@@ -1,0 +1,17 @@
+{
+  "name": "zeus-spec-tools",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Validates the JSON examples in docs/spec against docs/spec/schema and regenerates the state-machine table.",
+  "type": "module",
+  "scripts": {
+    "validate": "node validate-spec.mjs",
+    "gen:state-table": "node gen-state-table.mjs --write"
+  },
+  "devDependencies": {
+    "@noble/hashes": "^2.4.0",
+    "ajv": "^8.20.0",
+    "ajv-formats": "^3.0.1",
+    "canonicalize": "^5.1.0"
+  }
+}
