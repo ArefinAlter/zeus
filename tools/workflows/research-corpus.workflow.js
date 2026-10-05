@@ -1,6 +1,6 @@
 export const meta = {
   name: 'zeus-research-corpus',
-  description: 'Research, write and adversarially verify ~30 markdown research docs (HTTP/download standards, math, protocols, papers, agent/AI protocols, security, legal, Rust ecosystem) for the Haul/Zeus project, then index them',
+  description: 'Research, write and adversarially verify ~30 markdown research docs (HTTP/download standards, math, protocols, papers, agent/AI protocols, security, legal, Rust ecosystem) for the Zeus/Zeus project, then index them',
   phases: [
     { title: 'Research', detail: 'one agent per topic: web research + write the doc' },
     { title: 'Verify', detail: 'adversarial citation / claim / math verification, fixed in place' },
@@ -16,6 +16,10 @@ const ROOT = 'F:\\zeus\\docs\\research'
 const SP = (args && args.sp) || 'F:\\zeus\\tools\\research-checks'
 // Resume controls (see HANDOFF.md P1.0): args.skip = slugs already verified; args.verifyOnly = slugs written but unverified;
 // args.skipAudits / args.noCritic = skip those stages.
+const LITE = !!(args && args.lite)   // lean mode: shorter docs, fewer tool calls, default effort
+const HIGH = LITE ? undefined : 'high'
+const PRIORITY = ['browser-session-handoff-and-extension-platform', 'browser-download-internals', 'mcp-protocol-and-tool-design', 'agent-security-prompt-injection-and-mcp-threats', 'math-throughput-concurrency-congestion', 'trust-surface-approvals-and-gui-architecture', 'llm-provider-auth-routing-and-local-models', 'filesystems-and-file-management-semantics', 'a2a-and-agent-interoperability-protocols', 'auth-bot-defenses-and-ethical-fidelity', 'legal-ethical-and-policy-landscape', 'rust-ecosystem-and-architecture-survey', 'agentic-browsers-and-web-agent-research', 'scraping-crawling-and-extraction-research', 'workflow-engine-dsl-and-durable-execution', 'conversion-parsing-and-sandboxed-pipelines', 'provenance-dataset-and-content-governance-standards', 'terminal-orchestration-and-cli-tui-design', 'desktop-os-integration-packaging-distribution', 'testing-verification-and-benchmarking-methodology', 'competitor-and-reference-implementation-teardowns', 'llm-data-mining-pipelines-and-dataset-formats', 'business-model-licensing-and-open-core-strategy']
+const prio = (d) => { const i = PRIORITY.indexOf(d.slug); return i < 0 ? 999 : i }
 const SKIP = new Set((args && args.skip) || [])
 const VERIFY_ONLY = new Set((args && args.verifyOnly) || [])
 
@@ -61,7 +65,7 @@ const COMMON = `
 You are a senior systems / protocol / security researcher writing ONE document of a research corpus for an open-source project.
 
 PROJECT CONTEXT
-- Working name "Haul" (repo codename "Zeus"): a free, open-core, Rust, local-first "download + file layer for AI agents". A background daemon (tokio) with a segmented, resumable HTTP transfer engine; a Manifest V3 browser extension that hands live logged-in sessions and failed browser downloads to the daemon over native messaging (with an in-browser fetch fallback); an MCP server (later an A2A endpoint); a CLI/TUI; an optional Tauri GUI; BYOK plus subscription-friendly LLM provider ladder; scraping/workflow runner with pagination; sandboxed conversion pipelines; rules/dedupe/file organization; provenance manifests and a hash-chained audit log; human-only approval surfaces. It is NOT an IDM clone. Positioning: the session-aware downloader and file layer for agents.
+- Name: "Zeus" (research.md calls it "Zeus", its old working name): a free, open-core, Rust, local-first "download + file layer for AI agents". A background daemon (tokio) with a segmented, resumable HTTP transfer engine; a Manifest V3 browser extension that hands live logged-in sessions and failed browser downloads to the daemon over native messaging (with an in-browser fetch fallback); an MCP server (later an A2A endpoint); a CLI/TUI; an optional Tauri GUI; BYOK plus subscription-friendly LLM provider ladder; scraping/workflow runner with pagination; sandboxed conversion pipelines; rules/dedupe/file organization; provenance manifests and a hash-chained audit log; human-only approval surfaces. It is NOT an IDM clone. Positioning: the session-aware downloader and file layer for agents.
 - The existing market/product research is F:\\zeus\\research.md. Read it first (at least sections 4, 5 and 8). Do not duplicate it; go far deeper on your assigned topic. Where evidence contradicts research.md, say so in a "Corrections to research.md" section.
 - Today's date is 2026-10-05. Your training knowledge may be stale; everything dated 2025 or 2026 MUST be verified on the web. Do not assume a product, spec version or policy is still as you remember it.
 
@@ -77,14 +81,14 @@ OUTPUT FILE
 - Write exactly one file with the Write tool at the absolute path given below. Scratch files only in ${SP}. Do not run git. Do not touch other repo files.
 - Format (GitHub-flavored markdown):
   1. YAML front matter: title, slug, status: draft, last_researched: 2026-10-05, confidence (high|medium|low overall), related (list of other doc slugs).
-  2. "## TL;DR": 6-10 bullets with the conclusions that matter for building Haul.
+  2. "## TL;DR": 6-10 bullets with the conclusions that matter for building Zeus.
   3. Body sections covering every item of your scope list. Use tables for comparisons, numbered lists for algorithms, mermaid diagrams where they clarify mechanisms. Formulas in GitHub LaTeX ($...$ and $$...$$) with a plain-text restatement of key results; every worked example computed and checked.
-  4. "## Implications for Haul": concrete, decisive design recommendations (what to do, what not to do, defaults, thresholds), each tied to the evidence it rests on, plus candidate tests/benchmarks that would validate it.
+  4. "## Implications for Zeus": concrete, decisive design recommendations (what to do, what not to do, defaults, thresholds), each tied to the evidence it rests on, plus candidate tests/benchmarks that would validate it.
   5. "## Corrections to research.md" (only when applicable).
   6. "## Open questions".
   7. "## References": every cited source with a stable key such as [RFC 9110], [arXiv:2307.13854], [Chromium: download design], [Web: short title], with full title, authors/org, year and URL. Cite inline with those keys.
 - Style: dense, specific, technical; no marketing, no emoji, no filler. Label *Inference* explicitly where you are inferring. Give dates/versions for anything time-sensitive. Tag contested claims with confidence (High/Medium/Low).
-- Length: as long as needed to be a genuinely useful engineering and research reference, typically 5,000-10,000 words. Depth and correctness over breadth, but cover every scope item.
+- Length: ${LITE ? 'LEAN MODE. Target 3,500-5,500 words (hard cap 6,500). Budget about 45 tool calls of research, then write; do not exhaustively mine every source. Prioritise the scope items that matter most for building Zeus and cover the rest briefly. Depth and correctness over breadth.' : 'as long as needed to be a genuinely useful engineering and research reference, typically 5,000-10,000 words. Depth and correctness over breadth, but cover every scope item.'}
 
 FINAL MESSAGE
 - Reply with the required structured summary only.
@@ -102,7 +106,7 @@ scope: `
 - Caching relevance (RFC 9111, immutable RFC 8246). Digest fields: RFC 9530 Content-Digest / Repr-Digest / Want-*, legacy RFC 3230 Digest, x-amz-checksum-*, GCS crc32c/md5, Azure Content-MD5, S3 multipart ETag semantics.
 - Link header RFC 8288 (rel=next pagination). HTTP auth schemes in downloads (Basic, Bearer, Digest RFC 7616). Cookies RFC 6265 / 6265bis (SameSite, Secure, __Host-/__Secure- prefixes, Partitioned/CHIPS) and what matters when replaying cookies from a non-browser client.
 - Metalink: RFC 5854 (Metalink/XML) and RFC 6249 (Metalink/HTTP). RFC 8673 (HTTP Random Access and Live Content). IETF HTTP resumable uploads draft as a symmetrical design reference. HTTP/1.1 connection reuse and pipelining. Trailers.
-- Output: a normative "Haul HTTP engine behaviour checklist" (what to send, what to accept, what to treat as fatal, retry classes per status code).` },
+- Output: a normative "Zeus HTTP engine behaviour checklist" (what to send, what to accept, what to treat as fatal, retry classes per status code).` },
 
 { slug: 'transport-http2-http3-quic-congestion', file: '02-transport-http2-http3-quic-congestion.md', title: 'Transport for bulk transfer: HTTP/2, HTTP/3, QUIC and congestion control',
 scope: `
@@ -116,7 +120,7 @@ scope: `
 
 { slug: 'other-transfer-protocols-and-sources', file: '03-other-transfer-protocols-and-sources.md', title: 'Other transfer protocols and content sources',
 scope: `
-For each protocol give: resume capability, parallelism model, integrity mechanism, auth/session model, Rust crate support (verified), and a Haul priority (P0/P1/P2/never) in a final matrix.
+For each protocol give: resume capability, parallelism model, integrity mechanism, auth/session model, Rust crate support (verified), and a Zeus priority (P0/P1/P2/never) in a final matrix.
 - FTP (RFC 959, 2428, 3659 REST/MLSD/SIZE), FTPS (RFC 4217), SFTP (draft-ietf-secsh-filexfer, pipelining/performance), SCP deprecation, WebDAV (RFC 4918), rsync algorithm and protocol.
 - BitTorrent: BEP 3, 5 (DHT), 9, 10, 11, 14, 19 (web seeds), 29 (uTP), 52 (v2 Merkle); piece selection (rarest-first), choking; magnet URIs; hybrid HTTP + P2P; librqbit design. Cohen "Incentives build robustness" and modelling papers.
 - Metalink; IPFS (CIDs, bitswap, gateways, range support).
@@ -124,8 +128,8 @@ For each protocol give: resume capability, parallelism model, integrity mechanis
 - Consumer clouds: Google Drive large-file virus-scan confirmation, Dropbox dl=1, OneDrive/SharePoint, Box: download quirks and API routes.
 - Git LFS batch API and transfer adapters; OCI Distribution Spec blob pulls and bearer-token challenge flow; Hugging Face Hub downloads (resolve URLs, X-Linked-Etag, Xet CAS protocol, hf_transfer, hf_xet).
 - Usenet NNTP (RFC 3977) + yEnc; rclone as multi-backend reference; high-speed science transfer (GridFTP, Aspera FASP, UDT, Globus).
-- Streaming: HLS (RFC 8216, LL-HLS), MPEG-DASH (ISO/IEC 23009-1), CMAF, AES-128 / SAMPLE-AES; segment parallelism; muxing with ffmpeg; the DRM boundary (Widevine/PlayReady/FairPlay, EME) and why Haul must stop there.
-- yt-dlp architecture (extractors, format selection, native HLS vs ffmpeg, fragment retries and concurrency, --cookies-from-browser, impersonation, PO tokens), gallery-dl. Where Haul should delegate vs implement.` },
+- Streaming: HLS (RFC 8216, LL-HLS), MPEG-DASH (ISO/IEC 23009-1), CMAF, AES-128 / SAMPLE-AES; segment parallelism; muxing with ffmpeg; the DRM boundary (Widevine/PlayReady/FairPlay, EME) and why Zeus must stop there.
+- yt-dlp architecture (extractors, format selection, native HLS vs ffmpeg, fragment retries and concurrency, --cookies-from-browser, impersonation, PO tokens), gallery-dl. Where Zeus should delegate vs implement.` },
 
 { slug: 'math-throughput-concurrency-congestion', file: '04-math-throughput-concurrency-and-congestion.md', title: 'Mathematics of throughput, concurrency and adaptive control',
 scope: `
@@ -138,7 +142,7 @@ Derive, state conditions of validity, and give worked examples (computed with no
 - Tail latency: work stealing and dynamic splitting, BitTorrent end-game mode, hedged requests (Dean & Barroso "The Tail at Scale"; derive extra-load bound for a p-quantile trigger), speculative execution (LATE).
 - Disk-bound regimes: sequential write throughput, IOPS and queue depth, fsync cost; interaction between N segments and disk.
 - High-RTT, satellite, mobile and Wi-Fi regimes.
-- Deliverables: pseudocode for Haul's adaptive controller (segment count, split policy, hedge trigger, per-host caps) with default parameters and justification; a discrete-event simulator specification; a validation methodology. At least 8 numeric worked examples.` },
+- Deliverables: pseudocode for Zeus's adaptive controller (segment count, split policy, hedge trigger, per-host caps) with default parameters and justification; a discrete-event simulator specification; a validation methodology. At least 8 numeric worked examples.` },
 
 { slug: 'math-scheduling-reliability-estimation', file: '05-math-scheduling-reliability-and-estimation.md', title: 'Mathematics of scheduling, reliability, bandits and estimation',
 scope: `
@@ -152,7 +156,7 @@ Derive, state validity conditions, give computed worked examples:
 - Estimation: confidence intervals, heavy tails, streaming quantile sketches (t-digest, DDSketch, HdrHistogram) for p95 hedge triggers; anomaly/change detection (CUSUM, Page-Hinkley, BOCPD).
 - LLM-cost math: token budgets, expected spend with caching, routing/cascade cost models (FrugalGPT, RouteLLM; verify IDs).
 - Workflow time/size estimation: critical path/PERT with uncertainty bands for plan previews; estimating total items in paginated listings with unknown counts (capture-recapture, Good-Turing) and false-stop probability of 'stop when no new items'.
-- Deliverables: algorithms with pseudocode and recommended defaults for Haul's scheduler, retry policy, mirror selector and ETA/plan estimator.` },
+- Deliverables: algorithms with pseudocode and recommended defaults for Zeus's scheduler, retry policy, mirror selector and ETA/plan estimator.` },
 
 { slug: 'integrity-chunking-dedup-delta-erasure', file: '06-integrity-chunking-dedup-delta-and-erasure-coding.md', title: 'Integrity, chunking, deduplication, delta encoding, erasure coding and file splitting',
 scope: `
@@ -168,7 +172,7 @@ scope: `
 
 { slug: 'browser-session-handoff-and-extension-platform', file: '07-browser-session-handoff-and-extension-platform.md', title: 'Browser session handoff and the extension platform',
 scope: `
-- Feasibility and threat analysis of obtaining a logged-in session: Chrome cookie storage and encryption (DPAPI, v10/v11/v20), App-Bound Encryption (Chrome 127; Google security blog) and its bypass ecosystem described at fact level only (no exploit steps) and why Haul must never read cookie databases; DBSC (W3C WebAppSec spec, Chrome 146 status, registration/refresh protocol and header names, consequences for non-browser clients); Firefox (cookies.sqlite, Total Cookie Protection partitioning); Safari ITP; third-party cookie status in Chrome and CHIPS.
+- Feasibility and threat analysis of obtaining a logged-in session: Chrome cookie storage and encryption (DPAPI, v10/v11/v20), App-Bound Encryption (Chrome 127; Google security blog) and its bypass ecosystem described at fact level only (no exploit steps) and why Zeus must never read cookie databases; DBSC (W3C WebAppSec spec, Chrome 146 status, registration/refresh protocol and header names, consequences for non-browser clients); Firefox (cookies.sqlite, Total Cookie Protection partitioning); Safari ITP; third-party cookie status in Chrome and CHIPS.
 - MV3 capabilities with exact API details: chrome.downloads (events, DownloadItem.state/error/interruptReason list, download options, onDeterminingFilename, resume, search), chrome.cookies (getAll, partitionKey, storeId), chrome.webRequest (what remains), declarativeNetRequest modifyHeaders, chrome.permissions.request + optional_host_permissions (key to per-origin consent), activeTab, nativeMessaging (framing, size limits both directions, host manifest allowed_origins, per-browser/per-OS registration locations, connectNative vs sendNativeMessage), MV3 service-worker lifetime (idle/event limits, what keeps it alive, native-messaging port behaviour), chrome.offscreen, alarms, storage.session.
 - Fetch from the extension service worker: credentials, CORS exemption via host_permissions, forbidden headers, Referer/Origin control via DNR, streaming bodies, memory; streaming large bodies to the native host under message-size limits (compare: native messaging chunks vs localhost WebSocket with token and Chrome Private/Local Network Access prompts vs other); measured or documented throughput limits.
 - Firefox differences (MV3 event pages, browser.downloads, blocking webRequest retained, firstPartyDomain cookie isolation), Safari Web Extensions (native messaging only to containing app), Edge/Brave/Vivaldi/Opera/Arc differences.
@@ -182,7 +186,7 @@ scope: `
 - Chromium download stack: DownloadManager/DownloadItem, DownloadInterruptReason list (verify exact enum), resumption preconditions (strong ETag/Last-Modified, Accept-Ranges, If-Range), parallel download feature (history, flags, slicing policy), filename determination, .crdownload handling, Safe Browsing / download protection, Content-Disposition and MIME sniffing -> download vs navigation, insecure-download blocking, dangerous file type list, Mark-of-the-Web and Windows Attachment Execution Service.
 - Firefox (DownloadCore, .part files, resume logic), Safari/WebKit (WKDownload, resume data), Edge differences. blob: / data: downloads, <a download>, File System Access API, service-worker streamed downloads (StreamSaver pattern).
 - Signed-URL expiry mid-download; how each failure appears to users and to chrome.downloads (error strings; verify the exact list: FILE_FAILED, NETWORK_FAILED, SERVER_FORBIDDEN, SERVER_BAD_CONTENT, USER_CANCELED, etc.).
-- KEY DELIVERABLE: a precise mapping table from browser interrupt reasons / HTTP statuses / observable signals to Haul error classes (transient_network, throttled, auth_expired, url_expired, blocked, permanent) with the recovery action for each.
+- KEY DELIVERABLE: a precise mapping table from browser interrupt reasons / HTTP statuses / observable signals to Zeus error classes (transient_network, throttled, auth_expired, url_expired, blocked, permanent) with the recovery action for each.
 - Recovery design: reuse bytes_received only when validators match; location/format of partial files; take over the partial file vs restart; avoiding double-writing by browser and daemon; cancelling the browser's download after handoff; user-visible handoff UX and dedupe.
 - Linux/macOS/Windows specifics.` },
 
@@ -203,7 +207,7 @@ scope: `
 - Registry (registry.modelcontextprotocol.io, server.json, namespace verification) and directories (Smithery, PulseMCP, mcp.so, Docker MCP catalog, VS Code gallery).
 - Rust: rmcp current version and spec support (macros, transports, auth, tasks), alternatives; inspector and conformance tooling.
 - Client behaviours and context cost: tool-count limits, schema size cost, on-demand tool loading / tool search, "code execution with MCP" (Anthropic engineering) and Cloudflare Code Mode; Agent Skills (SKILL.md) as a complement; comparison with OpenAI function calling / Responses tools, Gemini function calling, OpenAPI-derived tools.
-- Tool design guidance for long-running jobs (job id + poll + subscribe + tasks), idempotency keys, pagination, output shaping, token-efficient responses, error messages for LLM recovery, destructive annotations, dry-run defaults. Include full JSON schemas for 3 representative Haul tools.
+- Tool design guidance for long-running jobs (job id + poll + subscribe + tasks), idempotency keys, pagination, output shaping, token-efficient responses, error messages for LLM recovery, destructive annotations, dry-run defaults. Include full JSON schemas for 3 representative Zeus tools.
 - Evidence on MCP-vs-CLI tradeoffs for agents (token cost, reliability) with sources.` },
 
 { slug: 'a2a-and-agent-interoperability-protocols', file: '11-a2a-and-agent-interoperability-protocols.md', title: 'A2A and the agent interoperability protocol landscape',
@@ -212,18 +216,18 @@ scope: `
 - MCP vs A2A division of labour; mapping A2A Tasks to MCP Tasks; IBM ACP (merged into A2A; verify), ANP (DID-based), AGNTCY (OASF, Agent Directory, SLIM), NLWeb, AP2, Agentic Commerce Protocol, x402, AGENTS.md, Agent Skills, OpenAI Apps SDK / AgentKit, Microsoft Agent Framework, Amazon AgentCore, Google ADK; Agentic AI Foundation members and projects.
 - Surveys and papers (e.g. arXiv 2505.02279 and 2504.16736 candidates; verify) and security analyses of A2A.
 - Agent identity and delegation: OAuth token exchange RFC 8693, on-behalf-of flows, SPIFFE/SPIRE, DID/VC, IETF agent-auth drafts (verify).
-- Fit for Haul: Agent Card for Haul listing skills (fetch, rescue, organise, convert); mapping of download job states to A2A task states (table); artifacts as file references (URI parts) rather than inline bytes; push notifications for long jobs; auth-required mapped to session consent; trust levels for peers; outbound delegation risks. Provide a proposed Agent Card JSON and a state-mapping table.` },
+- Fit for Zeus: Agent Card for Zeus listing skills (fetch, rescue, organise, convert); mapping of download job states to A2A task states (table); artifacts as file references (URI parts) rather than inline bytes; push notifications for long jobs; auth-required mapped to session consent; trust levels for peers; outbound delegation risks. Provide a proposed Agent Card JSON and a state-mapping table.` },
 
 { slug: 'agent-security-prompt-injection-and-mcp-threats', file: '12-agent-security-prompt-injection-and-mcp-threats.md', title: 'Agent security, prompt injection and MCP threat model',
 scope: `
 - Threat model for agents with file + network + session powers: indirect prompt injection (Greshake et al.), the "lethal trifecta" (Willison), tool poisoning / rug pull / shadowing (Invariant Labs), confused deputy, excessive agency (OWASP LLM Top 10 2025, OWASP agentic threat work, MITRE ATLAS).
 - MCP incidents and CVEs (VERIFY each against NVD/advisories before citing): MCP Inspector CVE-2025-49596, mcp-remote CVE-2025-6514, Anthropic filesystem server path traversal CVE-2025-53109/53110, Git MCP server CVEs, malicious Postmark MCP package, Supabase MCP lethal trifecta, GitHub MCP toxic flow, Asana MCP exposure, Cursor CurXecute/MCPoison, others found in 2026.
 - Papers and benchmarks: AgentDojo, InjecAgent, Agent Security Bench, WASP, MCPTox, MCP safety audit, MCP landscape/security surveys; defences: instruction hierarchy, spotlighting, StruQ/SecAlign, CaMeL, the design-patterns-for-securing-LLM-agents paper, Meta's Agents Rule of Two, vendor guidance (Chrome agentic security architecture, Anthropic Claude for Chrome, OpenAI Atlas hardening; verify). Verify every arXiv ID.
-- Apply capability/taint tracking to files and URLs: network-sourced content is tainted; delete/move/convert parameters must come from a trusted channel; dual-LLM and plan-then-execute applied to Haul workflows.
+- Apply capability/taint tracking to files and URLs: network-sourced content is tainted; delete/move/convert parameters must come from a trusted channel; dual-LLM and plan-then-execute applied to Zeus workflows.
 - Human approval security: consent fatigue, trusted UI, agent-supplied text spoofing, approvals that show daemon-computed facts only.
 - Localhost attack surface: DNS rebinding, CSRF to localhost, Origin/Host validation (MCP spec requirement), Chrome Private/Local Network Access rollout, the 0.0.0.0 day issue; IPC hardening (named pipe ACLs and first-instance flag, Unix socket permissions, SO_PEERCRED, GetNamedPipeClientProcessId, token files, macaroon/biscuit capabilities); native-messaging host hardening.
 - Supply chain: cargo-vet/audit/deny, reproducible builds, SLSA, Sigstore, npm provenance. Archive/parser attacks: zip-slip, zip bombs, symlink races and TOCTOU (openat2 RESOLVE_BENEATH, cap-std). Sandboxing options per OS. Exfiltration paths. Audit-log design and limits of hash chains. Kill switch, budgets, safe defaults.
-- Deliverables: a STRIDE-style threat table per Haul component and a list of testable 'security invariants'.` },
+- Deliverables: a STRIDE-style threat table per Zeus component and a list of testable 'security invariants'.` },
 
 { slug: 'agentic-browsers-and-web-agent-research', file: '13-agentic-browsers-and-web-agent-research.md', title: 'Agentic browsers and web-agent research: the download last-mile',
 scope: `
@@ -232,7 +236,7 @@ scope: `
 - Benchmarks and papers (verify IDs): WebArena, VisualWebArena, Mind2Web and Online-Mind2Web, WebVoyager, WebShop, WorkArena, OSWorld, BrowseComp, AssistantBench, GAIA, WebRL, UI-TARS, others from 2025-2026; focus on tasks involving file download/upload and failure analyses of web agents.
 - Source-level look (GitHub) at download handling in Playwright MCP and browser-use: events, output dirs, workspace-root restrictions, issue state today for #154/#953/#1754/#1768 and browser-use #3879/#3721/#3136/#1853.
 - Standards for agent-browser interop: WebMCP (W3C community group / navigator.modelContext; verify), NLWeb, llms.txt, browser agent-mode security architectures.
-- Formalise the 'last mile' problem (download as a first-class action). Design 'DownloadBench': a failure-corpus benchmark (categories, how to source legally, metrics) Haul could publish. Where Haul sits relative to agentic browsers; adapter designs for Playwright MCP / browser-use / Stagehand.` },
+- Formalise the 'last mile' problem (download as a first-class action). Design 'DownloadBench': a failure-corpus benchmark (categories, how to source legally, metrics) Zeus could publish. Where Zeus sits relative to agentic browsers; adapter designs for Playwright MCP / browser-use / Stagehand.` },
 
 { slug: 'scraping-crawling-and-extraction-research', file: '14-scraping-crawling-and-extraction-research.md', title: 'Scraping, crawling and extraction: classical and LLM-era research',
 scope: `
@@ -240,7 +244,7 @@ scope: `
 - LLM-era (verify all IDs): Evaporate (code synthesis for extraction), MarkupLM, ReaderLM-v2 / Jina Reader, Crawl4AI (adaptive crawling), ScrapeGraphAI, Firecrawl extract, WebWalker, HTML-to-markdown pipelines, LLM pagination detection.
 - Structured data in pages: JSON-LD/schema.org/microdata/OpenGraph, RSS/Atom, sitemaps (protocol, index files), robots sitemap directive, hidden-API discovery via network capture (XHR/GraphQL, HAR), Next.js __NEXT_DATA__ and hydration payloads.
 - Pagination taxonomy with detection heuristics and algorithms: Link header RFC 8288, page parameters, offset/limit, cursor/keyset, infinite scroll, load-more, date-range chunking, facet partitioning to beat result caps, sitemaps as enumerators; API conventions (GitHub Link, Stripe cursors, JSON:API, OData nextLink, Relay connections). Stopping rules (no-new-items, duplicate-page, count hints, capture-recapture estimate).
-- A taxonomy of 'how a file download is triggered on the web' (direct link, redirect chain, form POST, JS blob, XHR -> signed URL, websocket, window.open, countdown interstitial, CAPTCHA-gated, email-gated) with Haul's handling strategy for each.
+- A taxonomy of 'how a file download is triggered on the web' (direct link, redirect chain, form POST, JS blob, XHR -> signed URL, websocket, window.open, countdown interstitial, CAPTCHA-gated, email-gated) with Zeus's handling strategy for each.
 - URL canonicalisation (RFC 3986 normalisation, tracking-parameter stripping, canonical link), crawl frontier dedupe (Bloom/cuckoo filters, false-positive math), frameworks (Scrapy, Crawlee, Heritrix, StormCrawler, Colly, spider-rs, Katana, texting_robots), WARC.
 - Cost model of LLM-drafted selectors (plan once, run many) vs per-page LLM extraction, with dated price assumptions; validation of LLM-drafted plans (schema checks, canary pages, drift detection, rejecting selectors that match zero or too many nodes).
 - Deliverable: a workflow plan intermediate representation proposal (feeds the workflow-engine doc).` },
@@ -264,9 +268,9 @@ scope: `
 - Links and TOCTOU: symlinks, junctions, reparse points; openat2 RESOLVE_BENEATH, cap-std; locking (flock/fcntl/LockFileEx; Windows sharing modes and antivirus interference); watching (inotify limits, FSEvents, ReadDirectoryChangesW overflow; notify crate caveats).
 - Trash/recycle (freedesktop Trash spec, IFileOperation, macOS), extended attributes and provenance metadata (Zone.Identifier format, com.apple.quarantine, kMDItemWhereFroms, user.xdg.origin.url / referrer.url from the freedesktop common-xattrs spec), xattr support by filesystem, preservation through copy/zip.
 - File identification (WHATWG MIME Sniffing, libmagic, infer, Google Magika paper and Rust crate; extension/content mismatch policy). Search/indexing (Windows Search, Spotlight, Everything/USN, tantivy).
-- Rules engines (Hazel, File Juggler, organize, Maid) and a design for Haul's rule DSL: match -> actions, dry-run plan diff, idempotence, undo journal and move-journal format. Duplicate finders (fclones, czkawka, rmlint, jdupes) algorithms.
+- Rules engines (Hazel, File Juggler, organize, Maid) and a design for Zeus's rule DSL: match -> actions, dry-run plan diff, idempotence, undo journal and move-journal format. Duplicate finders (fclones, czkawka, rmlint, jdupes) algorithms.
 - Network filesystems and cloud-synced folders (OneDrive/Dropbox placeholders, Files On-Demand reparse points, never write .part into synced folders; SMB/NFS rename and fsync caveats), removable media, quotas; OS protections that block writes (Windows Controlled Folder Access, macOS TCC Downloads prompts, Flatpak/Snap confinement).
-- Deliverable: a 'Haul filesystem contract' checklist and a cross-platform test matrix.` },
+- Deliverable: a 'Zeus filesystem contract' checklist and a cross-platform test matrix.` },
 
 { slug: 'conversion-parsing-and-sandboxed-pipelines', file: '17-conversion-parsing-and-sandboxed-pipelines.md', title: 'Conversion, parsing and sandboxed pipelines',
 scope: `
@@ -284,7 +288,7 @@ scope: `
 - Release/supply-chain attestations vs dataset attestations: Sigstore, in-toto, SLSA.
 - Rights and opt-out signals: robots.txt RFC 9309, X-Robots-Tag, TDMRep (W3C CG), IETF AI Preferences (aipref) vocabulary and Content-Usage header (status), Really Simple Licensing (RSL 1.0), Cloudflare Content Signals Policy, ai.txt, Spawning Do-Not-Train, llms.txt, C2PA training-mining assertion, EU DSM Art. 4(3) machine-readable opt-out and AI Act GPAI Code of Practice commitments (verify).
 - License detection (SPDX identifiers, scancode, rel=license, schema.org license, Creative Commons REL).
-- Haul's per-file provenance record schema (JSONL) with a crosswalk table to PROV / Croissant / RO-Crate; a manifest v0 JSON Schema proposal.
+- Zeus's per-file provenance record schema (JSONL) with a crosswalk table to PROV / Croissant / RO-Crate; a manifest v0 JSON Schema proposal.
 - Tamper-evident logging: hash chains, Merkle transparency logs (RFC 9162, Trillian, Rekor), RFC 3161 timestamps, OpenTimestamps; realistic threat model and limits; signing manifests (minisign, Sigstore, ssh-keygen -Y, age); replayability of runs from manifests; privacy (GDPR minimisation, stripping query secrets, pseudonymising URLs); chain-of-custody practice for journalists/legal use.` },
 
 { slug: 'legal-ethical-and-policy-landscape', file: '19-legal-ethical-and-policy-landscape.md', title: 'Legal, ethical and policy landscape (not legal advice)',
@@ -294,7 +298,7 @@ Cite primary sources (opinions, statutes, official gazettes) and VERIFY status a
 - EU/UK/other: DSM Directive 2019/790 Arts. 3-4, Database Directive and Ryanair v PR Aviation, GDPR for scraped personal data and EDPB Opinion 28/2024, EU AI Act Art. 53 and the GPAI Code of Practice, UK CDPA s.29A and Getty v. Stability, GEMA v. OpenAI (Munich 2025), Japan Art. 30-4, Singapore, India DPDP, Bangladesh (Cyber Security Act 2023, personal data protection instruments, copyright; verify current status carefully), Brazil, Canada.
 - Platform/app-store policy: Chrome Web Store (user data, limited use, single purpose), Mozilla, Microsoft Store, Apple notarization.
 - Secondary liability for a tool with community extractors/workflows (Sony/Grokster doctrine; substantial non-infringing uses), DMCA agent and takedown handling for a community template registry, acceptable-use policy, responsible disclosure; JDownloader/yt-dlp/Gopeed precedent (including German decisions; verify).
-- Export-control note for open-source crypto software; licensing: Apache-2.0 vs MPL-2.0 vs AGPL, GPL dependency boundaries (FFmpeg, Pandoc, unrar), patents, DCO vs CLA; trademark clearance method and an actual quick search for conflicts on 'Haul' and 'Zeus' in software/Class 9/42 (USPTO/EUIPO/WIPO; report what you find and how reliable).
+- Export-control note for open-source crypto software; licensing: Apache-2.0 vs MPL-2.0 vs AGPL, GPL dependency boundaries (FFmpeg, Pandoc, unrar), patents, DCO vs CLA; trademark clearance method and an actual quick search for conflicts on 'Haul' (the former working name) and 'Zeus' in software/Class 9/42 (USPTO/EUIPO/WIPO; report what you find and how reliable).
 - Ethics: robots norms, Menlo Report, ACM Code; recommended product guardrails and first-run notice outline; a risk heat map by feature (session handoff, logged-in crawling, community workflows, DRM boundary, LLM egress).` },
 
 { slug: 'rust-ecosystem-and-architecture-survey', file: '20-rust-ecosystem-and-architecture-survey.md', title: 'Rust ecosystem survey and architecture patterns',
@@ -332,7 +336,7 @@ scope: `
 { slug: 'business-model-licensing-and-open-core-strategy', file: '24-business-model-licensing-and-open-core-strategy.md', title: 'Open-core business model, licensing and go-to-market evidence',
 scope: `
 - Evidence on what monetises developer tools in 2025-2026 with numbers where public: Supabase, Sentry (FSL), PostHog, GitLab, Grafana, Tailscale (OSS client, closed coordination server, Headscale), Obsidian (sync/publish), Raycast, Warp, Zed, Bun, Astral (uv/ruff), Deno, Charm; download-tool precedents (IDM pricing, Gopeed/AB DM/Motrix donations, yt-dlp sponsorship, JDownloader funding).
-- License-change history and community reaction (HashiCorp BSL -> OpenTofu, Elastic SSPL -> AGPL, Redis RSAL/SSPL -> AGPL 2025, Sentry FSL, MongoDB SSPL); license options for Haul (Apache-2.0 + trademark policy vs MPL-2.0 vs AGPL for server components vs FSL for paid components), DCO vs CLA and relicensing risk, patent grant.
+- License-change history and community reaction (HashiCorp BSL -> OpenTofu, Elastic SSPL -> AGPL, Redis RSAL/SSPL -> AGPL 2025, Sentry FSL, MongoDB SSPL); license options for Zeus (Apache-2.0 + trademark policy vs MPL-2.0 vs AGPL for server components vs FSL for paid components), DCO vs CLA and relicensing risk, patent grant.
 - Monetisation consistent with research.md (Pro sync, Team policy/audit, Enterprise, OEM) with pricing evidence; funding sources (GitHub Sponsors, Open Collective, NLnet/NGI Zero, Sovereign Tech Agency, GitHub Secure Open Source Fund, Alpha-Omega, FLOSS/fund, AI-lab OSS programmes; verify each is open and eligible); dev-tool GTM benchmarks (stars-to-users, MCP registry listing effects, Show HN outcomes).
 - Distribution channels: MCP registry, Smithery, PulseMCP, mcp.so, awesome lists, Claude Code plugin/skill marketplaces, Cursor directory, VS Code MCP gallery, Docker MCP catalog.
 - Community governance: CONTRIBUTING, code of conduct, RFC process, SECURITY policy, bus-factor mitigation, trademark strategy.
@@ -365,12 +369,12 @@ scope: `
 - Corpus-scale quality methods: exact dedup, MinHash-LSH parameter (b, r) selection maths with threshold curve, suffix-array dedup, fastText quality/LID classifiers, PII scrubbing, toxicity filters; licence/rights filtering using provenance metadata; reproducible 'dataset recipes' (workflow + manifest + seeds).
 - Personal-archive use cases with exact mechanics: Google Takeout (multi-part zips, link expiry, sign-in re-auth), Facebook/Instagram/X/Reddit data exports, GDPR Art. 20 exports; why they fit session-aware resumable downloading; failure modes observed.
 - MCP resources/prompts for dataset workflows; agent-driven dataset-building papers 2025-2026 (search and verify); cost estimates for LLM-assisted classification of N files (token math; local small model throughput) with explicit assumptions.
-- Provide THREE reference dataset recipes expressed as Haul workflows.` },
+- Provide THREE reference dataset recipes expressed as Zeus workflows.` },
 
 { slug: 'trust-surface-approvals-and-gui-architecture', file: '28-trust-surface-approvals-and-gui-architecture.md', title: 'Trust surface, human approvals and GUI architecture',
 scope: `
 - The problem: approvals (session grants, deletes, workflow runs) must be confirmable where an agent or injected prompt cannot spoof the content. Survey consent/approval UX research (consent and warning fatigue, Android permission research, UAC secure desktop, sudo/polkit, macOS TCC, WebAuthn user presence, Windows Hello), 'confused deputy' and 'approval text spoofing' in agent UIs, MCP elicitation limits, OS notification action buttons and their spoofability.
-- Candidate trust surfaces for Haul: extension popup (what the page/other extensions can and cannot spoof), terminal prompt on /dev/tty or CONIN$, OS-native toast with daemon-computed facts, Tauri GUI window, and a hardware-key/OS-auth confirmation (WebAuthn / Windows Hello / Touch ID) option; compare threat models in a table; specify the 'daemon-computed facts only' principle (origin, file count, bytes, destination, expiry) with example screens.
+- Candidate trust surfaces for Zeus: extension popup (what the page/other extensions can and cannot spoof), terminal prompt on /dev/tty or CONIN$, OS-native toast with daemon-computed facts, Tauri GUI window, and a hardware-key/OS-auth confirmation (WebAuthn / Windows Hello / Touch ID) option; compare threat models in a table; specify the 'daemon-computed facts only' principle (origin, file count, bytes, destination, expiry) with example screens.
 - GUI architecture: thin-client rule (daemon API is the single contract; no GUI-only features except approvals); Tauri 2 security model (capabilities, CSP, isolation pattern, IPC allowlists), serving the UI from the daemon on localhost (token, Origin checks, DNS-rebinding defences), WebView2/WKWebView/WebKitGTK constraints; egui/iced/slint/dioxus alternatives and when to prefer them.
 - MCP Apps (ui:// resources, sandboxed iframes, CSP, postMessage bridge, host support matrix as of 2026-10; verify) as a low-cost embedded GUI: what to render (job progress, plan preview) and what must never be approvable there.
 - Agent-activity UX: inbox, per-agent permissions and budgets, hash-chained audit view, kill switch; plan preview and dry-run diff visualisation; A2A peer/trust views; accessibility and i18n (including Bangla).
@@ -400,8 +404,8 @@ Procedure:
 2. Run refcheck.mjs. For every arXiv ID / RFC compare the official title, authors and year with how the doc describes it. Fix mismatches: correct the ID if you can find the intended paper by title (arXiv search), otherwise remove it or tag [unverified]. Replace obsoleted RFCs with the current ones and adjust text where semantics changed.
 3. Run mdcheck.mjs; fix structural issues (tables, sections, fences, emoji).
 4. Recompute EVERY numerical / worked example with node -e. Fix wrong arithmetic and any prose built on it.
-5. Select the 15-25 highest-impact factual claims that are NOT arXiv/RFC (version numbers, dates, CVE ids, crate versions, size limits, browser behaviours, legal case names and citations, statistics, star counts) and verify each against a primary source. Fix, soften (confidence tag), or remove what you cannot verify. Check that URLs cited for specific claims resolve and actually support the claim.
-6. Check each recommendation under "Implications for Haul" is supported by cited evidence or explicitly labelled inference; fix overreach.
+5. Select the ${LITE ? '10-15' : '15-25'} highest-impact factual claims that are NOT arXiv/RFC (version numbers, dates, CVE ids, crate versions, size limits, browser behaviours, legal case names and citations, statistics, star counts) and verify each against a primary source. Fix, soften (confidence tag), or remove what you cannot verify. Check that URLs cited for specific claims resolve and actually support the claim.
+6. Check each recommendation under "Implications for Zeus" is supported by cited evidence or explicitly labelled inference; fix overreach.
 7. Confirm every scope item below is covered; if something required is missing or thin, ADD it yourself with sources.
 Edit in place (Edit tool or rewriting sections), keep the voice, keep it dense. Set front matter status: verified (or verified-with-caveats) and add last_verified: 2026-10-05. Do not rename the file. Do not run git.
 
@@ -453,10 +457,10 @@ async function researchThenVerify(docs, phaseR, phaseV) {
     },
     async (s, d) => {
       if (!s) return null
-      let v = await agent(verifyPrompt(d, s), { label: 'verify:' + d.slug, phase: phaseV, schema: VERIFY, effort: 'high' })
+      let v = await agent(verifyPrompt(d, s), { label: 'verify:' + d.slug, phase: phaseV, schema: VERIFY, effort: HIGH })
       if (v && v.verdict === 'needs-rewrite') {
         log('repairing ' + d.slug)
-        const v2 = await agent(repairPrompt(d, v), { label: 'repair:' + d.slug, phase: phaseV, schema: VERIFY, effort: 'high' })
+        const v2 = await agent(repairPrompt(d, v), { label: 'repair:' + d.slug, phase: phaseV, schema: VERIFY, effort: HIGH })
         if (v2) v = v2
       }
       return { slug: d.slug, file: d.file, title: d.title, summary: s, verify: v }
@@ -466,10 +470,10 @@ async function researchThenVerify(docs, phaseR, phaseV) {
 
 // ---------- Run: research + verify for all docs, audits in parallel ----------
 phase('Research')
-const TODO = DOCS.filter(d => !SKIP.has(d.slug))
+const TODO = DOCS.filter(d => !SKIP.has(d.slug)).sort((a, b) => prio(a) - prio(b))
 const [results, audits] = await Promise.all([
   researchThenVerify(TODO, 'Research', 'Verify'),
-  (args && args.skipAudits) ? Promise.resolve([]) : parallel(AUDITS.map(a => () => agent(a.prompt, { label: 'audit:' + a.slug, phase: 'Audit', schema: AUDIT_SUMMARY, effort: 'high' }))),
+  (args && args.skipAudits) ? Promise.resolve([]) : parallel(AUDITS.map(a => () => agent(a.prompt, { label: 'audit:' + a.slug, phase: 'Audit', schema: AUDIT_SUMMARY, effort: HIGH }))),
 ])
 const done = results.filter(Boolean)
 const missing = TODO.filter(d => !done.find(r => r.slug === d.slug)).map(d => d.slug)
@@ -494,7 +498,7 @@ const GAPS = {
   },
   required: ['newDocs'],
 }
-const gaps = (args && args.noCritic) ? { newDocs: [] } : await agent(`You are the completeness critic for a research corpus in ${ROOT} supporting an open-source Rust project (working name Haul / codename Zeus): a session-aware download manager and file layer for AI agents.
+const gaps = (args && args.noCritic) ? { newDocs: [] } : await agent(`You are the completeness critic for a research corpus in ${ROOT} supporting an open-source Rust project (Zeus; research.md calls it Zeus, its old working name): a session-aware download manager and file layer for AI agents.
 
 The user's original request, condensed: research and document, as markdown files, ALL the download standards, mathematics, protocols, cutting-edge research, agent and AI protocols (MCP, A2A, etc.), papers and arXiv work relevant to: a lightweight Rust desktop download manager with persistent browser sessions, MCP connectivity, scraping workflow design (pagination, advanced scraping, tooling), file management, agent-to-agent protocols, file splitting, orchestrating file listing / downloading / converting via prompting, BYOK and subscription-based LLM access, terminal-based orchestration, LLM data-mining workflows, direct browser-to-download-manager handoff to convert or persistently retry failed downloads and to download from logged-in/walled sessions, a GUI plus agentic/A2A GUI, MCP Apps, human-only trust surfaces, and an open-core business model.
 
@@ -502,7 +506,7 @@ Existing docs (28 planned + 2 audits of the original research.md). Digest from t
 ${digest}
 Docs that failed to produce: ${missing.join(', ') || 'none'}.
 
-Task: list the docs that are STILL MISSING for this corpus to let an engineer build the product and a researcher trust it. Use Glob/Read on ${ROOT} to skim titles and headings (do not read every doc in full). Propose at most 8 NEW docs, numbered from 29 (file names like 29-<slug>.md), each with a precise scope list in the same style as the existing ones (rich bullet lists of required topics, seed leads to verify). Prefer genuinely new topics (for example: offline/low-bandwidth and censorship-resilient downloading; accessibility/i18n for Bangla and RTL; observability/telemetry-free diagnostics; update/rollback safety; cloud-drive APIs; email/attachment sources; media-library and metadata tagging; privacy-preserving local semantic search; whatever you find missing). Also list contradictions you notice between docs, and re-propose any doc listed as failed (use its original slug and file name). Return the structured result.`, { label: 'critic', phase: 'Critic', schema: GAPS, effort: 'high' })
+Task: list the docs that are STILL MISSING for this corpus to let an engineer build the product and a researcher trust it. Use Glob/Read on ${ROOT} to skim titles and headings (do not read every doc in full). Propose at most 8 NEW docs, numbered from 29 (file names like 29-<slug>.md), each with a precise scope list in the same style as the existing ones (rich bullet lists of required topics, seed leads to verify). Prefer genuinely new topics (for example: offline/low-bandwidth and censorship-resilient downloading; accessibility/i18n for Bangla and RTL; observability/telemetry-free diagnostics; update/rollback safety; cloud-drive APIs; email/attachment sources; media-library and metadata tagging; privacy-preserving local semantic search; whatever you find missing). Also list contradictions you notice between docs, and re-propose any doc listed as failed (use its original slug and file name). Return the structured result.`, { label: 'critic', phase: 'Critic', schema: GAPS, effort: HIGH })
 
 // ---------- Gap fill ----------
 phase('Gap-fill')
@@ -518,10 +522,10 @@ phase('Index')
 const allDocs = done.concat(gapResults)
 const index = await agent(`You are the corpus editor. All research docs are in ${ROOT} (files named NN-*.md plus 00a/00b audit docs). Today is 2026-10-05.
 Create two files with the Write tool:
-1. ${ROOT}\\README.md: the corpus index. Contents: purpose and scope (working name Haul, codename Zeus, link to ../../research.md as the original market/product research); how to read it (reading orders: 'I'm building the engine', 'I'm building the extension', 'I'm building agent integrations', 'I'm assessing risk/legal/business'); a table of every doc with a 2-3 sentence abstract (read each doc's TL;DR with Grep/Read - do not guess), status and confidence from front matter; a 'Top 40 design decisions and where they are justified' table (decision | doc | evidence strength) distilled from the 'Implications for Haul' sections; a consolidated 'Corrections to research.md' list (from the docs and the 00a/00b audits); a glossary of the 40 most important terms; conventions (citation keys, confidence tags, front matter statuses); and 'How to re-verify' (the refcheck/mdcheck approach described in plain words; copy the two scripts from ${SP} into a new folder F:\\zeus\\tools\\research-checks\\ with a short README there).
+1. ${ROOT}\\README.md: the corpus index. Contents: purpose and scope (Zeus; formerly "Zeus" in research.md, link to ../../research.md as the original market/product research); how to read it (reading orders: 'I'm building the engine', 'I'm building the extension', 'I'm building agent integrations', 'I'm assessing risk/legal/business'); a table of every doc with a 2-3 sentence abstract (read each doc's TL;DR with Grep/Read - do not guess), status and confidence from front matter; a 'Top 40 design decisions and where they are justified' table (decision | doc | evidence strength) distilled from the 'Implications for Zeus' sections; a consolidated 'Corrections to research.md' list (from the docs and the 00a/00b audits); a glossary of the 40 most important terms; conventions (citation keys, confidence tags, front matter statuses); and 'How to re-verify' (the refcheck/mdcheck approach described in plain words; copy the two scripts from ${SP} into a new folder F:\\zeus\\tools\\research-checks\\ with a short README there).
 2. ${ROOT}\\references.md: a consolidated bibliography GENERATED PARTLY BY SCRIPT: write a node script in ${SP} that scans all docs for arXiv IDs and RFC numbers, fetches official metadata (reuse logic from refcheck.mjs), and emits markdown tables: (a) RFCs: number | title | status | obsoleted-by | cited in docs; (b) arXiv papers: id | title | first author | year | cited in docs; flag any ID whose official title does not plausibly match the surrounding text (list those separately for manual fix and FIX them in the docs). Also add (c) a table of non-RFC standards and specs (W3C/WHATWG/BEP/ISO/etc.) by scanning the References sections, and (d) key repositories. Run it and paste/commit the generated output into references.md. Also copy the generator script to F:\\zeus\\tools\\research-checks\\build-references.mjs.
 Finally run node "${SP}\\mdcheck.mjs" on every doc and report which still fail. Return a short structured summary.`, {
-  label: 'index', phase: 'Index', effort: 'high',
+  label: 'index', phase: 'Index', effort: HIGH,
   schema: { type: 'object', properties: { files: { type: 'array', items: { type: 'string' } }, docsIndexed: { type: 'number' }, mdcheckFailures: { type: 'array', items: { type: 'string' } }, mismatchedCitationsFixed: { type: 'number' } }, required: ['files', 'docsIndexed'] },
 })
 
