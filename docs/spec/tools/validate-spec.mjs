@@ -5,6 +5,8 @@
 //   ```json validate=<schema-name>#/$defs/<Def>      one JSON document, must validate
 //   ```jsonl validate=<schema-name>#/$defs/<Def>     one document per line; add "chain" to also verify the audit hash chain
 //   ```json fragment                                  illustrative excerpt, deliberately not validated
+//   add "hash" to an ApprovalRequest block to also recompute its request_hash (07 section 4.6)
+//   add "plan_hash=<hex>" to a workflow Plan block to also check the hash of its normal form (08 section 4.2)
 // Any other json/jsonl fence is an error: no unvalidated example may be left behind.
 import Ajv2020 from 'ajv/dist/2020.js';
 import addFormats from 'ajv-formats';
@@ -16,6 +18,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { checkMachine, machinePath, renderDoc } from './gen-state-table.mjs';
 import { redactUrl } from './redact-url.mjs';
+import { planHash } from './plan-normalize.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const specDir = join(here, '..');
@@ -116,6 +119,20 @@ function verifyChain(records, where) {
   }
 }
 
+// ---------- approval requests (07 section 4.6) ----------
+// request_hash = hex(BLAKE3(JCS(facts))); the facts repeat the entity's id, kind, revision, expiry and scopes; and
+// facts.agent_says_blake3 binds the requester's text.
+function verifyApprovalRequest(a, where) {
+  const h = bytesToHex(blake3(utf8ToBytes(canonicalize(a.facts))));
+  if (h !== a.request_hash) fail(`${where}: request_hash is not BLAKE3(JCS(facts)), expected ${h}`);
+  const pairs = [['approval_id', 'id'], ['kind', 'kind'], ['revision', 'revision'], ['expires_at', 'expires_at']];
+  for (const [f, e] of pairs) if (a.facts[f] !== a[e]) fail(`${where}: facts.${f} differs from ${e}`);
+  if (JSON.stringify(a.facts.allowed_scopes) !== JSON.stringify(a.allowed_scopes)) fail(`${where}: facts.allowed_scopes differs`);
+  if ((a.facts.requester.client_id ?? 'daemon') !== a.requested_by) fail(`${where}: requested_by differs from facts.requester`);
+  const says = a.agent_says === undefined ? null : bytesToHex(blake3(utf8ToBytes(a.agent_says)));
+  if (a.facts.agent_says_blake3 !== says) fail(`${where}: facts.agent_says_blake3 does not match agent_says`);
+}
+
 // ---------- markdown examples ----------
 let validated = 0;
 let fragments = 0;
@@ -145,6 +162,12 @@ for (const f of mdFiles) {
       else validated++;
     });
     if (/\bchain\b/.test(info)) verifyChain(docs, where);
+    if (info.split(/\s+/).includes('hash')) docs.forEach((d, i) => verifyApprovalRequest(d, `${where} doc ${i + 1}`));
+    const expectPlanHash = info.match(/\bplan_hash=([0-9a-f]{64})\b/)?.[1];
+    if (expectPlanHash) docs.forEach((d, i) => {
+      const h = planHash(d);
+      if (h !== expectPlanHash) fail(`${where} doc ${i + 1}: plan hash of the normal form is ${h}, not ${expectPlanHash} (08 section 4.2)`);
+    });
   }
 }
 

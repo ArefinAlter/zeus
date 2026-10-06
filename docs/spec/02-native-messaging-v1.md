@@ -38,7 +38,7 @@ flowchart LR
     P <--> E
   end
   E <-->|"stdio, 4-byte length + JSON"| H["zeus-native-host"]
-  H <-->|"local IPC (pipe or socket), same JSON"| D["zeusd"]
+  H <-->|"daemon API (05): nm.frame, same JSON"| D["zeusd"]
   D --> J[("Journal")]
   D -->|"HTTPS"| S[("Origin servers")]
 ```
@@ -121,13 +121,14 @@ Rules:
 
 ### 3.4 H to D leg
 
-H connects to D over the platform local IPC (Windows named pipe; Unix domain socket in the user's runtime directory), defined in spec 05. The IPC uses the same length-prefixed framing and carries the same JSON, plus an attach preamble that H sends before relaying any E frame:
+H is an ordinary client of the daemon API (05): it connects to the daemon's local endpoint (Windows named pipe; Unix domain socket in the user's runtime directory), authenticates with its `native_host` credential, and relays every E frame, unchanged, as an `nm.frame` notification; D's frames come back the same way (05 section 9.12). H removes or adds only the 4-byte length prefix. Before relaying anything, H reports how it was launched in the `attach` object of `daemon.authenticate` (05 section 6.3):
 
-| Preamble field | Meaning |
+| `attach` field | Meaning |
 |---|---|
 | `browser` | Which browser launched H, derived from the registration path or argument shape. |
 | `attested_extension` | The extension id taken from `argv` (Chrome/Edge origin, Firefox add-on id) and found in H's allow-list. This is the only authoritative identity. |
 | `host_version` | Version of H. |
+| `parent_verified` | H found its parent process to be a registered browser executable (07 section 7.4). |
 
 D MUST reject an `hello` whose `extension_id` differs from `attested_extension` with `nm.extension_mismatch`. `extension_id` in `hello` is informational and self-declared.
 
@@ -318,6 +319,8 @@ Direction: E to D, D to E. Kind: **Q** request (a response is mandatory), **R** 
 | `grant.list.response` | D to E | R | | | |
 | `grant.revoke` | E to D | Q | `grant.revoke.response` | 10 s | `grants` |
 | `grant.revoke.response` | D to E | R | | | |
+| `kill_switch` | E to D | Q | `kill_switch.response` | 10 s | `kill_switch` |
+| `kill_switch.response` | D to E | R | | | |
 
 An error answer to any request is an `error` frame with `re` set, or the typed `*.reject` / `status` forms defined below where the schema gives one. A request that is not answered within its timeout is treated by the requester as `nm.timeout` (class `timeout`, retryable).
 
@@ -799,11 +802,12 @@ The goal is to keep D's memory and E's memory bounded and to let D's disk speed 
 
 | Type | Purpose |
 |---|---|
-| `approval.pending` (D to E, notification) | D pushes a full approval when it is created, and re-pushes every still-pending approval after each `hello.ack`. The popup shows it. |
-| `approval.list` (E to D) | Pull pending (default) or decided approvals, paged. |
-| `approval.decide` (E to D) | The human's decision. Response carries the updated approval and, when a grant was created, the grant. |
+| `approval.pending` (D to E, notification) | D pushes the full `ApprovalRequest` (07 section 4, with `facts`, `request_hash`, `revision` and `agent_says`) when it is created and again on every amendment (a higher `revision`), and re-pushes every still-pending approval after each `hello.ack`. The popup renders it by the rules of 07 section 10. |
+| `approval.list` (E to D) | Pull pending (default) or decided approvals, paged as full `ApprovalRequest`s. D sizes each page so the response frame stays under 1,000,000 bytes (section 3.3), which can mean fewer than `limit` items. |
+| `approval.decide` (E to D) | The human's decision, carrying the `request_hash` E recomputed from the facts it displayed (07 section 4.6). Response carries the updated approval and, when a grant was created, the grant. |
 | `grant.list`, `grant.revoke` (E to D) | Show and revoke grants. |
-| `job.event` | Carries `approval.decided`, `grant.created`, `grant.revoked`, `grant.expired` so every surface stays in sync, including decisions made in the TUI or CLI. |
+| `kill_switch` (E to D) | Engage or release the kill switch (07 section 8). Engage is accepted from every extension surface including notifications; release only from the popup, options or side panel. The response body is the `KillSwitchResult` of 07. |
+| `job.event` | Carries `approval.requested`, `approval.decided`, `grant.created`, `grant.revoked`, `grant.expired` and `daemon.kill_switch` so every surface stays in sync, including decisions made in the TUI or CLI. |
 
 ```json validate=native-messaging.v1#/$defs/DaemonToExtensionMessage
 {
@@ -827,7 +831,42 @@ The goal is to keep D's memory and E's memory bounded and to let D's disk speed 
       },
       "created_at": "2026-10-05T09:15:30.301Z",
       "expires_at": "2026-10-06T09:15:30.301Z",
-      "decided_at": null
+      "decided_at": null,
+      "request_hash": "09e8478513076b8b79ed19675402421a3cee9eb3d4c73487daa7bd63a55003ae",
+      "requested_by": "cli_01M3V7ME00TBC6F3THCHXHRYWJ",
+      "revision": 1,
+      "facts": {
+        "t": "zeus.approval.facts.v1",
+        "approval_id": "ap_01M45NHJ3XS0QXG9T42HHN2YR8",
+        "revision": 1,
+        "kind": "handoff",
+        "requester": { "kind": "human", "role": "native_host", "client_id": "cli_01M3V7ME00TBC6F3THCHXHRYWJ", "label": "host" },
+        "issued_at": "2026-10-05T09:15:30.301Z",
+        "expires_at": "2026-10-06T09:15:30.301Z",
+        "allowed_scopes": ["once", "site", "never"],
+        "confirmation": { "once": "gesture", "site": "gesture" },
+        "reason_codes": ["handoff.interrupted", "session.first_use"],
+        "origin": "https://portal.example.org",
+        "first_time_for_origin": true,
+        "browser": { "name": "chrome", "profile_id": "6f1c2a9e0b7d4e3fa5c8d2b1e0f9a7c3", "incognito": false },
+        "transfer": {
+          "job_ids": ["job_01M45NHJ2AHWMXT8JVJ7BEEJX7"],
+          "total_bytes": 1288490188,
+          "unknown_size_count": 0,
+          "dest_dirs": ["/home/ada/Downloads/Zeus"],
+          "dest_dirs_omitted": 0
+        },
+        "items": [
+          {
+            "job_id": "job_01M45NHJ2AHWMXT8JVJ7BEEJX7",
+            "untrusted_name": "dataset-v3.tar.zst",
+            "untrusted_url": "https://portal.example.org/download/8841",
+            "total_bytes": 1288490188
+          }
+        ],
+        "items_omitted": 0,
+        "agent_says_blake3": null
+      }
     }
   }
 }
@@ -840,6 +879,7 @@ The goal is to keep D's memory and E's memory bounded and to let D's disk speed 
   "type": "approval.decide",
   "body": {
     "approval_id": "ap_01M45NHJ3XS0QXG9T42HHN2YR8",
+    "request_hash": "09e8478513076b8b79ed19675402421a3cee9eb3d4c73487daa7bd63a55003ae",
     "decision": "approve",
     "scope": "site",
     "ui": { "surface": "extension_popup", "user_gesture": true }
@@ -887,13 +927,37 @@ The goal is to keep D's memory and E's memory bounded and to let D's disk speed 
 }
 ```
 
-D validates `approval.decide`:
+D validates `approval.decide` by the order of 07 section 5.2, with these native-messaging specifics:
 
-1. The approval exists and is `pending` (`nm.not_found`, `nm.conflict` when already decided; the response then carries the current approval in `error.details`).
-2. `scope` is in `allowed_scopes` when the decision is `approve`, and for `deny` may be `never` or omitted.
-3. `ui.surface` is one of the four extension surfaces and `ui.user_gesture` is true (the schema allows only `true`; D additionally requires that the sender's capability set included `approvals`). A missing or false value is `nm.user_gesture_required` (class `unauthenticated`).
-4. Rate: 10 decisions per minute.
-5. The decision is applied in one journal transaction with its events (01 section 6 rule 2) and audited as `approval.decided` with actor `human`, surface as sent.
+1. `ui.surface` is one of the four extension surfaces and `ui.user_gesture` is true (the schema allows only `true`; D additionally requires that the sender's capability set included `approvals`). A missing or false value is `nm.user_gesture_required` (class `unauthenticated`). The connection's channel evidence (host role and binary, attested extension, host parent) is checked as 07 section 7.4 states; `extension_notification` may only deny, without `never`.
+2. The approval exists and is `pending` (`nm.not_found`, `nm.conflict` when already decided; the response then carries the current approval in `error.details`).
+3. `request_hash` equals the hash of the approval's current revision (`policy.request_hash_mismatch`, `details.current_revision`); E then re-reads the approval with `approval.list` and renders it again.
+4. `scope` is in `allowed_scopes` when the decision is `approve`, and for `deny` may be `never` or omitted (`policy.scope_not_allowed`); `confirmation` meets the approval's `facts.confirmation` (`policy.confirmation_required`).
+5. Rate: 10 approve decisions per minute, daemon-wide (07 section 9.2).
+6. The decision is applied in one journal transaction with its events (01 section 6 rule 2) and audited as `approval.decided` with actor `human`, surface as sent, and the channel evidence of 07 section 5.3.
+
+`kill_switch` (capability `kill_switch`):
+
+```json validate=native-messaging.v1#/$defs/ExtensionToDaemonMessage
+{
+  "v": 1,
+  "id": "e9",
+  "type": "kill_switch",
+  "body": { "action": "engage", "ui": { "surface": "extension_popup", "user_gesture": true } }
+}
+```
+
+```json validate=native-messaging.v1#/$defs/DaemonToExtensionMessage
+{
+  "v": 1,
+  "id": "d12",
+  "re": "e9",
+  "type": "kill_switch.response",
+  "body": { "engaged": true, "changed": true, "grants_revoked": 3, "jobs_paused": 5, "approvals_pending": 2 }
+}
+```
+
+D answers a `release` from `extension_notification` with `api.human_required` (`details.check` `notification_outcome`).
 
 ### 10.2 Consent record and release gate (E)
 
@@ -910,7 +974,7 @@ E is the last gate before cookies leave the browser; the daemon's grant alone is
 
 Consent records contain no cookies and no URLs with secrets.
 
-A record is created (a) when the user clicks Approve in an extension page: the `approval.decide.response` carries the grant; or (b) when a `grant.created` event arrives for an `approval_id` that E displayed earlier through `approval.pending` and whose `decided_by.kind` is `human` (a decision taken in the TUI or CLI). E ignores `grant.created` events for approvals it never showed. A record is removed on `grant.revoked`, `grant.expired`, when its `expires_at_ms` passes, and when a `once` job reaches a terminal state.
+A record is created (a) when the user clicks Approve in an extension page: the `approval.decide.response` carries the grant; or (b) when a `grant.created` event arrives for an `approval_id` that E displayed earlier through `approval.pending` and whose `decided_by.kind` is `human` (a decision taken in the TUI or CLI). E ignores `grant.created` events for approvals it never showed. A record is removed on `grant.revoked`, `grant.expired`, when its `expires_at_ms` passes, and when a `once` job reaches a terminal state. On a `daemon.kill_switch` event with `engaged: true`, E deletes **every** consent record and aborts every fetch at once, without waiting for the individual `grant.revoked` events (07 section 8.1).
 
 **Release gate**, evaluated for every `session.request`, `url.refresh.request` and `fetch.range`:
 
@@ -1043,7 +1107,7 @@ Where two sides hold a copy of something, exactly one is authoritative; the othe
 2. **Identity.** Only the attested id counts (section 3.4). A mismatching `hello.extension_id` closes the connection with `nm.extension_mismatch`.
 3. **No cookie persistence.** E never writes cookie values to any storage, log or message other than `session.response`. H never writes frame bodies to disk or logs. D holds session material in zeroizing memory for at most its TTL and never in the journal, an event, an audit record, a log or a core dump (00 section 8). A lease dies with its connection.
 4. **TTL and scope.** Material is for one origin and at most 15 minutes. A new lease is requested per probe or refresh; leases are never extended.
-5. **Human-only approvals.** Only extension pages can emit `approval.decide`; D accepts it only on a connection whose attested extension passed pinning, with the gesture attestation, within the rate limit, for a pending approval whose `allowed_scopes` include the scope.
+5. **Human-only approvals.** Only extension pages can emit `approval.decide`; D accepts it only on a connection whose attested extension passed pinning, with the gesture attestation, within the rate limit, for a pending approval whose `allowed_scopes` include the scope, and only when it names the `request_hash` of the approval's current revision, which E recomputes from the facts it displayed (07 sections 4.6 and 7.4).
 6. **Least privilege in the manifest.** The extension declares `nativeMessaging`, `downloads`, `cookies`, `storage`, `alarms`; host permissions are optional and requested per origin at approval time. It has no content scripts that touch pages, no `externally_connectable`, no `webRequest` blocking, no `<all_urls>` at install.
 7. **Limits.** Frame sizes (section 3.3), rate limits (00 section 10), at most 4 (maximum 8) streams, at most 50 pending approvals, at most 8 connections. D checks the announced `length` before allocating.
 8. **No amplification.** E never forwards a URL, header or cookie it received from a web page; the only inputs to `handoff.offer` are browser-owned `DownloadItem` fields and the user's explicit forward action.
@@ -1068,8 +1132,8 @@ Where two sides hold a copy of something, exactly one is authoritative; the othe
 
 | Threat | Mitigation |
 |---|---|
-| Another extension or a local process talks to H | Browser-enforced `allowed_origins`; H's own allow-list; only the browser launches H with a valid origin. |
-| Another local process impersonates H towards D | IPC permissions (owner only), per-user pipe or socket path, attach preamble verified by D (spec 05 adds a per-launch token). |
+| Another extension or a local process talks to H | Browser-enforced `allowed_origins`; H's own allow-list; the browser launches H with a valid origin. A same-user process can launch H itself with forged arguments and stdin; H's parent-process check and D's refusal of decisions from unverified launches narrow this (07 sections 7.4 and 7.8). |
+| Another local process impersonates H towards D | IPC permissions (owner only), per-user pipe or socket path, H's own `native_host` credential (challenge-response, 05 section 6.4), the `attach` data with the parent-process check, and D's binary verification (07 section 7.2). A same-user process that holds the credential remains the residual risk of 07 section 7.8. |
 | Compromised web page triggers cookie release | No page-to-extension channel; release only for a daemon request that matches a consent record created by a click. |
 | Agent obtains cookies | Agents talk to D through MCP/A2A, which exposes no cookie and no approval operation. |
 | Hostile host returns forged `approval.decided` events | E creates consent records from events only for approvals it displayed, decided by a human, and the browser's own optional host permission still has to be granted by a click. A fully compromised D can read any lease it is given: the trust boundary is "D is the user's own installed program". |
@@ -1268,6 +1332,7 @@ Loss is bounded by the slice size and the unacknowledged window: bytes whose `pw
 3. A breaking change raises `v`. D SHOULD speak the current and the previous version for at least one release.
 4. The schema file is versioned in its name (`native-messaging.v1`). A v2 schema lives beside it.
 5. Compatibility test: the extension and the daemon each run the conformance suite against recorded transcripts of this document's examples; the daemon additionally replays the sequences of section 15 against a scripted extension.
+6. **Pre-release correction (2026-10-06, spec 07).** Before any release of protocol 1: `approval.decide` requires `request_hash` and accepts `confirmation`; `approval.pending` and `approval.list.response` carry the full `ApprovalRequest` of 07; `kill_switch` and `kill_switch.response` were added behind the capability `kill_switch`. Because no implementation has shipped, `v` stays 1; the extension must adopt these changes before its first release.
 
 ## 17. Open issues
 

@@ -136,7 +136,7 @@ A ledger with a header and three files (one handoff, one agent download, one con
 | `ts` | instant | Wall-clock time (00 section 6.1). Informational for ordering: `seq` is the order. |
 | `actor` | Actor | Who did it: `kind` (`human`, `agent`, `cli`, `extension`, `engine`, `policy`, `system`), `surface`, `client_id` (01 section 5.3). |
 | `action` | string | Dotted, from the registry in section 4.4. |
-| `subject` | object | What it concerned: any of `job_id`, `run_id`, `grant_id`, `approval_id`, `lease_id`, `origin`, `url_redacted`, `path`. May be empty. |
+| `subject` | object | What it concerned: any of `job_id`, `run_id`, `grant_id`, `approval_id`, `lease_id`, `artifact_id` (13), `origin`, `url_redacted`, `path`. May be empty. |
 | `outcome` | enum | `ok`, `denied`, `error`. |
 | `data` | object | Action-specific facts. At most 32 KiB. **Never** secrets (00 section 8.1); URLs only as `url_redacted` (mode `record`); integers only, no floats (00 section 7). |
 | `prev_hash` | hex | Hash of the previous record, or the genesis hash. |
@@ -180,10 +180,14 @@ For record `r` with sequence `n`:
 | `job.canceled` | Transition to `canceled` | no | `actor`, `cause` |
 | `file.converted` | A conversion produced a file | no | `tool`, `tool_version`, `input_sha256`, `output_sha256`, `output_blake3`, `output_size_bytes` |
 | `file.moved`, `file.deleted`, `file.renamed` | Organisation operations (07, 08) | **yes** | `from`, `to` (paths), `plan_id`, `approval_id` |
+| `workflow.run_started` | A workflow run enters `running` after its plan approval (08) | **yes** | `plan_id`, `plan_hash`, `budgets`, `session_origin` (subject: `run_id`, `approval_id`, `grant_id`) |
+| `workflow.run_ended` | A workflow run reaches a terminal status (08) | no | `status`, `stop_reason`, `pages_fetched`, `files_enqueued`, `files_completed`, `bytes_done` |
+| `workflow.drift_detected` | The runner recorded drift (08 section 8.7) | no | `code`, `path`, `action` (`pause`, `stop`, `continue`) |
 | `policy.denied` | A rule refused something | no | `rule`, `reason_code` |
 | `config.changed` | Configuration or allow-list changed | **yes** | `key`, `old_blake3`, `new_blake3` (never values of secrets) |
 | `audit.verify` | A verification run finished | no | `result`, `records`, `first_problem_seq` |
 | `audit.error` | A record could not be built as asked (for example `redaction_violation`, section 9) | no | `reason`, `action` |
+| `artifact.*` | Artifact store actions: `artifact.imported`, `artifact.materialized`, `artifact.updated`, `artifact.deleted`, `artifact.gc_sweep`, `artifact.object_damaged`, `artifact.object_repaired` | yes for `artifact.deleted` and `artifact.gc_sweep` | Defined in 13 section 18 |
 
 `job.state_changed` and `job.progress` are **not** audited: they are high-volume and reproducible from the journal. The audit records the security-relevant and file-changing facts.
 

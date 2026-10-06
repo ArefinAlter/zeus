@@ -219,7 +219,15 @@
         "bytes_total": { "oneOf": [{ "$ref": "https://zeus.invalid/schema/common#/$defs/Bytes" }, { "type": "null" }] },
         "last_error": { "oneOf": [{ "$ref": "https://zeus.invalid/schema/common#/$defs/ErrorEnvelope" }, { "type": "null" }] },
         "created_at": { "$ref": "https://zeus.invalid/schema/common#/$defs/Timestamp" },
-        "updated_at": { "$ref": "https://zeus.invalid/schema/common#/$defs/Timestamp" }
+        "updated_at": { "$ref": "https://zeus.invalid/schema/common#/$defs/Timestamp" },
+        "state_seq": {
+          "description": "seq of the durable event that put the job into its current state (job.created or job.state_changed). Filled by the daemon API (05 section 9.2).",
+          "$ref": "https://zeus.invalid/schema/common#/$defs/EventSeq"
+        },
+        "rate_ewma": { "description": "progress.rate_ewma (bytes per second).", "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+        "eta_s": { "description": "progress.eta_s.", "type": ["integer", "null"], "minimum": 0 },
+        "path": { "description": "result.path; completed jobs only.", "type": "string", "maxLength": 4096 },
+        "sha256": { "description": "result.sha256; completed jobs only.", "$ref": "https://zeus.invalid/schema/common#/$defs/Hex256" }
       }
     },
     "SessionGrant": {
@@ -269,7 +277,7 @@
       "enum": ["handoff", "session_grant", "retry_escalation", "policy_exception", "workflow_plan", "destructive_op"]
     },
     "Approval": {
-      "description": "A pending or decided request for a human decision. Only a human trust surface may decide one (docs/spec/07-approvals-trust-surface-and-consent.md). The members request_hash, requested_by, facts and agent_says are added by spec 07: events and agent-facing views carry the entity without facts and agent_says; trust surfaces receive the full ApprovalRequest (approvals.v1.schema.json).",
+      "description": "A pending or decided request for a human decision. Only a human trust surface may decide one (docs/spec/07-approvals-trust-surface-and-consent.md). The members request_hash, requested_by, revision, facts and agent_says are added by spec 07: events carry the entity without facts and agent_says; trust surfaces, and the client that caused the approval, receive the full ApprovalRequest (approvals.v1.schema.json, 07 section 4.8).",
       "type": "object",
       "required": ["id", "kind", "state", "allowed_scopes", "reason_codes", "summary", "created_at", "expires_at"],
       "properties": {
@@ -287,6 +295,12 @@
           "description": "Credential id of the requesting client, or the literal daemon for approvals the daemon raised itself. Set by the daemon from the authenticated connection.",
           "type": "string",
           "maxLength": 128
+        },
+        "revision": {
+          "description": "Starts at 1 and increases each time the daemon amends the pending approval (a job joins or leaves a batch); every revision has its own request_hash (07 section 4.7).",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000
         },
         "facts": {
           "description": "The exact daemon-computed facts the request_hash covers (approvals.v1.schema.json RequestFacts). Present only in the full ApprovalRequest.",
@@ -358,7 +372,8 @@
         "grant_expired",
         "policy",
         "recovered",
-        "crash_loop"
+        "crash_loop",
+        "workflow_runner"
       ]
     },
     "SuggestedAction": {

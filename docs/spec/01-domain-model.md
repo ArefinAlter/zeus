@@ -139,7 +139,7 @@ The immutable request. Fields with a default are filled in by the daemon before 
 | `hint_url` | URL | none | Last known resolved URL (for a browser handoff, the browser's `finalUrl`). Tried first; `url` is the fallback. |
 | `referrer` | URL or null | null | Sent as `Referer` only when it has the same origin as `url`, or `url`'s origin is on the user's referrer allow-list; otherwise it is stored for provenance but not sent. |
 | `dest_dir` | path | daemon default root | Must resolve inside a configured write root (section 12.3). |
-| `filename` | string | derived | Hint only. Final name comes from `Content-Disposition` (RFC 6266 `filename*` preferred), then the URL path, then this hint, then a type-based default; always sanitised (section 12.3). |
+| `filename` | string | derived | Hint only. Final name comes from `Content-Disposition` (RFC 6266 `filename*` preferred), then the URL path, then this hint, then a type-based default; always sanitised (section 12.3). Exception: for a job whose source kind is `workflow` and whose plan renames files, the value is the final name, sanitised but not replaced by `Content-Disposition` (08). |
 | `expected_sha256` | hex | none | When present, a mismatch is an `integrity` failure after at most one restart (section 8.5). |
 | `expected_size` | bytes | none | Likewise for size. |
 | `priority` | `low`, `normal`, `high` | `normal` (`high` for `browser_handoff`) | Weighted-fair-queue weights 1, 2, 4 (section 10). The only mutable field. |
@@ -359,7 +359,7 @@ Fields: `id`, `origin`, `scope`, `state` (`active`, `expired`, `revoked`, `consu
 
 ### 5.3 Approval
 
-An Approval is a request for a human decision. Full flow, UI text and policy are in [07](07-approvals-trust-surface-and-consent.md); this section fixes the entity and kinds. 07 adds four members to the entity: `request_hash`, `requested_by`, `facts` and `agent_says` (07 sections 4.3 to 4.6).
+An Approval is a request for a human decision. Full flow, UI text and policy are in [07](07-approvals-trust-surface-and-consent.md); this section fixes the entity and kinds. 07 adds five members to the entity: `requested_by`, `facts`, `agent_says`, `request_hash` and `revision` (07 sections 4.3 to 4.7).
 
 | `kind` | Raised when | `allowed_scopes` | On `approve` | On `deny` | Default expiry |
 |---|---|---|---|---|---|
@@ -367,7 +367,7 @@ An Approval is a request for a human decision. Full flow, UI text and policy are
 | `session_grant` | A job names `session_origin` and none is effective (S02, S11, S07, S41). | `once`, `site`, `workflow`, `never` | As above. | As above. | 24 h |
 | `retry_escalation` | Refresh budget exhausted (S23). | none (a plain yes or no) | Counters reset, job to `queued`. | Job fails with its last error. | 7 days |
 | `policy_exception` | A rule needs a human override (for example a destination outside the write roots, a sensitive category) (07). | none | The exception applies to this job only. | Job fails `policy.approval_denied`. | 24 h |
-| `workflow_plan` | A workflow plan is ready to run (08). | `workflow` | Plan runs; a `workflow` grant is created if sessions are needed. | Plan discarded. | 7 days |
+| `workflow_plan` | A workflow plan is ready to run (08). | `workflow` when the plan needs a session, else none | Plan runs; a `workflow` grant is created if sessions are needed. | Plan discarded; the run ends `failed`. | 7 days |
 | `destructive_op` | A file operation that deletes or overwrites (07, 08). | none | The operation runs. | It is dropped. | 24 h |
 
 Fields: `id`, `kind`, `state` (`pending`, `approved`, `denied`, `expired`, `canceled`), `job_id`, `run_id`, `origin`, `allowed_scopes`, `reason_codes`, `summary` (display data: title, redacted URL, size, source kind), `created_at`, `expires_at`, `decided_at`, `decision` (`outcome`, `scope`, `actor`, `grant_id`).
@@ -404,7 +404,7 @@ Rules:
 1. Only an Actor of kind `human` on a trust surface may decide, and the daemon accepts the actor only on the channel evidence of 07 section 7. A decision whose actor is `agent`, `engine` or an unknown surface is rejected with `unauthenticated` and audited as `denied`. The surfaces, and which of them may approve, are listed in 07 section 7.1 (notification surfaces can only deny).
 2. `expire` and `cancel` outcomes are written by `system` (the deadline passed, or the job was canceled).
 3. A decided approval is immutable.
-4. At most 50 approvals are pending at once; further requests are refused with `policy.too_many_pending` (class `unavailable`, retryable) so a hostile page cannot flood the user.
+4. At most 50 approvals are pending at once; further requests are refused with `policy.too_many_pending` (class `unavailable`, retryable) so a hostile page cannot flood the user. 07 section 9 adds a per-requester cap, batching of concurrent requests into one approval, and how approvals raised by the engine for running jobs are bounded.
 
 ## 6. Job states
 
@@ -482,7 +482,7 @@ The normative table is machine-readable in [`schema/job-state-machine.v1.json`](
 | S26 | `downloading` | `canceled` | cancel | `client` | - | `job.state_changed` |
 | S30 | `awaiting_approval` | `queued` | approval approved | `human` | Approval decision is approve and the approval has not expired. grant.created is emitted only when the decision creates a grant. | `approval.decided`, `grant.created`, `job.state_changed` |
 | S31 | `awaiting_approval` | `failed` | approval denied or expired | `human`, `system` | Decision deny, or approval deadline passed (class policy_denied). grant.created is emitted only when a deny decision also records a never grant. | `approval.decided`, `grant.created`, `job.state_changed`, `job.failed` |
-| S32 | `awaiting_approval` | `canceled` | cancel | `client` | The pending approval is withdrawn (decision canceled, actor system). | `approval.decided`, `job.state_changed` |
+| S32 | `awaiting_approval` | `canceled` | cancel | `client` | The pending approval is withdrawn (decision canceled, actor system). When other jobs share the approval (07 section 4.7) the job leaves it instead: the approval is amended and approval.decided is not emitted. | `approval.decided`, `job.state_changed` |
 | S40 | `awaiting_session` | `queued` | material delivered | `engine` | Session lease, refreshed URL or proxy channel is now available. | `job.state_changed` |
 | S41 | `awaiting_session` | `awaiting_approval` | consent missing | `engine`, `policy` | Extension answered consent_required, or the grant was revoked or expired while waiting. | `job.state_changed`, `approval.requested` |
 | S42 | `awaiting_session` | `failed` | wait deadline or refresh impossible | `engine`, `system` | session_wait deadline passed, or the extension answered cannot_refresh / proxy failure with class blocked. | `job.state_changed`, `job.failed` |
@@ -593,6 +593,7 @@ stateDiagram-v2
 | `policy` | S08 |
 | `recovered` | S95 |
 | `crash_loop` | S96 |
+| `workflow_runner` | S05, S06, S15, S16, S24, S26, S32, S43, S50, S51, S61, S62, S73 when the workflow runner pauses, resumes or cancels a job of its run (08); the event's `actor` is `{"kind": "system"}` |
 
 ### 7.2 Walk-through of the main paths
 

@@ -168,7 +168,7 @@ The extension offers the failed download over native messaging (spec 02). `zeus-
 
 ## 5. Design for spec 05: daemon API
 
-This section is the input for `05-daemon-api-v1.md` and for `schema/daemon-api.v1.schema.json`. The Rust types in `crates/zeus-api` are the draft of record; the spec follows them.
+This section is the input for `05-daemon-api-v1.md` and for `schema/daemon-api.v1.schema.json`. Spec 05 (Draft 1, 2026-10-06) is now normative and supersedes this section where they differ; its section 18 lists every difference from this design and from the draft Rust types in `crates/zeus-api` (for example `clients.*` and `files.roots.register` are MVP, list parameters are flat, mutating results carry `replayed`, and the Windows endpoint is derived from the user's SID).
 
 ### 5.1 Transport, framing, versions
 
@@ -227,6 +227,7 @@ MVP unless marked later.
 | `workflows` | later: `plan`, `validate`, `dry_run`, `run`, `get`, `list`, `control`, `manifest` |
 | `llm` | later: `status`, `configure` (human) |
 | `clients` | later: `list`, `add` (admin; the only way to create a `service` credential), `revoke` (admin) |
+| `artifacts` | later: `get`, `list`, `lineage`, `ingest` over the Zeus artifact store (spec 13); every record returned is an export form with privacy applied; `ingest` mutates and takes an `idempotency_key` |
 
 Server-to-client notifications: `events.event` (`{subscription_id, event}`), `events.lagged` (`{subscription_id, dropped, resume_from_seq}`), `daemon.stopping`, `nm.frame`.
 
@@ -243,6 +244,8 @@ Server-to-client notifications: `events.event` (`{subscription_id, event}`), `ev
 - **Discovery.** The daemon holds `<state>/zeusd.lock` (03) and writes `<state>/zeusd.json` after the listener is up: `{pid, instance_id, version, protocol_versions, endpoint, started_at}`; the file is removed on clean exit. A client that finds the file but no live lock treats it as stale.
 
 ## 6. Design for spec 06: MCP tools
+
+Spec 06 ([`spec/06-mcp-tools-v1.md`](spec/06-mcp-tools-v1.md), Draft 1, 2026-10-06) is now normative and supersedes this section where they differ.
 
 Nine MVP tools, each a thin projection of daemon methods (ADR 0003).
 
@@ -275,6 +278,8 @@ Conventions fixed by the draft in `crates/zeus-mcp`:
 
 ## 7. Design for spec 07: approvals
 
+Spec 07 ([`spec/07-approvals-trust-surface-and-consent.md`](spec/07-approvals-trust-surface-and-consent.md), Draft 1, 2026-10-06) is now normative and supersedes this section where they differ.
+
 See ADR 0007 for the model. API consequences:
 
 - `Approval` (01 section 5.3) gains daemon-computed `request_hash` (hex BLAKE3 over the JCS facts), `requested_by` (client id) and `facts` (the exact structure hashed). The human interface renders from `facts` only.
@@ -286,6 +291,8 @@ See ADR 0007 for the model. API consequences:
 - Kill switch: `daemon.kill_switch` revokes all grants and pauses all jobs in one transaction, emits `grant.revoked` events and a `daemon.kill_switch` audit record.
 
 ## 8. Design for spec 08: workflow plan IR
+
+Spec 08 ([`spec/08-workflow-plan-v0.md`](spec/08-workflow-plan-v0.md), Draft 1, 2026-10-06) is now normative and supersedes this section where they differ.
 
 Crate `zeus-workflow`. Plans are JSON documents (`plan_version: 0`), identified by `plan_` ids (a new 00 section 5.1 prefix) and hashed with JCS+BLAKE3 for approval, so they contain **no floating-point numbers**: rates are minimum intervals in milliseconds.
 

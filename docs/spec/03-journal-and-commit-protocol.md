@@ -94,6 +94,9 @@ Overlapping inserts are legal (work stealing and hedged requests fetch the same 
 | `grants` | `grant_id` (str) | JSON `SessionGrant` (01) | Consent records. |
 | `approvals` | `approval_id` (str) | JSON `ApprovalRequest` (01 `Approval` plus the 07 members `request_hash`, `requested_by`, `facts`, `agent_says`) | Pending and decided approvals. The `DecisionRecord` of 07 section 5.3 (with channel evidence) is stored next to it. |
 | `idempotency` | `(client_id: str, key: str)` | JSON `IdempotencyRow` | 00 section 5.4. |
+| `plans` | `plan_id` (str) | JSON draft (08 section 9.2) | Workflow plan drafts; deleted 24 h after last use. Sample bodies are not stored here. |
+| `runs` | `run_id` (str) | JSON run record with its `Checkpoint` (08 section 9.2) | Workflow runs. The checkpoint may hold full document URLs (00 section 8.2). |
+| `run_keys` | `(run_id: str, key: [u8; 32])` | `()` | BLAKE3 of each URL and dedupe key a run has seen (08 section 9.1, invariant W1). Deleted with the run record. |
 
 Rows holding JSON use `serde_json` output (UTF-8, not canonical; canonical JSON is for hashing only, 00 section 7). The fixed-layout tables use redb's native integer and tuple encodings so a commit round writes only a few bytes per unit.
 
@@ -205,9 +208,11 @@ Row shapes of the other tables, one per line (the first three are range rows of 
 
 ```json validate=journal.v1#/$defs/IdempotencyRow
 {
-  "client_id": "claude-code:3d9e",
+  "client_id": "cli_01M45KGHR0ED0WJDFXKG49029B",
   "key": "agent-7f3c:q3-export",
   "request_hash": "9218812567e906efb346546840f6145fc189148e5633d0737fee7402a3207f9a",
+  "method": "jobs.enqueue",
+  "result": { "jobs": [{ "job_id": "job_01M45R71NCNH3W8EQ63TAFME4C", "state": "queued" }], "dry_run": false, "replayed": false },
   "job_id": "job_01M45R71NCNH3W8EQ63TAFME4C",
   "created_at": "2026-10-05T10:02:11.500Z",
   "expires_at": "2026-10-06T10:02:11.500Z"
@@ -402,7 +407,7 @@ Preconditions: S70 committed `verify_result` (size, SHA-256, BLAKE3, detected MI
 | F4 | Atomic rename of `tmp_path` to `dest_path` **without replacing**: Linux `renameat2(RENAME_NOREPLACE)`; macOS `renamex_np(RENAME_EXCL)`; Windows `MoveFileExW` with `MOVEFILE_WRITE_THROUGH` and without `MOVEFILE_REPLACE_EXISTING`. For `overwrite = replace`: Unix `link(dest, trash/...)` then atomic `rename`; Windows `ReplaceFile` with a backup name in the trash directory. | Same directory, same volume, so the rename is a single metadata operation. |
 | F5 | Unix: `fsync` the parent directory. Windows: `MOVEFILE_WRITE_THROUGH` already covers it. | |
 | F6 | Commit S80 (`Immediate`): `state = completed`, `result`, `finalize = null`, remove the job's range, `unit_crc` and reservation rows, append `job.completed` and `job.state_changed`. | **The point of no return.** Before it the job is "finalizing"; after it, "completed". |
-| F7 | Post-commit, idempotent side effects driven by the durable event stream (outbox pattern): append the audit record `file.finalized` (04) and the provenance manifest record (04); advance `meta.audit_cursor` and `meta.manifest_cursor` in later transactions. | If the daemon crashes between F6 and F7, startup recovery replays durable events above the cursors (section 10 step 6). |
+| F7 | Post-commit, idempotent side effects driven by the durable event stream (outbox pattern): append the audit record `file.finalized` (04) and the provenance manifest record (04), and register the artifact in the artifact store (13 section 7.5); advance `meta.audit_cursor`, `meta.manifest_cursor` and `meta.artifact_cursor` in later transactions. | If the daemon crashes between F6 and F7, startup recovery replays durable events above the cursors (section 10 step 6). |
 | F8 | Delete the trash entries older than their retention, notify subscribers (the events already exist). | |
 
 Fingerprint rule (skip re-hash): when recovery re-enters `verifying` or `finalizing` for a job with a durable `verify_result`, it MAY skip F0 if the data file's `file_id`, length and `mtime_ms` equal the recorded values. Otherwise F0 is repeated.
@@ -459,7 +464,7 @@ Decision procedure when `finalize.phase` is `intent` at recovery, with `T = tmp_
 | 3 | Scan `jobs`. For every job in `probing`, `downloading`, `verifying` or `finalizing`: increment `retry.recovery_count`; if it reached 3 without intervening committed progress (progress resets the counter) apply S96 (`engine.crash_loop`, failed); else apply S95 (to `queued`). `awaiting_*`, `paused`, `retry_scheduled` jobs keep their state; timers are re-armed from stored instants (`next_attempt_at`, `session_wait_deadline_at`). All in one transaction with their events. |
 | 4 | For each job going to `queued` with committed ranges, the usual probe will run the local checks of section 7.2. For each job with `finalize` set, apply the decision procedure of section 8.2 now (before the scheduler runs it). |
 | 5 | Normalise range sets: verify I4 (sorted, disjoint, non-adjacent, within `[0, total)`); repair by re-coalescing; log any repair. A range beyond `total_bytes` is removed with an invalidation row. |
-| 6 | Outbox replay: read durable events above `meta.audit_cursor` and write the missing audit records; above `meta.manifest_cursor` and write the missing manifest records. Verify the audit chain tail against `meta.audit_head` (04 section 4.5); a mismatch is reported as `audit.chain_broken` in `daemon.started.recovery.audit_chain_ok = false` and logged; recovery continues. |
+| 6 | Outbox replay: read durable events above `meta.audit_cursor` and write the missing audit records; above `meta.manifest_cursor` and write the missing manifest records; above `meta.artifact_cursor` (when the artifact store is enabled) and register the missing artifacts, idempotently by ingest key (13 section 7.5). Verify the audit chain tail against `meta.audit_head` (04 section 4.5); a mismatch is reported as `audit.chain_broken` in `daemon.started.recovery.audit_chain_ok = false` and logged; recovery continues. |
 | 7 | Orphans: list `*.zpart` files in every destination directory referenced by a non-terminal job and in the configured roots. A file whose path is not `zpart_path` of a non-terminal job is an orphan; count it (`orphans_found`); delete it when it is older than `orphan_gc_age` (default 7 days, minimum 1 hour), otherwise leave it and report. Empty orphans created by D6 are deleted at once. Also delete reservations whose job is terminal or missing. |
 | 8 | Expire grants and approvals whose deadlines passed (`grant.expired`, `approval.decided` with outcome `expire`). Prune events beyond retention and idempotency rows beyond `expires_at`. |
 | 9 | Emit `daemon.started` with the recovery summary, start the scheduler and the IPC listeners. |
@@ -561,7 +566,7 @@ State: `tmp` (absent or present with content `partial`, `verified`), `dest` (abs
 |---|---|
 | Job tombstones (`completed`, `canceled`, `failed` after 30 days with no retry) | Kept 30 days (01 section 10), then the job row, remaining events and idempotency rows are deleted. Provenance and audit are separate and unaffected. |
 | Data files of `failed` jobs | Kept for `failed_partial_retention` (7 days) so a manual retry resumes; then deleted with an `invalidations`-style record. |
-| Events | 30 days or 1,000,000 events, whichever is smaller. Never pruned above `min(audit_cursor, manifest_cursor)`. |
+| Events | 30 days or 1,000,000 events, whichever is smaller. Never pruned above `min(audit_cursor, manifest_cursor, artifact_cursor)`; `artifact_cursor` counts only when the artifact store is enabled (13). |
 | Trash | 30 days, then deleted. |
 | Journal size | redb does not shrink on its own; `zeus-journal` runs the store's compaction at idle when the file exceeds twice the live data (verify the redb compaction API available in the pinned version). |
 

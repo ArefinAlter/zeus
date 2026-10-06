@@ -20,13 +20,38 @@ This file is for the next Claude Code session (or the user) resuming the Zeus bu
 
 Records: Zeus ADR 0011 (Accepted), Ogun ADR 0002 (Accepted), Ogun ADRs 0003 to 0005 (Proposed).
 
+**Progress on device A (2026-10-06).**
+- Done: the four repos committed and pushed; `ARCHITECTURE.md` gained the `service` kind and the MCP 2026-07-28 target; spec 00 reserves `art_`.
+- **Segment S1 done:** run `wf_783e2d42-853`, 5 agents, about 2.9M subagent tokens, 40 minutes, lean mode.
+  - New specs: 05 daemon API, 06 MCP tools, 07 approvals, 08 workflow plan, 13 artifacts and content store, each with its schema; new tools `mcp-catalogue.mjs` and `plan-normalize.mjs`. Specs 00 to 04 and their schemas got the matching deltas.
+  - `npm run validate`: 238 examples, 0 failures (the two dangling 07 links are gone); `node mcp-catalogue.mjs --check` OK.
+  - The spec 13 agent's work was audited by hand because the safety classifier timed out on it. It wrote only to `docs/spec`, `ARCHITECTURE.md` and the scratchpad, and ran no destructive commands.
+  - `ARCHITECTURE.md` sections 5 to 8 now say their spec supersedes them.
+
+**S1 follow-ups** (from the writers' open questions; full lists are in each spec's open-issues section):
+1. **Maintainer decisions:**
+   - Spec 05 promotes `clients.*` to MVP. Keep that, or defer service clients, and with them Ogun's session access?
+   - ADR 0007 says the kill switch revokes all grants; spec 07 keeps `never` grants. Amend the ADR wording?
+   - Should agents see only their own jobs, grants and audit records by default (06 O3)?
+   - Should each MCP host get its own agent credential instead of a shared `agent.token` (05 O2, 06 O7)?
+2. **Cross-spec inconsistencies to reconcile:**
+   - What an agent sees of its own approvals: 05 section 7.5 versus 07 section 4.8.
+   - `jobs.wait` with `since_seq` and the JobSummary fields that 06 needs (06 O1).
+   - A site grant from an agent also covers service jobs (05 O3).
+   - Workflow payloads in 05 should `$ref` the 08 schema.
+   - Run events in 01.
+   - Facts in 07 for a robots override, conversion and end-of-run deletes.
+   - GitHub's rate-limit 403 is classified `permanent` (01 rule D5).
+   - Site policy for hosts like arXiv (08 O3).
+   - Run `mcp-catalogue.mjs --check` from `validate-spec.mjs`.
+   - A broken table in 03 near line 573.
+3. **Code and copies now behind the specs** (the I segments): `zeus-types` (Surface `gui` and `os_notification`, Approval `request_hash`, `requested_by` and `revision`, `ArtifactId`); `zeus-api` and `zeus-daemon` (spec 05 section 18 list, including `ClientKind::Service`); `zeus-mcp` (spec 06); a new `zeus-core` crate for spec 13. The schema copies drift: run `node scripts/sync-spec-fixtures.mjs` in `zeus-core` and `npm run sync:schema` in `zeus-extension` first. Spec 02 gained `session.page` and `page_render`, which the extension must implement.
+
 **Next.** One segment at a time; commit, push, stop and ask after each.
-1. Commit the Zeus changes from this session (ADR 0011, `CLAUDE.md`, this block, the workflow scripts and their README, `.gitattributes`) and the `zeus-core` `.gitattributes`.
-2. By hand, small: add the `service` row and `files.roots.register` to `docs/ARCHITECTURE.md` section 5.3; note in section 1 that `zeus-core` has two consumers; add the `art_` prefix to spec 00.
-3. **S1**: specs 05 to 08 (original scope plus the service kind) and the new spec 13.
-4. **I1 → I2 → I3** (core crates through `zeus-engine`): the critical path for both products.
-5. **Ogun O0** (specs O-00 to O-03) after S1. Ogun research OR1 to OR4 is interleaved with Zeus R2 to R5.
-6. **S2** (specs 09 to 12): unchanged.
+1. **Reconcile** (small: 1 or 2 agents, or by hand): apply the maintainer's decisions from follow-up 1 and fix follow-up 2.
+2. **I1** core leaf crates. Start by re-syncing `spec-fixtures`, then update `zeus-types` to the new specs; then `zeus-control`, `zeus-fs`, `zeus-verify`, `zeus-journal`, `zeus-session`. **I2** `zeus-http`, **I3** `zeus-engine`: the critical path for both products.
+3. **Ogun O0** (specs O-00 to O-03) can run now that S1 has landed; Ogun research OR1 to OR4 is interleaved with Zeus R2 to R5.
+4. **S2** (specs 09 to 12): unchanged.
 
 ## UPDATE (2026-10-05, about 21:30 local): read this block first; it supersedes parts of section 0/P0 below
 

@@ -39,6 +39,7 @@
         "last_event_seq": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
         "audit_cursor": { "type": "integer", "minimum": 0, "maximum": 9007199254740991, "description": "Highest durable event seq already written to the audit log (outbox cursor)." },
         "manifest_cursor": { "type": "integer", "minimum": 0, "maximum": 9007199254740991, "description": "Highest durable event seq already reflected in provenance manifests (outbox cursor)." },
+        "artifact_cursor": { "type": "integer", "minimum": 0, "maximum": 9007199254740991, "description": "Highest durable event seq already registered in the artifact store (outbox cursor, 13 section 7.5). Absent when the artifact store is disabled; never above audit_cursor." },
         "audit_head": {
           "oneOf": [
             {
@@ -147,14 +148,17 @@
       }
     },
     "IdempotencyRow": {
-      "description": "Row of table idempotency, key (client_id, key).",
+      "description": "Row of table idempotency, key (client_id, key). client_id is the daemon API credential id; the stored outcome is returned on a replay (00 section 5.4, 05 section 12).",
       "type": "object",
-      "required": ["client_id", "key", "request_hash", "job_id", "created_at", "expires_at"],
+      "required": ["client_id", "key", "request_hash", "created_at", "expires_at"],
       "properties": {
         "client_id": { "type": "string", "maxLength": 128 },
         "key": { "type": "string", "minLength": 1, "maxLength": 128 },
         "request_hash": { "$ref": "https://zeus.invalid/schema/common#/$defs/Hex256" },
-        "job_id": { "$ref": "https://zeus.invalid/schema/common#/$defs/JobId" },
+        "method": { "description": "The method the key was used with (part of request_hash).", "type": "string", "maxLength": 64, "pattern": "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)+$" },
+        "result": { "description": "The stored result object (with replayed false), or absent when a non-retryable error was stored.", "type": "object" },
+        "error": { "description": "The stored non-retryable error, when the call failed.", "$ref": "https://zeus.invalid/schema/common#/$defs/ErrorEnvelope" },
+        "job_id": { "description": "Informational: the first job a jobs.enqueue created.", "$ref": "https://zeus.invalid/schema/common#/$defs/JobId" },
         "created_at": { "$ref": "https://zeus.invalid/schema/common#/$defs/Timestamp" },
         "expires_at": { "$ref": "https://zeus.invalid/schema/common#/$defs/Timestamp" }
       }

@@ -74,9 +74,9 @@ Throughput has no suffix convention: the single field `rate_ewma` is bytes per s
 4. The first message of every protocol is sent with the lowest protocol version that exists (today `1`) so that any future peer can parse it. That message's envelope is frozen forever.
 5. Additive changes do **not** raise the version: new optional fields, new enum values on request fields, new message types gated by a capability, new error codes.
 6. Breaking changes **do** raise the version: removing or renaming a field, changing a type or unit, making an optional field required, changing the meaning of an existing value, changing framing or ordering rules.
-7. Receivers MUST ignore unknown object keys. Receivers MUST NOT fail on an unknown enum value in a field they only display or log; they SHOULD map it to a generic "other" presentation. Receivers MUST fail with `invalid_request` on an unknown enum value in a field that drives behaviour they cannot guess (for example an unknown `decision`).
+7. Receivers MUST ignore unknown object keys. One exception: a document that a human approves by its hash (a workflow plan, 08) is rejected when it has a key its reader does not know, because an ignored key would make the run differ from what was approved. Receivers MUST NOT fail on an unknown enum value in a field they only display or log; they SHOULD map it to a generic "other" presentation. Receivers MUST fail with `invalid_request` on an unknown enum value in a field that drives behaviour they cannot guess (for example an unknown `decision`).
 8. A release SHOULD support its own protocol version and the previous one. Dropping a version needs one release in which the daemon logs a deprecation notice when it is negotiated.
-9. Wire types are described by JSON Schema 2020-12 documents in `docs/spec/schema/`. The schema is an aid for testing and code generation. Schemas do not set `additionalProperties: false` because of rule 7; test suites SHOULD additionally run a strict mode (`unevaluatedProperties: false`) on their own outputs to catch typos. The tool in `docs/spec/tools/` does exactly that for the examples in these documents.
+9. Wire types are described by JSON Schema 2020-12 documents in `docs/spec/schema/`. The schema is an aid for testing and code generation. Schemas do not set `additionalProperties: false` because of rule 7, except for the approved-by-hash documents that rule names; test suites SHOULD additionally run a strict mode (`unevaluatedProperties: false`) on their own outputs to catch typos. The tool in `docs/spec/tools/` does exactly that for the examples in these documents.
 
 ```mermaid
 sequenceDiagram
@@ -96,11 +96,13 @@ sequenceDiagram
 | Protocol | Name | Version today | Spec |
 |---|---|---|---|
 | Extension to daemon through the host | native messaging | 1 | 02 |
-| Daemon local API (JSON-RPC) | daemon api | 1 | 05 (planned) |
+| Daemon local API (JSON-RPC) | daemon api | 1 | 05 |
+| MCP tool surface (tools, resources, prompt) | mcp tools | 1 (`_meta["dev.zeus/tools_version"]` in `tools/list`) | 06 |
 | Journal store format | journal | 1 (`schema_version`) | 03 |
 | Audit record | audit | 1 (`v`) | 04 |
 | Provenance manifest | manifest | 0 (`manifest_version`) | 04 |
 | Job state machine | state machine | 1 | 01 |
+| Artifact store layout and index; artifact record | artifact store | 1 (`format_version` in `store.json`), 1 (`artifact_version`) | 13 |
 
 Stored formats (journal, audit, manifest) carry their version in the data itself. A reader MUST refuse data whose version is higher than it understands and MUST NOT attempt a partial read.
 
@@ -119,8 +121,11 @@ Entity identifiers are a lowercase prefix, an underscore and a 26 character ULID
 | `sess_` | Session lease | daemon | metadata only | Handle for one release of cookies. Safe to log. The material it names is never persisted. |
 | `conn_` | Native-messaging connection | daemon | no | Per connection, for logs. |
 | `chain_` | Audit chain | daemon | yes | Identifies one hash chain (04). |
+| `art_` | Artifact record | artifact store (the `zeus-core` library inside the store's owner) | yes | Local to one store instance; the same content in another store has another id (13). |
+| `plan_` | Workflow plan draft | daemon | yes | A stored candidate plan with its samples; expires 24 h after last use. An approved run keeps its plan by hash, not by id (08). |
+| `cli_` | Client credential | daemon (provisioning, `clients.add`) | yes, in the verifier store | Names a daemon API credential; it is the `client_id` of actors, job sources and audit records. Safe to log; the token it belongs to never is (05). |
 
-Reserved for later specs: `plan_` (workflow plan), `cli_` (client credential id), `art_` (artifact, spec 13). Ogun (ADR 0011) registers its own prefixes here when its spec O-00 is written. A new prefix requires an entry in this table.
+Ogun (ADR 0011) registers its own prefixes here when its spec O-00 is written. A new prefix requires an entry in this table.
 
 Rules:
 
@@ -145,12 +150,12 @@ Correlation ids on a connection (native messaging `id` and `re`, JSON-RPC `id`) 
 
 ### 5.4 Idempotency keys
 
-A mutating request MAY carry `idempotency_key`, a client-chosen string of 1 to 128 characters. The daemon stores `(client_id, key) -> (request_hash, result)` for at least 24 hours (03, table `idempotency`). `request_hash` is the BLAKE3 digest of the JCS form (section 7) of the request parameters without the key itself.
+A mutating request MAY carry `idempotency_key`, a client-chosen string of 1 to 128 characters. The daemon stores `(client_id, key) -> (request_hash, result)` for at least 24 hours (03, table `idempotency`). `request_hash` is the BLAKE3 digest of the JCS form (section 7) of the object `{"method": <method or message type>, "params": <the request parameters without the key itself>}`, so one key used with two methods cannot collide. Details for the daemon API, including which failures are stored, are in 05 section 12.
 
 | Situation | Behaviour |
 |---|---|
 | First request with this key | Execute and store the result. |
-| Same key, same `request_hash` within the retention window | Return the stored result unchanged and do not execute again. |
+| Same key, same `request_hash` within the retention window | Return the stored result and do not execute again. The daemon API marks such a result with `replayed: true` (05 section 8.3); nothing else changes. |
 | Same key, different `request_hash` | Reject with `api.idempotency_conflict`, class `conflict`, not retryable. |
 
 ## 6. Time, durations and units
@@ -224,7 +229,7 @@ A parameter name matches the **deny pattern** when it contains, delimited by sta
 
 The heuristics are deliberately conservative and will over-redact. Over-redaction is a documented, acceptable failure; under-redaction is a bug.
 
-The one place a full URL is stored is the journal job record (03), because resuming needs it. That file is created with owner-only permissions and the URL never leaves it except toward the origin server and, over the local pipe, the extension (02).
+The one place a full URL is stored is the journal (03): the job record, and the checkpoint of a workflow run (08), because resuming needs them. That file is created with owner-only permissions and the URL never leaves it except toward the origin server and, over the local pipe, the extension (02).
 
 ### 8.3 Rules for implementers
 
@@ -264,8 +269,8 @@ Transport mapping:
 | Transport | Carrying rule |
 |---|---|
 | Native messaging | `error` message body, or the `error` member of a typed response (02). |
-| JSON-RPC (05) | `error.data` holds the envelope; `error.code` is a JSON-RPC code (`-32602` for `invalid_request`, `-32601` for unknown method, `-32000` for everything else); `error.message` repeats `message`. |
-| MCP tools (06) | A tool execution error: `isError: true`, `structuredContent` is the envelope, `content[0].text` is a one-line rendering `"<code>: <message>"`. Protocol errors (unknown tool, malformed arguments) use JSON-RPC errors as MCP requires. |
+| JSON-RPC (05) | `error.data` holds the envelope; `error.code` is the JSON-RPC code chosen by the table of 05 section 11.1 (by error code first, then by class; `-32000` for job classes); `error.message` repeats `message`. |
+| MCP tools (06) | A tool execution error: `isError: true`, `structuredContent` is the envelope plus a `next` recovery hint (06 section 5.4), `content[0].text` is the one-line rendering `"<code>: <message>"`, followed by `" Next: <action>."` or `" Next: <action> with <tool>."` when a hint applies. Invalid argument values are tool execution errors too, as MCP 2025-11-25 and later require; only an unknown tool, `arguments` that is not an object and MCP-level failures (version, headers, `_meta`) are JSON-RPC errors (06 section 5.4). |
 | A2A (10) | Task status message with the envelope in a data part. |
 | CLI | Message on stderr, exit status by class (11). |
 | Event `job.failed` | Envelope in `data.error`. |
@@ -315,6 +320,9 @@ A code is `<namespace>.<reason>` in lowercase `snake_case`. A code, once publish
 | `audit` | Audit log (`audit.chain_broken`) | 04 |
 | `engine` | Engine internals (`engine.crash_loop`) | 01 |
 | `api` | Daemon API generic (`api.idempotency_conflict`, `api.not_found`) | 05 |
+| `artifact` | Artifact store (`artifact.object_absent`, `artifact.store_locked`) | 13 |
+| `workflow` | Workflow plans and runs (`workflow.plan_hash_mismatch`, `workflow.host_not_allowed`) | 08 |
+| `plan` | Plan diagnostics, not errors: the same lexical form, carried in `Diagnostic.code` (`plan.selector_no_match`) | 08 |
 | `internal` | Bugs | all |
 
 ## 10. Limits
@@ -326,8 +334,8 @@ Limits are normative maxima for what a conforming sender emits and what a confor
 | JSON nesting depth | 32 | Receivers parse with a depth limit. |
 | Native messaging frame, daemon to extension | 1,000,000 bytes | Browser hard limit is "1 MB" (Chrome: 1 MiB; Firefox: 1 MB). See 02 section 3.3. |
 | Native messaging frame, extension to daemon | 4,194,304 bytes (4 MiB) | Chrome allows 64 MiB, Firefox 4 GiB; Zeus stays far below both. |
-| Local API request body | 1 MiB | 05 may lower. |
-| Local API response body | 16 MiB | Larger results are paged. |
+| Local API request line | 1 MiB | 5 MiB on `native_host` connections, which carry 4 MiB extension frames (05 section 4.3). |
+| Local API response line | 16 MiB | Larger results are paged. |
 | URL | 8192 bytes | After punycode and percent-encoding. |
 | Origin | 300 bytes | |
 | File name | 255 UTF-8 bytes | Applies to a single path component. |
@@ -347,6 +355,7 @@ Limits are normative maxima for what a conforming sender emits and what a confor
 | Session material time to live | 900,000 ms (15 min) | Per release (02). |
 | Redirects followed | 10 | |
 | MCP tool name | 64 characters | |
+| MCP tool result | 32,768 bytes | `structuredContent` as compact JSON (06 section 5.3). |
 
 Default rate limits (per peer, token bucket, burst equals twice the sustained rate unless stated): native messaging control messages 200 per second sustained, excluding `fetch.chunk` and `fetch.credit`, which flow control governs; `handoff.offer` 30 per minute; `approval.decide` 10 per minute; local API mutating calls 50 per second. Exceeding a limit yields `<ns>.rate_limited`, class `unavailable`, `retryable: true`, with `details.retry_after_ms`.
 
@@ -381,4 +390,3 @@ An implementation conforms if it passes: (a) the schema validation of every exam
 | O2 | The secret heuristics in section 8.2 will over-redact some provenance URLs (for example Google Drive file ids). | Allow a per-origin allow-list of parameter names for `record` mode in configuration. |
 | O3 | Timestamps with three fractional digits cannot express leap-second ordering or sub-millisecond event order. | Event `seq` is the order of record; timestamps are informational. |
 | O4 | Prefixed ULIDs leak creation time to anyone who sees an id. | Accepted: local-first product; revisit if ids are ever published. |
-| O5 | The JSON-RPC code mapping in section 9.1 is provisional until spec 05 fixes the numeric ranges. | 05 owns the final table. |
