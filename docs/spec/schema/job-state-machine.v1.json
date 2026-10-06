@@ -91,6 +91,7 @@
     "grant.created",
     "grant.revoked",
     "grant.expired",
+    "grant.renewed",
     "approval.requested",
     "approval.decided",
     "job.verified",
@@ -98,6 +99,7 @@
     "job.completed",
     "job.failed",
     "daemon.started",
-    "daemon.stopping"
+    "daemon.stopping",
+    "daemon.kill_switch"
   ]
 }

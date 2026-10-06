@@ -19,16 +19,16 @@ The documents use MUST, MUST NOT, SHOULD and MAY as defined in RFC 2119 and RFC 
 | 02 | [native messaging v1](02-native-messaging-v1.md) | Draft 1 | Extension to host to daemon protocol: framing and limits, handshake, handoff, session oracle, URL refresh, in-browser fetch proxy with credit flow control, approvals, events, keepalive, security. |
 | 03 | [journal and commit protocol](03-journal-and-commit-protocol.md) | Draft 1 | The durable transfer journal (redb), write and commit ordering, every crash point, resume validation, finalization, recovery, invariants I1 to I12, model-check sketch. |
 | 04 | [audit log and provenance](04-audit-log-and-provenance.md) | Draft 1 | Hash-chained audit log, per-file provenance manifest v0, PROV and Croissant crosswalk, OS provenance metadata and when not to write it. |
-| 05 | daemon-api | planned | Local JSON-RPC API of `zeusd` (transport, authentication, methods, subscriptions, IPC attach used by the host). |
-| 06 | mcp-tools | planned | The `zeus_<verb>` MCP tool surface, resources, output and untrusted-content labelling. |
-| 07 | approvals | planned | The human trust surface: approval flows, UI contract, grant management, policy defaults. |
-| 08 | workflow-plan | planned | Declarative crawl and download plans, pagination, politeness, dry run. |
-| 09 | llm-provider | planned | The BYOK provider ladder, budgets, what may enter model context. |
-| 10 | a2a | planned | Agent card and task mapping for the A2A protocol. |
-| 11 | cli | planned | Commands, exit codes, output formats, TUI. |
-| 12 | security-invariants | planned | The consolidated, testable security invariants and the threat model. |
+| 05 | daemon-api | PLANNED | Local JSON-RPC API of `zeusd` (transport, authentication, methods, subscriptions, native-host relay). Design: [ARCHITECTURE section 5](../ARCHITECTURE.md), [ADR 0002](../adr/0002-local-json-rpc-daemon-api.md); draft Rust types in `crates/zeus-api`. |
+| 06 | mcp-tools | PLANNED | The `zeus_<verb>` MCP tool surface, resources, output and untrusted-content labelling. Design: [ARCHITECTURE section 6](../ARCHITECTURE.md), [ADR 0003](../adr/0003-mcp-primary-agent-interface.md). |
+| 07 | approvals | PLANNED | The human trust surface: approval flows, UI contract, grant management, policy defaults. Design: [ARCHITECTURE section 7](../ARCHITECTURE.md), [ADR 0007](../adr/0007-human-only-approvals.md). |
+| 08 | workflow-plan | PLANNED | Declarative crawl and download plans, pagination, politeness, dry run. Design: [ARCHITECTURE section 8](../ARCHITECTURE.md); draft types in `crates/zeus-workflow`. |
+| 09 | llm-provider | PLANNED | The BYOK provider ladder, budgets, what may enter model context, the signed policy manifest. Design: [ARCHITECTURE section 9](../ARCHITECTURE.md), [ADR 0008](../adr/0008-byok-provider-ladder.md); draft types in `crates/zeus-llm`. |
+| 10 | a2a | PLANNED | Agent card and task mapping for the A2A protocol. Design: [ARCHITECTURE section 10](../ARCHITECTURE.md), [ADR 0010](../adr/0010-one-local-listener-http-bridges.md); draft types in `crates/zeus-a2a`. |
+| 11 | cli | PLANNED | Commands, exit codes, output formats, TUI. Design: [ARCHITECTURE section 11](../ARCHITECTURE.md); draft command tree in `crates/zeus-cli`. |
+| 12 | security-invariants | PLANNED | The consolidated, testable security invariants and the threat model. Design: [ARCHITECTURE section 12](../ARCHITECTURE.md). |
 
-Documents 05 to 12 must reuse the vocabulary of 00 to 04 and reference sections rather than redefine anything.
+Documents 05 to 12 are **PLANNED**: they were not written in the first pass. Until they exist, the design choices they must follow are recorded in [`docs/ARCHITECTURE.md`](../ARCHITECTURE.md) (sections 5 to 12, and section 13 for the small follow-up edits that 00 to 04 need) and in the [ADRs](../adr/), and the draft Rust contracts live in the `crates/` of this repository. The specs are to be written to match, and where they differ the difference is resolved in the spec and the code together. Documents 05 to 12 must reuse the vocabulary of 00 to 04 and reference sections rather than redefine anything.
 
 ## Machine-readable contracts
 

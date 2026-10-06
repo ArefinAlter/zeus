@@ -19,14 +19,14 @@ related:
 - **MV3 has every primitive needed** (`downloads.onChanged`, `cookies.getAll({url})`, `nativeMessaging`, `optional_host_permissions`, DNR). Gaps: `DownloadItem` has no ETag or Last-Modified; extension `fetch` cannot set `Referer`, `User-Agent` or `Cookie`; partitioned cookies need an explicit `partitionKey`.
 - **Measured on Chrome for Testing 154 (Windows 11)**: native-messaging frames are capped at exactly 1,048,576 bytes host-to-extension and 64 MiB extension-to-host (+1 byte throws); sustained throughput was about 80 MiB/s extension-to-host, 40 MiB/s the other way, and 60 to 140 MiB/s for loopback `fetch` POST [Exp: scratch07]. Native messaging saturates links up to about 600 Mbit/s, so a localhost side channel is an optimisation, not a requirement.
 - **The service worker dies about 30 s after start even while `fetch` bodies and timers are active** (measured); an open native port keeps it alive (75 s idle survived) and an alarm revives a dead worker [Exp: scratch07]. Spec 02's keepalive design holds.
-- **Header fidelity has a hard edge.** DNR `modifyHeaders` can overwrite `Referer`, `Origin`, `User-Agent`, `Sec-CH-UA` and even `Sec-Fetch-Site` on extension fetches (measured). Zeus may use it only for a single-stream `Referer` rule scoped by `initiatorDomains`. When a site blocks the daemon, route through the real browser; never impersonate one.
+- **Header fidelity has a hard edge.** DNR `modifyHeaders` can overwrite `Referer`, `Origin`, `User-Agent`, `Sec-CH-UA` and even `Sec-Fetch-Site` on extension fetches (measured). Zeus may use it only for a single-stream `Referer` rule scoped by `initiatorDomains`. If a site blocks the daemon, use the real browser; never impersonate one.
 - **Consent maps onto `optional_host_permissions`**: `https://*/*` optional, `permissions.request` from the approving click, `permissions.remove` at expiry [Chrome: permissions].
 - **CDP is an opt-in automation lane, not the handoff.** Chrome 136 ignores `--remote-debugging-port` on the default profile; Chrome 144 added a `chrome://inspect` toggle with a per-session prompt [Chrome: remote debugging 136], [Chrome: DevTools MCP].
 - **Stores**: broad host permissions slow Chrome Web Store review and remote logic is banned; AMO requires `data_collection_permissions` for new extensions since 2025-11-03; Edge may assign another extension ID, so list both in the host manifest [CWS: review], [Mozilla: data collection], [Edge: native messaging].
 
 ## 1. Method and evidence levels
 
-Primary documentation was fetched on 2026-10-05/06; secondary press is tagged. Behaviour marked [Exp: scratch07] was measured with a scratch MV3 extension, a Node native host and a Node loopback server (`tools/research-checks/_scratch07`) on Windows 11, Chrome for Testing 154, `--headless=new`, unpacked extension. Caveats: one machine with unrelated background load; headless (UA contains `HeadlessChrome`); and the extension only loaded with `--disable-features=DisableLoadExtensionCommandLineSwitch` (branded Chrome dropped `--load-extension` in 137 [Chromium-extensions: load-extension PSA]). Treat measurements as Medium confidence until repeated on branded Chrome, Edge and Firefox.
+Primary documentation was fetched on 2026-10-05/06; secondary press is tagged. Behaviour marked [Exp: scratch07] was measured with a scratch MV3 extension, a Node native host and a Node loopback server (`tools/research-checks/_scratch07`) on Windows 11, Chrome for Testing 154, `--headless=new`, unpacked extension. Caveats: one machine with background load; headless (`HeadlessChrome` UA); the extension only loaded with `--disable-features=DisableLoadExtensionCommandLineSwitch` (branded Chrome dropped `--load-extension` in 137 [Chromium-extensions: load-extension PSA]). Treat measurements as Medium confidence until repeated on branded Chrome, Edge and Firefox.
 
 ## 2. Why Zeus must not read cookie stores
 
@@ -39,7 +39,7 @@ Primary documentation was fetched on 2026-10-05/06; secondary press is tagged. B
 | v10 / v11 | Linux | Fixed fallback key (v10) or Secret Service/KWallet key (v11); newer Chrome may use the XDG secret portal (unverified) | User session processes | Medium |
 | v20 (App-Bound) | Windows, Chrome 127+ | Key wrapped by system DPAPI, user DPAPI, then an app-bound step; a SYSTEM elevation service validates that the caller is Chrome | Chrome, or an attacker with SYSTEM, injection or debugger access | High [Google: ABE blog], [Web: v20 layout] |
 
-Google's stated intent: another app that tries to decrypt fails, so attackers must escalate in detectable ways [Google: ABE blog]. Elastic catalogued what malware families did, at fact level: inject into Chrome, call the elevation service over COM, use the remote-debugging port, read browser process memory [Elastic: ABE bypass]. Wider context: a September 2026 study of about 170,000 infostealer victims lists exposed browser sessions among the critical attack surfaces [arXiv:2609.30070]; user profiles lack protection against file-system attackers, and a proposed Chromium variant adds `BrowserOnly` and `Monitored` cookie attributes to hide cookies even from extensions [arXiv:2504.17692], [arXiv:2405.06830].
+Google's stated intent: another app that tries to decrypt fails, so attackers must escalate in detectable ways [Google: ABE blog]. Elastic catalogued what malware families did, at fact level: inject into Chrome, call the elevation service over COM, use the remote-debugging port, read browser process memory [Elastic: ABE bypass]. Wider context: a September 2026 study of about 170,000 infostealer victims names exposed browser sessions a critical attack surface [arXiv:2609.30070]; profiles lack protection against file-system attackers [arXiv:2504.17692]; a proposed Chromium variant adds `BrowserOnly` and `Monitored` cookie attributes to hide cookies even from extensions [arXiv:2405.06830].
 
 *Inference:* a download manager that read the cookie database would need the same techniques, trip the detections Elastic recommends (a non-browser process touching cookie files, COM elevation access), and be indistinguishable from a stealer to a user. The rule is absolute: **Zeus reads cookies only through the extension, per origin, with consent**.
 
@@ -172,7 +172,7 @@ Local Network Access (Chrome 142) prompts for public-site requests to loopback; 
 
 ### 4.3 Long fetches and memory
 
-Always stream (`response.body.getReader()`), never `arrayBuffer()` a download; memory then stays at the unread backlog. An in-flight response body does not keep the worker alive: a 75 s stream delivering 1 KiB per second was cut when the worker died (the server saw the client close at 29.8 s; no completion report), and two earlier benchmark runs stalled the same way mid-stream [Exp: scratch07]. Design consequence: bound every `fetch.range` slice (spec 02: 16 MiB), keep the native port open, and treat worker death as normal.
+Always stream (`response.body.getReader()`), never `arrayBuffer()` a download. An in-flight response body does not keep the worker alive: a 75 s stream delivering 1 KiB per second was cut when the worker died (the server saw the client close at 29.8 s; no completion report), and two earlier benchmark runs stalled the same way mid-stream [Exp: scratch07]. Design consequence: bound every `fetch.range` slice (spec 02: 16 MiB), keep the native port open, and treat worker death as normal.
 
 ## 5. Browser differences
 
@@ -185,7 +185,7 @@ Always stream (`response.body.getReader()`), never `arrayBuffer()` a download; m
 | Cookies | `partitionKey`, `storeId` | same | `firstPartyDomain`, `partitionKey`, containers | not usable | as Chrome |
 | Host permissions UX | Install warning unless optional | same | Shown at install since Firefox 127, user-revocable | n/a | as Chrome |
 
-Firefox on Windows kills the host's job object, so a daemon started by the host needs breakaway (spec 02 section 3.4) [MDN: native messaging]. For Brave, Vivaldi, Opera and Arc I found no primary documentation of manifest directories or registry keys; they may fall back to Chrome's location as Edge does. Treat as unverified and test (Q4). Safari needs a separate app-extension architecture that spec 02 leaves out of v1 (O8); keep it out.
+Firefox on Windows kills the host's job object, so a daemon started by the host needs breakaway (spec 02 section 3.4) [MDN: native messaging]. For Brave, Vivaldi, Opera and Arc I found no primary documentation of manifest directories or registry keys; they may fall back to Chrome's location as Edge does. Test them (Q4). Safari needs a separate app-extension design that spec 02 leaves out of v1 (O8); keep it out.
 
 ## 6. Store policies and extension ID stability
 
@@ -198,7 +198,7 @@ Firefox on Windows kills the host's job object, so a daemon started by the host 
 
 *Inference:* the single purpose is "download and file handoff for the Zeus daemon"; leases, URL refresh and the fetch proxy serve it, a "scrape any page" feature would not. Declare `https://*/*` only as `optional_host_permissions`.
 
-**ID stability.** A `key` field in `manifest.json` pins the extension ID across unpacked and packed builds (the public key comes from the Developer Dashboard package tab) [Chrome: manifest key]. Pin it, publish the same ID in the host manifest, and run CI against it. Keep the private signing key out of the repository; only the public `key` belongs there. Firefox pins the ID with `browser_specific_settings.gecko.id` [MDN: native messaging].
+**ID stability.** A `key` field in `manifest.json` pins the extension ID across unpacked and packed builds (the public key comes from the Developer Dashboard package tab) [Chrome: manifest key]. Pin it, use the same ID in the host manifest, and run CI against it. Keep the private signing key out of the repository; only the public `key` belongs there. Firefox pins the ID with `browser_specific_settings.gecko.id` [MDN: native messaging].
 
 ## 7. CDP and WebDriver BiDi alternatives
 
@@ -239,7 +239,7 @@ Cookies, header values and tokens live only in memory for the lease (`ttl_ms` at
 | Solving or bypassing challenges (`cf-mitigated`) | **Forbidden** | Stop and report |
 | When blocked, fetching through the user's real browser | Allowed | The user is the actor and no control is bypassed |
 
-For agent-driven crawls the legitimate counterpart of fingerprint games is declaring the bot. The IETF Web Bot Auth working group (chartered 2025-10-23) adopted `draft-ietf-webbotauth-httpsig-protocol-00` on 2026-09-01; it profiles HTTP Message Signatures [RFC 9421] with a signature-agent directory [IETF: webbotauth]. *Inference:* once stable, signing workflow-runner requests is the sanctioned way to be recognised; it does not apply to a user's own browser session.
+For agent crawls, the legitimate counterpart of fingerprint games is declaring the bot. The IETF Web Bot Auth working group (chartered October 2025, secondary) adopted `draft-ietf-webbotauth-httpsig-protocol-00` on 2026-09-01; it profiles HTTP Message Signatures [RFC 9421] with a signature-agent directory [IETF: webbotauth]. *Inference:* once stable, signing workflow-runner requests is the sanctioned way to be recognised; it does not apply to a user's own browser session.
 
 ## 9. Recommended handoff architecture
 
@@ -278,7 +278,7 @@ flowchart LR
 | `workflow` (7 days, renewable) | Same | Run end or renewal prompt |
 | `never` | Zeus blocklist; `permissions.remove` | Persistent |
 
-The browser's prompt stacks on Zeus's approval, giving two independent gates. Required permissions: `nativeMessaging`, `downloads`, `cookies`, `storage`, `alarms`. Optional: `https://*/*`, `http://localhost/*` and loopback, `declarativeNetRequestWithHostAccess` (*Inference*: allowed as optional because it is absent from the list of nine). No `externally_connectable`, no content scripts.
+The browser's prompt stacks on Zeus's approval: two independent gates. Required permissions: `nativeMessaging`, `downloads`, `cookies`, `storage`, `alarms`. Optional: `https://*/*`, `http://localhost/*` and loopback, `declarativeNetRequestWithHostAccess` (*Inference*: allowed as optional because it is absent from the list of nine). No `externally_connectable`, no content scripts.
 
 **Failure and fallback ladder:**
 
@@ -322,12 +322,12 @@ Agent-owned sessions use a separate lane: a dedicated automation profile with CD
 
 ## Open questions
 
-- **Q1.** Does a browser-initiated `fetch` from the extension trigger DBSC refresh, and does `chrome.cookies` expose the refreshed cookie? Needs Chrome 146+ and a DBSC test server.
-- **Q2.** Does `chrome.cookies.getAll` return first-party `Partitioned` cookies, and does an extension `fetch` attach them? My http-loopback probe was inconclusive.
+- **Q1.** Does an extension `fetch` trigger DBSC refresh, and does `chrome.cookies` then expose the refreshed cookie? Needs Chrome 146+ and a DBSC test server.
+- **Q2.** Does `chrome.cookies.getAll` return first-party `Partitioned` cookies, and does extension `fetch` attach them? My http probe was inconclusive.
 - **Q3.** Do branded Chrome, Edge and Firefox match these Chrome for Testing measurements (headers including `Accept-Encoding`, 1 MiB boundary, worker lifetime)?
 - **Q4.** Native-messaging locations and fallbacks for Brave, Vivaldi, Opera, Arc.
 - **Q5.** Does the `persistAcrossSessions` alarm flag documented for Chrome 150 [Chrome: alarms] change reconnect behaviour after a browser restart?
-- **Q6.** Does `activeTab` permit a service-worker cross-origin `fetch` to the tab's origin (a lighter "once" consent)?
+- **Q6.** Does `activeTab` allow a worker `fetch` to the tab's origin (a lighter "once" consent)?
 - **Q7.** `draft-ietf-httpbis-rfc6265bis` (revision 22, 2025-12-01) was in the RFC Editor queue when checked; one press summary claims publication on 2026-08-31 [unverified]; the RFC Editor still shows RFC 6265 as current [Web: RFC 6265bis status].
 - **Q8.** Whether `Origin` omission on extension worker `fetch` (reported for Chrome 153) is intended.
 
@@ -340,7 +340,7 @@ Agent-owned sessions use a separate lane: a dedicated automation profile with CD
 - [W3C: DBSC] W3C WebAppSec WG, "Device Bound Session Credentials", Editor's Draft 2026-09-08. https://w3c.github.io/webappsec-dbsc/
 - [Google: DBSC] Google, "Protecting Cookies with Device Bound Session Credentials", 2026-04-09. https://blog.google/security/protecting-cookies-with-device-bound-session-credentials/
 - [Chrome: DBSC] Chrome for Developers, "Device Bound Session Credentials". https://developer.chrome.com/docs/web-platform/device-bound-session-credentials
-- [Web: DBSC status] Search-result roundup of Edge/Firefox/Safari status (secondary, Medium). https://www.corbado.com/blog/device-bound-session-credentials-dbsc
+- [Web: DBSC status] Corbado, "Device Bound Session Credentials (DBSC) explained" (secondary). https://www.corbado.com/blog/device-bound-session-credentials-dbsc
 - [Chrome: remote debugging 136] Chrome for Developers, "Changes to remote debugging switches to improve security". https://developer.chrome.com/blog/remote-debugging-port
 - [Chrome: DevTools MCP] Chrome for Developers, "Let your coding agent debug your browser session", 2025-12-11. https://developer.chrome.com/blog/chrome-devtools-mcp-debug-your-browser-session
 - [Chrome: downloads] Chrome for Developers, "chrome.downloads". https://developer.chrome.com/docs/extensions/reference/api/downloads
@@ -382,7 +382,7 @@ Agent-owned sessions use a separate lane: a dedicated automation profile with CD
 - [Fetch: forbidden headers] WHATWG Fetch Standard, forbidden request-header. https://fetch.spec.whatwg.org/#forbidden-request-header
 - [Web: RFC 6265bis status] IETF datatracker, draft-ietf-httpbis-rfc6265bis (rev 22). https://datatracker.ietf.org/doc/draft-ietf-httpbis-rfc6265bis/
 - [RFC 9421] Backman, Richer, Sporny, "HTTP Message Signatures", 2024. https://www.rfc-editor.org/info/rfc9421
-- [Exp: scratch07] Local measurements, 2026-10-06, Chrome for Testing 154 headless on Windows 11; code and raw JSON in `tools/research-checks/_scratch07` (`results2.json`, `results3_run2.json`, `results4_run3_partial.json`, `results5_*.json`).
+- [Exp: scratch07] Local measurements, 2026-10-06: Chrome for Testing 154 (headless, Windows 11), scratch MV3 extensions, Node host and loopback server; scripts and raw JSON in `tools/research-checks/_scratch07` (`results2.json`, `results3.json`, `results4_run3_partial.json`, `results5_*.json`); the browser binary and profiles were deleted afterwards.
 - [arXiv:2609.30070] Paju, Nurmi, Arroyo et al., "A Data-Driven Analysis of Infostealer Malware Victims", 2026.
 - [arXiv:2405.06830] Tyler, Nunes, "Towards Browser Controls to Protect Cookies from Malicious Extensions", 2024.
 - [arXiv:2504.17692] Somé, Airan, Durumeric et al., "User Profiles: The Achilles' Heel of Web Browsers", 2025.

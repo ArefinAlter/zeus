@@ -84,7 +84,7 @@ Overlapping inserts are legal (work stealing and hedged requests fetch the same 
 
 | Table | Key | Value | Purpose |
 |---|---|---|---|
-| `meta` | `"store"` (str) | JSON `Meta` | Schema version, store id, `last_event_seq`, outbox cursors, audit head. |
+| `meta` | `"store"` (str) | JSON `Meta` | Schema version, store id, `last_event_seq`, outbox cursors, audit head, the kill-switch latch (07 section 8). |
 | `jobs` | `job_id` (str) | JSON `JobRecord` | The full job (01) plus `internal` (engine-private state). |
 | `ranges` | `(job_id: str, start: u64)` | `(end: u64, epoch: u32)` | Committed range set. redb orders integer keys numerically, so a range scan by `job_id` yields intervals in order. |
 | `unit_crc` | `(job_id: str, offset: u64)` | `(length: u32, crc32c: u32)` | Per commit unit checksum for the tail check of section 7.2. Optional (feature `journal-crc`, default on). Not coalesced. |
@@ -92,7 +92,7 @@ Overlapping inserts are legal (work stealing and hedged requests fetch the same 
 | `reservations` | normalised path (str) | JSON `ReservationRow` | Final-path uniqueness (section 3.2). |
 | `events` | `seq: u64` | JSON `Event` (01 section 9) | Durable event log, pruned by retention. |
 | `grants` | `grant_id` (str) | JSON `SessionGrant` (01) | Consent records. |
-| `approvals` | `approval_id` (str) | JSON `Approval` (01) | Pending and decided approvals. |
+| `approvals` | `approval_id` (str) | JSON `ApprovalRequest` (01 `Approval` plus the 07 members `request_hash`, `requested_by`, `facts`, `agent_says`) | Pending and decided approvals. The `DecisionRecord` of 07 section 5.3 (with channel evidence) is stored next to it. |
 | `idempotency` | `(client_id: str, key: str)` | JSON `IdempotencyRow` | 00 section 5.4. |
 
 Rows holding JSON use `serde_json` output (UTF-8, not canonical; canonical JSON is for hashing only, 00 section 7). The fixed-layout tables use redb's native integer and tuple encodings so a commit round writes only a few bytes per unit.

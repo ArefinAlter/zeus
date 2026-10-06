@@ -52,6 +52,15 @@
             },
             { "type": "null" }
           ]
+        },
+        "kill_switch": {
+          "description": "The kill-switch latch (07 section 8). Absent means never engaged. Written in the same transaction as the revocations and pauses it causes.",
+          "type": "object",
+          "required": ["engaged", "changed_at"],
+          "properties": {
+            "engaged": { "type": "boolean" },
+            "changed_at": { "$ref": "https://zeus.invalid/schema/common#/$defs/Timestamp" }
+          }
         }
       }
     },

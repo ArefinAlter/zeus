@@ -327,7 +327,7 @@ A grant is a recorded consent. It **never contains cookies**: cookies are fetche
 | `workflow` | one origin and one `run_id` | 7 days (604,800,000 ms) from creation or last renewal | yes, by a human approval; each renewal restarts the 7 days and increments `renewal_count` | Jobs of that run. |
 | `never` | one origin | no expiry (`expires_at` null) until a human removes it | n/a | Block-list entry: handoffs are rejected (`policy.origin_never`), session requests are refused, no probing with session. |
 
-Fields: `id`, `origin`, `scope`, `state` (`active`, `expired`, `revoked`, `consumed`), `created_at`, `expires_at`, `job_id` (once), `run_id` (workflow), `approval_id`, `decided_by` (an Actor), `uses`, `last_used_at`, `revoked_at`, `renewable`, `renewal_count`.
+Fields: `id`, `origin`, `scope`, `state` (`active`, `expired`, `revoked`, `consumed`), `created_at`, `expires_at`, `job_id` (once), `run_id` (workflow), `approval_id`, `decided_by` (an Actor), `uses`, `last_used_at`, `revoked_at`, `revoked_by` (an Actor) and `revocation_reason` (`user_request`, `kill_switch`, `origin_blocked`) once revoked, `renewable`, `renewal_count`, `renewed_at`. Lifetimes, renewal, the never list and the invariants between these fields are fixed in 07 section 6 and enforced by `GrantRecord` in [`schema/approvals.v1.schema.json`](schema/approvals.v1.schema.json).
 
 ```json validate=domain#/$defs/SessionGrant
 {
@@ -353,13 +353,13 @@ Fields: `id`, `origin`, `scope`, `state` (`active`, `expired`, `revoked`, `consu
 2. **Resolution.** For a request needing `origin`, candidate grants are those with `state = active` and unexpired. Precedence: `never` (deny), then `once` bound to the job, then `workflow` bound to the job's run, then `site`. The first match is the effective grant.
 3. **Use.** An audit record `session.lease_requested` (04) is made durable **before** the request for material is sent to the extension. Each lease then increments `uses`, sets `last_used_at`, emits `session.leased` and appends the audit record `session.leased`.
 4. **Expiry.** A sweeper checks every 60 s and every use also checks lazily. On expiry the grant becomes `expired`, `grant.expired` is emitted, leases are dropped, and dependent jobs follow S07, S23 or S41.
-5. **Revocation.** `grants.revoke` by a human is immediate: state `revoked`, `grant.revoked` emitted, outstanding leases zeroized, the extension removes its local consent record (02), dependent jobs follow S07, S23 or S41. Revocation is idempotent.
+5. **Revocation.** `sessions.revoke` by a human is immediate: state `revoked`, `grant.revoked` emitted, outstanding leases zeroized, the extension removes its local consent record (02), dependent jobs follow S07, S23 or S41. Revocation is idempotent.
 6. **Daemon restart.** Grants persist (03); leases do not. A job that needs a lease after a restart goes through `awaiting_session`.
 7. **Agents cannot** create, renew, extend or revoke grants, cannot read cookies, and cannot change the scope a human picked.
 
 ### 5.3 Approval
 
-An Approval is a request for a human decision. Full flow, UI text and policy are in 07; this section fixes the entity and kinds.
+An Approval is a request for a human decision. Full flow, UI text and policy are in [07](07-approvals-trust-surface-and-consent.md); this section fixes the entity and kinds. 07 adds four members to the entity: `request_hash`, `requested_by`, `facts` and `agent_says` (07 sections 4.3 to 4.6).
 
 | `kind` | Raised when | `allowed_scopes` | On `approve` | On `deny` | Default expiry |
 |---|---|---|---|---|---|
@@ -401,7 +401,7 @@ Fields: `id`, `kind`, `state` (`pending`, `approved`, `denied`, `expired`, `canc
 
 Rules:
 
-1. Only an Actor of kind `human` on a trust surface may decide. A decision whose actor is `agent`, `engine` or an unknown surface is rejected with `unauthenticated` and audited as `denied`.
+1. Only an Actor of kind `human` on a trust surface may decide, and the daemon accepts the actor only on the channel evidence of 07 section 7. A decision whose actor is `agent`, `engine` or an unknown surface is rejected with `unauthenticated` and audited as `denied`. The surfaces, and which of them may approve, are listed in 07 section 7.1 (notification surfaces can only deny).
 2. `expire` and `cancel` outcomes are written by `system` (the deadline passed, or the job was canceled).
 3. A decided approval is immutable.
 4. At most 50 approvals are pending at once; further requests are refused with `policy.too_many_pending` (class `unavailable`, retryable) so a hostile page cannot flood the user.
@@ -844,7 +844,8 @@ All events share the envelope `{seq | after_seq, ts, type, job_id?, run_id?, dat
 | `grant.created` | yes | S30, S31 and trust-surface actions | `grant` |
 | `grant.revoked` | yes | revocation | `grant_id`, `origin`, `by` |
 | `grant.expired` | yes | sweeper | `grant_id`, `origin` |
-| `approval.requested` | yes | S02, S07, S11, S23, S41 and other raisers | `approval` |
+| `grant.renewed` | yes | a human renewal of a `workflow` grant (07 section 6.3) | `grant` |
+| `approval.requested` | yes | S02, S07, S11, S23, S41 and other raisers; again for the same approval when it is amended (07 section 4.7) | `approval` (without `facts` and `agent_says`, 07 section 11) |
 | `approval.decided` | yes | S30, S31, S32 | `approval_id`, `kind`, `outcome`, `scope`, `actor`, `grant_id` |
 | `job.verified` | yes | S70 | `size_bytes`, `sha256`, `blake3`, `detected_mime`, `declared_mime`, `mime_match`, `expected_sha256_match`, `expected_size_match` |
 | `job.quarantined` | yes | S70 when any quarantine rule fires | `reasons` |
@@ -852,6 +853,7 @@ All events share the envelope `{seq | after_seq, ts, type, job_id?, run_id?, dat
 | `job.failed` | yes | S08, S14, S25, S31, S42, S72, S82, S96 | `error`, `suggested_next` (`action`, `tool`) |
 | `daemon.started` | yes | startup, after recovery | `version`, `instance_id`, `recovery` |
 | `daemon.stopping` | yes | orderly shutdown | `reason` |
+| `daemon.kill_switch` | yes | the kill switch is engaged or released (07 section 8) | `engaged`, `grants_revoked`, `jobs_paused`, `by` |
 
 `suggested_next.action` values: `retry`, `approve`, `request_session`, `open_in_browser`, `free_disk_space`, `fix_destination`, `check_url`, `none`. `tool` is a Zeus MCP tool name (for example `zeus_control`) or null. It is advice for agents, never an automatic action.
 

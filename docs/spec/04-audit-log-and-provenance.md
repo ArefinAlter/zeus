@@ -166,10 +166,11 @@ For record `r` with sequence `n`:
 | `audit.checkpoint` | Every 1000 records and at rotation | n/a | `covered_seq`, `journal_last_event_seq`, `store_id` |
 | `audit.recovered` | After a torn tail was cut (section 4.6) | n/a | `discarded_bytes`, `quarantine_file` |
 | `daemon.started`, `daemon.stopping` | Lifecycle | no | `version`, `instance_id` or `reason` |
-| `client.connected`, `client.rejected` | A client authenticated or was refused on any interface | no | `via`, `client_id`, `reason` |
+| `client.connected`, `client.rejected` | A client authenticated or was refused on any interface | no | `via`, `client_id`, `reason`; for `client.connected` also `role`, `credential_kind`, `effective_kind`, `exe_verified`, `downgraded` (07 section 7.2) |
 | `tool.call` | Every MCP tool, A2A task or JSON-RPC method that mutates state or reads sensitive state (06, 05) | **yes**, for mutating calls | `tool`, `args_blake3` (BLAKE3 of the JCS of the arguments, never the arguments), result summary (`job_ids`, counts) |
-| `approval.requested`, `approval.decided` | From events | no for requested; **yes** for decided | `kind`, `outcome`, `scope`, `grant_id` |
-| `grant.created`, `grant.revoked`, `grant.expired` | From events | **yes** for created and revoked | `scope`, `expires_at` or `reason` |
+| `approval.requested`, `approval.decided` | From events; `approval.decided` also for a refused decision attempt, with audit `outcome` `denied` | no for requested; **yes** for decided | requested: `kind`, `request_hash`, `revision`, `requested_by`. Decided: `kind`, `outcome`, `scope`, `grant_id`, `request_hash`, `channel` (surface, role, evidence summary). Refused attempt: `reason` (an error code), `surface` as claimed (07 section 11) |
+| `grant.created`, `grant.revoked`, `grant.expired`, `grant.renewed` | From events | **yes** for created, revoked and renewed | `scope`, `expires_at` or `reason`; renewed: `expires_at`, `renewal_count` |
+| `daemon.kill_switch` | A human engaged or released the kill switch (07 section 8) | **yes**, but the switch proceeds if the write fails (section 4.6 item 8) | `action`, `grants_revoked`, `jobs_paused`, `approvals_pending`, `reason_blake3` |
 | `session.lease_requested` | Just before the daemon asks the extension for session material (02) | **yes** | `purpose`, `ttl_ms`, `via` |
 | `session.leased` | Material arrived | no | `purpose`, `cookie_count`, `ttl_ms`. Never cookie names or values. |
 | `session.denied` | Extension refused or policy refused | no | `status`, `error_code` |
@@ -239,7 +240,7 @@ verify(files, anchor?):
 5. **Rotation.** When the active file reaches 64 MiB, or the UTC date changes, the writer appends `audit.checkpoint`, then `audit.rotated` as the last record, fsyncs, and starts `audit-<index+1>.jsonl`. The first line of the new file is an ordinary record.
 6. **Retention.** Files are kept at least 365 days (configurable). Pruning removes whole files from the oldest end only, after writing `audit/anchor.json` `{chain_id, seq, hash}` (the hash of the last record of the newest pruned file) and an `audit.checkpoint` noting the prune. Verification then runs from that anchor.
 7. **Size and cost.** A record is about 400 bytes to 1.5 KiB; at 50 audited actions per second (a busy workflow) the log grows about 100 MB per day, so rotation matters. Jobs themselves are not audited per progress tick.
-8. **Disabled?** The audit log cannot be disabled in the free product. If it cannot be written (disk full, permission), write-ahead actions fail closed (`audit.unavailable`, class `unavailable`): Zeus does not release session material or delete files without a record.
+8. **Disabled?** The audit log cannot be disabled in the free product. If it cannot be written (disk full, permission), write-ahead actions fail closed (`audit.unavailable`, class `unavailable`): Zeus does not release session material or delete files without a record. The one exception is the kill switch (07 section 8): it is a safety action that only removes authority, so it proceeds when the audit write fails, reports the failure on stderr and in `audit.error`, and appends the missing record as soon as the log is writable again.
 
 ### 4.7 Test vectors
 
