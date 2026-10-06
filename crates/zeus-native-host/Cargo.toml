@@ -1,0 +1,41 @@
+[package]
+name = "zeus-native-host"
+description = "Zeus native-messaging host: thin relay between the browser extension and zeusd, plus host-manifest install and uninstall"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[lib]
+name = "zeus_native_host"
+path = "src/lib.rs"
+
+[[bin]]
+name = "zeus-native-host"
+path = "src/main.rs"
+
+[dependencies]
+zeus-api.workspace = true
+# core:begin
+zeus-types.workspace = true
+# core:end
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tokio.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+winreg.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+proptest.workspace = true
+assert_cmd.workspace = true
+predicates.workspace = true

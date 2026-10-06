@@ -1,0 +1,138 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/zeus-api",
+    "crates/zeus-daemon",
+    "crates/zeus-mcp",
+    "crates/zeus-cli",
+    "crates/zeus-native-host",
+    "crates/zeus-workflow",
+    "crates/zeus-llm",
+    "crates/zeus-a2a",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.90"
+license = "Apache-2.0"
+repository = "https://github.com/ArefinAlter/zeus"
+homepage = "https://github.com/ArefinAlter/zeus"
+authors = ["Zeus contributors"]
+publish = false
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+dbg_macro = "warn"
+todo = "deny"
+unimplemented = "deny"
+print_stdout = "allow"
+print_stderr = "allow"
+
+[workspace.dependencies]
+# ---- zeus-core (sibling repository; clone it next to this one) ----
+zeus-types = { path = "../zeus-core/crates/zeus-types", version = "0.1.0" }
+zeus-control = { path = "../zeus-core/crates/zeus-control", version = "0.1.0" }
+zeus-fs = { path = "../zeus-core/crates/zeus-fs", version = "0.1.0" }
+zeus-verify = { path = "../zeus-core/crates/zeus-verify", version = "0.1.0" }
+zeus-journal = { path = "../zeus-core/crates/zeus-journal", version = "0.1.0" }
+zeus-session = { path = "../zeus-core/crates/zeus-session", version = "0.1.0" }
+zeus-http = { path = "../zeus-core/crates/zeus-http", version = "0.1.0" }
+zeus-engine = { path = "../zeus-core/crates/zeus-engine", version = "0.1.0" }
+
+# ---- zeus-app crates ----
+zeus-api = { path = "crates/zeus-api", version = "0.1.0" }
+zeus-daemon = { path = "crates/zeus-daemon", version = "0.1.0" }
+zeus-mcp = { path = "crates/zeus-mcp", version = "0.1.0" }
+zeus-cli = { path = "crates/zeus-cli", version = "0.1.0" }
+zeus-native-host = { path = "crates/zeus-native-host", version = "0.1.0" }
+zeus-workflow = { path = "crates/zeus-workflow", version = "0.1.0", default-features = false }
+zeus-llm = { path = "crates/zeus-llm", version = "0.1.0", default-features = false }
+zeus-a2a = { path = "crates/zeus-a2a", version = "0.1.0" }
+
+# ---- async runtime and utilities ----
+tokio = { version = "1.53", features = ["rt-multi-thread", "macros", "sync", "time", "net", "io-util", "io-std", "fs", "process", "signal"] }
+tokio-util = { version = "0.7", default-features = false, features = ["rt"] }
+futures = "0.3"
+bytes = "1.12"
+async-trait = "0.1"
+tokio-test = "0.4"
+
+# ---- serialization and schemas ----
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+schemars = { version = "1.2", features = ["derive", "indexmap2"] }
+toml = "1.1"
+jsonschema = "0.58"
+
+# ---- errors and logging ----
+thiserror = "2"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "env-filter", "json", "ansi", "std"] }
+tracing-appender = "0.2"
+
+# ---- IPC, CLI, TUI ----
+interprocess = { version = "2.4", features = ["tokio"] }
+clap = { version = "4.6", features = ["derive", "env", "wrap_help"] }
+clap_complete = "4.6"
+ratatui = "0.30"
+crossterm = "0.29"
+which = "8"
+
+# ---- MCP (verified 2026-10-05: rmcp 3.5.0, MSRV 1.88; this workspace uses 1.90 for redb 4.x in zeus-core; feature names from its Cargo.toml) ----
+rmcp = { version = "3.5", default-features = false, features = ["server", "macros", "transport-io", "schemars"] }
+
+# ---- HTTP (daemon-adjacent, optional localhost listeners, workflow page fetching, LLM calls) ----
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "http2", "json", "stream", "system-proxy"] }
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio"] }
+tower = "0.5"
+http = "1.5"
+
+# ---- workflow extraction ----
+scraper = "0.27"
+jsonpath-rust = "1.0"
+regex = "1.13"
+indexmap = { version = "2.14", features = ["serde"] }
+
+# ---- identifiers, time, text ----
+url = { version = "2.5", features = ["serde"] }
+ulid = "3"
+time = { version = "0.3", features = ["serde", "formatting", "parsing", "macros"] }
+semver = { version = "1", features = ["serde"] }
+
+# ---- crypto and secrets ----
+blake3 = "1.8"
+sha2 = "0.11"
+ed25519-dalek = { version = "3.0", features = ["zeroize"] }
+base64 = "0.23"
+hex = "0.4"
+rand = "0.10"
+zeroize = { version = "1.9", features = ["derive"] }
+keyring = "4.2"
+
+# ---- platform and filesystem ----
+directories = "6"
+winreg = "0.56"
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Pipes", "Win32_System_Threading", "Win32_System_Console", "Win32_Storage_FileSystem"] }
+
+# ---- test-only ----
+tempfile = "3.27"
+assert_cmd = "2.2"
+predicates = "3.1"
+proptest = "1.11"
+insta = { version = "1.49", features = ["json"] }
+
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.test]
+debug = "line-tables-only"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true

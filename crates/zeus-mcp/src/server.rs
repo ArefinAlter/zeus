@@ -1,0 +1,761 @@
+//! Tool dispatch: from an MCP tool call to daemon API calls and back.
+//!
+//! [`ZeusTools`] is transport-agnostic (any [`zeus_api::Client`]), so it is unit-tested with a fake client and bound
+//! to `rmcp` separately ([`crate::transport`]). Conventions (ARCHITECTURE section 6):
+//!
+//! * **Tool execution errors, not protocol errors, for bad input.** Invalid arguments and every daemon error come
+//!   back as a tool result with `isError: true`, the 00 error envelope in `structuredContent`, a one-line
+//!   `"<code>: <message>"` text and a recovery hint, so the model can correct itself. Only an unknown tool name is a
+//!   protocol error.
+//! * **Nothing here decides, grants or reveals.** The nine tools map to daemon methods an `agent` credential may
+//!   call; the daemon enforces that again.
+//! * **Long work is a job.** `zeus_wait` takes at most 60 seconds.
+
+use std::sync::Arc;
+
+use serde::Serialize;
+use serde::de::DeserializeOwned;
+use serde_json::Value;
+use zeus_api::methods::jobs::{
+    ControlAction, EnqueueParams, JobsControlParams, JobsGetParams, JobsListParams,
+    JobsVerifyParams, JobsWaitParams, NewJob, ProbeParams, WaitUntil,
+};
+use zeus_api::methods::sessions::{SessionsListParams, SessionsRequestParams};
+use zeus_api::methods::{
+    FilesList, JobsControl, JobsEnqueue, JobsGet, JobsList, JobsProbe, JobsVerify, JobsWait,
+    RpcMethod, SessionsList, SessionsRequest,
+};
+use zeus_api::{ApiError, Client, PageRequest, call};
+use zeus_types::job::GrantScopeHint;
+use zeus_types::{ErrorEnvelope, Hex256, HttpUrl, JobId, Origin, Priority};
+
+use crate::args::*;
+use crate::output::*;
+
+/// Longest `zeus_wait` timeout in seconds.
+pub const MAX_WAIT_S: u32 = 60;
+/// Most URLs in one `zeus_enqueue`.
+pub const MAX_URLS: usize = 50;
+
+/// The unknown-tool protocol error (JSON-RPC `-32602` in MCP).
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("unknown tool `{0}`")]
+pub struct UnknownTool(pub String);
+
+/// The result of a tool call, ready to become an MCP `CallToolResult`.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ToolOutcome {
+    /// Success: `structuredContent`.
+    Ok(Value),
+    /// Failure that the model can act on: `isError: true`.
+    Error {
+        /// The 00 error envelope.
+        envelope: ErrorEnvelope,
+        /// Recovery advice.
+        next: NextStep,
+    },
+}
+
+impl ToolOutcome {
+    /// `isError`.
+    pub fn is_error(&self) -> bool {
+        matches!(self, Self::Error { .. })
+    }
+
+    /// One-line text for `content[0].text` (00 section 9.1: `"<code>: <message>"` on errors).
+    pub fn text(&self) -> String {
+        match self {
+            Self::Ok(value) => serde_json::to_string(value).unwrap_or_default(),
+            Self::Error { envelope, .. } => format!("{}: {}", envelope.code, envelope.message),
+        }
+    }
+
+    /// `structuredContent`: the output, or the envelope plus the hint.
+    pub fn structured(&self) -> Value {
+        match self {
+            Self::Ok(value) => value.clone(),
+            Self::Error { envelope, next } => {
+                let mut value = serde_json::to_value(envelope).unwrap_or(Value::Null);
+                if let Some(object) = value.as_object_mut() {
+                    object.insert(
+                        "next".into(),
+                        serde_json::to_value(next).unwrap_or(Value::Null),
+                    );
+                }
+                value
+            }
+        }
+    }
+
+    fn from_api(error: &ApiError) -> Self {
+        let envelope = error.envelope().clone();
+        let next = next_step_for(envelope.class);
+        Self::Error { envelope, next }
+    }
+
+    fn invalid(message: impl Into<String>) -> Self {
+        Self::from_api(&ApiError::invalid_params(message))
+    }
+}
+
+type ToolResult<T> = Result<T, ToolOutcome>;
+
+/// The tool implementation over a daemon client.
+pub struct ZeusTools<C: Client> {
+    client: Arc<C>,
+}
+
+impl<C: Client> ZeusTools<C> {
+    /// Wrap a client (an `agent`-kind daemon connection).
+    pub fn new(client: Arc<C>) -> Self {
+        Self { client }
+    }
+
+    /// Run the tool `name` with JSON `arguments`.
+    pub async fn call(&self, name: &str, arguments: Value) -> Result<ToolOutcome, UnknownTool> {
+        let outcome = match name {
+            "zeus_probe" => self.run(arguments, |a: ProbeArgs| self.probe(a)).await,
+            "zeus_enqueue" => self.run(arguments, |a: EnqueueArgs| self.enqueue(a)).await,
+            "zeus_status" => self.run(arguments, |a: StatusArgs| self.status(a)).await,
+            "zeus_wait" => self.run(arguments, |a: WaitArgs| self.wait(a)).await,
+            "zeus_control" => self.run(arguments, |a: ControlArgs| self.control(a)).await,
+            "zeus_verify" => self.run(arguments, |a: VerifyArgs| self.verify(a)).await,
+            "zeus_session_list" => {
+                self.run(arguments, |a: SessionListArgs| self.session_list(a))
+                    .await
+            }
+            "zeus_session_request" => {
+                self.run(arguments, |a: SessionRequestArgs| self.session_request(a))
+                    .await
+            }
+            "zeus_files_list" => {
+                self.run(arguments, |a: FilesListArgs| self.files_list(a))
+                    .await
+            }
+            other => return Err(UnknownTool(other.chars().take(64).collect())),
+        };
+        Ok(outcome)
+    }
+
+    async fn run<A, O, F, Fut>(&self, arguments: Value, f: F) -> ToolOutcome
+    where
+        A: DeserializeOwned,
+        O: Serialize,
+        F: FnOnce(A) -> Fut,
+        Fut: std::future::Future<Output = ToolResult<O>>,
+    {
+        let arguments = if arguments.is_null() {
+            Value::Object(Default::default())
+        } else {
+            arguments
+        };
+        let args: A = match serde_json::from_value(arguments) {
+            Ok(args) => args,
+            Err(error) => return ToolOutcome::invalid(argument_error(&error)),
+        };
+        match f(args).await {
+            Ok(output) => ToolOutcome::Ok(serde_json::to_value(output).unwrap_or(Value::Null)),
+            Err(outcome) => outcome,
+        }
+    }
+
+    async fn rpc<M: RpcMethod>(&self, params: M::Params) -> ToolResult<M::Result> {
+        call::<M, C>(&self.client, params)
+            .await
+            .map_err(|e| ToolOutcome::from_api(&e))
+    }
+
+    async fn probe(&self, args: ProbeArgs) -> ToolResult<ProbeOutput> {
+        let params = ProbeParams {
+            url: parse_url(&args.url)?,
+            session_origin: parse_origin_opt(args.session_origin.as_deref())?,
+        };
+        let result = self.rpc::<JobsProbe>(params).await?;
+        let probe = result.probe;
+        Ok(ProbeOutput {
+            status: probe.status,
+            range_support: wire_name(&probe.range_support),
+            size_bytes: probe.total_bytes,
+            requires_session: probe.requires_session,
+            interstitial_suspected: probe.interstitial_suspected,
+            approval_needed: result.approval_needed,
+            untrusted_content_type: probe.content_type,
+            untrusted_filename: Some(probe.filename.value),
+            etag: probe.validators.etag,
+        })
+    }
+
+    async fn enqueue(&self, args: EnqueueArgs) -> ToolResult<EnqueueOutput> {
+        check_key(&args.idempotency_key)?;
+        if args.urls.is_empty() || args.urls.len() > MAX_URLS {
+            return Err(ToolOutcome::invalid(format!(
+                "urls must hold 1 to {MAX_URLS} entries"
+            )));
+        }
+        if args.urls.len() > 1 && (args.filename.is_some() || args.expected_sha256.is_some()) {
+            return Err(ToolOutcome::invalid(
+                "filename and expected_sha256 need exactly one url",
+            ));
+        }
+        let session_origin = parse_origin_opt(args.session_origin.as_deref())?;
+        let expected_sha256 = args
+            .expected_sha256
+            .as_deref()
+            .map(|h| {
+                Hex256::from_hex(h)
+                    .map_err(|_| ToolOutcome::invalid("expected_sha256 must be 64 hex digits"))
+            })
+            .transpose()?;
+        let priority = args.priority.map(|p| match p {
+            PriorityArg::Low => Priority::Low,
+            PriorityArg::Normal => Priority::Normal,
+            PriorityArg::High => Priority::High,
+        });
+        let mut jobs = Vec::with_capacity(args.urls.len());
+        for url in &args.urls {
+            jobs.push(NewJob {
+                url: parse_url(url)?,
+                hint_url: None,
+                referrer: None,
+                dest_dir: args.dest_dir.clone(),
+                filename: args.filename.clone(),
+                expected_sha256,
+                expected_size: None,
+                priority,
+                session_origin: session_origin.clone(),
+                grant_scope_hint: None,
+                extra_headers: Default::default(),
+                overwrite: None,
+                max_connections: None,
+                transport_hint: None,
+                labels: Default::default(),
+                run_id: None,
+            });
+        }
+        let result = self
+            .rpc::<JobsEnqueue>(EnqueueParams {
+                jobs,
+                dry_run: args.dry_run,
+                idempotency_key: Some(args.idempotency_key),
+            })
+            .await?;
+        Ok(EnqueueOutput {
+            dry_run: result.dry_run,
+            jobs: result
+                .jobs
+                .into_iter()
+                .map(|j| EnqueuedEntry {
+                    job_id: j.job_id.map(|id| id.to_string()),
+                    state: j.state,
+                    approval_id: j.approval_id.map(|id| id.to_string()),
+                    deduplicated: j.deduplicated,
+                    untrusted_planned_path: j.plan.and_then(|p| p.dest_path),
+                    error_code: j.error.map(|e| e.code.to_string()),
+                })
+                .collect(),
+            note: if result.dry_run {
+                "Nothing was created. Repeat without dry_run to start."
+            } else {
+                "Started. Call zeus_wait with the job ids; entries with an approval_id wait for the user."
+            },
+        })
+    }
+
+    async fn status(&self, args: StatusArgs) -> ToolResult<JobsOutput> {
+        if let Some(id) = &args.job_id {
+            let job_id = parse_job_id(id)?;
+            let result = self
+                .rpc::<JobsGet>(JobsGetParams {
+                    job_id,
+                    reveal_urls: false,
+                })
+                .await?;
+            return Ok(JobsOutput {
+                jobs: vec![JobBrief::from_view(&result.job)],
+                timed_out: None,
+            });
+        }
+        let limit = args.limit.unwrap_or(10).clamp(1, 50);
+        let page = self
+            .rpc::<JobsList>(JobsListParams {
+                page: PageRequest {
+                    limit: Some(limit),
+                    cursor: None,
+                },
+                ..Default::default()
+            })
+            .await?;
+        Ok(JobsOutput {
+            jobs: page.items.iter().map(JobBrief::from_summary).collect(),
+            timed_out: None,
+        })
+    }
+
+    async fn wait(&self, args: WaitArgs) -> ToolResult<JobsOutput> {
+        if args.job_ids.is_empty() || args.job_ids.len() > 20 {
+            return Err(ToolOutcome::invalid("job_ids must hold 1 to 20 entries"));
+        }
+        let job_ids = args
+            .job_ids
+            .iter()
+            .map(|id| parse_job_id(id))
+            .collect::<ToolResult<Vec<_>>>()?;
+        let seconds = args.timeout_s.unwrap_or(30).clamp(1, MAX_WAIT_S);
+        let until = match args.until {
+            WaitUntilArg::SettledOrBlocked => WaitUntil::SettledOrBlocked,
+            WaitUntilArg::AllFinal => WaitUntil::AllTerminal,
+            WaitUntilArg::AnyChange => WaitUntil::AnyChange,
+        };
+        let result = self
+            .rpc::<JobsWait>(JobsWaitParams {
+                job_ids,
+                until,
+                timeout_ms: u64::from(seconds) * 1000,
+            })
+            .await?;
+        Ok(JobsOutput {
+            jobs: result.jobs.iter().map(JobBrief::from_summary).collect(),
+            timed_out: Some(result.timed_out),
+        })
+    }
+
+    async fn control(&self, args: ControlArgs) -> ToolResult<ControlOutput> {
+        check_key(&args.idempotency_key)?;
+        let action = match args.action {
+            ControlActionArg::Pause => ControlAction::Pause,
+            ControlActionArg::Resume => ControlAction::Resume,
+            ControlActionArg::Cancel => ControlAction::Cancel,
+            ControlActionArg::Retry => ControlAction::Retry,
+            ControlActionArg::RetryNow => ControlAction::RetryNow,
+            ControlActionArg::Reprioritize => ControlAction::Reprioritize,
+        };
+        if (action == ControlAction::Reprioritize) != args.priority.is_some() {
+            return Err(ToolOutcome::invalid(
+                "priority is required for reprioritize and not allowed otherwise",
+            ));
+        }
+        let priority = args.priority.map(|p| match p {
+            PriorityArg::Low => Priority::Low,
+            PriorityArg::Normal => Priority::Normal,
+            PriorityArg::High => Priority::High,
+        });
+        let result = self
+            .rpc::<JobsControl>(JobsControlParams {
+                job_id: parse_job_id(&args.job_id)?,
+                action,
+                priority,
+                idempotency_key: Some(args.idempotency_key),
+            })
+            .await?;
+        Ok(ControlOutput {
+            job: JobBrief::from_summary(&result.job),
+        })
+    }
+
+    async fn verify(&self, args: VerifyArgs) -> ToolResult<VerifyOutput> {
+        let expected = args
+            .expected_sha256
+            .as_deref()
+            .map(|h| {
+                Hex256::from_hex(h)
+                    .map_err(|_| ToolOutcome::invalid("expected_sha256 must be 64 hex digits"))
+            })
+            .transpose()?;
+        let result = self
+            .rpc::<JobsVerify>(JobsVerifyParams {
+                job_id: parse_job_id(&args.job_id)?,
+                expected_sha256: expected,
+            })
+            .await?;
+        Ok(VerifyOutput {
+            sha256: result.sha256.to_hex(),
+            size_bytes: result.size_bytes,
+            matches_recorded: result.matches_recorded,
+            matches_expected: result.matches_expected,
+            untrusted_detected_type: result.detected_mime,
+            quarantined: result.quarantined,
+            quarantine_reasons: result.quarantine_reasons.iter().map(wire_name).collect(),
+        })
+    }
+
+    async fn session_list(&self, args: SessionListArgs) -> ToolResult<SessionListOutput> {
+        let page = self
+            .rpc::<SessionsList>(SessionsListParams {
+                page: PageRequest {
+                    limit: Some(50),
+                    cursor: None,
+                },
+                origin: parse_origin_opt(args.origin.as_deref())?,
+                include_inactive: args.include_inactive,
+            })
+            .await?;
+        Ok(SessionListOutput {
+            grants: page
+                .items
+                .iter()
+                .map(|g| GrantBrief {
+                    grant_id: g.id.to_string(),
+                    origin: g.origin.to_string(),
+                    scope: wire_name(&g.scope),
+                    state: wire_name(&g.state),
+                    expires_at: g.expires_at.map(|t| t.to_rfc3339()),
+                    uses: g.uses,
+                })
+                .collect(),
+        })
+    }
+
+    async fn session_request(&self, args: SessionRequestArgs) -> ToolResult<SessionRequestOutput> {
+        check_key(&args.idempotency_key)?;
+        if args.reason.trim().is_empty() || args.reason.chars().count() > 280 {
+            return Err(ToolOutcome::invalid("reason must be 1 to 280 characters"));
+        }
+        let scope = match args.scope {
+            ScopeArg::Once => GrantScopeHint::Once,
+            ScopeArg::Site => GrantScopeHint::Site,
+            ScopeArg::Workflow => GrantScopeHint::Workflow,
+        };
+        let result = self
+            .rpc::<SessionsRequest>(SessionsRequestParams {
+                origin: parse_origin(&args.origin)?,
+                scope,
+                reason: args.reason,
+                job_id: args.job_id.as_deref().map(parse_job_id).transpose()?,
+                run_id: None,
+                idempotency_key: Some(args.idempotency_key),
+            })
+            .await?;
+        let status = wire_name(&result.status);
+        let note = match status.as_str() {
+            "already_granted" => "A grant already covers this site. Go ahead with zeus_enqueue.",
+            "pending_user_approval" => {
+                "A person must approve this in their browser or terminal. You cannot. Check with zeus_status or zeus_wait."
+            }
+            _ => {
+                "The user has blocked this site. Do not ask again; use open_in_browser guidance instead."
+            }
+        };
+        Ok(SessionRequestOutput {
+            status,
+            grant_id: result.grant_id.map(|g| g.to_string()),
+            approval_id: result.approval_id.map(|a| a.to_string()),
+            expires_at: result.expires_at.map(|t| t.to_rfc3339()),
+            note,
+        })
+    }
+
+    async fn files_list(&self, args: FilesListArgs) -> ToolResult<FilesOutput> {
+        let limit = args.limit.unwrap_or(50).clamp(1, 100);
+        let page = self
+            .rpc::<FilesList>(zeus_api::methods::files::FilesListParams {
+                page: PageRequest {
+                    limit: Some(limit),
+                    cursor: None,
+                },
+                dir: args.dir,
+                recursive: args.recursive,
+                include_partial: false,
+            })
+            .await?;
+        Ok(FilesOutput {
+            truncated: page.next_cursor.is_some(),
+            files: page
+                .items
+                .into_iter()
+                .map(|f| FileBrief {
+                    untrusted_path: f.path,
+                    size_bytes: f.size_bytes,
+                    sha256: f.sha256.map(|h| h.to_hex()),
+                    quarantined: f.quarantined,
+                    job_id: f.job_id.map(|j| j.to_string()),
+                    untrusted_source: f.source_url_redacted.map(|u| u.to_string()),
+                })
+                .collect(),
+        })
+    }
+}
+
+/// The snake_case wire spelling of a serde enum value.
+fn wire_name<T: Serialize>(value: &T) -> String {
+    serde_json::to_value(value)
+        .ok()
+        .and_then(|v| v.as_str().map(str::to_string))
+        .unwrap_or_default()
+}
+
+fn argument_error(error: &serde_json::Error) -> String {
+    // serde messages for values can echo the offending value; only field-name messages are passed on.
+    let text = error.to_string();
+    if text.starts_with("missing field") || text.starts_with("unknown field") {
+        text.split(" at line")
+            .next()
+            .unwrap_or("invalid arguments")
+            .to_string()
+    } else {
+        "arguments do not match the tool's input schema".to_string()
+    }
+}
+
+fn check_key(key: &str) -> ToolResult<()> {
+    if key.is_empty() || key.chars().count() > 128 {
+        Err(ToolOutcome::invalid(
+            "idempotency_key must be 1 to 128 characters",
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+fn parse_url(text: &str) -> ToolResult<HttpUrl> {
+    HttpUrl::parse(text).map_err(|_| ToolOutcome::invalid("url must be an absolute http(s) URL"))
+}
+
+fn parse_origin(text: &str) -> ToolResult<Origin> {
+    Origin::parse(text).map_err(|_| {
+        ToolOutcome::invalid(
+            "origin must look like https://host (no path, query or trailing slash)",
+        )
+    })
+}
+
+fn parse_origin_opt(text: Option<&str>) -> ToolResult<Option<Origin>> {
+    text.map(parse_origin).transpose()
+}
+
+fn parse_job_id(text: &str) -> ToolResult<JobId> {
+    text.parse::<JobId>()
+        .map_err(|_| ToolOutcome::invalid("job_id must look like job_<26 characters>"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    use async_trait::async_trait;
+    use serde_json::json;
+    use tokio::sync::broadcast;
+    use zeus_api::ApiResult;
+    use zeus_api::error::codes;
+    use zeus_api::jsonrpc::Notification;
+    use zeus_api::kind::{ClientKind, ClientRole};
+    use zeus_api::methods::daemon::{AuthenticateResult, ConnectionLimits};
+
+    /// Records calls and answers from a script keyed by method name.
+    struct Fake {
+        calls: Mutex<Vec<(String, Value)>>,
+        answers: Mutex<std::collections::HashMap<String, ApiResult<Value>>>,
+        session: AuthenticateResult,
+        tx: broadcast::Sender<Notification>,
+    }
+
+    impl Fake {
+        fn new() -> Arc<Self> {
+            let (tx, _) = broadcast::channel(4);
+            Arc::new(Self {
+                calls: Mutex::default(),
+                answers: Mutex::default(),
+                session: AuthenticateResult {
+                    client_id: "cli_x".into(),
+                    kind: ClientKind::Agent,
+                    role: ClientRole::Mcp,
+                    permissions: vec![],
+                    limits: ConnectionLimits::STANDARD,
+                    connection_id: zeus_types::IdGenerator::new().connection_id(),
+                },
+                tx,
+            })
+        }
+
+        fn answer(&self, method: &str, result: ApiResult<Value>) {
+            self.answers.lock().unwrap().insert(method.into(), result);
+        }
+
+        fn last(&self) -> (String, Value) {
+            self.calls
+                .lock()
+                .unwrap()
+                .last()
+                .cloned()
+                .expect("a call was made")
+        }
+    }
+
+    #[async_trait]
+    impl Client for Fake {
+        async fn call_raw(&self, method: &str, params: Value) -> ApiResult<Value> {
+            self.calls.lock().unwrap().push((method.into(), params));
+            self.answers
+                .lock()
+                .unwrap()
+                .get(method)
+                .cloned()
+                .unwrap_or_else(|| Err(ApiError::not_implemented("fake")))
+        }
+
+        fn notifications(&self) -> broadcast::Receiver<Notification> {
+            self.tx.subscribe()
+        }
+
+        fn session(&self) -> &AuthenticateResult {
+            &self.session
+        }
+    }
+
+    const JOB: &str = "job_01M45NHJ2AHWMXT8JVJ7BEEJX7";
+    const KEY: &str = "intent-1";
+
+    #[tokio::test]
+    async fn unknown_tools_are_protocol_errors_and_bad_arguments_are_tool_errors() {
+        let tools = ZeusTools::new(Fake::new());
+        assert!(tools.call("zeus_nope", json!({})).await.is_err());
+        let outcome = tools
+            .call("zeus_enqueue", json!({ "urls": ["https://a.example/x"] }))
+            .await
+            .unwrap();
+        assert!(outcome.is_error());
+        assert!(outcome.text().starts_with("api.invalid_params: "));
+        assert!(outcome.text().contains("idempotency_key"));
+        let outcome = tools
+            .call("zeus_wait", json!({ "job_ids": ["ZEUS-CANARY-bad"] }))
+            .await
+            .unwrap();
+        assert!(!outcome.text().contains("ZEUS-CANARY"));
+    }
+
+    #[tokio::test]
+    async fn enqueue_maps_arguments_and_never_sends_a_source() {
+        let fake = Fake::new();
+        fake.answer(
+            "jobs.enqueue",
+            Ok(json!({ "dry_run": false, "jobs": [{ "job_id": JOB, "state": "queued", "deduplicated": false }] })),
+        );
+        let tools = ZeusTools::new(Arc::clone(&fake));
+        let outcome = tools
+            .call("zeus_enqueue", json!({ "urls": ["https://files.example.com/a.zip"], "idempotency_key": KEY, "priority": "high" }))
+            .await
+            .unwrap();
+        assert!(!outcome.is_error(), "{}", outcome.text());
+        let (method, params) = fake.last();
+        assert_eq!(method, "jobs.enqueue");
+        assert_eq!(params["idempotency_key"], KEY);
+        assert_eq!(params["jobs"][0]["priority"], "high");
+        assert!(params["jobs"][0].get("source").is_none());
+        let structured = outcome.structured();
+        assert_eq!(structured["jobs"][0]["job_id"], JOB);
+    }
+
+    #[tokio::test]
+    async fn enqueue_validates_before_calling_the_daemon() {
+        let fake = Fake::new();
+        let tools = ZeusTools::new(Arc::clone(&fake));
+        for bad in [
+            json!({ "urls": [], "idempotency_key": KEY }),
+            json!({ "urls": ["ftp://x/y"], "idempotency_key": KEY }),
+            json!({ "urls": ["https://a/1", "https://a/2"], "filename": "x", "idempotency_key": KEY }),
+            json!({ "urls": ["https://a/1"], "expected_sha256": "nothex", "idempotency_key": KEY }),
+            json!({ "urls": ["https://a/1"], "idempotency_key": "" }),
+        ] {
+            assert!(tools.call("zeus_enqueue", bad).await.unwrap().is_error());
+        }
+        assert!(
+            fake.calls.lock().unwrap().is_empty(),
+            "invalid input must not reach the daemon"
+        );
+    }
+
+    #[tokio::test]
+    async fn wait_clamps_the_timeout_to_sixty_seconds() {
+        let fake = Fake::new();
+        fake.answer(
+            "jobs.wait",
+            Ok(json!({ "jobs": [], "timed_out": true, "head_seq": 0 })),
+        );
+        let tools = ZeusTools::new(Arc::clone(&fake));
+        let outcome = tools
+            .call("zeus_wait", json!({ "job_ids": [JOB], "timeout_s": 3600 }))
+            .await
+            .unwrap();
+        assert!(!outcome.is_error(), "{}", outcome.text());
+        assert_eq!(fake.last().1["timeout_ms"], 60_000);
+        assert_eq!(outcome.structured()["timed_out"], true);
+        tools
+            .call("zeus_wait", json!({ "job_ids": [JOB], "timeout_s": 0 }))
+            .await
+            .unwrap();
+        assert_eq!(fake.last().1["timeout_ms"], 1000);
+    }
+
+    #[tokio::test]
+    async fn daemon_errors_become_tool_errors_with_recovery_hints() {
+        let fake = Fake::new();
+        let envelope =
+            ErrorEnvelope::from_code(zeus_types::codes::POLICY_ORIGIN_NEVER, "origin is blocked");
+        fake.answer("sessions.request", Err(ApiError::from(envelope)));
+        let tools = ZeusTools::new(Arc::clone(&fake));
+        let outcome = tools
+            .call(
+                "zeus_session_request",
+                json!({ "origin": "https://portal.example.org", "scope": "site", "reason": "needs the export", "idempotency_key": KEY }),
+            )
+            .await
+            .unwrap();
+        assert!(outcome.is_error());
+        assert_eq!(outcome.text(), "policy.origin_never: origin is blocked");
+        assert_eq!(outcome.structured()["next"]["action"], "ask_user");
+        assert_eq!(outcome.structured()["class"], "policy_denied");
+    }
+
+    #[tokio::test]
+    async fn session_request_cannot_ask_for_never_and_says_only_a_person_can_approve() {
+        let fake = Fake::new();
+        fake.answer("sessions.request", Ok(json!({ "status": "pending_user_approval", "approval_id": "ap_01M45NHJ3XS0QXG9T42HHN2YR8" })));
+        let tools = ZeusTools::new(Arc::clone(&fake));
+        let never = tools
+            .call("zeus_session_request", json!({ "origin": "https://p.example", "scope": "never", "reason": "x", "idempotency_key": KEY }))
+            .await
+            .unwrap();
+        assert!(never.is_error());
+        let ok = tools
+            .call("zeus_session_request", json!({ "origin": "https://p.example", "scope": "once", "reason": "x", "idempotency_key": KEY }))
+            .await
+            .unwrap();
+        assert_eq!(ok.structured()["status"], "pending_user_approval");
+        assert!(
+            ok.structured()["note"]
+                .as_str()
+                .unwrap()
+                .contains("You cannot")
+        );
+        assert_eq!(fake.last().1["scope"], "once");
+    }
+
+    #[tokio::test]
+    async fn status_without_an_id_lists_recent_jobs_with_a_small_page() {
+        let fake = Fake::new();
+        fake.answer("jobs.list", Ok(json!({ "items": [], "next_cursor": null })));
+        let tools = ZeusTools::new(Arc::clone(&fake));
+        tools.call("zeus_status", json!({})).await.unwrap();
+        let (method, params) = fake.last();
+        assert_eq!(method, "jobs.list");
+        assert_eq!(params["page"]["limit"], 10);
+        tools
+            .call("zeus_status", json!({ "limit": 500 }))
+            .await
+            .unwrap();
+        assert_eq!(fake.last().1["page"]["limit"], 50);
+    }
+
+    #[tokio::test]
+    async fn reveal_urls_is_never_requested() {
+        let fake = Fake::new();
+        fake.answer("jobs.get", Err(ApiError::not_implemented("fake")));
+        let tools = ZeusTools::new(Arc::clone(&fake));
+        tools
+            .call("zeus_status", json!({ "job_id": JOB }))
+            .await
+            .unwrap();
+        assert_eq!(fake.last().1["reveal_urls"], false);
+        let _ = codes::NOT_IMPLEMENTED;
+    }
+}

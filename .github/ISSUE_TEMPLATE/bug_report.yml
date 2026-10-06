@@ -1,0 +1,42 @@
+name: Bug report
+description: Something does not work as specified
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do **not** use this form for security problems. Report those privately (see SECURITY.md).
+        Never paste cookies, tokens, signed URLs or personal data. Redact URLs to their origin and path.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, what you saw.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      description: Output of `zeus --version`, or the commit hash.
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options: [Windows, macOS, Linux, Other]
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant log lines
+      description: Logs are redacted by design; check before pasting anyway.
+      render: text

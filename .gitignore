@@ -1,0 +1,38 @@
+# Rust
+/target/
+**/*.rs.bk
+Cargo.lock.bak
+
+# Node tooling used by docs/spec/tools
+node_modules/
+
+# Local state, keys and secrets: never commit
+*.pem
+*.key
+*.p12
+*.pfx
+.env
+.env.*
+.keys/
+*.token
+credentials/
+
+# Editors and OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Build outputs
+dist/
+*.zpart
+*.redb
+
+# Scratch output of the research workflow (not part of the checker tools)
+tools/research-checks/_*
+tools/research-checks/*.pdf
+tools/research-checks/*.txt
+tools/research-checks/*.c
+tools/research-checks/*.bin
+tools/research-checks/scratch-*

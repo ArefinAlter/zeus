@@ -1,0 +1,154 @@
+//! `files.*`: listing and (later) organizing files under the write roots.
+//!
+//! Every mutation defaults to `dry_run: true`; deleting or overwriting needs an approval of kind `destructive_op`
+//! (01 section 5.3) and moves files to the application trash with an undo journal, never straight to unlink.
+
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+use zeus_types::{ApprovalId, Hex256, JobId, RedactedUrl, Timestamp};
+
+use crate::paging::{Page, PageRequest};
+
+/// `files.list` parameters.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct FilesListParams {
+    /// Paging.
+    #[serde(default)]
+    pub page: PageRequest,
+    /// A directory inside a write root. Absent: the default root.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dir: Option<String>,
+    /// Recurse into sub-directories.
+    #[serde(default)]
+    pub recursive: bool,
+    /// Include `.zpart` files of unfinished jobs.
+    #[serde(default)]
+    pub include_partial: bool,
+}
+
+/// One file with its provenance. Names are untrusted data (01 section 12.1).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct FileEntry {
+    /// Path relative to the write root.
+    pub path: String,
+    /// Size in bytes.
+    pub size_bytes: u64,
+    /// Last modification.
+    pub modified_at: Timestamp,
+    /// SHA-256 recorded when the file was completed by Zeus, if it was.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<Hex256>,
+    /// Zeus's quarantine flag.
+    pub quarantined: bool,
+    /// The job that produced the file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub job_id: Option<JobId>,
+    /// Where it came from, redacted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_url_redacted: Option<RedactedUrl>,
+}
+
+/// `files.list` result.
+pub type FilesListResult = Page<FileEntry>;
+
+/// One step of a file plan.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct FileStep {
+    /// `move`, `rename`, `convert` or `trash`.
+    pub op: String,
+    /// Source path relative to the root.
+    pub from: String,
+    /// Destination path relative to the root, for non-trash operations.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to: Option<String>,
+    /// Whether this step deletes or overwrites (needs approval to apply).
+    pub destructive: bool,
+}
+
+/// `files.organize` parameters.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct FilesOrganizeParams {
+    /// Directory inside a write root.
+    pub dir: String,
+    /// Rules, either a rule set or a natural-language instruction handled by the LLM ladder. Untrusted.
+    pub rules: serde_json::Value,
+    /// Plan only. **Default true.**
+    #[serde(default = "yes")]
+    pub dry_run: bool,
+    /// Idempotency key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idempotency_key: Option<String>,
+}
+
+fn yes() -> bool {
+    true
+}
+
+/// `files.organize` result.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct FilesOrganizeResult {
+    /// The plan.
+    pub steps: Vec<FileStep>,
+    /// Whether the plan was applied.
+    pub applied: bool,
+    /// The approval needed to apply destructive steps.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval_id: Option<ApprovalId>,
+}
+
+/// `files.convert` parameters.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct FilesConvertParams {
+    /// Inputs, relative to a write root.
+    pub inputs: Vec<String>,
+    /// Target extension without a dot.
+    pub target: String,
+    /// Plan only. **Default true.**
+    #[serde(default = "yes")]
+    pub dry_run: bool,
+    /// Idempotency key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idempotency_key: Option<String>,
+}
+
+/// `files.convert` result.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct FilesConvertResult {
+    /// Planned or performed conversions.
+    pub steps: Vec<FileStep>,
+    /// Converter name and version used, when applied.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool: Option<String>,
+    /// Whether anything was done.
+    pub applied: bool,
+}
+
+/// `files.undo` parameters.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct FilesUndoParams {
+    /// Identifier of the operation in the undo journal.
+    pub operation_id: String,
+}
+
+/// `files.undo` result.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct FilesUndoResult {
+    /// Steps reverted.
+    pub steps: Vec<FileStep>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mutations_default_to_dry_run() {
+        let organize: FilesOrganizeParams =
+            serde_json::from_value(serde_json::json!({"dir": "x", "rules": {}})).unwrap();
+        assert!(organize.dry_run);
+        let convert: FilesConvertParams =
+            serde_json::from_value(serde_json::json!({"inputs": ["a.docx"], "target": "pdf"}))
+                .unwrap();
+        assert!(convert.dry_run);
+    }
+}

@@ -1,0 +1,39 @@
+[package]
+name = "zeus-workflow"
+description = "Zeus workflow plan IR (v0), validator, dry-run planner and estimators"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+# `runtime` pulls in the HTML/JSON extraction engines. Wire-type consumers (zeus-api) disable it.
+default = ["runtime"]
+runtime = ["dep:scraper", "dep:jsonpath-rust", "dep:regex"]
+
+[dependencies]
+# core:begin
+zeus-types.workspace = true
+# core:end
+serde.workspace = true
+serde_json.workspace = true
+schemars.workspace = true
+thiserror.workspace = true
+url.workspace = true
+indexmap.workspace = true
+async-trait.workspace = true
+blake3.workspace = true
+scraper = { workspace = true, optional = true }
+jsonpath-rust = { workspace = true, optional = true }
+regex = { workspace = true, optional = true }
+
+[dev-dependencies]
+proptest.workspace = true
+jsonschema.workspace = true
+insta.workspace = true

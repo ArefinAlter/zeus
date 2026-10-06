@@ -1,0 +1,40 @@
+[package]
+name = "zeus-mcp"
+description = "Zeus MCP server library: the zeus_<verb> tool surface backed by the daemon API"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+default = []
+# Streamable HTTP transport (localhost only, bearer token, Origin validation). Off by default.
+http = ["rmcp/transport-streamable-http-server", "dep:axum", "dep:tower"]
+
+[dependencies]
+zeus-api.workspace = true
+# core:begin
+zeus-types.workspace = true
+# core:end
+rmcp.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+schemars.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tokio.workspace = true
+async-trait.workspace = true
+axum = { workspace = true, optional = true }
+tower = { workspace = true, optional = true }
+
+[dev-dependencies]
+proptest.workspace = true
+jsonschema.workspace = true
+insta.workspace = true
+tokio = { workspace = true, features = ["test-util"] }

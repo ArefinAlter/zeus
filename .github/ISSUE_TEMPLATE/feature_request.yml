@@ -1,0 +1,27 @@
+name: Feature request
+description: Propose a capability or a contract change
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: Who is affected and what are they trying to do?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: What should Zeus do? Mention any spec or ADR it would touch.
+    validations:
+      required: true
+  - type: textarea
+    id: safety
+    attributes:
+      label: Safety and privacy considerations
+      description: Does it touch sessions, approvals, file paths or what a model can see?
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
