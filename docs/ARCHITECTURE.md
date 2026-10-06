@@ -9,8 +9,9 @@ Contents: 1 Repositories and processes, 2 Crate map, 3 Trust boundaries, 4 Data 
 | Repository | Contents |
 |---|---|
 | `zeus` (this one) | Daemon `zeusd`, CLI `zeus` with TUI, MCP server, native-messaging host `zeus-native-host`, workflow engine, LLM provider ladder, A2A types, and the normative specs in `docs/spec`. |
-| `zeus-core` | The embeddable engine library: `zeus-types`, `zeus-control`, `zeus-fs`, `zeus-verify`, `zeus-journal`, `zeus-session`, `zeus-http`, `zeus-engine`. No daemon, no MCP, no UI. Cloned next to this repository and used by path dependency. |
+| `zeus-core` | The embeddable engine library: `zeus-types`, `zeus-control`, `zeus-fs`, `zeus-verify`, `zeus-journal`, `zeus-session`, `zeus-http`, `zeus-engine`. No daemon, no MCP, no UI. Cloned next to this repository and used by path dependency. It has a second first-party consumer, Ogun (ADR 0011), so its public API is a contract. |
 | `zeus-extension` | The Manifest V3 browser extension: trust-surface popup, download rescue, session oracle, in-browser fetch fallback. Keeps copies of the schemas it needs. |
+| `ogun` | A separate product: developer platform for data mining, data engineering and agent benchmarks. Embeds the `zeus-core` engine without sessions; reaches browser-session sources only as a `service` client of `zeusd` (ADR 0011). |
 
 ```mermaid
 flowchart LR
@@ -37,7 +38,7 @@ flowchart LR
 
 Process rules:
 
-1. `zeusd` is the only process with durable state and the only one that holds session material. It has **one** listener, the local IPC endpoint (ADR 0002, ADR 0010).
+1. `zeusd` is the only Zeus process with durable state, and the only process of Zeus or Ogun that holds session material. It has **one** listener, the local IPC endpoint (ADR 0002, ADR 0010).
 2. Everything else is a client of the daemon API: `zeus` (CLI, TUI, `zeus mcp`), `zeus-native-host`, future GUI, bridge processes.
 3. The binaries are `zeus`, `zeusd` and `zeus-native-host`. `zeus daemon start` launches `zeusd`; the installer registers `zeusd` for per-user autostart.
 
@@ -197,14 +198,15 @@ Before `daemon.authenticate` succeeds every other method fails with `api.not_aut
 | `agent` | `zeus mcp`, `zeus a2a serve`, any bridge, scripts given the agent credential | Observe and control jobs, enqueue, request sessions (creates an approval), read files list, audit and config (redacted), plan workflows. |
 | `human` | `zeus` on a tty, TUI, GUI, `zeus-native-host` relaying the extension popup | Everything an agent can do plus `approvals.decide`, `sessions.revoke`, `config.set`, `daemon.kill_switch`, LLM configuration. |
 | `admin` | `zeus` on a tty with the admin credential | Everything plus `daemon.shutdown` and credential management. |
+| `service` | First-party programs that use `zeusd` unattended; today only Ogun's `ogund` (ADR 0011) | The agent ceiling plus `files.roots.register`. Never human: everything human-only is refused exactly as for `agent`. |
 
-Roles describe the concrete client: `cli`, `tui`, `gui`, `native_host`, `mcp`, `a2a`, `embedded`, `test`. A credential fixes `(kind, role, permissions)`; the client cannot claim more in `daemon.hello` (the claimed role must equal the credential's, else the single authentication attempt fails). The daemon never infers kind from the claimed name. A role caps the kind a credential may hold: `mcp` and `a2a` at `agent`, `tui`, `gui` and `native_host` at `human`, `cli`, `embedded` and `test` at `admin`. A credential may narrow its permissions, never widen them beyond its kind's defaults (plus `nm.relay` for `native_host`).
+Roles describe the concrete client: `cli`, `tui`, `gui`, `native_host`, `mcp`, `a2a`, `service`, `embedded`, `test`. A credential fixes `(kind, role, permissions)`; the client cannot claim more in `daemon.hello` (the claimed role must equal the credential's, else the single authentication attempt fails). The daemon never infers kind from the claimed name. A role caps the kind a credential may hold: `mcp` and `a2a` at `agent`, `service` at `service`, `tui`, `gui` and `native_host` at `human`, `cli`, `embedded` and `test` at `admin`. A credential may narrow its permissions, never widen them beyond its kind's defaults (plus `nm.relay` for `native_host`).
 
-`zeusd init` (and `zeus daemon install`) provisions three credential files, owner-only, in `<state>/credentials/`: `cli.token` (kind `admin`, role `cli`, used by `zeus` and the TUI), `agent.token` (kind `agent`, role `mcp`, used by `zeus mcp` and bridges) and `host.token` (kind `human`, role `native_host`, used by `zeus-native-host`), plus the IPC secret `<state>/ipc.secret`. The daemon stores only a verifier derived from each token (`BLAKE3 derive_key`), never the token. These files are readable by any process of the same OS user: kinds separate *kinds of client*, they do not defend against same-user code, which is why a decision also needs channel evidence (ADR 0007).
+`zeusd init` (and `zeus daemon install`) provisions three credential files, owner-only, in `<state>/credentials/`: `cli.token` (kind `admin`, role `cli`, used by `zeus` and the TUI), `agent.token` (kind `agent`, role `mcp`, used by `zeus mcp` and bridges) and `host.token` (kind `human`, role `native_host`, used by `zeus-native-host`), plus the IPC secret `<state>/ipc.secret`. The daemon stores only a verifier derived from each token (`BLAKE3 derive_key`), never the token. No `service` credential exists by default: a human creates one with `zeus clients add --kind service --name <name>` (admin credential, tty), which writes `<state>/credentials/<name>.token` and prints where to point the service. Session use by a service client is bounded by grants that a human created on a trust surface. Every use is audited with the service's client id, and service clients have their own rate limits. These files are readable by any process of the same OS user: kinds separate *kinds of client*, they do not defend against same-user code, which is why a decision also needs channel evidence (ADR 0007).
 
-Permissions (`Permission`, dotted lowercase): `jobs.read`, `jobs.write`, `jobs.control`, `events.read`, `sessions.read`, `sessions.request`, `sessions.revoke`, `approvals.read`, `approvals.decide`, `files.read`, `files.write`, `workflows.plan`, `workflows.run`, `audit.read`, `config.read`, `config.write`, `llm.read`, `llm.configure`, `daemon.read`, `daemon.admin`, `kill_switch`, `nm.relay`. Each kind has a default set (`ClientKind::default_permissions`); a credential may be narrowed, never widened beyond its kind. The method policy table in `zeus_api::policy` is the single source for which method needs which permission, whether it mutates, whether it is human-only and whether it is MVP or later.
+Permissions (`Permission`, dotted lowercase): `jobs.read`, `jobs.write`, `jobs.control`, `events.read`, `sessions.read`, `sessions.request`, `sessions.revoke`, `approvals.read`, `approvals.decide`, `files.read`, `files.write`, `workflows.plan`, `workflows.run`, `audit.read`, `config.read`, `config.write`, `llm.read`, `llm.configure`, `daemon.read`, `daemon.admin`, `kill_switch`, `nm.relay`, `files.roots.register`. Each kind has a default set (`ClientKind::default_permissions`); a credential may be narrowed, never widened beyond its kind. The method policy table in `zeus_api::policy` is the single source for which method needs which permission, whether it mutates, whether it is human-only and whether it is MVP or later.
 
-Agent visibility is scoped: an agent sees only the approvals it caused (`requested_by` equals its client id) and never another client's idempotency keys.
+Agent and service visibility is scoped: such a client sees only the approvals it caused (`requested_by` equals its client id) and never another client's idempotency keys.
 
 ### 5.4 Method catalogue
 
@@ -217,14 +219,14 @@ MVP unless marked later.
 | `events` | `subscribe` (since_seq, type filter, job filter, progress interval), `unsubscribe` |
 | `sessions` | `list` (grants and lease counts, never material), `request` (raises an approval, never blocks on it), `revoke` (human) |
 | `approvals` | `list`, `get`, `decide` (human, channel evidence, request hash) |
-| `files` | `list`; later `organize` (dry run default), `convert`, `undo` |
+| `files` | `list`, `roots.register` (service: register a write root it owns, inside the user's allowed roots, so jobs it enqueues land there); later `organize` (dry run default), `convert`, `undo` |
 | `audit` | `tail`, `verify` |
 | `config` | `get`, `set` (human) |
 | `doctor` | `run` |
 | `nm` | `frame` (notification both ways, role `native_host` only) |
 | `workflows` | later: `plan`, `validate`, `dry_run`, `run`, `get`, `list`, `control`, `manifest` |
 | `llm` | later: `status`, `configure` (human) |
-| `clients` | later: `list`, `revoke` (admin) |
+| `clients` | later: `list`, `add` (admin; the only way to create a `service` credential), `revoke` (admin) |
 
 Server-to-client notifications: `events.event` (`{subscription_id, event}`), `events.lagged` (`{subscription_id, dropped, resume_from_seq}`), `daemon.stopping`, `nm.frame`.
 
@@ -242,7 +244,11 @@ Server-to-client notifications: `events.event` (`{subscription_id, event}`), `ev
 
 ## 6. Design for spec 06: MCP tools
 
-Nine MVP tools, each a thin projection of daemon methods (ADR 0003). Names, daemon methods and annotations:
+Nine MVP tools, each a thin projection of daemon methods (ADR 0003).
+
+**Protocol revision (finding of research doc 10, 2026-10-05).** MCP 2026-07-28 is final and stateless. It removes `initialize`, `Mcp-Session-Id`, the GET stream and SSE resumability. It carries the protocol version and client capabilities in every request's `_meta`, adds `server/discover`, and deprecates Sampling, Roots and Logging. `rmcp` 3.5.1 implements it and stays compatible with 2025-11-25. Spec 06 targets 2026-07-28 and decides how far 2025-11-25 clients are still served. Statements below that cite 2025-11-25 must be re-verified against 2026-07-28.
+
+Names, daemon methods and annotations:
 
 | Tool | Daemon method | Mutates | Annotations (read-only, destructive, idempotent, open-world) |
 |---|---|---|---|
@@ -296,7 +302,7 @@ See ADR 0008. Crate `zeus-llm`:
 | Rung | `ProviderKind` | Status in the skeleton |
 |---|---|---|
 | 1 | `host_agent` | Contract only (the agent answers through MCP). |
-| 2 | `mcp_sampling` | Contract only. |
+| 2 | `mcp_sampling` | Contract only. Sampling is deprecated in MCP 2026-07-28 (section 6), so this rung cannot serve background work; spec 09 decides whether it survives at all. |
 | 3 | `chatgpt_oauth` | Declared; facts to verify in spec 09. |
 | 4 | `cli_delegate` | Declared. |
 | 5 | `openrouter_oauth` | PKCE helper implemented (RFC 7636 test vector); endpoints to verify in spec 09. |

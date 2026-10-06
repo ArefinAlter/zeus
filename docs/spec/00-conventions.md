@@ -120,7 +120,7 @@ Entity identifiers are a lowercase prefix, an underscore and a 26 character ULID
 | `conn_` | Native-messaging connection | daemon | no | Per connection, for logs. |
 | `chain_` | Audit chain | daemon | yes | Identifies one hash chain (04). |
 
-Reserved for later specs: `plan_` (workflow plan), `cli_` (client credential id). A new prefix requires an entry in this table.
+Reserved for later specs: `plan_` (workflow plan), `cli_` (client credential id), `art_` (artifact, spec 13). Ogun (ADR 0011) registers its own prefixes here when its spec O-00 is written. A new prefix requires an entry in this table.
 
 Rules:
 
