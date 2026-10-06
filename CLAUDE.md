@@ -12,6 +12,7 @@ Zeus is a free, open-core (Apache-2.0), Rust, local-first session-aware download
 | `../zeus-core/` | Engine library crates (`zeus-types`, `-control`, `-fs`, `-verify`, `-journal`, `-session`, `-http`, `-engine`). Path dependencies from this workspace, and the engine Ogun embeds: its public API is a contract with two consumers. Never edit it from here without being asked. |
 | `../zeus-extension/` | MV3 TypeScript extension. |
 | `../ogun/` | Ogun: separate developer platform (data mining, data engineering, agent benchmarks) built on `zeus-core`; reaches browser sessions only as a `service` client of `zeusd`. Boundary: `docs/adr/0011-ogun-built-on-zeus-core.md`. Never edit it from here without being asked. |
+| `../zeus-site/`, `../ogun-site/` | Marketing websites and brand guidelines (`brand/BRAND.md`) for Zeus and Ogun. Static, dependency-free (`node build.mjs`). Never edit them from here without being asked. |
 
 ## Repo map
 
