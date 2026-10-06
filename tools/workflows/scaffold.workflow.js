@@ -10,12 +10,24 @@ export const meta = {
   ],
 }
 
-const APP = 'F:\\zeus'
-const CORE = 'F:\\zeus-core'
-const EXT = 'F:\\zeus-extension'
+// Machine profile (see tools/workflows/README.md). Nothing machine-specific is hard-coded: args.root is the folder that
+// holds the sibling repos zeus, zeus-core, zeus-extension and ogun (for example 'A:\\' or 'F:\\'). The script refuses to
+// run without it, so a run on the wrong machine cannot write into an unrelated drive.
+if (!args || !args.root) throw new Error("args.root is required: the folder holding the zeus repos, e.g. 'A:\\\\' (see tools/workflows/README.md)")
+const BASE = String(args.root).replace(/[\\/]+$/, '')
+const APP = BASE + '\\zeus'
+const CORE = BASE + '\\zeus-core'
+const EXT = BASE + '\\zeus-extension'
+const OGUN = BASE + '\\ogun'
+// Build settings for agents: args.buildCache (default <root>\zeus-build-cache), args.toolchain (a RUSTUP_TOOLCHAIN to force;
+// default: the repo's rust-toolchain.toml), args.buildJobs (default 3), args.machineNote (CPU, RAM and quirks shown to agents).
+const BUILD_CACHE = String(args.buildCache || BASE + '\\zeus-build-cache').replace(/[\\/]+$/, '')
+const TOOLCHAIN = args.toolchain ? String(args.toolchain) : ''
+const BUILD_JOBS = Number(args.buildJobs) > 0 ? Math.floor(Number(args.buildJobs)) : 3
+const MACHINE_NOTE = `- MACHINE: ${args.machineNote || 'Windows 11'}. Other agents may be building at the same time. Before ANY cargo command in PowerShell set: ${TOOLCHAIN ? `$env:RUSTUP_TOOLCHAIN='${TOOLCHAIN}'; ` : ''}$env:CARGO_TARGET_DIR='${BUILD_CACHE}\\<repo-folder-name>'; $env:CARGO_BUILD_JOBS='${BUILD_JOBS}'. NEVER run cargo from the Bash tool and do not change rustup defaults${/gnu/.test(TOOLCHAIN) ? '; if a C-heavy dependency such as aws-lc-sys fails on windows-gnu, use rustls with the ring provider' : ''}.`
 const SPEC = APP + '\\docs\\spec'
 // Folder with the spec validators and ajv (run `npm ci` in it first on a fresh clone). Override with args.sp.
-const SP = (args && args.sp) || 'F:\\zeus\\docs\\spec\\tools'
+const SP = args.sp || SPEC + '\\tools'
 // Resume control (see HANDOFF.md P1.0): args.skipTasks = labels of tasks that are already done on disk.
 const LITE = !!(args && args.lite)   // lean mode: default effort instead of high
 const HIGH = LITE ? undefined : 'high'
@@ -54,11 +66,11 @@ Crate/tool naming: crates zeus-*; binaries zeus (CLI), zeusd (daemon), zeus-nati
 Normative contracts live in ${SPEC} (markdown) and ${SPEC}\\schema (JSON Schema 2020-12). READ the ones relevant to your task before coding; they win over your assumptions. If a contract is wrong or missing something, make the smallest consistent fix IN the contract file and mention it in your summary (publicApiChanges).
 
 ENGINEERING STANDARDS
-- Rust: edition 2024, MSRV 1.90 (build with the 1.99.0 GNU toolchain: see the machine note). thiserror in libraries, anyhow only in binaries, tracing for logs, serde + schemars for wire types. #![forbid(unsafe_code)] everywhere except isolated, commented platform FFI modules. No todo!()/unimplemented!() in anything the specs require for the MVP; if something is genuinely deferred, gate it behind a cargo feature or return a typed NotImplemented error AND list it in knownGaps. Public items need doc comments; otherwise comments are sparse and explain WHY, never narrate. Match the surrounding code's idiom and density.
+- Rust: edition 2024, MSRV 1.90 (build with the toolchain set in the MACHINE line below). thiserror in libraries, anyhow only in binaries, tracing for logs, serde + schemars for wire types. #![forbid(unsafe_code)] everywhere except isolated, commented platform FFI modules. No todo!()/unimplemented!() in anything the specs require for the MVP; if something is genuinely deferred, gate it behind a cargo feature or return a typed NotImplemented error AND list it in knownGaps. Public items need doc comments; otherwise comments are sparse and explain WHY, never narrate. Match the surrounding code's idiom and density.
 - TypeScript: strict mode, no any, ESM, small modules, no runtime dependencies unless essential (the extension ships to a store and handles session cookies: minimal, auditable dependency surface).
 - Tests are part of the work: unit + property tests (proptest) for algorithms, integration tests for I/O. Everything you add must be green.
 - Quality gates before you finish (for the crates/packages you touched): cargo fmt, cargo clippy --all-targets -- -D warnings, cargo test (Rust); npm run typecheck, npm test, npm run build (TypeScript). Fix warnings instead of silencing them.
-- THIS MACHINE IS SMALL (Windows 11, 8 CPUs, 7.8 GB RAM) and other agents are building too. Before ANY cargo command in PowerShell set: $env:RUSTUP_TOOLCHAIN='1.99.0-x86_64-pc-windows-gnu' (the default MSVC toolchain cannot link on this machine; NEVER run cargo from the Bash tool; do not change rustup defaults; if a C-heavy dependency such as aws-lc-sys fails on windows-gnu use rustls with the ring provider), $env:CARGO_TARGET_DIR='F:\\zeus-build-cache\\<repo-folder-name>'; $env:CARGO_BUILD_JOBS='3'. Run one cargo command at a time, prefer cargo test -p <crate> / cargo clippy -p <crate> to whole-workspace runs until the integration phase, never cargo build --release unless asked. If a command blocks on 'file lock on build directory', just wait. If a dependency crate owned by another agent fails to compile because of their in-progress edit, wait a minute and retry; never edit crates you do not own (ownership is stated in your task).
+${MACHINE_NOTE} Run one cargo command at a time, prefer cargo test -p <crate> / cargo clippy -p <crate> to whole-workspace runs until the integration phase, never cargo build --release unless asked. If a command blocks on 'file lock on build directory', just wait. If a dependency crate owned by another agent fails to compile because of their in-progress edit, wait a minute and retry; never edit crates you do not own (ownership is stated in your task).
 - Cargo.toml hygiene: dependencies are declared in the root [workspace.dependencies]; crate manifests use workspace = true. Edit the root manifest with small targeted Edit calls, never rewrite it wholesale (other agents edit it too). Check current versions with cargo search or the crates.io API and read the actual crate docs/source (~/.cargo/registry after cargo fetch) because APIs changed since your training data (examples verified 2026-10-05: tokio 1.53, reqwest 0.13, rmcp 3.5, redb 4.3, clap 4.6, ratatui 0.30, blake3 1.8).
 - Windows is the primary dev OS here; code must also compile on Linux and macOS (cfg-gate platform code, keep it isolated; CI will check). Never write a secret, token or cookie value into any file, log line, panic message or test fixture that is real; use zeroize types for session material.
 - No telemetry. No network access at runtime except what a task explicitly specifies. Tests must be hermetic (local servers on 127.0.0.1:0 only).
@@ -70,7 +82,7 @@ FINISH by returning the structured summary (files changed, public API changes, c
 const SPECCOMMON = `
 You are writing NORMATIVE specification documents (RFC 2119 MUST/SHOULD/MAY) that three codebases will implement independently, so precision and internal consistency matter more than prose. Include: purpose, terminology, normative rules, tables (states, messages, errors), concrete JSON examples that validate against your schemas, sequence diagrams (mermaid) where interaction order matters, security considerations, versioning/compat rules, and an 'Open issues' list. JSON Schemas go in ${SPEC}\\schema (draft 2020-12, $id like https://zeus.invalid/schema/<name>), and every example in the markdown must validate against them (check with a small node script using the ajv npm package installed in ${SP}, or write your own validator invocation; do not leave unvalidated examples).
 Inputs: ${APP}\\research.md (original product research), and the research corpus in ${APP}\\docs\\research (Glob it; it is being written concurrently, so some files may be missing or in progress: use what exists, and do your own web verification for hard facts such as Chrome native-messaging limits, MCP spec tool-name rules, A2A schema, MV3 service-worker lifetimes). Earlier specs in ${SPEC} (00-04 at least) are authoritative vocabulary: do not redefine them, reference them by section.
-The app and core skeleton repos ALREADY EXIST with a defined Rust API surface and ADRs: before writing, read F:\zeus\docs\ARCHITECTURE.md, F:\zeus\docs\adr, F:\zeus\crates\<crate>\src (lib.rs and modules of the crates your spec concerns), F:\zeus-core\docs\ARCHITECTURE.md and F:\zeus-extension\docs (ARCHITECTURE, PERMISSIONS, THREAT_MODEL) so the spec matches what is already built; where code and your design disagree decide which is right, fix the other side in your summary notes (keyDecisions) and never leave them inconsistent.
+The app and core skeleton repos ALREADY EXIST with a defined Rust API surface and ADRs: before writing, read ${APP}\\docs\\ARCHITECTURE.md, ${APP}\\docs\\adr, ${APP}\\crates\\<crate>\\src (lib.rs and modules of the crates your spec concerns), ${CORE}\\docs\\ARCHITECTURE.md and ${EXT}\\docs (ARCHITECTURE, PERMISSIONS, THREAT_MODEL) so the spec matches what is already built; where code and your design disagree decide which is right, fix the other side in your summary notes (keyDecisions) and never leave them inconsistent.
 Use the exact vocabulary of 00-conventions.md and 01-domain-model.md (job states, error classes, ID formats, event names). Windows paths in prose are fine but specs must be OS-neutral where possible.
 `
 
