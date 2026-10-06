@@ -37,3 +37,4 @@ An ADR is required when a change affects a contract in `docs/spec`, a trust boun
 | 0008 | Bring-your-own-key with a provider ladder |
 | 0009 | Tauri for the later GUI |
 | 0010 | One local listener; HTTP surfaces are bridge processes |
+| 0011 | zeus-core is shared with Ogun; Zeus keeps its consumer scope |

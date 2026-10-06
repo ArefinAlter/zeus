@@ -4,13 +4,14 @@ Zeus is a free, open-core (Apache-2.0), Rust, local-first session-aware download
 
 > While `HANDOFF.md` exists at the repository root it describes the in-flight build and decisions already made; read it first and delete it (and this paragraph) before the repository goes public.
 
-## Three repositories, side by side
+## Repositories, side by side
 
 | Path | Role |
 |---|---|
 | `zeus/` (this repo) | App: `zeusd`, `zeus` CLI/TUI, MCP server, native host, workflows, LLM ladder, A2A types, `docs/spec`. |
-| `../zeus-core/` | Engine library crates (`zeus-types`, `-control`, `-fs`, `-verify`, `-journal`, `-session`, `-http`, `-engine`). Path dependencies from this workspace. Never edit it from here without being asked. |
+| `../zeus-core/` | Engine library crates (`zeus-types`, `-control`, `-fs`, `-verify`, `-journal`, `-session`, `-http`, `-engine`). Path dependencies from this workspace, and the engine Ogun embeds: its public API is a contract with two consumers. Never edit it from here without being asked. |
 | `../zeus-extension/` | MV3 TypeScript extension. |
+| `../ogun/` | Ogun: separate developer platform (data mining, data engineering, agent benchmarks) built on `zeus-core`; reaches browser sessions only as a `service` client of `zeusd`. Boundary: `docs/adr/0011-ogun-built-on-zeus-core.md`. Never edit it from here without being asked. |
 
 ## Repo map
 
@@ -32,8 +33,8 @@ Zeus is a free, open-core (Apache-2.0), Rust, local-first session-aware download
 ## Commands
 
 ```powershell
-# one cargo process at a time; small machine
-$env:CARGO_TARGET_DIR = 'F:\zeus-build-cache\zeus'; $env:CARGO_BUILD_JOBS = '3'
+# one cargo process at a time; the build cache sits next to the repos on any machine (jobs: 3 on 8 GB RAM, 8 on 32 GB)
+$env:CARGO_TARGET_DIR = '..\zeus-build-cache\zeus'; $env:CARGO_BUILD_JOBS = '3'
 # Windows without MSVC (see CONTRIBUTING.md): $env:RUSTUP_TOOLCHAIN = '1.99.0-x86_64-pc-windows-gnu'
 cargo fmt --all
 cargo clippy --workspace --all-targets -- -D warnings

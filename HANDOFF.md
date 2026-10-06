@@ -4,6 +4,30 @@ This file is for the next Claude Code session (or the user) resuming the Zeus bu
 
 ---
 
+## UPDATE 2 (2026-10-06, device A): read this block first
+
+**Two devices.** On device F (the original), the repos are on `F:\`; it has 8 CPUs and 7.8 GB RAM, and MSVC cannot link there, so it uses the GNU toolchain. On device A, the repos are `A:\zeus`, `A:\zeus-core`, `A:\zeus-extension` and `A:\ogun`; it has 16 CPUs, 32 GB RAM and MSVC Build Tools. Paths in the older sections below are device F's.
+- **The workflow scripts are machine-independent.** Every run must pass `args.root`, optionally with `buildCache`, `toolchain`, `buildJobs` and `machineNote`. A script refuses to start without `root`. `tools/workflows/README.md` holds both device profiles and an example. The commands in the older sections lack `root`, so merge the profile in.
+- **The build cache is relative** in `CLAUDE.md` (`..\zeus-build-cache\<repo>`). That is `F:\zeus-build-cache` on device F and `A:\zeus-build-cache` on device A.
+- **Device A state (2026-10-06):** `zeus-core` is checked out at `02ca260`. Rust stable 1.99.0 (MSVC, updated from 1.88) links here. Gates are green on device A: `cargo fmt --check`, `clippy -D warnings` and `cargo test` pass in `zeus-core` (227 passed, 1 ignored) and `zeus` (263 passed), with jobs = 8. The extension's npm gates were not re-run on device A. `gh` has the `workflow` scope here, but the three `ci.yml` files exist only on device F. The git identity here is `arefinalter@gmail.com`.
+- **Line endings:** git has `core.autocrlf=true` on device A, so checkouts had CRLF, which `rustfmt` (`newline_style = "Unix"`) rejects. `.gitattributes` now pins `eol=lf` in `zeus`, `zeus-core` and `ogun`, and the working trees were converted to LF.
+
+**Ogun** (decided 2026-10-06; earlier working name Hephaestus) is a separate developer platform for data mining, data engineering and agent benchmarking, built on `zeus-core`. Repo: `ArefinAlter/ogun` (private, docs only). Decisions:
+- The Zeus app keeps its full original scope: spec 08 including conversion, spec 09 LLM ladder, spec 10 A2A, the ADR 0009 GUI.
+- Ogun embeds the engine with a null session provider and reaches browser sessions only through `zeusd`, as a client of the new kind `service`.
+- Each product owns its GUI, LLM ladder, A2A and approvals.
+- The artifact and CAS format becomes a `zeus-core` library (new spec 13). Shared code moves to `zeus-core` by ADR when a second consumer needs it.
+
+Records: Zeus ADR 0011 (Accepted), Ogun ADR 0002 (Accepted), Ogun ADRs 0003 to 0005 (Proposed).
+
+**Next.** One segment at a time; commit, push, stop and ask after each.
+1. Commit the Zeus changes from this session (ADR 0011, `CLAUDE.md`, this block, the workflow scripts and their README, `.gitattributes`) and the `zeus-core` `.gitattributes`.
+2. By hand, small: add the `service` row and `files.roots.register` to `docs/ARCHITECTURE.md` section 5.3; note in section 1 that `zeus-core` has two consumers; add the `art_` prefix to spec 00.
+3. **S1**: specs 05 to 08 (original scope plus the service kind) and the new spec 13.
+4. **I1 → I2 → I3** (core crates through `zeus-engine`): the critical path for both products.
+5. **Ogun O0** (specs O-00 to O-03) after S1. Ogun research OR1 to OR4 is interleaved with Zeus R2 to R5.
+6. **S2** (specs 09 to 12): unchanged.
+
 ## UPDATE (2026-10-05, about 21:30 local): read this block first; it supersedes parts of section 0/P0 below
 
 1. **The first two workflows died** at the 5-hour usage limit (every in-flight agent failed; limit reset 15:40). The surviving output was committed: `ArefinAlter/zeus` has 4 commits on `main` (research.md, 5 draft research docs, spec 00-04 + schemas, tools + this file).
