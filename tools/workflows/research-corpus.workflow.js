@@ -20,6 +20,7 @@ const LITE = !!(args && args.lite)   // lean mode: shorter docs, fewer tool call
 const HIGH = LITE ? undefined : 'high'
 const PRIORITY = ['browser-session-handoff-and-extension-platform', 'browser-download-internals', 'mcp-protocol-and-tool-design', 'agent-security-prompt-injection-and-mcp-threats', 'math-throughput-concurrency-congestion', 'trust-surface-approvals-and-gui-architecture', 'llm-provider-auth-routing-and-local-models', 'filesystems-and-file-management-semantics', 'a2a-and-agent-interoperability-protocols', 'auth-bot-defenses-and-ethical-fidelity', 'legal-ethical-and-policy-landscape', 'rust-ecosystem-and-architecture-survey', 'agentic-browsers-and-web-agent-research', 'scraping-crawling-and-extraction-research', 'workflow-engine-dsl-and-durable-execution', 'conversion-parsing-and-sandboxed-pipelines', 'provenance-dataset-and-content-governance-standards', 'terminal-orchestration-and-cli-tui-design', 'desktop-os-integration-packaging-distribution', 'testing-verification-and-benchmarking-methodology', 'competitor-and-reference-implementation-teardowns', 'llm-data-mining-pipelines-and-dataset-formats', 'business-model-licensing-and-open-core-strategy']
 const prio = (d) => { const i = PRIORITY.indexOf(d.slug); return i < 0 ? 999 : i }
+const ONLY = (args && args.only) ? new Set(args.only) : null   // segment control: run just these slugs
 const SKIP = new Set((args && args.skip) || [])
 const VERIFY_ONLY = new Set((args && args.verifyOnly) || [])
 
@@ -457,6 +458,7 @@ async function researchThenVerify(docs, phaseR, phaseV) {
     },
     async (s, d) => {
       if (!s) return null
+      if (args && args.noVerify) return { slug: d.slug, file: d.file, title: d.title, summary: s, verify: null }
       let v = await agent(verifyPrompt(d, s), { label: 'verify:' + d.slug, phase: phaseV, schema: VERIFY, effort: HIGH })
       if (v && v.verdict === 'needs-rewrite') {
         log('repairing ' + d.slug)
@@ -470,7 +472,7 @@ async function researchThenVerify(docs, phaseR, phaseV) {
 
 // ---------- Run: research + verify for all docs, audits in parallel ----------
 phase('Research')
-const TODO = DOCS.filter(d => !SKIP.has(d.slug)).sort((a, b) => prio(a) - prio(b))
+const TODO = DOCS.filter(d => !SKIP.has(d.slug) && (!ONLY || ONLY.has(d.slug))).sort((a, b) => prio(a) - prio(b))
 const [results, audits] = await Promise.all([
   researchThenVerify(TODO, 'Research', 'Verify'),
   (args && args.skipAudits) ? Promise.resolve([]) : parallel(AUDITS.map(a => () => agent(a.prompt, { label: 'audit:' + a.slug, phase: 'Audit', schema: AUDIT_SUMMARY, effort: HIGH }))),
@@ -520,7 +522,7 @@ if (gaps && gaps.newDocs && gaps.newDocs.length) {
 // ---------- Index ----------
 phase('Index')
 const allDocs = done.concat(gapResults)
-const index = await agent(`You are the corpus editor. All research docs are in ${ROOT} (files named NN-*.md plus 00a/00b audit docs). Today is 2026-10-05.
+const index = (args && args.noIndex) ? null : await agent(`You are the corpus editor. All research docs are in ${ROOT} (files named NN-*.md plus 00a/00b audit docs). Today is 2026-10-05.
 Create two files with the Write tool:
 1. ${ROOT}\\README.md: the corpus index. Contents: purpose and scope (Zeus; formerly "Zeus" in research.md, link to ../../research.md as the original market/product research); how to read it (reading orders: 'I'm building the engine', 'I'm building the extension', 'I'm building agent integrations', 'I'm assessing risk/legal/business'); a table of every doc with a 2-3 sentence abstract (read each doc's TL;DR with Grep/Read - do not guess), status and confidence from front matter; a 'Top 40 design decisions and where they are justified' table (decision | doc | evidence strength) distilled from the 'Implications for Zeus' sections; a consolidated 'Corrections to research.md' list (from the docs and the 00a/00b audits); a glossary of the 40 most important terms; conventions (citation keys, confidence tags, front matter statuses); and 'How to re-verify' (the refcheck/mdcheck approach described in plain words; copy the two scripts from ${SP} into a new folder F:\\zeus\\tools\\research-checks\\ with a short README there).
 2. ${ROOT}\\references.md: a consolidated bibliography GENERATED PARTLY BY SCRIPT: write a node script in ${SP} that scans all docs for arXiv IDs and RFC numbers, fetches official metadata (reuse logic from refcheck.mjs), and emits markdown tables: (a) RFCs: number | title | status | obsoleted-by | cited in docs; (b) arXiv papers: id | title | first author | year | cited in docs; flag any ID whose official title does not plausibly match the surrounding text (list those separately for manual fix and FIX them in the docs). Also add (c) a table of non-RFC standards and specs (W3C/WHATWG/BEP/ISO/etc.) by scanning the References sections, and (d) key repositories. Run it and paste/commit the generated output into references.md. Also copy the generator script to F:\\zeus\\tools\\research-checks\\build-references.mjs.

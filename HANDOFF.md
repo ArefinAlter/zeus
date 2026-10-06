@@ -22,6 +22,32 @@ This file is for the next Claude Code session (or the user) resuming the Zeus bu
 6. **Contract gaps reported by the extension agent** (apply to spec 02 and its schema, then re-sync `F:\zeus-extension\schema` with `npm run sync:schema` and the Rust side): (a) spec 02 section 13.1 item 6 lists `cookies` as a declared permission but it must be an optional permission only; (b) `url.refresh.request` and `fetch.range` carry no `grant_id` and none of the session requests carries `run_id`: add optional `grant_id` and `run_id`; (c) register an error code `session.replayed` for a replayed `session_id` (extension used `nm.conflict`); (d) document that a `fetch.range` rejected before `fetch.head` is answered with `fetch.error` carrying `re`; (e) optional host patterns are `https://*/*`, `http://localhost/*`, `http://127.0.0.1/*` (`[::1]` omitted: IPv6 match-pattern support unverified); (f) specs 05-12 and research docs 07/08 were missing when the extension was built: re-check `THREAT_MODEL.md` against SI numbers once spec 12 exists. Known extension gaps: never run in a real Chrome/Firefox, `web-ext lint` not run, deciding approvals from notification buttons not implemented, Firefox alarm/event-page behaviour with an open native port untested.
 7. **Citation check of the 5 old research docs:** 170 arXiv/RFC citations exist, 0 missing. Doc 02 cites RFC 8446 (TLS 1.3), which is now superseded by RFC 9846: update it. Claim-level verification still pending (the lean run's verifyOnly stage does it).
 
+## SEGMENT PLAN (supersedes item 2 of the update above; written 2026-10-06 08:40)
+
+**Why segments:** the two lean fan-outs launched at ~21:30 on 2026-10-05 hit the usage limit again within ~25 minutes (about 3.7M subagent tokens, zero finished agents; limit reset 12:10am). Roughly 4M to 6M subagent tokens per hour exhausts a window. The user asked (2026-10-06): "do the big fan outs in small segments". **Rule: run ONE segment at a time (2 to 6 agents), commit + push when it lands, then start the next. If a segment's agents all fail with "session limit", stop and wait for the reset.**
+All commands below are `Workflow({scriptPath, args})`; `R` = `F:\zeus\tools\workflows\research-corpus.workflow.js`, `S` = `F:\zeus\tools\workflows\scaffold.workflow.js`. Every run adds `lite: true`; research writing segments (R1-R5) add `noCritic: true, noIndex: true, skipAudits: true, noVerify: true` (verification happens in separate V segments with `verifyOnly`). `only` limits a research run to the listed slugs.
+
+| # | Segment | How | Cost guess |
+|---|---|---|---|
+| 1 | Resume core + app skeleton subagents (ids `a12eed114fcf76a63`, `a209f608dd7d4f1c8`) via SendMessage; then I verify gates, commit, push | done by hand | small |
+| 2 | **R1** research: `browser-session-handoff-and-extension-platform`, `browser-download-internals`, `mcp-protocol-and-tool-design`, `llm-provider-auth-routing-and-local-models` | R, `only: [those 4]` | ~2M |
+| 3 | **S1** specs 05-08 | S, `stopAfter: "specs"`, `skipTasks`: kernel, skeleton:core, skeleton:extension, spec:09-llm-provider, spec:10-a2a, spec:11-cli, spec:12-security | ~2M |
+| 4 | **R2**: `math-throughput-concurrency-congestion`, `filesystems-and-file-management-semantics`, `a2a-and-agent-interoperability-protocols`, `auth-bot-defenses-and-ethical-fidelity` | R, `only` | ~2M |
+| 5 | **S2** specs 09-12 | S, `stopAfter: "specs"`, skip the other labels | ~2M |
+| 6 | **I1** core leaf crates: `core:zeus-control`, `core:zeus-fs`, `core:zeus-verify`, `core:zeus-journal`, `core:zeus-session` | S without `stopAfter`, `skipTasks` = everything except these five | ~4M, may need 2 windows |
+| 7 | **R3**: `legal-ethical-and-policy-landscape`, `rust-ecosystem-and-architecture-survey`, `agentic-browsers-and-web-agent-research`, `scraping-crawling-and-extraction-research` | R, `only` | ~2M |
+| 8 | **I2** `core:zeus-http`, then **I3** `core:zeus-engine` (sequential) | S, skip all but one at a time | ~2M each |
+| 9 | **R4**: `workflow-engine-dsl-and-durable-execution`, `conversion-parsing-and-sandboxed-pipelines`, `provenance-dataset-and-content-governance-standards`, `terminal-orchestration-and-cli-tui-design` | R, `only` | ~2M |
+| 10 | **I4** app leaves A: `app:zeus-api`, `app:zeus-mcp`, `app:zeus-cli`; **I5** app leaves B: `app:zeus-native-host`, `app:zeus-workflow`, `app:zeus-llm`, `app:zeus-a2a` | S, skip others | ~3M each |
+| 11 | **R5**: `desktop-os-integration-packaging-distribution`, `testing-verification-and-benchmarking-methodology`, `competitor-and-reference-implementation-teardowns`, `llm-data-mining-pipelines-and-dataset-formats`, `business-model-licensing-and-open-core-strategy` | R, `only` (5) | ~2.5M |
+| 12 | **I6** `app:zeus-daemon`; then **I7** integrate (`integrate:core`, `integrate:app`, `integrate:ext`) and `conformance` | S | ~4M |
+| 13 | **V**: adversarial verification of drafts in groups of 3 to 4 (`verifyOnly`, `only` = same list): the 7 existing drafts (01, 02, 03, 05, 06, 12, 28) then each new batch | R | ~1.5M per group |
+| 14 | **A**: claims audits of research.md | R with `only: [], skipAudits: false, noIndex: true` | ~1M |
+| 15 | **Rev** security/correctness reviews (5) + final gates (3) | S | ~4M |
+| 16 | **X**: index + references | R with `only: [], noIndex: false, skipAudits: true` | ~0.5M |
+Between segments: run deterministic checks yourself (cheap): `node tools/research-checks/mdcheck.mjs docs/research/*.md`, `refcheck.mjs`, `cargo`/`npm` gates; then commit + push. Prefer SendMessage-resuming a dead agent over relaunching it.
+**Progress ledger** (update as segments land): segment 1 in progress (2026-10-06 08:40). Research docs on disk: 01, 02, 03, 05, 06 (drafts), 12 and 28 (new, written just before the limit hit; unverified). Specs on disk: 00-04.
+
 ## 0. Snapshot: where things stand (original, written before the update above)
 
 | Item | State |
