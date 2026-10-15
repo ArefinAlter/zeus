@@ -19,6 +19,7 @@
 pub mod approvals;
 pub mod backend;
 pub mod config;
+pub mod kill_switch;
 pub mod nm;
 pub mod provision;
 pub mod routes;
