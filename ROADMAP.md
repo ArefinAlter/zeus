@@ -4,7 +4,7 @@ Derived from `research.md` section 5.8 and the sequencing agreed during planning
 
 ## Phase 0: contracts and skeleton (now)
 
-- Normative specs 00 to 04 written and validated; specs 05 to 12 **planned** (daemon API, MCP tools, approvals, workflow plan, LLM provider, A2A, CLI, security invariants), designed in `docs/ARCHITECTURE.md` and `docs/adr/`.
+- Normative specs 00 to 08 and 13 written (daemon API, MCP tools, approvals, workflow plan, artifacts); specs 09 to 12 **planned** (LLM provider, A2A, CLI, security invariants), designed in `docs/ARCHITECTURE.md` and `docs/adr/`.
 - Three repositories scaffolded and compiling: `zeus`, `zeus-core`, `zeus-extension`.
 - Research corpus drafted in `docs/research` (unverified until marked verified).
 
