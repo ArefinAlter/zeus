@@ -17,6 +17,7 @@
 
 pub mod auth;
 pub mod cli;
+pub mod cloud;
 pub mod commands;
 pub mod connect;
 pub mod exit;

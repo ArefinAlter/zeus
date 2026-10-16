@@ -373,6 +373,64 @@ impl ConsentManager {
         self.store(&a)?;
         a.try_into()
     }
+    /// Verify that the requesting credential has not been revoked between planning and execution.
+    pub(crate) fn requester_active(&self, id: &str) -> bool {
+        self.credential(id).is_ok()
+    }
+
+    /// Bind one immutable cloud plan; this approval never creates a website-session grant.
+    pub async fn request_cloud(
+        &self,
+        plan: &zeus_api::methods::cloud::CloudPlanView,
+        requester: &str,
+    ) -> ApiResult<ApprovalView> {
+        let _gate = self.gate.lock().await;
+        let credential = self.credential(requester)?;
+        for approval in self.journal.read(|tx| tx.approvals(None)).map_err(error)? {
+            if approval.kind == ApprovalKind::CloudDelivery
+                && approval.requested_by.as_deref() == Some(requester)
+                && approval
+                    .facts
+                    .as_ref()
+                    .and_then(|f| f.get("delivery_id"))
+                    .and_then(|v| v.as_str())
+                    == Some(plan.delivery_id.as_str())
+            {
+                if approval
+                    .facts
+                    .as_ref()
+                    .and_then(|f| f.get("plan_blake3"))
+                    .and_then(|v| v.as_str())
+                    != Some(plan.plan_hash.to_string().as_str())
+                {
+                    return Err(ApiError::new(
+                        "api.conflict",
+                        "delivery already has a different approval binding",
+                    ));
+                }
+                return approval.try_into();
+            }
+        }
+        let pending = self
+            .journal
+            .read(|tx| tx.approvals(Some(&[ApprovalState::Pending])))
+            .map_err(error)?;
+        crate::approvals::check_pending_cap(pending.len())?;
+        let now = Timestamp::now();
+        let id = IdGenerator::new().approval_id();
+        let facts = serde_json::json!({"t":"zeus.approval.facts.v1","approval_id":id,"revision":1,"kind":"cloud_delivery",
+            "requester":{"kind":credential.kind,"role":credential.role,"client_id":requester,"label":if matches!(credential.role,zeus_api::ClientRole::Cli|zeus_api::ClientRole::Tui){"cli"}else{"agent"},"registered_at":credential.created_at},
+            "issued_at":now,"expires_at":plan.expires_at,"allowed_scopes":[],"confirmation":{"approve":"typed_code"},
+            "reason_codes":["cloud.delivery_requested"],"agent_says_blake3":null,"delivery_id":plan.delivery_id,"plan_blake3":plan.plan_hash,"plan":plan,
+            "shares_full_source_url_with_provider":plan.mode==zeus_cloud::DeliveryMode::RemoteImport,
+            "remote_byte_cap_enforced":plan.hard_byte_cap,"remote_cancellation_supported":plan.remote_cancellation_supported});
+        let approval:Approval=serde_json::from_value(serde_json::json!({"id":id,"kind":"cloud_delivery","state":"pending",
+            "allowed_scopes":[],"reason_codes":["cloud.delivery_requested"],"summary":{"title":"Deliver to configured cloud destination","total_bytes":plan.size_bytes},
+            "created_at":now,"expires_at":plan.expires_at,"request_hash":crate::approvals::facts_hash(&facts)?,"requested_by":requester,"revision":1,"facts":facts}))
+            .map_err(|_|ApiError::internal("cannot bind cloud approval"))?;
+        self.store(&approval)?;
+        approval.try_into()
+    }
     /// Commit one independently attested human decision. The caller verifies terminal/browser evidence first.
     pub(crate) async fn decide(
         &self,
@@ -397,6 +455,13 @@ impl ConsentManager {
             ));
         }
         let mut a = self.get(identity, p.approval_id)?;
+        if a.kind == ApprovalKind::CloudDelivery
+            && !matches!(p.channel, Surface::CliInteractive | Surface::Tui)
+        {
+            return Err(ApiError::human_required(
+                "cloud delivery requires a verified physical terminal",
+            ));
+        }
         let view = ApprovalView::try_from(a.clone())?;
         if crate::approvals::facts_hash(&view.facts)? != view.request_hash {
             return Err(ApiError::new(
@@ -429,7 +494,10 @@ impl ConsentManager {
         }
         if !matches!(
             a.kind,
-            ApprovalKind::SessionGrant | ApprovalKind::Handoff | ApprovalKind::WorkflowPlan
+            ApprovalKind::SessionGrant
+                | ApprovalKind::Handoff
+                | ApprovalKind::WorkflowPlan
+                | ApprovalKind::CloudDelivery
         ) {
             return Err(ApiError::not_implemented("this approval kind"));
         }

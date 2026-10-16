@@ -10,6 +10,7 @@ members = [
     "crates/zeus-llm",
     "crates/zeus-a2a",
     "crates/zeus-a2a-bridge",
+    "crates/zeus-cloud",
 ]
 
 [workspace.package]
@@ -55,6 +56,7 @@ zeus-workflow = { path = "crates/zeus-workflow", version = "0.1.0", default-feat
 zeus-llm = { path = "crates/zeus-llm", version = "0.1.0", default-features = false }
 zeus-a2a = { path = "crates/zeus-a2a", version = "0.1.0" }
 zeus-a2a-bridge = { path = "crates/zeus-a2a-bridge", version = "0.1.0" }
+zeus-cloud = { path = "crates/zeus-cloud", version = "0.1.0" }
 zeus-artifact = { path = "../zeus-core/crates/zeus-artifact", version = "0.1.0" }
 
 # ---- async runtime and utilities ----
@@ -113,6 +115,8 @@ unicode-segmentation = "1.13"
 # ---- crypto and secrets ----
 blake3 = "1.8"
 sha2 = "0.11"
+# Legacy Baidu chunk protocol only; SHA-256 remains the integrity/approval digest.
+md-5 = "0.11"
 ed25519-dalek = { version = "3.0", features = ["zeroize"] }
 base64 = "0.23"
 hex = "0.4"

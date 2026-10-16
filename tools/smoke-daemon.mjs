@@ -223,6 +223,10 @@ try {
   assert.equal((await cli(primary, ['ls'])).items.length, 0);
   record('authenticated CLI status matches owned discovery; journal is writable and jobs are empty');
 
+  assert.deepEqual((await cli(primary, ['cloud', 'accounts', 'list'])).accounts, []);
+  assert.deepEqual((await cli(primary, ['cloud', 'list'])).deliveries, []);
+  record('cloud account and delivery routes return empty isolated state without account or provider access');
+
   const duplicate = await finish(launch(binaries.zeusd, ['run'], collision, 'daemon-collision'));
   assert.notEqual(duplicate.exit, 0, 'Second per-user listener must fail.');
   assert.match(duplicate.stderr, /bind|listener|pipe|access|unavailable/i, 'Collision failure must identify endpoint failure.');

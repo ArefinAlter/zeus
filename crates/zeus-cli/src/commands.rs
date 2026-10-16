@@ -207,6 +207,7 @@ pub async fn run_remote<C: Client + ?Sized>(
     terminal: Option<&mut Terminal>,
 ) -> ApiResult<CmdOutput> {
     match command {
+        Command::Cloud(command) => crate::cloud::run(command, client, global.dry_run).await,
         Command::Get(args) => get(args, global, client, color).await,
         Command::Probe { url } => probe(url, client).await,
         Command::Ls {
@@ -1315,6 +1316,52 @@ mod tests {
 
     fn parse(args: &[&str]) -> Cli {
         Cli::try_parse_from(std::iter::once("zeus").chain(args.iter().copied())).unwrap()
+    }
+
+    #[tokio::test]
+    async fn cloud_submit_dispatch_preserves_plan_hash_and_dry_run_never_mutates() {
+        let client = Fake::new();
+        let hash = "a".repeat(64);
+        let cli = parse(&[
+            "cloud",
+            "submit",
+            "clp_example",
+            "--plan-hash",
+            &hash,
+            "--idempotency-key",
+            "retry-key",
+        ]);
+        assert!(
+            run_remote(&cli.command, &cli.global, &client, false, None)
+                .await
+                .is_err()
+        );
+        let calls = client.calls_to("cloud.submit");
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0]["plan_hash"], hash);
+        assert_eq!(calls[0]["idempotency_key"], "retry-key");
+        assert!(client.calls_to("approvals.decide").is_empty());
+        let mut global = cli.global;
+        global.dry_run = true;
+        assert!(
+            run_remote(&cli.command, &global, &client, false, None)
+                .await
+                .is_err()
+        );
+        assert_eq!(client.calls_to("cloud.submit").len(), 1);
+    }
+
+    #[tokio::test]
+    async fn cloud_account_setup_refuses_agent_connection_before_collecting_input() {
+        let mut client = Fake::new();
+        client.session.kind = ClientKind::Agent;
+        client.session.downgraded = true;
+        let cli = parse(&["cloud", "accounts", "configure"]);
+        let error = run_remote(&cli.command, &cli.global, &client, false, None)
+            .await
+            .unwrap_err();
+        assert_eq!(error.envelope().code.to_string(), "api.human_required");
+        assert!(client.calls.lock().unwrap().is_empty());
     }
 
     const JOB: &str = "job_01M45NHJ2AHWMXT8JVJ7BEEJX7";

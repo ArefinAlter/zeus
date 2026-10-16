@@ -17,6 +17,7 @@ Zeus combines familiar download queues, resumable transfers and a link inbox wit
 | The file is behind a login | A human approves a scoped session grant in the browser extension or the terminal. Cookies are handed over for one origin, for minutes, held in memory, never stored. |
 | The server blocks non-browser clients | Zeus asks the user's own browser to fetch the bytes. It never evades, spoofs or solves captchas. |
 | "Where did this file come from?" | Hash-chained audit log, per-file provenance manifest, OS provenance marks. |
+| The agent should save into cloud storage | An explicit cloud delivery plan chooses verified staged upload, bounded streaming, or a supported provider URL fetch. Human approval binds the source, account revision, destination and limits. |
 
 ## Architecture
 
@@ -30,9 +31,11 @@ flowchart LR
   subgraph D["zeusd (daemon)"]
     API["Daemon API (JSON-RPC, local socket)"] --> ENG["zeus-core engine"]
     API --> APR["Approvals + grants"]
+    API --> CLOUD["Cloud delivery + private checkpoints"]
     ENG --> J[("Journal + audit log")]
   end
   ENG -->|HTTPS| S[("Origin servers")]
+  CLOUD -->|approved upload or URL import| C[("Configured cloud drives")]
 ```
 
 One daemon owns all state; everything else is a client of its local JSON-RPC API. Agents cannot approve anything: approvals are decided only by a human on a trust surface (terminal prompt, extension popup). More in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) and the decision records in [`docs/adr/`](docs/adr/).
@@ -59,6 +62,7 @@ zeus-workspace/
 | Crate | What it is |
 |---|---|
 | `zeus-api` | Daemon API: JSON-RPC types, client kinds and permissions, IPC transport, client and server frameworks. |
+| `zeus-cloud` | Native Google Drive, Yandex Disk and Baidu Netdisk adapters; explicit rclone remotes; bounded streams, capabilities and reconciliation. |
 | `zeus-daemon` | The `zeusd` binary and its library. |
 | `zeus-mcp` | MCP server library (`zeus_<verb>` tools). |
 | `zeus-cli` | The `zeus` binary, including the TUI. |

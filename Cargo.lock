@@ -2471,6 +2471,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "47e1ffaa40ddd1f3ed91f717a33c8c0ee23fff369e3aa8772b9605cc1d22f4c3"
 
 [[package]]
+name = "md-5"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "69b6441f590336821bb897fb28fc622898ccceb1d6cea3fde5ea86b090c4de98"
+dependencies = [
+ "cfg-if",
+ "digest 0.11.3",
+]
+
+[[package]]
 name = "memchr"
 version = "2.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3603,6 +3613,7 @@ dependencies = [
  "rustls-platform-verifier",
  "serde",
  "serde_json",
+ "serde_urlencoded",
  "sync_wrapper",
  "tokio",
  "tokio-rustls",
@@ -4084,6 +4095,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6662b5879511e06e8999a8a235d848113e942c9124f211511b16466ee2995f26"
 dependencies = [
  "serde_core",
+]
+
+[[package]]
+name = "serde_urlencoded"
+version = "0.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d3491c14715ca2294c4d6a88f15e84739788c1d030eed8c110436aafdaa2f3fd"
+dependencies = [
+ "form_urlencoded",
+ "itoa",
+ "ryu",
+ "serde",
 ]
 
 [[package]]
@@ -5829,6 +5852,7 @@ dependencies = [
  "widestring",
  "windows-sys 0.61.2",
  "zeroize",
+ "zeus-cloud",
  "zeus-llm",
  "zeus-types",
  "zeus-workflow",
@@ -5887,6 +5911,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "zeus-cloud"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "axum",
+ "bytes",
+ "futures",
+ "hex",
+ "http",
+ "keyring",
+ "md-5",
+ "reqwest",
+ "schemars",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-util",
+ "url",
+ "zeroize",
+]
+
+[[package]]
 name = "zeus-control"
 version = "0.1.0"
 dependencies = [
@@ -5909,6 +5958,7 @@ dependencies = [
  "futures",
  "hex",
  "http",
+ "md-5",
  "proptest",
  "redb",
  "regex",
@@ -5920,10 +5970,12 @@ dependencies = [
  "thiserror 2.0.21",
  "time",
  "tokio",
+ "tokio-util",
  "toml",
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
+ "ulid",
  "unicode-normalization",
  "unicode-segmentation",
  "url",
@@ -5931,6 +5983,7 @@ dependencies = [
  "zeus-a2a",
  "zeus-api",
  "zeus-artifact",
+ "zeus-cloud",
  "zeus-control",
  "zeus-engine",
  "zeus-fs",

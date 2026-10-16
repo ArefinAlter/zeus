@@ -141,6 +141,7 @@ const headings = {
     "The next move is yours.",
     "Clear facts, a named requester, and a decision with a precise scope.",
   ],
+  destinations: ["CLOUD DELIVERY", "Choose the path, then the destination.", "Review account scope, source disclosure and verification before a file leaves your machine."],
   queues: [
     "YOUR CONNECTION, YOUR SCHEDULE",
     "Make room for the right work.",
@@ -173,6 +174,7 @@ function setView(view) {
   $("#add-links").hidden = view === "inbox";
   $("#message").hidden = true;
   if (view === "approvals") renderApproval();
+  if (view === "destinations") renderCloud();
 }
 function visibleJobs() {
   const query = $("#search").value.toLowerCase();
@@ -490,6 +492,8 @@ $$("[data-batch]").forEach((button) =>
 );
 $("#global-stop").addEventListener("click", () => {
   stopped = true;
+  cloudPlanned = false;
+  renderCloud();
   approvalPending = false;
   for (const job of jobs)
     if (!["completed", "canceled", "failed"].includes(job.state)) {
@@ -497,18 +501,19 @@ $("#global-stop").addEventListener("click", () => {
       job.rate = "—";
       job.eta = "Global stop";
     }
-  $("#workspace-state").textContent = "All work stopped · permissions revoked";
+  $("#workspace-state").textContent = "Zeus work stopped · remote imports may continue";
   $("#workspace-dot").style.background = "#9e4526";
   $("#release-stop").hidden = false;
   if ($("#approval-dialog").open) $("#approval-dialog").close();
   renderJobs();
   renderApproval();
   message(
-    "Simulation: all work paused, session permissions revoked and pending approvals canceled. Releasing the stop will not resume jobs or restore permissions.",
+    "Simulation: Zeus work paused, permissions revoked and pending approvals canceled. An accepted provider fetch may continue remotely. Releasing the stop will not resume work or restore permissions.",
   );
 });
 $("#release-stop").addEventListener("click", () => {
   stopped = false;
+  renderCloud();
   $("#release-stop").hidden = true;
   $("#workspace-state").textContent =
     "Ready · jobs stay paused until you resume them";
@@ -647,3 +652,103 @@ $("#approval-dialog").addEventListener("close", () =>
 );
 renderJobs();
 renderApproval();
+
+// Cloud destination design simulation. Capability examples are explicit, never a live account check.
+const cloudModes = {
+  staged_upload: {
+    title: "Download, verify, then upload",
+    detail: "Keeps a complete staged file. Verify its local SHA-256 before uploading; requires space for the full file.",
+    exposure: "The destination provider receives file bytes. The original source URL is not handed to the provider.",
+    assurance: "Example assurance: local SHA-256 checked before upload. Completion must state whether a matching remote SHA-256 was returned or only remote size; a receipt alone is insufficient.",
+  },
+  stream_upload: {
+    title: "Relay with bounded buffering",
+    detail: "Reads from the source and uploads with bounded memory. No full local copy; restarts and provider limits must be checked before choosing this mode.",
+    exposure: "The destination provider receives file bytes while Zeus reads them. The original source URL is not handed to the provider.",
+    assurance: "Example assurance: local SHA-256 is available only after reading the entire stream. A source mismatch may be discovered after upload has begun. Remote SHA-256 and remote size are separate evidence.",
+  },
+  remote_import: {
+    title: "Provider fetches the source URL",
+    detail: "Only providers advertising URL-fetch support can use this mode. The provider performs the download; Zeus does not read the file bytes.",
+    exposure: "The full source URL is disclosed to the destination provider. A separate approval must cover that disclosure. Browser cookies and session material are never forwarded.",
+    assurance: "Example assurance: no local hash. A known expected SHA-256 can be compared with a provider-reported SHA-256; otherwise the evidence is remote size only. Accepted / in progress does not mean completed.",
+  },
+};
+const cloudAccounts = {
+  drive: { label: "Google Drive · Research (sample)", folder: "Research/Climate reference", fetch: false },
+  yandex: { label: "Yandex Disk · Archive (sample)", folder: "disk:/Archive", fetch: true },
+  rclone: { label: "Configured rclone remote (sample)", folder: "zeus-archive/Research", fetch: false },
+  baidu: { label: "Baidu Netdisk · App folder (sample)", folder: "/apps/Zeus/Research", fetch: false, blockManifest: true },
+};
+let cloudRevision = 1;
+let cloudPlanned = false;
+function cloudSelection() {
+  return { account: cloudAccounts[$("#cloud-account").value], mode: $("#cloud-mode").value,
+    source: $("#cloud-source").value, folder: $("#cloud-folder").value.trim(), name: $("#cloud-name").value.trim(),
+    remoteOptIn: $("#cloud-remote-optin").checked, blockManifest: $("#cloud-block-manifest").checked };
+}
+function cloudRestriction(selection) {
+  if (!selection.name || /[\\/:?#\x00-\x1f]/.test(selection.name) || [".", ".."].includes(selection.name)) return "Choose a filename only, inside the account’s configured folder.";
+  if (selection.mode === "remote_import" && !selection.account.fetch) return "This sample account does not advertise provider URL fetch. Choose another mode explicitly; no automatic fallback is allowed.";
+  if (selection.mode === "remote_import" && selection.source !== "public") return "Provider fetch requires a public source URL. Local files and browser-session sources cannot be disclosed as a URL-fetch request.";
+  if (selection.mode === "remote_import" && !selection.remoteOptIn) return "Explicitly accept the provider’s cancellation and byte-limit restrictions before previewing this mode.";
+  if (selection.mode === "stream_upload" && selection.account.blockManifest && !selection.blockManifest) return "Baidu streaming needs a verified manifest of 4 MiB block MD5 values before the first upload. Choose staged mode explicitly if it is unavailable.";
+  if (selection.mode === "stream_upload" && selection.source !== "public") return "This relay example accepts public URLs only. Use staged delivery for a completed local download; browser-session relay is not advertised.";
+  if (selection.source === "session") return "Browser-session cloud delivery requires separately bound source and destination permission; this capability is not advertised by the preview.";
+  return null;
+}
+function renderCloud() {
+  const selection = cloudSelection();
+  const mode = cloudModes[selection.mode];
+  const restriction = cloudRestriction(selection);
+  $("#cloud-capability").textContent = restriction || `Sample capability: ${mode.detail}`;
+  $("#cloud-exposure").textContent = mode.exposure;
+  $("#cloud-plan").disabled = Boolean(restriction) || stopped;
+  $("#cloud-example").disabled = Boolean(restriction) || !cloudPlanned || stopped;
+  const facts = $("#cloud-facts");
+  facts.replaceChildren();
+  for (const [label, value] of [["Account", selection.account.label], ["Folder", selection.folder || "Not chosen"], ["Object", `${selection.name}.zeus-cld_SAMPLE`], ["Mode", mode.title], ["Limits", selection.mode === "remote_import" ? "2 GB expected · 30 min local lifetime · provider cap and cancellation unavailable" : "1 sample file · at most 2 GB · 30 minutes"], ["Source URL", selection.mode === "remote_import" ? "Full source URL disclosed to provider" : "Not disclosed to destination provider"], ["Revision", String(cloudRevision)], ["Permission", "Not granted · simulation only"]]) {
+    facts.append(element("dt", label), element("dd", value));
+  }
+  $("#cloud-assurance").textContent = mode.assurance;
+  if (!cloudPlanned) {
+    $("#cloud-progress").replaceChildren();
+    $("#cloud-review-state").textContent = "Review the current facts. Nothing is authorized or submitted.";
+  }
+}
+function invalidateCloud() {
+  cloudRevision++;
+  cloudPlanned = false;
+  renderCloud();
+}
+for (const id of ["cloud-account", "cloud-source", "cloud-mode", "cloud-name", "cloud-remote-optin", "cloud-block-manifest"]) $("#" + id).addEventListener(id === "cloud-name" ? "input" : "change", () => {
+  $("#cloud-folder").value = cloudAccounts[$("#cloud-account").value].folder;
+  invalidateCloud();
+});
+$("#cloud-plan").addEventListener("click", () => {
+  if (stopped || cloudRestriction(cloudSelection())) return;
+  cloudPlanned = true;
+  renderCloud();
+  $("#cloud-review-state").textContent = `Sample plan revision ${cloudRevision} is ready for human review. This preview cannot request or record real cloud permission.`;
+});
+$("#cloud-example").addEventListener("click", () => {
+  const selection = cloudSelection();
+  if (stopped || !cloudPlanned || cloudRestriction(selection)) return;
+  const stages = selection.mode === "remote_import"
+    ? [["Source download by Zeus", null, "Not performed"], ["Provider operation", null, "Provider says in progress · byte count unknown"]]
+    : selection.mode === "stream_upload"
+      ? [["Source read", 63, "63% read through the bounded relay"], ["Upload", 58, "58% acknowledged by the sample provider"]]
+      : [["Download", 100, "Complete sample staging file"], ["Local SHA-256", 100, "Verified before upload"], ["Upload", 35, "35% acknowledged by the sample provider"]];
+  const progress = $("#cloud-progress");
+  progress.replaceChildren();
+  for (const [label, percent, detail] of stages) {
+    const row = element("div", null, "cloud-progress-row");
+    row.append(element("strong", label), element("span", detail));
+    if (percent !== null) {
+      const bar = element("progress"); bar.max = 100; bar.value = percent; bar.setAttribute("aria-label", `${label}: ${percent}% (sample)`); row.append(bar);
+    }
+    progress.append(row);
+  }
+  message("Sample progress only. No credentials, source bytes or cloud requests were sent.");
+});
+renderCloud();

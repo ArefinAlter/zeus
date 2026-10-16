@@ -426,9 +426,9 @@ Rules:
 
 | Permission | Grants | A | S | H | Ad |
 |---|---|---|---|---|---|
-| `jobs.read` | `jobs.probe`, `jobs.list`, `jobs.get`, `jobs.wait`, `jobs.verify` | yes | yes | yes | yes |
-| `jobs.write` | `jobs.enqueue` | yes | yes | yes | yes |
-| `jobs.control` | `jobs.control` | yes | yes | yes | yes |
+| `jobs.read` | `jobs.probe`, `jobs.list`, `jobs.get`, `jobs.wait`, `jobs.verify`; `cloud.accounts.list`, `cloud.list`, `cloud.get` | yes | yes | yes | yes |
+| `jobs.write` | `jobs.enqueue`; `cloud.plan`, `cloud.submit` | yes | yes | yes | yes |
+| `jobs.control` | `jobs.control`, `cloud.control` | yes | yes | yes | yes |
 | `events.read` | `events.subscribe`, `events.unsubscribe` | yes | yes | yes | yes |
 | `sessions.read` | `sessions.list` | yes | yes | yes | yes |
 | `sessions.request` | `sessions.request` (raises an approval, never grants) | yes | yes | yes | yes |
@@ -442,7 +442,7 @@ Rules:
 | `workflows.run` | `workflows.run`, `workflows.control` (later) | yes | yes | yes | yes |
 | `audit.read` | `audit.tail`, `audit.verify` | yes | yes | yes | yes |
 | `config.read` | `config.get` | yes | yes | yes | yes |
-| `config.write` | `config.set` | no | no | yes | yes |
+| `config.write` | `config.set`; `cloud.accounts.configure`, `cloud.accounts.revoke` (physical terminal) | no | no | yes | yes |
 | `llm.read` | `llm.status` (later) | yes | yes | yes | yes |
 | `llm.configure` | `llm.configure` (later) | no | no | yes | yes |
 | `daemon.read` | `daemon.ping`, `daemon.status`, `doctor.run` | yes | yes | yes | yes |
@@ -532,6 +532,14 @@ ADR 0011 introduces the `service` kind for first-party programs that use the dae
 | `approvals.get` | MVP | `approvals.read` | A S H Ad | no | Scoped for A and S. |
 | `approvals.decide` | MVP | `approvals.decide` | H Ad | yes | Human-only, channel evidence, request hash. |
 | `files.list` | MVP | `files.read` | A S H Ad | no | Paged. |
+| `cloud.accounts.list` | cloud delivery (14) | `jobs.read` | A S H Ad | no | Configured scopes/capabilities, without credentials. |
+| `cloud.accounts.configure` | cloud delivery (14) | `config.write` | H Ad | yes | Independently verified physical terminal; revision-bound scope and keyring credential. |
+| `cloud.accounts.revoke` | cloud delivery (14) | `config.write` | H Ad | yes | Same terminal requirement; invalidates old revision and stops local work. |
+| `cloud.plan` | cloud delivery (14) | `jobs.write` | A S H Ad | yes | Persist immutable dry run; no source reads or remote object mutations. |
+| `cloud.submit` | cloud delivery (14) | `jobs.write` | A S H Ad | yes | Reserve delivery and request human approval; never authorizes it. |
+| `cloud.list` | cloud delivery (14) | `jobs.read` | A S H Ad | no | At most 100 visible delivery records, newest first. |
+| `cloud.get` | cloud delivery (14) | `jobs.read` | A S H Ad | no | Owner-scoped for agent/service clients. |
+| `cloud.control` | cloud delivery (14) | `jobs.control` | A S H Ad | yes | Pause/resume/cancel; retains remote cancellation uncertainty. |
 | `files.roots.register` | MVP | `files.roots.register` | S | yes | Role `service` only. Capability `files.roots`. |
 | `files.organize` | later | `files.write` | A S H Ad | yes | Dry run by default. Capability `files.organize`. |
 | `files.convert` | later | `files.write` | A S H Ad | yes | Dry run by default. Capability `files.convert`. |

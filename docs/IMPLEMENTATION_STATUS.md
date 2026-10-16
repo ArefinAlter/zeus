@@ -33,7 +33,7 @@ Human/admin credentials from unverified executables are downgraded before the au
 
 The native broker implements handoff, approval/list/control/events/grants/kill-switch, session leases, URL refresh and bounded browser fetch streaming. Streams are correlated per connection, return credits only as data is consumed, recheck consent and stop on disconnect/revocation/timeout. Grants decided in one browser profile cannot silently select a different profile. Ambiguous terminal-granted profiles fail closed until a profile is selected. Browser proxy redirects currently fail closed; cross-origin redirect handling needs a separately authorized design.
 
-The nine MCP tools have a working stdio transport, resources and the rescue prompt. Workflow manifests travel as bounded inline content plus a digest; an agent does not open arbitrary daemon-returned paths. The optional MCP HTTP bridge remains unavailable. The CLI supports daemon lifecycle, downloads, live event-driven TUI, terminal decisions and model setup. Its auth menu provides OAuth sign-in, saved ChatGPT account inspection and sign-out; selecting an OAuth account for inference and configuring its model remain API/configuration tasks. Sign-in alone does not enable inference or paid requests. OS-authenticator approval confirmation (`os_auth`) remains unavailable and fails closed.
+The nine original MCP tools plus the constrained `zeus_cloud` tool have a working stdio transport, resources and the rescue prompt. Workflow manifests travel as bounded inline content plus a digest; an agent does not open arbitrary daemon-returned paths. The optional MCP HTTP bridge remains unavailable. The CLI supports daemon lifecycle, downloads, live event-driven TUI, terminal decisions and model setup. Its auth menu provides OAuth sign-in, saved ChatGPT account inspection and sign-out; selecting an OAuth account for inference and configuring its model remain API/configuration tasks. Sign-in alone does not enable inference or paid requests. OS-authenticator approval confirmation (`os_auth`) remains unavailable and fails closed.
 
 A2A runs as a separate opt-in loopback process with a dedicated agent credential, owner-scoped tasks and durable task recovery. It implements a bounded file-download profile with submit/get/list/cancel, not every A2A capability; interoperability with external SDKs remains unvalidated.
 
@@ -43,15 +43,30 @@ Model work includes explicitly configured OpenAI Responses/compatible, Anthropic
 
 ### zeus-extension
 
+Cloud delivery adds the terminal-only `cloud_delivery` approval kind. The extension can recognize the shared contract but does not offer a browser decision for it; its UI directs the person to the terminal. Website-session consent never authorizes cloud disclosure.
+
 Protocol schemas/types, approval fact hashing/revision checks, trust UI, native relay integration assumptions and fetch fallback are updated. Chrome/Firefox development and store bundles build; scripted-daemon and protocol tests run. The original cookie-release boundary remains: only current, explicit consent permits memory-only session delivery.
 
 A successful extension unit test or browser bundle does not prove installation/native-messaging compatibility. Real Chrome, Edge and Firefox runs must cover browser suspension, reconnect, expiry/revocation, cookie release, fetch backpressure and interrupted transfers. Browser-parent verification currently recognizes machine-installed Windows browsers registered under HKLM and known root-owned Linux paths. Per-user/portable Windows installations, unsupported Linux packaging and macOS fail closed. Proposed `session.page` / `page_render` capabilities are not implemented or advertised. Store identifiers, screenshots/disclosures, signing and publication still need their actual production inputs.
+
+## Cloud delivery
+
+Cloud delivery now has a [provider library](../crates/zeus-cloud/README.md), durable daemon service, [CLI commands](../crates/zeus-cli/README.md), constrained [MCP tool](../crates/zeus-mcp/README.md), and [spec 14](spec/14-cloud-destinations-and-delivery.md). The service binds each delivery to an immutable plan, source hash, account revision, byte/time limits and independently evidenced human approval. Private checkpoints and idempotency receipts survive restart. Verified staged sources are retained for resumption; streaming uses bounded reads; provider imports remain pending until a remote receipt is verified.
+
+| Destination | Verified staged upload | Bounded streaming | Provider fetch |
+|---|---|---|---|
+| Google Drive | Native resumable upload | Known length | Unavailable |
+| Yandex Disk | Native upload | Known length | Native asynchronous URL import; explicit weaker-limit consent |
+| Baidu Netdisk | Native multipart upload, staged block hashing | Known length and precomputed 4 MiB MD5 manifest | Unavailable |
+| MEGA and other configured rclone remotes | Backend-dependent | Known-length `rcat`, no implicit local spool | Unavailable |
+
+These adapters have hermetic protocol coverage; live-account acceptance is still required. Native OAuth application setup, browser/device-code onboarding and automatic token refresh are unfinished. Runtime status reports delivery state and provider-confirmed bytes; the preview's finer source/upload progress display is not yet connected. Partial source staging is not a ranged engine download; use an existing completed Zeus job when engine-level source recovery is required. Existing native access credentials are entered through the physical terminal and stored in the OS keyring. Rclone requires an installed trusted executable and an explicit protected configuration. Its generic write API cannot guarantee atomic no-overwrite against a concurrent external writer; cleanup without sufficient object identity/checksum evidence is refused. Yandex imports cannot promise a hard remote byte cap or remote cancellation. Baidu account tier and registered-application limits remain provider-enforced. No provider URL-fetch capability is inferred from an ordinary upload API.
 
 ## Product UI
 
 Open [the download workspace prototype](design/console/index.html), [desktop preview](design/console/preview-desktop.png), [agent run preview](design/console/preview-agent-run.png) or [approval preview](design/console/preview-approval.png). The [design rationale and primary sources](design/download-workspace.md) explain the choices.
 
-The prototype home screen is a dense download table with search, filters, saved/total bytes, speed, state, requester and queue. An adjacent inspector gives details without replacing the queue. Link intake previews duplicates, packages, names and destinations before a simulated enqueue. Agent runs expose the plan, files, budgets, approval and exceptions. The proposed consent design gives trusted facts their own plain-text review and excludes chat and downloaded content from approval authority. A prominent global stop is separate from ordinary pause or a queue schedule.
+The prototype home screen is a dense download table with search, filters, saved/total bytes, speed, state, requester and queue. An adjacent inspector gives details without replacing the queue. Link intake previews duplicates, packages, names and destinations before a simulated enqueue. Agent runs expose the plan, files, budgets, approval and exceptions. The cloud panel compares all three data paths, providers, source size and Baidu block-manifest requirements, and makes remote-fetch cancellation/byte-cap limitations visible before its simulated plan. The proposed consent design gives trusted facts their own plain-text review and excludes chat and downloaded content from approval authority. A prominent global stop is separate from ordinary pause or a queue schedule.
 
 These controls currently manipulate **sample state**. The prototype is not a trusted approval surface, a Tauri app or an installed scheduler. Its illustrative bind codes are never sent to the daemon.
 
@@ -70,22 +85,24 @@ The research corpus in `docs/research` remains unverified unless its own metadat
 
 ## Validation evidence
 
-Validation uses synthetic credentials and loopback HTTP/model/browser peers. The results below cover the validated implementation snapshot; subsequent publication changes only update documentation. Live browser/provider and Linux/macOS platform results must not be inferred from Windows-hosted hermetic tests.
+Validation uses synthetic credentials and loopback HTTP/model/browser peers. The current cloud update passed the app and extension suites below; the core rows distinguish its preceding full runtime baseline from the focused checks rerun for the cloud approval/schema changes. Live browser/provider and Linux/macOS platform results must not be inferred from Windows-hosted hermetic tests.
 
 | Check | Result |
 |---|---|
-| `zeus-core`: `cargo test --workspace --all-features --offline` | 273 passed; one documentation example intentionally ignored. Includes 20 engine integration tests covering resume, validators, corrupt tails, retries, grants, proxy streams and shutdown. |
-| `zeus`: `cargo test --workspace --all-features --offline` | 347 passed. Includes actual authenticated API downloads, durable approvals/kill switch, workflow checkpoints/audit/pacing, model adapters and IPC shutdown. |
-| Both Rust workspaces: `cargo clippy --workspace --all-targets --all-features --offline -- -D warnings` and `cargo fmt --all -- --check` | Passed. |
+| `zeus-core`: preceding full runtime baseline, `cargo test --workspace --all-features --offline` | 273 passed; one documentation example intentionally ignored. Includes 20 engine integration tests covering resume, validators, corrupt tails, retries, grants, proxy streams and shutdown. |
+| `zeus-core`: current changed types/session and schema conformance | 123 passed; generated core schema and 195 normative fixture files synchronized. |
+| `zeus`: `cargo test --workspace --all-features --offline` | 400 passed. Includes actual authenticated API downloads, durable approvals/kill switch, workflow checkpoints/audit/pacing, model adapters and IPC shutdown. |
+| `zeus`: workspace strict Clippy and formatting; cloud provider strict Clippy | Passed. The preceding core runtime baseline also passed workspace strict Clippy/formatting; current core changes were formatted and conformance-tested. |
 | Generated API schema, checked without update mode | Passed. |
-| Extension Vitest | 318 passed across 22 files. |
+| Extension Vitest | 321 passed across 22 files, including terminal-only cloud approval refusal. |
 | Extension TypeScript, ESLint/Prettier, Chrome/Firefox development/store builds and repository checks | Passed. Schema copies, generated protocol types, manifest identities and bundled-code checks agree. |
-| Normative spec validator and core fixture synchronization | 239 documents validated, four partial fragments skipped, 14 spec files scanned; fixtures synchronized. |
+| Normative contracts | 244 documents validated, four partial fragments skipped, 15 spec files scanned; fixtures synchronized. Cloud API schema drift check passes. MCP catalogue: 10 tools, 23,991 bytes, digest checked. |
+| Cloud behavior (included in app total) | 25 provider HTTP/subprocess tests; 13 daemon authorization/recovery/cancellation/retention regressions. No live account calls. |
 | Interactive UI prototype | Navigation, filters/search, batch actions, safe URL import/deduplication, approval arming, stop/release, budget and schedule simulation checks passed; desktop/mobile screenshots reviewed. |
 
 Rust tests ran with the Windows MSVC Rust 1.99 toolchain. Extension and UI checks ran with Windows Node. Local smoke evidence follows below; these results do not establish Linux/macOS acceptance, real-browser compatibility or a release benchmark.
 
-The permanent [Windows daemon/CLI smoke test](../tools/smoke-daemon.mjs) passed all 13 checkpoints using isolated state and a loopback HTTP server. It verified initialization/pin stability, authenticated named-pipe IPC, rejection of a competing daemon, actual file bytes and SHA-256, CLI verification, durable idempotency, audit integrity, graceful shutdown and restart.
+The permanent [Windows daemon/CLI smoke test](../tools/smoke-daemon.mjs) passed all 14 checkpoints using isolated state and a loopback HTTP server. It verified initialization/pin stability, authenticated named-pipe IPC, empty cloud account/delivery routes, rejection of a competing daemon, actual file bytes and SHA-256, CLI verification, durable idempotency, audit integrity, graceful shutdown and restart.
 
 It also terminated only its own daemon process after **4,194,304 committed bytes of an 8,388,608-byte transfer**, restarted the daemon, confirmed a nonzero resumed range with the original validator and no re-fetch of the committed prefix, then verified the complete file and audit. This proves the tested Windows crash/restart path; it does not replace the broader fault-injection matrix or real-browser acceptance. See [running the smoke test](../tools/README.md). No real browser session, external provider account or user daemon was used.
 

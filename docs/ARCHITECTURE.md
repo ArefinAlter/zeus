@@ -61,6 +61,7 @@ flowchart TD
     LLM[zeus-llm]
     A2A[zeus-a2a]
     API[zeus-api]
+    CLOUD[zeus-cloud]
     MCP[zeus-mcp]
     NATIVE[zeus-native-host]
     DAEMON[zeus-daemon]
@@ -166,6 +167,24 @@ sequenceDiagram
 
 The extension offers the failed download over native messaging (spec 02). `zeus-native-host` relays the frame to the daemon as `nm.frame`. The daemon creates the job (S01 or S02), raises an approval if needed, and the human decides in the popup or terminal. The daemon then asks the extension for session material through the same relay; the extension releases cookies for one origin after its own consent check. The daemon probes, downloads, verifies and finalizes. Details: 01 section 11.1 and 02 sections 7 to 10.
 
+### 4.3 Approved cloud delivery
+
+Cloud delivery is a distinct durable operation (spec 14), separate from local job completion. `zeus_cloud` or the CLI creates an immutable plan, then submits its ID/hash for a terminal-only `cloud_delivery` approval. The daemon binds account revision, source identity, data path, destination, byte/time limits and provider limitations. It owns the private checkpoint store and cancellation; provider adapters never decide authority.
+
+```mermaid
+flowchart LR
+  SOURCE[Public URL or completed job] --> STAGE[Stage and verify]
+  STAGE --> UPLOAD[Provider upload]
+  SOURCE --> BUFFER[Bounded Zeus stream]
+  BUFFER --> UPLOAD
+  URL[Approved public URL disclosure] --> IMPORT[Provider URL import]
+  UPLOAD --> RECEIPT[Verified remote receipt]
+  IMPORT --> POLL[Persist operation and poll]
+  POLL --> RECEIPT
+```
+
+Google Drive and Baidu support native resumable staged upload; Yandex supports native upload and asynchronous URL import. Explicit rclone remotes extend upload coverage, including MEGA, without claiming provider URL fetch. The selected mode never silently changes. Credentials stay in the OS keyring or explicitly protected rclone configuration; upload-session URLs remain private. Remote cancellation and byte limits are reported as actual capabilities. See [the provider implementation guide](../crates/zeus-cloud/README.md) for protocol and acceptance limits.
+
 ## 5. Design for spec 05: daemon API
 
 This section is the input for `05-daemon-api-v1.md` and for `schema/daemon-api.v1.schema.json`. Spec 05 (Draft 1, 2026-10-06) is now normative and supersedes this section where they differ; its section 18 lists every difference from this design and from the draft Rust types in `crates/zeus-api` (for example `clients.*` and `files.roots.register` are MVP, list parameters are flat, mutating results carry `replayed`, and the Windows endpoint is derived from the user's SID).
@@ -216,6 +235,7 @@ MVP unless marked later.
 |---|---|
 | `daemon` | `hello`, `authenticate`, `ping`, `status`, `shutdown` (admin), `kill_switch` (human) |
 | `jobs` | `probe`, `enqueue` (batch up to 100, `dry_run`), `list`, `get`, `wait` (timeout at most 60 s), `control` (`pause`, `resume`, `cancel`, `retry`, `reprioritize`), `verify` |
+| `cloud` | `accounts.list`, `accounts.configure` and `accounts.revoke` (verified physical terminal), `plan`, `submit`, `list`, `get`, `control`; approval-bound delivery contracts in spec 14 |
 | `events` | `subscribe` (since_seq, type filter, job filter, progress interval), `unsubscribe` |
 | `sessions` | `list` (grants and lease counts, never material), `request` (raises an approval, never blocks on it), `revoke` (human) |
 | `approvals` | `list`, `get`, `decide` (human, channel evidence, request hash) |

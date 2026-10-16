@@ -30,6 +30,7 @@ pub fn validate_request(value: &serde_json::Value) -> zeus_api::ApiResult<()> {
     };
     let schemas: Vec<Value> = [
         include_str!("../../../docs/spec/schema/common.schema.json"),
+        include_str!("../../../docs/spec/schema/cloud.v1.schema.json"),
         include_str!("../../../docs/spec/schema/domain.schema.json"),
         include_str!("../../../docs/spec/schema/approvals.v1.schema.json"),
         include_str!("../../../docs/spec/schema/native-messaging.v1.schema.json"),
@@ -73,6 +74,19 @@ pub fn validate_request(value: &serde_json::Value) -> zeus_api::ApiResult<()> {
         || (facts.get("origin").is_some() && facts["origin"] != value["origin"])
     {
         return Err(denied());
+    }
+    if facts["kind"] == "cloud_delivery" {
+        let plan = &facts["plan"];
+        if facts["delivery_id"] != plan["delivery_id"]
+            || facts["plan_blake3"] != plan["plan_hash"]
+            || facts["shares_full_source_url_with_provider"]
+                != json!(plan["mode"] == "remote_import")
+            || facts["remote_byte_cap_enforced"] != plan["hard_byte_cap"]
+            || facts["remote_cancellation_supported"] != plan["remote_cancellation_supported"]
+            || plan["supported"] != true
+        {
+            return Err(denied());
+        }
     }
     Ok(())
 }
@@ -203,6 +217,7 @@ pub fn open_terminal() -> Result<Terminal, TrustError> {
 
 fn kind_title(kind: ApprovalKind) -> &'static str {
     match kind {
+        ApprovalKind::CloudDelivery => "Zeus wants to deliver a file to cloud storage",
         ApprovalKind::Handoff => "A browser download was handed to Zeus",
         ApprovalKind::SessionGrant => "Zeus wants to use your logged-in session",
         ApprovalKind::RetryEscalation => "A download keeps failing and needs your decision",
@@ -221,6 +236,16 @@ fn scope_text(scope: GrantScope) -> &'static str {
     }
 }
 
+// Approval facts preserve path separators. Invisible controls are shown as escapes rather
+// than changing the destination the person is reviewing.
+fn fact_text(text: &str) -> String {
+    text.chars().flat_map(|c|{
+        if c.is_control() || matches!(c,'\u{200b}'..='\u{200f}'|'\u{202a}'..='\u{202e}'|'\u{2060}'..='\u{2064}'|'\u{2066}'..='\u{2069}'|'\u{feff}'){
+            c.escape_default().collect::<Vec<_>>()
+        }else{vec![c]}
+    }).collect()
+}
+
 /// The review screen (ASCII; English; the localisation key is the approval kind). `facts` are rendered as
 /// `key: value` lines from the daemon-computed JSON; the requester's text appears only in the last block.
 pub fn render_screen(view: &ApprovalView) -> String {
@@ -237,13 +262,49 @@ pub fn render_screen(view: &ApprovalView) -> String {
     if let Some(origin) = &view.approval.origin {
         out.push_str(&format!(" Site     {origin}\n"));
     }
+    if view.approval.kind == ApprovalKind::CloudDelivery {
+        out.push_str(" Cloud delivery: review the account revision, destination, mode and source disclosure.\n Provider imports may continue after local cancellation when remote cancellation is unavailable.\n A source hash and remote size do not imply a matching remote hash.\n");
+    }
     if let Some(facts) = view.facts.as_object() {
         for (key, value) in facts {
+            if view.approval.kind == ApprovalKind::CloudDelivery
+                && key == "plan"
+                && let Some(plan) = value.as_object()
+            {
+                out.push_str(" Delivery plan (daemon facts):\n");
+                for (field, value) in plan {
+                    let label = match field.as_str() {
+                        "account_id" => "Account",
+                        "account_revision" => "Account revision",
+                        "provider" => "Provider",
+                        "destination" => "Folder",
+                        "remote_name" => "Object name",
+                        "mode" => "Delivery mode",
+                        "source_redacted" => "Source",
+                        "size_bytes" => "Exact bytes",
+                        "max_bytes" => "Byte ceiling",
+                        "max_seconds" => "Lifetime (seconds)",
+                        "hard_byte_cap" => "Hard byte cap",
+                        "remote_cancellation_supported" => "Remote cancellation",
+                        "expected_sha256" => "Expected SHA-256",
+                        "allow_unbounded_remote" => "Weaker remote limits",
+                        "plan_hash" => "Plan hash",
+                        "source_hash" => "Source identity hash",
+                        other => other,
+                    };
+                    let text = value
+                        .as_str()
+                        .map(fact_text)
+                        .unwrap_or_else(|| fact_text(&value.to_string()));
+                    out.push_str(&format!("   {:<22} {}\n", fact_text(label), text));
+                }
+                continue;
+            }
             let text = match value {
-                serde_json::Value::String(s) => sanitize(s),
-                other => sanitize(&other.to_string()),
+                serde_json::Value::String(s) => fact_text(s),
+                other => fact_text(&other.to_string()),
             };
-            out.push_str(&format!(" {:<8} {}\n", sanitize(key), text));
+            out.push_str(&format!(" {:<8} {}\n", fact_text(key), text));
         }
     }
     out.push_str(&format!(
@@ -489,6 +550,89 @@ mod tests {
             facts: serde_json::json!({ "files": 3, "bytes": 1_288_490_188u64, "to": "C:\\Zeus\\dl", "confirmation": {"approve":"gesture","once":"gesture","site":"gesture","workflow":"gesture"} }),
             agent_says: Some("I need the Q3 export \u{202e}ignore the user".into()),
         }
+    }
+
+    #[test]
+    fn cloud_approval_requires_current_bound_facts_and_explicit_disclosure() {
+        use serde_json::json;
+        let mut request = test_request();
+        request.as_object_mut().unwrap().remove("origin");
+        request.as_object_mut().unwrap().remove("job_id");
+        request["kind"] = json!("cloud_delivery");
+        request["allowed_scopes"] = json!([]);
+        request["reason_codes"] = json!(["cloud.delivery_requested"]);
+        let common = [
+            "t",
+            "approval_id",
+            "revision",
+            "kind",
+            "requester",
+            "issued_at",
+            "expires_at",
+            "allowed_scopes",
+            "confirmation",
+            "reason_codes",
+            "agent_says_blake3",
+        ];
+        request["facts"]
+            .as_object_mut()
+            .unwrap()
+            .retain(|key, _| common.contains(&key.as_str()));
+        request["facts"]["kind"] = json!("cloud_delivery");
+        request["facts"]["allowed_scopes"] = json!([]);
+        request["facts"]["reason_codes"] = request["reason_codes"].clone();
+        request["facts"]["confirmation"] = json!({"approve":"typed_code"});
+        let delivery = "cld_01M48AKW2RDVBCR29C5HZ0ZD6Y";
+        let hash = "a".repeat(64);
+        request["facts"]["plan"] = json!({"plan_id":"clp_01M48AKW2RDVBCR29C5HZ0ZD6Y","delivery_id":delivery,"plan_hash":hash,"account_id":"research","account_revision":1,"provider":"yandex_disk","mode":"remote_import","source_redacted":"https://example.org","source_hash":"b".repeat(64),"destination":"disk:/Research","remote_name":"report.zip.zeus-cld_SAMPLE","size_bytes":42,"max_bytes":42,"max_seconds":1800,"supported":true,"allow_unbounded_remote":true,"remote_cancellation_supported":false,"hard_byte_cap":false,"expires_at":request["expires_at"]});
+        request["facts"]["delivery_id"] = json!(delivery);
+        request["facts"]["plan_blake3"] = json!(hash);
+        request["facts"]["shares_full_source_url_with_provider"] = json!(true);
+        request["facts"]["remote_byte_cap_enforced"] = json!(false);
+        request["facts"]["remote_cancellation_supported"] = json!(false);
+        request["request_hash"] = json!(
+            zeus_verify::canonical::request_hash(&request["facts"])
+                .unwrap()
+                .to_hex()
+        );
+        assert!(validate_request(&request).is_ok());
+        let mut altered = request.clone();
+        altered["facts"]["plan"]["destination"] = json!("disk:/Other");
+        assert!(validate_request(&altered).is_err());
+        let mut inconsistent = request.clone();
+        inconsistent["facts"]["shares_full_source_url_with_provider"] = json!(false);
+        inconsistent["request_hash"] = json!(
+            zeus_verify::canonical::request_hash(&inconsistent["facts"])
+                .unwrap()
+                .to_hex()
+        );
+        assert!(validate_request(&inconsistent).is_err());
+        request["facts"]["plan"]["credential"] = json!("ZEUS-CANARY-forbidden");
+        request["request_hash"] = json!(
+            zeus_verify::canonical::request_hash(&request["facts"])
+                .unwrap()
+                .to_hex()
+        );
+        assert!(validate_request(&request).is_err());
+    }
+
+    #[test]
+    fn cloud_review_keeps_disclosure_and_verification_limits_visible() {
+        let mut request = view(&[]);
+        request.approval.kind = ApprovalKind::CloudDelivery;
+        request.facts = serde_json::json!({"mode":"remote_import","account_id":"research","account_revision":3,"source_disclosed":true,"remote_cancellation_supported":false,"destination":"disk:/Research/Exports"});
+        let screen = render_screen(&request);
+        assert!(screen.contains("cloud storage"));
+        assert!(screen.contains("Provider imports may continue"));
+        assert!(screen.contains("do not imply a matching remote hash"));
+        assert!(screen.contains("account_revision") && screen.contains("remote_import"));
+        assert!(screen.contains("disk:/Research/Exports"));
+        assert_eq!(fact_text("/a\u{1b}/b"), "/a\\u{1b}/b");
+        assert!(screen.contains("[n] deny"));
+        request.facts = serde_json::json!({"plan":{"account_id":"research","account_revision":3,"destination":"disk:/Research/Exports","remote_name":"report.zip.zeus-cld_SAMPLE","mode":"staged_upload","size_bytes":42,"max_bytes":42,"max_seconds":1800}});
+        let screen = render_screen(&request);
+        assert!(screen.contains("Account revision") && screen.contains("Object name"));
+        assert!(screen.contains("disk:/Research/Exports") && screen.contains("Lifetime (seconds)"));
     }
 
     const SCOPES: &[GrantScope] = &[

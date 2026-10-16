@@ -42,6 +42,7 @@ impl RuntimeBackend {
             .map_err(error)?;
         if engaged {
             self.workflows.pause_all_for_kill_switch().await?;
+            self.cloud.pause_all_for_kill_switch().await?;
         }
         let pending = self
             .journal

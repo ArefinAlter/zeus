@@ -9,3 +9,5 @@ The sample approval binding is illustrative, not cryptographic evidence. Product
 See [the design decisions and source references](../download-workspace.md).
 
 Captured previews: [desktop downloads](preview-desktop.png), [390 px mobile layout](preview-mobile.png), [agent run](preview-agent-run.png), [neutral approval review](preview-approval.png). These show the simulated prototype, not the production daemon.
+
+Cloud destinations demonstrate three explicit paths: complete staging and verification, bounded relay, and provider URL fetch. The examples distinguish local SHA-256, a matching provider SHA-256, and remote size alone. Provider fetch requires an explicit acknowledgement that provider activity may outlive local cancellation or exceed local byte limits. Baidu streaming additionally requires a precomputed block manifest. Every account, permission and progress value remains simulated.

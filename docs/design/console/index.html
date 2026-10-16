@@ -22,6 +22,7 @@
             <span>＋</span> Link inbox <b id="inbox-count">0</b>
           </button>
           <button data-view="runs"><span>◇</span> Agent runs <b>1</b></button>
+          <button data-view="destinations"><span>⇧</span> Cloud destinations</button>
           <button data-view="approvals">
             <span>☑</span> Approvals <b id="approval-count">1</b>
           </button>
@@ -319,6 +320,41 @@
                 request requires a fresh review.
               </p>
             </div>
+          </section>
+
+          <section data-panel="destinations" hidden>
+            <div class="split">
+              <article class="card">
+                <p class="eyebrow">EXAMPLE CLOUD DELIVERY</p>
+                <h2>Choose where the file goes.</h2>
+                <p>All accounts and progress below are sample data. This preview cannot sign in, read files or upload anything.</p>
+                <div class="form-grid">
+                  <label>Destination account<select id="cloud-account"><option value="drive">Google Drive · Research (sample)</option><option value="yandex">Yandex Disk · Archive (sample)</option><option value="rclone">Configured rclone remote (sample)</option><option value="baidu">Baidu Netdisk · App folder (sample)</option></select></label>
+                  <label>Configured destination folder<input id="cloud-folder" value="Research/Climate reference" readonly /></label><label>Remote filename<input id="cloud-name" value="climate-reference.zip" maxlength="160" /></label>
+                  <label>Source<select id="cloud-source"><option value="public">Public HTTPS file URL</option><option value="local">Completed, verified local download</option><option value="session">File requiring a browser session</option></select></label>
+                  <label>Delivery mode<select id="cloud-mode"><option value="staged_upload">Download, verify, then upload</option><option value="stream_upload">Relay with bounded buffering</option><option value="remote_import">Ask the provider to fetch the URL</option></select></label>
+                </div>
+                <p class="muted">The account fixes the allowed folder. Changing that scope requires human account setup. Object names receive a unique delivery suffix to prevent overwrites.</p>
+                <label class="check-row"><input type="checkbox" id="cloud-remote-optin" /> For provider fetch, accept that the provider may exceed the local byte cap or continue after cancellation.</label>
+                <label class="check-row"><input type="checkbox" id="cloud-block-manifest" /> Sample Baidu source has a verified 4 MiB block-MD5 manifest available before streaming.</label>
+                <div id="cloud-capability" class="notice" role="status"></div>
+                <p id="cloud-exposure" class="muted"></p>
+                <button id="cloud-plan">Preview delivery facts</button>
+                <p class="muted">A real delivery needs a separate human approval bound to the account, folder, source, mode and limits. Choosing another mode never grants permission to fall back to it.</p>
+              </article>
+              <article class="card">
+                <h2>What will be reviewed</h2>
+                <dl id="cloud-facts" class="cloud-facts"></dl>
+                <p class="agent-quote"><strong>Agent explanation · untrusted text</strong><br />“Keep the climate reference set with the research team.”</p>
+                <p id="cloud-review-state" class="notice">No delivery plan has been previewed.</p>
+              </article>
+            </div>
+            <article class="card cloud-progress-card">
+              <div class="cloud-progress-heading"><div><p class="eyebrow">ILLUSTRATIVE PROGRESS ONLY</p><h2>See each leg of the delivery.</h2></div><button id="cloud-example">Show sample progress</button></div>
+              <div id="cloud-progress" class="cloud-progress"></div>
+              <p id="cloud-assurance" class="muted"></p>
+              <p class="muted">A provider’s receipt or reported size is not an independent remote-content checksum. Provider-fetch delivery does not give Zeus a local SHA-256.</p>
+            </article>
           </section>
 
           <section data-panel="queues" hidden>

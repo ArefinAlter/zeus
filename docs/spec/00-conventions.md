@@ -115,6 +115,8 @@ Entity identifiers are a lowercase prefix, an underscore and a 26 character ULID
 | Prefix | Entity | Created by | Persisted | Notes |
 |---|---|---|---|---|
 | `job_` | Job | daemon | yes | One per download. |
+| `clp_` | Cloud delivery plan | daemon | yes | Immutable scoped plan and hash (14). |
+| `cld_` | Cloud delivery | daemon | yes | One remote delivery identity across retries and reconciliation (14). |
 | `run_` | Workflow run | daemon | yes | Groups jobs of one workflow (spec 08). |
 | `gr_` | Session grant | daemon | yes | Consent record, never contains cookies. |
 | `ap_` | Approval | daemon | yes | One pending or decided human decision. |

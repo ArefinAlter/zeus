@@ -16,6 +16,10 @@ use zeus_api::methods::{
     LlmStatus, SessionsList, SessionsRequest, SessionsRevoke, WorkflowsControl, WorkflowsDryRun,
     WorkflowsGet, WorkflowsList, WorkflowsManifest, WorkflowsPlan, WorkflowsRun,
 };
+use zeus_api::methods::{
+    CloudAccountsConfigure, CloudAccountsList, CloudAccountsRevoke, CloudControl, CloudGet,
+    CloudList, CloudPlan, CloudSubmit,
+};
 use zeus_types::Timestamp;
 
 use crate::backend::Backend;
@@ -37,6 +41,19 @@ pub fn build_router<B: Backend>(backend: Arc<B>) -> Router {
             server_time: Timestamp::now(),
         })
     });
+    let router = forward!(router, backend, CloudAccountsList, cloud_accounts_list);
+    let router = forward!(
+        router,
+        backend,
+        CloudAccountsConfigure,
+        cloud_accounts_configure
+    );
+    let router = forward!(router, backend, CloudAccountsRevoke, cloud_accounts_revoke);
+    let router = forward!(router, backend, CloudPlan, cloud_plan);
+    let router = forward!(router, backend, CloudSubmit, cloud_submit);
+    let router = forward!(router, backend, CloudList, cloud_list);
+    let router = forward!(router, backend, CloudGet, cloud_get);
+    let router = forward!(router, backend, CloudControl, cloud_control);
     let router = forward!(router, backend, DaemonStatus, daemon_status);
     let router = forward!(router, backend, DaemonShutdown, daemon_shutdown);
     let router = forward!(router, backend, DaemonKillSwitch, daemon_kill_switch);

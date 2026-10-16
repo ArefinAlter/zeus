@@ -89,6 +89,7 @@ The kinds are those of 01 section 5.3; this document adds what each kind's facts
 | `policy_exception` | a policy rule that permits a one-subject override (section 4.4) | the client whose request hit the rule | none | `typed_code` | 24 h | no | `policy_change` (one subject) |
 | `workflow_plan` | `workflows.run` (spec 08), and renewal of a `workflow` grant (section 6.3) | the client that asked to run | `workflow` when the plan names a `session_origin`, otherwise none (01 section 5.3) | `typed_code` | 7 days | no | `workflow_run` |
 | `destructive_op` | a file operation that deletes, overwrites or moves files (`files.organize`, `files.undo`, `files.convert`, later), and the end-of-run replacements of a workflow run (spec 08) | the client that asked, or the client that started the run | none | `typed_code` | 24 h | no | `destructive_files` |
+| `cloud_delivery` | `cloud.submit` (14) | the client that submitted the immutable plan | none | `typed_code` | 24 h, no later than plan expiry | no | |
 
 Rules:
 
@@ -151,6 +152,9 @@ The facts are the only content a surface may present as true. Their schema is `R
 | `policy_exception` | `rule` (`path_outside_roots`, `quarantined_file`), `operation` (`write`, `open`, `convert`, `move`, `delete`), `job_id`, `origin`, `subject_path`, `untrusted_name`, `quarantine_reasons` |
 | `workflow_plan` | `plan_id`, `plan_blake3`, `run_id`, `renewal_of`, `untrusted_title`, `allowed_domains`, `allowed_domains_omitted`, `session_origin`, `budgets` (`max_pages`, `max_files`, `max_bytes`, `max_duration_ms`, `max_depth`), `pace` (`min_interval_ms`, `max_concurrency_per_host`), `robots_txt`, `dest_dir`, `estimate` |
 | `destructive_op` | `operation_set_blake3`, `plan_id`, `counts` (`delete`, `overwrite`, `move`, `rename`), `total_bytes`, `to_trash`, `quarantined_count`, `sample`, `sample_omitted` |
+| `cloud_delivery` | `delivery_id`, `plan_blake3`, `plan` (14 public immutable plan), `shares_full_source_url_with_provider`, `remote_byte_cap_enforced`, `remote_cancellation_supported` |
+
+Cloud delivery creates no website-session grant. The initial implementation accepts its decisions only from an independently verified physical terminal (`cli_interactive` or `tui`); browser approval views MUST fail closed for this kind until they implement and attest its complete facts. The public plan withholds source URL paths/query strings, binding them through `source_hash`; destination names remain untrusted display data. The person sees the mode, account revision, destination, budget and remote cancellation/byte-limit exceptions before entering the bind code. An approval cannot authorize a later account revision or a changed plan.
 
 `transfer` holds `job_ids` (every covered job, at most 50), `total_bytes` (sum of known sizes, null when none is known), `unknown_size_count`, `dest_dirs` (canonical directories, at most 8) and `dest_dirs_omitted`. `items` is a sample of at most 20 covered downloads, each with `job_id`, `untrusted_name`, `untrusted_url` (through `redact_url(log)`, 00 section 8.2) and `total_bytes`.
 

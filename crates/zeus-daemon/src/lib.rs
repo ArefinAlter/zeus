@@ -52,3 +52,6 @@ pub mod models;
 mod workflow_network;
 /// Durable bounded workflow orchestration.
 pub mod workflows;
+
+/// Approval-bound, durable cloud delivery operations.
+pub mod cloud;

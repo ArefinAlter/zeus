@@ -6,7 +6,7 @@ Implementation evidence and remaining work are tracked in [docs/IMPLEMENTATION_S
 
 ## Phase 0: contracts and skeleton
 
-- Specs 00–08 and 13 exist; draft specs 09–12 now cover model providers, A2A, terminal UI and security invariants. Contract reconciliation and review remain open, so API v1 is not frozen.
+- Specs 00–14 exist, including draft cloud delivery contracts. Contract reconciliation and review remain open, so API v1 is not frozen.
 - Three repositories contain implementations and tests: `zeus`, `zeus-core`, `zeus-extension`. Shared schema copies are regenerated from the app specifications.
 - Research corpus drafted in `docs/research` (unverified until marked verified).
 
@@ -30,6 +30,7 @@ Exit criteria: handoff success of at least 85 percent on a 200-URL failure test 
 - Provider ladder and signed policy manifest (spec 09); `zeus auth` wizard.
 - Daemon API frozen as v1.
 - Firefox build of the extension.
+- Cloud destinations (spec 14): verified download then upload, bounded streaming, and provider-side URL fetch where an official API supports it. Native Drive/Yandex/Baidu and explicitly configured rclone adapters have implementation coverage; live accounts, OAuth onboarding/refresh, provider quotas and installed-helper acceptance remain release gates. Cloud account setup and delivery consent remain human-controlled.
 
 ## Phase 3: interoperability and GUI (months 6 to 9)
 

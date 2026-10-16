@@ -1038,3 +1038,15 @@ footer a {
     transition: none !important;
   }
 }
+
+.cloud-facts { display: grid; grid-template-columns: 80px 1fr; gap: 12px; font: 13px/1.5 system-ui, sans-serif; }
+.cloud-facts dt { color: var(--muted); }
+.cloud-facts dd { margin: 0; overflow-wrap: anywhere; }
+.cloud-progress-card { margin-top: 24px; }
+.cloud-progress-heading { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 16px; }
+.cloud-progress { display: grid; gap: 16px; margin-top: 18px; }
+.cloud-progress-row { display: grid; grid-template-columns: 160px 1fr; gap: 10px; }
+.cloud-progress-row progress { grid-column: 1 / -1; width: 100%; height: 8px; }
+@media (max-width: 700px) { .cloud-progress-row { grid-template-columns: 1fr; } }
+.check-row { display: flex; align-items: flex-start; gap: 9px; margin: 12px 0; font: 13px/1.5 system-ui, sans-serif; }
+.check-row input { width: auto; flex: 0 0 auto; margin-top: 3px; }

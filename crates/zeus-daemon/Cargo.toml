@@ -27,6 +27,9 @@ a2a = ["dep:zeus-a2a"]
 
 [dependencies]
 zeus-api.workspace = true
+zeus-cloud = { workspace = true, features = ["os-keyring"] }
+tokio-util = { workspace = true, features = ["io"] }
+ulid.workspace = true
 zeus-workflow = { workspace = true, features = ["runtime"] }
 zeus-llm = { workspace = true, features = ["http", "os-keyring"] }
 zeus-a2a = { workspace = true, optional = true }
@@ -53,6 +56,7 @@ async-trait.workspace = true
 futures.workspace = true
 directories.workspace = true
 blake3.workspace = true
+md-5.workspace = true
 hex.workspace = true
 redb.workspace = true
 unicode-normalization.workspace = true

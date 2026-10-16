@@ -369,6 +369,7 @@ An Approval is a request for a human decision. Full flow, UI text and policy are
 | `policy_exception` | A rule needs a human override (for example a destination outside the write roots, a sensitive category) (07). | none | The exception applies to this job only. | Job fails `policy.approval_denied`. | 24 h |
 | `workflow_plan` | A workflow plan is ready to run (08). | `workflow` when the plan needs a session, else none | Plan runs; a `workflow` grant is created if sessions are needed. | Plan discarded; the run ends `failed`. | 7 days |
 | `destructive_op` | A file operation that deletes or overwrites (07, 08). | none | The operation runs. | It is dropped. | 24 h |
+| `cloud_delivery` | An immutable cloud plan is submitted (14). | none | Authorize that delivery's exact mode, account revision, source and limits; no session grant is created. | Delivery is canceled without dispatch. | 24 h, bounded by plan expiry |
 
 Fields: `id`, `kind`, `state` (`pending`, `approved`, `denied`, `expired`, `canceled`), `job_id`, `run_id`, `origin`, `allowed_scopes`, `reason_codes`, `summary` (display data: title, redacted URL, size, source kind), `created_at`, `expires_at`, `decided_at`, `decision` (`outcome`, `scope`, `actor`, `grant_id`).
 

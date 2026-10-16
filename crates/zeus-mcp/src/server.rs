@@ -7,7 +7,7 @@
 //!   back as a tool result with `isError: true`, the 00 error envelope in `structuredContent`, a one-line
 //!   `"<code>: <message>"` text and a recovery hint, so the model can correct itself. Only an unknown tool name is a
 //!   protocol error.
-//! * **Nothing here decides, grants or reveals.** The nine tools map to daemon methods an `agent` credential may
+//! * **Nothing here decides, grants or reveals.** The tools map to daemon methods an `agent` credential may
 //!   call; the daemon enforces that again.
 //! * **Long work is a job.** `zeus_wait` takes at most 60 seconds.
 
@@ -114,6 +114,12 @@ impl<C: Client> ZeusTools<C> {
     /// Run the tool `name` with JSON `arguments`.
     pub async fn call(&self, name: &str, arguments: Value) -> Result<ToolOutcome, UnknownTool> {
         let outcome = match name {
+            "zeus_cloud" => {
+                self.run(arguments, |a: crate::cloud::CloudArgs| {
+                    crate::cloud::dispatch(self.client.as_ref(), a)
+                })
+                .await
+            }
             "zeus_probe" => self.run(arguments, |a: ProbeArgs| self.probe(a)).await,
             "zeus_enqueue" => self.run(arguments, |a: EnqueueArgs| self.enqueue(a)).await,
             "zeus_status" => self.run(arguments, |a: StatusArgs| self.status(a)).await,
@@ -634,6 +640,57 @@ mod tests {
 
     const JOB: &str = "job_01M45NHJ2AHWMXT8JVJ7BEEJX7";
     const KEY: &str = "intent-1";
+
+    #[tokio::test]
+    async fn cloud_dispatch_is_bounded_and_never_maps_to_human_methods() {
+        let fake = Fake::new();
+        fake.answer("cloud.accounts.list", Ok(json!({"accounts":[]})));
+        let tools = ZeusTools::new(Arc::clone(&fake));
+        let result = tools
+            .call(
+                "zeus_cloud",
+                json!({"idempotency_key":"read-1","request":{"action":"accounts"}}),
+            )
+            .await
+            .unwrap();
+        assert!(!result.is_error(), "{}", result.text());
+        assert_eq!(fake.last().0, "cloud.accounts.list");
+        assert_eq!(result.structured()["untrusted_data"]["accounts"], json!([]));
+        let count = fake.calls.lock().unwrap().len();
+        for request in [
+            json!({"action":"configure","credential":"CANARY-secret"}),
+            json!({"action":"control","delivery_id":"cld_example","operation":"delete","args":["--force"]}),
+            json!({"action":"accounts","secret":"CANARY-secret"}),
+        ] {
+            let result = tools
+                .call(
+                    "zeus_cloud",
+                    json!({"idempotency_key":"intent","request":request}),
+                )
+                .await
+                .unwrap();
+            assert!(result.is_error());
+            assert!(!result.text().contains("CANARY-secret"));
+        }
+        assert_eq!(fake.calls.lock().unwrap().len(), count);
+    }
+
+    #[tokio::test]
+    async fn cloud_submit_preserves_plan_binding_and_retry_key() {
+        let fake = Fake::new();
+        let tools = ZeusTools::new(Arc::clone(&fake));
+        let hash = "f".repeat(64);
+        let outcome=tools.call("zeus_cloud",json!({"idempotency_key":"cloud-intent","request":{"action":"submit","plan_id":"clp_example","plan_hash":hash}})).await.unwrap();
+        assert!(
+            outcome.is_error(),
+            "Fake backend must not claim a delivery was created"
+        );
+        let (method, params) = fake.last();
+        assert_eq!(method, "cloud.submit");
+        assert_eq!(params["plan_hash"], hash);
+        assert_eq!(params["idempotency_key"], "cloud-intent");
+        assert_eq!(fake.calls.lock().unwrap().len(), 1);
+    }
 
     #[tokio::test]
     async fn unknown_tools_are_protocol_errors_and_bad_arguments_are_tool_errors() {

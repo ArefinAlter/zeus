@@ -280,7 +280,7 @@ mod tests {
         )
         .await;
         let tools = catalogue["result"]["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 9);
+        assert_eq!(tools.len(), 10);
         assert!(
             !tools
                 .iter()

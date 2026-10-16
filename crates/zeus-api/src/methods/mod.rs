@@ -9,6 +9,7 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 
 pub mod admin;
+pub mod cloud;
 pub mod daemon;
 pub mod events;
 pub mod files;
@@ -53,6 +54,7 @@ macro_rules! rpc_methods {
 }
 
 use self::admin::*;
+use self::cloud::*;
 use self::daemon::*;
 use self::events::*;
 use self::files::*;
@@ -61,6 +63,22 @@ use self::sessions::*;
 use self::workflows::*;
 
 rpc_methods! {
+    /// `cloud.accounts.list`.
+    CloudAccountsList = "cloud.accounts.list" (CloudAccountsListParams) -> CloudAccountsListResult;
+    /// `cloud.accounts.configure`.
+    CloudAccountsConfigure = "cloud.accounts.configure" (CloudAccountsConfigureParams) -> CloudAccountMutationResult;
+    /// `cloud.accounts.revoke`.
+    CloudAccountsRevoke = "cloud.accounts.revoke" (CloudAccountsRevokeParams) -> CloudAccountMutationResult;
+    /// `cloud.plan`.
+    CloudPlan = "cloud.plan" (CloudPlanParams) -> CloudPlanResult;
+    /// `cloud.submit`.
+    CloudSubmit = "cloud.submit" (CloudSubmitParams) -> CloudMutationResult;
+    /// `cloud.list`.
+    CloudList = "cloud.list" (CloudListParams) -> CloudListResult;
+    /// `cloud.get`.
+    CloudGet = "cloud.get" (CloudGetParams) -> CloudDeliveryView;
+    /// `cloud.control`.
+    CloudControl = "cloud.control" (CloudControlParams) -> CloudMutationResult;
     /// Negotiate the protocol version and capabilities; first call on a connection.
     DaemonHello = "daemon.hello" (HelloParams) -> HelloResult;
     /// Prove possession of the credential; second call on a connection.

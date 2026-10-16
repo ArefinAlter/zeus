@@ -95,6 +95,18 @@ use Permission::*;
 
 /// Every method of the daemon API. See ARCHITECTURE section 5.4.
 pub const METHODS: &[MethodSpec] = &[
+    MethodSpec::needs("cloud.accounts.list", JobsRead),
+    MethodSpec::needs("cloud.accounts.configure", ConfigWrite)
+        .mutates()
+        .human(),
+    MethodSpec::needs("cloud.accounts.revoke", ConfigWrite)
+        .mutates()
+        .human(),
+    MethodSpec::needs("cloud.plan", JobsWrite).mutates(),
+    MethodSpec::needs("cloud.submit", JobsWrite).mutates(),
+    MethodSpec::needs("cloud.list", JobsRead),
+    MethodSpec::needs("cloud.get", JobsRead),
+    MethodSpec::needs("cloud.control", JobsControl).mutates(),
     MethodSpec::pre_auth("daemon.hello"),
     MethodSpec::pre_auth("daemon.authenticate"),
     MethodSpec::needs("daemon.ping", DaemonRead),
@@ -299,6 +311,9 @@ mod tests {
             .map(|m| m.name)
             .collect();
         let expected: BTreeSet<&str> = [
+            "cloud.plan",
+            "cloud.submit",
+            "cloud.control",
             "jobs.enqueue",
             "jobs.control",
             "sessions.request",

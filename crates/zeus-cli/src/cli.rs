@@ -251,6 +251,9 @@ pub enum ConfigCommand {
 /// The commands.
 #[derive(Debug, Clone, Subcommand)]
 pub enum Command {
+    /// Plan and manage explicitly approved cloud deliveries.
+    #[command(subcommand)]
+    Cloud(crate::cloud::CloudCommand),
     /// Download one or more URLs.
     Get(GetArgs),
     /// Check a URL: size, resumability, type, whether a session is needed.

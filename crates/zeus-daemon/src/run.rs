@@ -74,6 +74,15 @@ pub async fn run(paths: ZeusPaths) -> Result<()> {
     tracing::info!("daemon ready");
     let maintenance_backend = backend.clone();
     let workflows = backend.workflows.clone();
+    let cloud = backend.cloud.clone();
+    let cloud_runner = tokio::spawn(async move {
+        loop {
+            if let Err(error) = cloud.tick().await {
+                tracing::warn!(code=%error.envelope().code,"cloud execution needs attention");
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        }
+    });
     let workflow_runner = tokio::spawn(async move {
         loop {
             if let Err(e) = workflows.tick().await {
@@ -110,6 +119,9 @@ pub async fn run(paths: ZeusPaths) -> Result<()> {
     let notice = backend.shutdown.stopping().await;
     maintenance.abort();
     let _ = maintenance.await;
+    cloud_runner.abort();
+    let _ = cloud_runner.await;
+    backend.cloud.shutdown().await;
     backend.workflows.shutdown();
     workflow_runner.abort();
     let _ = workflow_runner.await;

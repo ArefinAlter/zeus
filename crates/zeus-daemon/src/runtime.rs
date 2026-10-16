@@ -11,7 +11,7 @@ use std::{
 };
 use tokio::sync::Mutex;
 use zeus_api::methods::{
-    admin::*, daemon::*, events::*, files::*, jobs::*, sessions::*, workflows::*,
+    admin::*, cloud::*, daemon::*, events::*, files::*, jobs::*, sessions::*, workflows::*,
 };
 use zeus_api::{ApiError, ApiResult, CallContext, Page};
 use zeus_engine::{Engine, EngineBuilder, EngineConfig};
@@ -67,6 +67,7 @@ pub struct RuntimeBackend {
     models: crate::models::ModelService,
     outbox: Arc<std::sync::Mutex<crate::outbox::Outbox>>,
     pub(crate) workflows: Arc<crate::workflows::WorkflowService>,
+    pub(crate) cloud: Arc<crate::cloud::CloudService>,
     subscriptions: Mutex<HashMap<String, (zeus_types::ConnectionId, tokio::task::AbortHandle)>>,
 }
 
@@ -168,6 +169,15 @@ impl RuntimeBackend {
                 service: "dev.zeus".into(),
             }),
         )?;
+        let cloud = crate::cloud::CloudService::open(
+            &state_dir,
+            journal.clone(),
+            consent.clone(),
+            audit.clone(),
+            Arc::new(zeus_cloud::OsCredentialStore {
+                service: "dev.zeus".into(),
+            }),
+        )?;
         let outbox = Arc::new(std::sync::Mutex::new(crate::outbox::Outbox::open(
             &state_dir,
             &config.effective_write_roots(),
@@ -188,6 +198,7 @@ impl RuntimeBackend {
             models,
             outbox,
             workflows,
+            cloud,
             info: DaemonInfo {
                 version: env!("CARGO_PKG_VERSION").into(),
                 instance_id: zeus_api::auth::Nonce::generate().as_str()[..32].to_owned(),
@@ -292,6 +303,64 @@ impl RuntimeBackend {
 
 #[async_trait]
 impl Backend for RuntimeBackend {
+    async fn cloud_accounts_list(
+        &self,
+        _ctx: &CallContext,
+        _p: CloudAccountsListParams,
+    ) -> ApiResult<CloudAccountsListResult> {
+        self.cloud.accounts()
+    }
+    async fn cloud_accounts_configure(
+        &self,
+        ctx: &CallContext,
+        p: CloudAccountsConfigureParams,
+    ) -> ApiResult<CloudAccountMutationResult> {
+        let actor = self.model_human(ctx)?;
+        self.cloud.configure(&ctx.identity, actor, p).await
+    }
+    async fn cloud_accounts_revoke(
+        &self,
+        ctx: &CallContext,
+        p: CloudAccountsRevokeParams,
+    ) -> ApiResult<CloudAccountMutationResult> {
+        let actor = self.model_human(ctx)?;
+        self.cloud.revoke(&ctx.identity, actor, p).await
+    }
+    async fn cloud_plan(
+        &self,
+        ctx: &CallContext,
+        p: CloudPlanParams,
+    ) -> ApiResult<CloudPlanResult> {
+        self.cloud.plan(&ctx.identity, p).await
+    }
+    async fn cloud_submit(
+        &self,
+        ctx: &CallContext,
+        p: CloudSubmitParams,
+    ) -> ApiResult<CloudMutationResult> {
+        self.cloud.submit(&ctx.identity, p).await
+    }
+    async fn cloud_get(
+        &self,
+        ctx: &CallContext,
+        p: CloudGetParams,
+    ) -> ApiResult<CloudDeliveryView> {
+        self.cloud.get(&ctx.identity, p)
+    }
+    async fn cloud_list(
+        &self,
+        ctx: &CallContext,
+        p: CloudListParams,
+    ) -> ApiResult<CloudListResult> {
+        self.cloud.list(&ctx.identity, p)
+    }
+    async fn cloud_control(
+        &self,
+        ctx: &CallContext,
+        p: CloudControlParams,
+    ) -> ApiResult<CloudMutationResult> {
+        self.cloud.control(&ctx.identity, p).await
+    }
     async fn workflows_plan(
         &self,
         ctx: &CallContext,

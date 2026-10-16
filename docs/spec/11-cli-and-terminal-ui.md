@@ -89,6 +89,8 @@ Browser-parent attestation currently recognizes machine-installed Windows browse
 
 ## Implemented local bridges and model setup
 
+Cloud commands are documented in [the CLI cloud guide](../../crates/zeus-cli/README.md) and [spec 14](14-cloud-destinations-and-delivery.md). `zeus cloud accounts configure` uses hidden physical-terminal credential input and fresh confirmation. `plan` requires an explicit mode, configured account, exact source size and budgets; `submit` binds the returned plan hash and raises human review. `get`, `list` and `control` report the separate delivery lifecycle. Cloud approvals use the existing typed bind-code terminal review and cannot be decided by MCP or browser-session controls. A provider fetch with no hard byte cap or remote cancellation requires explicit `--allow-unbounded-remote` consent. Baidu direct streams require a complete 4 MiB block manifest; staged uploads compute it during local verification.
+
 `zeus a2a --token-file PATH [--port 4750]` runs the optional authenticated loopback bridge using its dedicated agent credential. See [the bridge profile](../../crates/zeus-a2a-bridge/README.md) for request shapes, limits and ownership. It does not start alongside the daemon automatically.
 
 `zeus auth` opens a controlling-terminal menu for model configuration, ChatGPT/OpenRouter sign-in, saved ChatGPT account inspection and provider sign-out. Sign-in presents the one-use URL only at that terminal, polls the daemon's owned flow, and cancels on Ctrl-C; it never enables inference or changes spending settings. Sign-out distinguishes local credential removal from confirmed remote revocation. Live provider/account and real-terminal/platform acceptance remain release gates.

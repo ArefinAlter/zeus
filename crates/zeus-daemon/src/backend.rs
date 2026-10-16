@@ -12,6 +12,7 @@ use zeus_api::methods::admin::{
     LlmAuthStartParams, LlmAuthStartResult, LlmAuthStatusParams, LlmAuthStatusResult,
     LlmConfigureParams, LlmConfigureResult, LlmStatusParams, LlmStatusResult,
 };
+use zeus_api::methods::cloud::*;
 use zeus_api::methods::daemon::{
     KillSwitchParams, KillSwitchResult, ShutdownParams, ShutdownResult, StatusParams, StatusResult,
 };
@@ -50,6 +51,22 @@ macro_rules! backend {
 }
 
 backend! {
+    /// `cloud.accounts.list`.
+    cloud_accounts_list(CloudAccountsListParams) -> CloudAccountsListResult;
+    /// `cloud.accounts.configure`.
+    cloud_accounts_configure(CloudAccountsConfigureParams) -> CloudAccountMutationResult;
+    /// `cloud.accounts.revoke`.
+    cloud_accounts_revoke(CloudAccountsRevokeParams) -> CloudAccountMutationResult;
+    /// `cloud.plan`.
+    cloud_plan(CloudPlanParams) -> CloudPlanResult;
+    /// `cloud.submit`.
+    cloud_submit(CloudSubmitParams) -> CloudMutationResult;
+    /// `cloud.list`.
+    cloud_list(CloudListParams) -> CloudListResult;
+    /// `cloud.get`.
+    cloud_get(CloudGetParams) -> CloudDeliveryView;
+    /// `cloud.control`.
+    cloud_control(CloudControlParams) -> CloudMutationResult;
     /// `daemon.status`.
     daemon_status(StatusParams) -> StatusResult;
     /// `daemon.shutdown` (admin).

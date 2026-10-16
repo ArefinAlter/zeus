@@ -17,6 +17,7 @@ Zeus is a free, open-core (Apache-2.0), Rust, local-first session-aware download
 | Path | What |
 |---|---|
 | `crates/zeus-api` | JSON-RPC types, `ClientKind`, `Permission`, method policy table, NDJSON codec, endpoint and discovery, auth handshake, `Client` and `Router`/`serve_connection`, redacted `JobView`. The contract between all front ends and the daemon. |
+| `crates/zeus-cloud` | Explicit staged/streaming/provider-fetch delivery adapters, capabilities, private checkpoints and keyring credential port. Daemon cloud service owns approval, account revision, source policy and orchestration. |
 | `crates/zeus-daemon` | `zeusd` binary; `Backend` trait + routes, human-decision rules (`approvals.rs`), provisioning, config. The runtime adapts the engine, consent store, workflow runner and model service; see docs/IMPLEMENTATION_STATUS.md for remaining gaps. |
 | `crates/zeus-mcp` | MCP tools (`zeus_<verb>`): catalogue, dispatch over any `Client`, resources, prompt. The rmcp stdio transport is implemented; HTTP remains optional and unavailable. |
 | `crates/zeus-cli` | `zeus` binary, clap tree, exit codes, trust prompt, TUI (`src/tui`). |
@@ -24,7 +25,7 @@ Zeus is a free, open-core (Apache-2.0), Rust, local-first session-aware download
 | `crates/zeus-workflow` | Plan IR v0, templates, validator, estimators. |
 | `crates/zeus-llm` | Provider ladder, policy manifest, PKCE, spend ledger. |
 | `crates/zeus-a2a` | Agent Card, job to task mapping. |
-| `docs/spec/` | Specs 00–13 and JSON Schemas; 09–12 are new review drafts. Prose wins over schema. |
+| `docs/spec/` | Specs 00–14 and JSON Schemas; new drafts still require implementation/release review. Prose wins over schema. |
 | `docs/ARCHITECTURE.md`, `docs/adr/` | Design and decisions. Section 5 to 12 of ARCHITECTURE are the input for the planned specs. |
 | `docs/research/` | Research corpus. Owned by another workflow; do not edit. Unverified unless the front matter says `verified`. |
 | `research.md` | Original market research (historical name "Haul"). |
