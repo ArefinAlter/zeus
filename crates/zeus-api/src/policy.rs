@@ -159,6 +159,18 @@ pub const METHODS: &[MethodSpec] = &[
         .mutates()
         .human()
         .later(),
+    MethodSpec::needs("llm.auth.start", LlmConfigure)
+        .human()
+        .later(),
+    MethodSpec::needs("llm.auth.status", LlmConfigure)
+        .human()
+        .later(),
+    MethodSpec::needs("llm.auth.cancel", LlmConfigure)
+        .human()
+        .later(),
+    MethodSpec::needs("llm.auth.sign_out", LlmConfigure)
+        .human()
+        .later(),
     MethodSpec::needs("clients.list", DaemonAdmin)
         .human()
         .later(),

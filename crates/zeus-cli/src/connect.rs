@@ -19,6 +19,8 @@ pub enum Identity {
     Cli,
     /// The MCP server (`agent.token`).
     Agent,
+    /// The standalone A2A bridge (`a2a.token`).
+    A2a,
 }
 
 impl Identity {
@@ -27,6 +29,7 @@ impl Identity {
         match self {
             Self::Cli => "cli",
             Self::Agent => "agent",
+            Self::A2a => "a2a",
         }
     }
 
@@ -35,6 +38,7 @@ impl Identity {
         match self {
             Self::Cli => ClientRole::Cli,
             Self::Agent => ClientRole::Mcp,
+            Self::A2a => ClientRole::A2a,
         }
     }
 }

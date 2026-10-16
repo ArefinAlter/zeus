@@ -104,7 +104,7 @@ rpc_methods! {
     /// List approvals.
     ApprovalsList = "approvals.list" (ApprovalsListParams) -> ApprovalsListResult;
     /// Get one approval.
-    ApprovalsGet = "approvals.get" (ApprovalsGetParams) -> ApprovalView;
+    ApprovalsGet = "approvals.get" (ApprovalsGetParams) -> ApprovalsGetResult;
     /// Decide an approval (human, with channel evidence).
     ApprovalsDecide = "approvals.decide" (ApprovalsDecideParams) -> ApprovalsDecideResult;
 
@@ -146,6 +146,14 @@ rpc_methods! {
     LlmStatus = "llm.status" (LlmStatusParams) -> LlmStatusResult;
     /// Configure LLM providers (human, later).
     LlmConfigure = "llm.configure" (LlmConfigureParams) -> LlmConfigureResult;
+    /// Begin provider sign-in on a trusted human surface.
+    LlmAuthStart = "llm.auth.start" (LlmAuthStartParams) -> LlmAuthStartResult;
+    /// Inspect sign-in/account status on a trusted human surface.
+    LlmAuthStatus = "llm.auth.status" (LlmAuthStatusParams) -> LlmAuthStatusResult;
+    /// Cancel an owned provider sign-in.
+    LlmAuthCancel = "llm.auth.cancel" (LlmAuthCancelParams) -> LlmAuthFlow;
+    /// Clear provider credentials and request remote revocation.
+    LlmAuthSignOut = "llm.auth.sign_out" (LlmAuthSignOutParams) -> LlmAuthSignOutResult;
     /// List client credentials (admin, later).
     ClientsList = "clients.list" (ClientsListParams) -> ClientsListResult;
     /// Revoke a client credential (admin, later).
@@ -211,10 +219,10 @@ mod tests {
         let mut seen = BTreeSet::new();
         for name in ALL_NAMES {
             assert!(seen.insert(*name), "{name}");
-            let (namespace, verb) = name.split_once('.').expect("dotted");
-            for part in [namespace, verb] {
+            assert!(name.contains('.'), "dotted");
+            for part in name.split('.') {
                 assert!(
-                    part.bytes().all(|b| b.is_ascii_lowercase() || b == b'_'),
+                    !part.is_empty() && part.bytes().all(|b| b.is_ascii_lowercase() || b == b'_'),
                     "{name}"
                 );
             }

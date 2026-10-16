@@ -1,8 +1,8 @@
 //! Dry-run planning contracts and estimators.
 //!
 //! The planner fetches a few pages through an injected [`PageFetcher`] (so tests are hermetic and the daemon
-//! controls politeness and sessions) and produces a [`crate::report::DryRunReport`]. The skeleton ships the trait
-//! contracts and the pure estimators; the daemon-side implementation is a later task.
+//! controls politeness and sessions) and produces a [`crate::report::DryRunReport`]. With the runtime
+//! feature, `BoundedPlanner` executes the same selectors and pagination through sampling-only ports.
 
 use async_trait::async_trait;
 use schemars::JsonSchema;
@@ -43,6 +43,18 @@ pub enum PlannerError {
 pub trait PageFetcher: Send + Sync {
     /// Fetch one page for sampling.
     async fn fetch(&self, url: &str) -> Result<PageSample, PlannerError>;
+    /// Private full response for correct redirect bases and Link pagination during dry runs.
+    #[cfg(feature = "runtime")]
+    async fn fetch_document(&self, url: &str) -> Result<crate::runtime::Document, PlannerError> {
+        let sample = self.fetch(url).await?;
+        Ok(crate::runtime::Document {
+            final_url: url.into(),
+            status: 200,
+            content_type: sample.content_type.unwrap_or_else(|| "text/html".into()),
+            body: sample.body,
+            headers: Default::default(),
+        })
+    }
 }
 
 /// Produces dry-run reports.
@@ -159,5 +171,223 @@ mod tests {
             let e = Estimate::from_page_counts(&counts, pages).unwrap();
             prop_assert!(e.low <= e.point && e.point <= e.high);
         }
+    }
+}
+
+/// Concrete bounded planner using the same selectors, filters, naming and pagination as execution.
+#[cfg(feature = "runtime")]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct BoundedPlanner;
+
+#[cfg(feature = "runtime")]
+#[async_trait]
+impl DryRunPlanner for BoundedPlanner {
+    async fn dry_run(
+        &self,
+        plan: &Plan,
+        fetcher: &dyn PageFetcher,
+        sample_items: u32,
+    ) -> Result<DryRunReport, PlannerError> {
+        use crate::runtime::*;
+        use std::sync::Mutex;
+        struct Samples<'a> {
+            fetcher: &'a dyn PageFetcher,
+            items: Mutex<Vec<JobIntent>>,
+            counts: Mutex<Vec<u64>>,
+        }
+        #[async_trait]
+        impl RuntimePort for Samples<'_> {
+            async fn authorize(&self, _: zeus_types::RunId, _: &str) -> RuntimeResult<()> {
+                Ok(())
+            }
+            async fn validate_environment(&self, _: &Plan) -> RuntimeResult<()> {
+                Ok(())
+            }
+            async fn fetch(&self, r: FetchRequest) -> RuntimeResult<Document> {
+                let document = self
+                    .fetcher
+                    .fetch_document(&r.url)
+                    .await
+                    .map_err(|_| RuntimeError::Port("workflow.sample_fetch_failed"))?;
+                if document.body.len() > 512 * 1024 {
+                    return Err(RuntimeError::Policy("workflow.sample_too_large"));
+                }
+                Ok(document)
+            }
+            async fn job_totals(&self, _: zeus_types::RunId) -> RuntimeResult<JobTotals> {
+                Ok(JobTotals::default())
+            }
+            async fn commit(
+                &self,
+                _: u64,
+                _: &RunSnapshot,
+                jobs: &[JobIntent],
+            ) -> RuntimeResult<()> {
+                if !jobs.is_empty() {
+                    self.counts
+                        .lock()
+                        .map_err(|_| RuntimeError::Port("workflow.sample_state"))?
+                        .push(jobs.len() as u64);
+                }
+                self.items
+                    .lock()
+                    .map_err(|_| RuntimeError::Port("workflow.sample_state"))?
+                    .extend_from_slice(jobs);
+                Ok(())
+            }
+            async fn control_jobs(&self, _: zeus_types::RunId, _: RunAction) -> RuntimeResult<()> {
+                Ok(())
+            }
+            async fn finish(&self, _: &Plan, _: &RunSnapshot) -> RuntimeResult<()> {
+                Ok(())
+            }
+        }
+        let diagnostics = crate::validate::validate_plan(plan);
+        if crate::validate::has_errors(&diagnostics) {
+            return Err(PlannerError::Invalid(diagnostics));
+        }
+        let mut sampled = plan.clone();
+        sampled.budgets.max_pages = sampled.budgets.max_pages.min(10);
+        sampled.budgets.max_files = sampled.budgets.max_files.min(sample_items.clamp(1, 100));
+        sampled.budgets.max_duration_ms = sampled.budgets.max_duration_ms.min(60_000);
+        fn limit(p: &mut crate::Pagination) {
+            match p {
+                crate::Pagination::RelNext { max_pages }
+                | crate::Pagination::PageParam { max_pages, .. }
+                | crate::Pagination::OffsetLimit { max_pages, .. }
+                | crate::Pagination::Cursor { max_pages, .. }
+                | crate::Pagination::NextSelector { max_pages, .. } => {
+                    *max_pages = (*max_pages).min(3)
+                }
+                crate::Pagination::DateRange { inner, .. } => limit(inner),
+                _ => {}
+            }
+        }
+        if let Some(p) = &mut sampled.pagination {
+            limit(p);
+        }
+        let mut runner = WorkflowRuntime::new(sampled, zeus_types::IdGenerator::new().run_id())
+            .map_err(|e| match e {
+                RuntimeError::Invalid(d) => PlannerError::Invalid(d),
+                _ => PlannerError::Fetch("workflow.sample_invalid".into()),
+            })?;
+        let port = Samples {
+            fetcher,
+            items: Mutex::new(vec![]),
+            counts: Mutex::new(vec![]),
+        };
+        let work = async {
+            for _ in 0..32 {
+                runner.step(&port).await?;
+                if !matches!(
+                    runner.report().status,
+                    crate::RunStatus::Running | crate::RunStatus::AwaitingApproval
+                ) {
+                    break;
+                }
+            }
+            Ok::<(), RuntimeError>(())
+        };
+        let mut warnings = diagnostics;
+        let complete = match tokio::time::timeout(std::time::Duration::from_secs(60), work).await {
+            Ok(Ok(())) => true,
+            Ok(Err(RuntimeError::Invalid(d))) => return Err(PlannerError::Invalid(d)),
+            Ok(Err(_)) => return Err(PlannerError::Fetch("workflow.sample_fetch_failed".into())),
+            Err(_) => {
+                warnings.push(Diagnostic::warning(
+                    "plan.dry_run_partial",
+                    "/fetch",
+                    "sampling did not finish within the 60-second deadline",
+                ));
+                false
+            }
+        };
+        warnings.extend(runner.report().drift.clone());
+        if plan.session.is_some() {
+            warnings.push(Diagnostic::warning(
+                "plan.tos_logged_in",
+                "/session",
+                "this plan uses a logged-in session; the site's automation terms apply",
+            ));
+        }
+        let intents = port
+            .items
+            .into_inner()
+            .map_err(|_| PlannerError::Fetch("workflow.sample_state".into()))?;
+        let counts = port
+            .counts
+            .into_inner()
+            .map_err(|_| PlannerError::Fetch("workflow.sample_state".into()))?;
+        let mut sample = Vec::new();
+        let mut paths = std::collections::BTreeMap::new();
+        let mut collisions = 0;
+        for item in intents
+            .into_iter()
+            .take(sample_items.clamp(1, 100) as usize)
+        {
+            let filename = item.spec.filename.unwrap_or_else(|| "download".into());
+            let path = format!("{}/{}", item.spec.dest_dir.unwrap_or_default(), filename);
+            let index = sample.len() as u32 + 1;
+            let prior = paths.insert(path, index);
+            if prior.is_some() {
+                collisions += 1;
+            }
+            sample.push(crate::PlannedItem {
+                index,
+                url_redacted: display_url(item.spec.url.expose()),
+                file_name: filename,
+                size_bytes: item.declared_size,
+                collides_with: prior,
+            });
+        }
+        let files =
+            Estimate::from_page_counts(&counts, u64::from(plan.budgets.max_pages)).map(|e| {
+                Estimate {
+                    low: e.low.min(plan.budgets.max_files as u64),
+                    point: e.point.min(plan.budgets.max_files as u64),
+                    high: e.high.min(plan.budgets.max_files as u64),
+                }
+            });
+        let sizes = sample
+            .iter()
+            .filter_map(|i| i.size_bytes)
+            .collect::<Vec<_>>();
+        let bytes = files.filter(|_| !sizes.is_empty()).map(|e| {
+            let mean = sizes.iter().fold(0u64, |a, b| a.saturating_add(*b)) / sizes.len() as u64;
+            Estimate {
+                low: e.low.saturating_mul(mean).min(plan.budgets.max_bytes),
+                point: e.point.saturating_mul(mean).min(plan.budgets.max_bytes),
+                high: e.high.saturating_mul(mean).min(plan.budgets.max_bytes),
+            }
+        });
+        let duration = files.map(|e| {
+            let estimate = |n: u64| {
+                n.saturating_add(plan.budgets.max_pages as u64)
+                    .saturating_mul(plan.fetch.min_interval_ms)
+            };
+            Estimate {
+                low: estimate(e.low),
+                point: estimate(e.point),
+                high: estimate(e.high),
+            }
+        });
+        Ok(DryRunReport {
+            plan_hash: plan.plan_hash().map_err(|_| {
+                PlannerError::Invalid(vec![Diagnostic::error(
+                    "workflow.plan_invalid",
+                    "/",
+                    "plan cannot be canonicalized",
+                )])
+            })?,
+            generated_at: zeus_types::Timestamp::now(),
+            complete,
+            sampled_pages: runner.report().pages_fetched,
+            sample,
+            name_collisions: collisions,
+            estimate_files: files,
+            estimate_bytes: bytes,
+            estimate_duration_ms: duration,
+            warnings,
+        })
     }
 }

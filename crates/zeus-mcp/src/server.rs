@@ -248,7 +248,7 @@ impl<C: Client> ZeusTools<C> {
                     job_id: j.job_id.map(|id| id.to_string()),
                     state: j.state,
                     approval_id: j.approval_id.map(|id| id.to_string()),
-                    deduplicated: j.deduplicated,
+                    deduplicated: result.replayed,
                     untrusted_planned_path: j.plan.and_then(|p| p.dest_path),
                     error_code: j.error.map(|e| e.code.to_string()),
                 })
@@ -273,6 +273,8 @@ impl<C: Client> ZeusTools<C> {
             return Ok(JobsOutput {
                 jobs: vec![JobBrief::from_view(&result.job)],
                 timed_out: None,
+                cursor: None,
+                all_settled: None,
             });
         }
         let limit = args.limit.unwrap_or(10).clamp(1, 50);
@@ -288,6 +290,8 @@ impl<C: Client> ZeusTools<C> {
         Ok(JobsOutput {
             jobs: page.items.iter().map(JobBrief::from_summary).collect(),
             timed_out: None,
+            cursor: None,
+            all_settled: None,
         })
     }
 
@@ -301,6 +305,19 @@ impl<C: Client> ZeusTools<C> {
             .map(|id| parse_job_id(id))
             .collect::<ToolResult<Vec<_>>>()?;
         let seconds = args.timeout_s.unwrap_or(30).clamp(1, MAX_WAIT_S);
+        let since_seq = args
+            .since
+            .as_deref()
+            .map(|cursor| {
+                cursor
+                    .strip_prefix("ev_")
+                    .filter(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()))
+                    .and_then(|s| s.parse::<u64>().ok())
+                    .ok_or_else(|| {
+                        ToolOutcome::invalid("since must be a durable ev_<number> cursor")
+                    })
+            })
+            .transpose()?;
         let until = match args.until {
             WaitUntilArg::SettledOrBlocked => WaitUntil::SettledOrBlocked,
             WaitUntilArg::AllFinal => WaitUntil::AllTerminal,
@@ -311,11 +328,22 @@ impl<C: Client> ZeusTools<C> {
                 job_ids,
                 until,
                 timeout_ms: u64::from(seconds) * 1000,
+                since_seq,
+                progress_bytes: None,
             })
             .await?;
         Ok(JobsOutput {
             jobs: result.jobs.iter().map(JobBrief::from_summary).collect(),
             timed_out: Some(result.timed_out),
+            cursor: Some(format!("ev_{}", result.head_seq)),
+            all_settled: Some(result.jobs.iter().all(|j| {
+                matches!(
+                    j.state,
+                    zeus_types::JobState::Completed
+                        | zeus_types::JobState::Failed
+                        | zeus_types::JobState::Canceled
+                )
+            })),
         })
     }
 
@@ -558,6 +586,8 @@ mod tests {
                 session: AuthenticateResult {
                     client_id: "cli_x".into(),
                     kind: ClientKind::Agent,
+                    credential_kind: ClientKind::Agent,
+                    downgraded: false,
                     role: ClientRole::Mcp,
                     permissions: vec![],
                     limits: ConnectionLimits::STANDARD,
@@ -684,6 +714,41 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(fake.last().1["timeout_ms"], 1000);
+    }
+
+    #[tokio::test]
+    async fn wait_preserves_the_durable_cursor_and_rejects_malformed_cursors() {
+        let fake = Fake::new();
+        fake.answer(
+            "jobs.wait",
+            Ok(json!({"jobs":[],"timed_out":true,"head_seq":43})),
+        );
+        let tools = ZeusTools::new(Arc::clone(&fake));
+        let result = tools
+            .call(
+                "zeus_wait",
+                json!({"job_ids":[JOB],"since":"ev_42","until":"any_change"}),
+            )
+            .await
+            .unwrap();
+        assert!(!result.is_error(), "{}", result.text());
+        assert_eq!(fake.last().1["since_seq"], 42);
+        assert_eq!(fake.last().1["until"], "any_change");
+        assert_eq!(result.structured()["cursor"], "ev_43");
+        for cursor in ["42", "ev_", "ev_-1", "ev_1.0", "ev_18446744073709551616"] {
+            assert!(
+                tools
+                    .call("zeus_wait", json!({"job_ids":[JOB],"since":cursor}))
+                    .await
+                    .unwrap()
+                    .is_error()
+            );
+        }
+        assert_eq!(
+            fake.calls.lock().unwrap().len(),
+            1,
+            "invalid cursors never reach the daemon"
+        );
     }
 
     #[tokio::test]

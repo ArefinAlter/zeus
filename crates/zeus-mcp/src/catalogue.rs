@@ -153,7 +153,7 @@ pub fn catalogue() -> Vec<ToolDef> {
         tool::<WaitArgs, JobsOutput>(
             "zeus_wait",
             "Wait for jobs",
-            "Wait up to 60 seconds for jobs to finish or need attention, then return their progress. Call again to keep waiting.",
+            "Wait up to timeout_s (default 30, max 60) until a job completes, fails or needs a person, then return the jobs. Pass the returned cursor as since next time so old states do not wake you. Changes nothing. If next.action is ask_user, tell the user and stop waiting on that job.",
             true,
             false,
             true,

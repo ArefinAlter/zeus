@@ -10,8 +10,9 @@ use crate::output::{format_bytes, percent, progress_bar, sanitize};
 
 /// Draw the whole interface.
 pub fn render(frame: &mut Frame, app: &App) {
-    let [top, spark, bottom, footer] = Layout::vertical([
+    let [top, details, spark, bottom, footer] = Layout::vertical([
         Constraint::Min(6),
+        Constraint::Length(3),
         Constraint::Length(4),
         Constraint::Length((app.approvals.len().min(5) + 2) as u16),
         Constraint::Length(1),
@@ -38,6 +39,10 @@ pub fn render(frame: &mut Frame, app: &App) {
             let row = Row::new([
                 sanitize(job.filename.as_deref().unwrap_or("-")),
                 state,
+                serde_json::to_value(job.source_kind)
+                    .ok()
+                    .and_then(|v| v.as_str().map(str::to_string))
+                    .unwrap_or_default(),
                 progress_bar(job.bytes_done, job.bytes_total, 16),
                 percent(job.bytes_done, job.bytes_total),
                 job.bytes_total.map_or("?".to_string(), format_bytes),
@@ -54,22 +59,64 @@ pub fn render(frame: &mut Frame, app: &App) {
         [
             Constraint::Min(16),
             Constraint::Length(17),
+            Constraint::Length(15),
             Constraint::Length(18),
             Constraint::Length(5),
             Constraint::Length(10),
         ],
     )
     .header(
-        Row::new(["Name", "State", "Progress", "%", "Size"])
+        Row::new(["Name", "State", "Asked by", "Saved", "%", "Size"])
             .style(Style::default().add_modifier(Modifier::BOLD)),
     )
     .block(
         Block::default()
             .borders(Borders::ALL)
-            .title(" Jobs ")
+            .title(format!(" Downloads ({}) ", app.jobs.len()))
             .style(focus(Pane::Jobs)),
     );
     frame.render_widget(table, top);
+
+    let detail = app
+        .selected_job()
+        .map(|job| {
+            let source = job
+                .origin
+                .as_ref()
+                .map_or_else(|| job.url_redacted.to_string(), |o| o.to_string());
+            match &job.last_error {
+                Some(error) => format!(
+                    "{} · {} [{}] · {}",
+                    source,
+                    sanitize(&error.message),
+                    error.code,
+                    match error.class {
+                        zeus_types::ErrorClass::AuthExpired =>
+                            "Open approvals to review website access.",
+                        zeus_types::ErrorClass::Blocked => "Download this file in your browser.",
+                        zeus_types::ErrorClass::Disk => "Free disk space, then retry.",
+                        _ => "Review the error before retrying.",
+                    }
+                ),
+                None => format!(
+                    "{} · {} saved · {}",
+                    source,
+                    format_bytes(job.bytes_done),
+                    job.id
+                ),
+            }
+        })
+        .unwrap_or_else(|| {
+            "Add a URL with zeus get <url>, or send one from your browser or AI app.".into()
+        });
+    frame.render_widget(
+        Paragraph::new(sanitize(&detail)).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" Selected download "),
+        ),
+        details,
+    );
 
     let samples: Vec<u64> = app.throughput.iter().copied().collect();
     let current = samples.last().copied().unwrap_or(0);
@@ -131,7 +178,7 @@ mod tests {
     use zeus_types::JobSummary;
 
     fn screen(app: &App) -> String {
-        let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(120, 28)).unwrap();
         terminal.draw(|frame| render(frame, app)).unwrap();
         let buffer = terminal.backend().buffer().clone();
         buffer

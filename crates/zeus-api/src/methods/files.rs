@@ -87,6 +87,9 @@ fn yes() -> bool {
 /// `files.organize` result.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct FilesOrganizeResult {
+    /// True when this response replays a durable mutation receipt.
+    #[serde(default)]
+    pub replayed: bool,
     /// The plan.
     pub steps: Vec<FileStep>,
     /// Whether the plan was applied.
@@ -114,6 +117,9 @@ pub struct FilesConvertParams {
 /// `files.convert` result.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct FilesConvertResult {
+    /// True when this response replays a durable mutation receipt.
+    #[serde(default)]
+    pub replayed: bool,
     /// Planned or performed conversions.
     pub steps: Vec<FileStep>,
     /// Converter name and version used, when applied.
@@ -133,6 +139,9 @@ pub struct FilesUndoParams {
 /// `files.undo` result.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct FilesUndoResult {
+    /// True when this response replays a durable mutation receipt.
+    #[serde(default)]
+    pub replayed: bool,
     /// Steps reverted.
     pub steps: Vec<FileStep>,
 }

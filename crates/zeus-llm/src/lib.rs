@@ -31,3 +31,11 @@ pub use provider::{
 };
 pub use secrets::{MemorySecretStore, SecretStore};
 pub use spend::{SpendCaps, SpendLedger};
+
+#[cfg(feature = "http")]
+pub mod http_provider;
+#[cfg(feature = "runtime")]
+pub mod runtime;
+
+#[cfg(feature = "http")]
+pub mod chatgpt;

@@ -15,7 +15,7 @@ pub struct SecretKey {
     /// Which provider the secret belongs to.
     pub provider: ProviderKind,
     /// What the secret is.
-    pub purpose: &'static str,
+    pub purpose: String,
 }
 
 impl SecretKey {
@@ -75,8 +75,8 @@ impl SecretStore for MemorySecretStore {
     }
 }
 
-/// OS keyring backend (Windows Credential Manager, macOS Keychain, Secret Service). The skeleton declares the
-/// type; the daemon agent implements it against the `keyring` crate.
+/// OS keyring backend (Windows Credential Manager, macOS Keychain, Secret Service).
+/// Backend errors are deliberately opaque: platform diagnostics can contain account data.
 #[cfg(feature = "os-keyring")]
 #[derive(Debug, Clone)]
 pub struct OsKeyringStore {
@@ -86,17 +86,34 @@ pub struct OsKeyringStore {
 
 #[cfg(feature = "os-keyring")]
 impl SecretStore for OsKeyringStore {
-    fn get(&self, _key: &SecretKey) -> Result<Option<Zeroizing<String>>, LlmError> {
-        Err(LlmError::NotImplemented("os keyring get"))
+    fn get(&self, key: &SecretKey) -> Result<Option<Zeroizing<String>>, LlmError> {
+        let entry = keyring::Entry::new(&self.service, &key.account()).map_err(keyring_error)?;
+        match entry.get_password() {
+            Ok(value) => Ok(Some(Zeroizing::new(value))),
+            Err(keyring::Error::NoEntry) => Ok(None),
+            Err(error) => Err(keyring_error(error)),
+        }
     }
 
-    fn set(&self, _key: &SecretKey, _value: &str) -> Result<(), LlmError> {
-        Err(LlmError::NotImplemented("os keyring set"))
+    fn set(&self, key: &SecretKey, value: &str) -> Result<(), LlmError> {
+        keyring::Entry::new(&self.service, &key.account())
+            .map_err(keyring_error)?
+            .set_password(value)
+            .map_err(keyring_error)
     }
 
-    fn delete(&self, _key: &SecretKey) -> Result<(), LlmError> {
-        Err(LlmError::NotImplemented("os keyring delete"))
+    fn delete(&self, key: &SecretKey) -> Result<(), LlmError> {
+        let entry = keyring::Entry::new(&self.service, &key.account()).map_err(keyring_error)?;
+        match entry.delete_credential() {
+            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+            Err(error) => Err(keyring_error(error)),
+        }
     }
+}
+
+#[cfg(feature = "os-keyring")]
+fn keyring_error(_: keyring::Error) -> LlmError {
+    LlmError::SecretStore("OS credential store is unavailable or access was denied".into())
 }
 
 #[cfg(test)]
@@ -108,7 +125,7 @@ mod tests {
         let store = MemorySecretStore::default();
         let key = SecretKey {
             provider: ProviderKind::ApiKeyAnthropic,
-            purpose: "api_key",
+            purpose: "api_key".into(),
         };
         assert!(store.get(&key).unwrap().is_none());
         store.set(&key, "ZEUS-CANARY-key").unwrap();
@@ -126,7 +143,7 @@ mod tests {
         let store = MemorySecretStore::default();
         let key = SecretKey {
             provider: ProviderKind::LocalOllama,
-            purpose: "api_key",
+            purpose: "api_key".into(),
         };
         store.set(&key, "ZEUS-CANARY-secret").unwrap();
         assert!(!format!("{store:?}").contains("ZEUS-CANARY"));

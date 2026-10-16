@@ -50,12 +50,27 @@ tracing-subscriber.workspace = true
 tracing-appender.workspace = true
 tokio.workspace = true
 async-trait.workspace = true
+futures.workspace = true
 directories.workspace = true
 blake3.workspace = true
 hex.workspace = true
+redb.workspace = true
+unicode-normalization.workspace = true
+unicode-segmentation.workspace = true
+zeus-artifact.workspace = true
 zeroize.workspace = true
+time.workspace = true
+
+reqwest.workspace = true
+http.workspace = true
+bytes.workspace = true
+url.workspace = true
+regex.workspace = true
+
+schemars.workspace = true
 
 [dev-dependencies]
+zeus-types = { workspace = true, features = ["spec-testing"] }
 tempfile.workspace = true
 proptest.workspace = true
 assert_cmd.workspace = true

@@ -112,6 +112,10 @@
         "resume_recheck": { "enum": ["none", "tail", "full"], "default": "tail" },
         "verify_result": { "oneOf": [{ "$ref": "#/$defs/VerifyResult" }, { "type": "null" }] },
         "finalize": { "oneOf": [{ "$ref": "#/$defs/FinalizeState" }, { "type": "null" }] },
+        "retry_no_progress_since": { "$ref": "https://zeus.invalid/schema/common#/$defs/Timestamp", "description": "First failed attempt since the last durable data progress; bounds consecutive retry stall time across restart." },
+        "retry_counts": { "type": "object", "additionalProperties": { "type": "integer", "minimum": 0 }, "description": "Consecutive bounded failure counters, reset after durable transfer progress." },
+        "last_state_seq": { "type": "integer", "minimum": 0, "description": "Sequence of this job's newest durable created/state event, updated in the same journal transaction. Zero is a legacy row without a recorded cursor." },
+        "os_metadata": { "type": "array", "uniqueItems": true, "items": { "enum": ["zone_identifier", "quarantine_xattr", "where_froms", "xdg_origin_url", "xdg_referrer_url"] }, "description": "Only provenance attributes successfully written to the finalized file." },
         "url_secret_stored": { "type": "boolean", "description": "True when spec.url carries a query string that is persisted verbatim (needed to resume)." }
       }
     },
@@ -162,6 +166,10 @@
         "created_at": { "$ref": "https://zeus.invalid/schema/common#/$defs/Timestamp" },
         "expires_at": { "$ref": "https://zeus.invalid/schema/common#/$defs/Timestamp" }
       }
+    },
+    "ApprovalDecisionRow": {
+      "description": "Private decision record keyed by approval_id in approval_decisions. Written in the same transaction as the terminal approval, grants and events; never projected to public event payloads.",
+      "$ref": "https://zeus.invalid/schema/approvals.v1#/$defs/DecisionRecord"
     },
     "ReservationRow": {
       "description": "Row of table reservations, key = normalised destination path (case-folded on case-insensitive file systems). Guarantees two jobs never target one final path.",

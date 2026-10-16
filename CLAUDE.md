@@ -2,8 +2,6 @@
 
 Zeus is a free, open-core (Apache-2.0), Rust, local-first session-aware download and file layer for AI agents. Product name and codename are both "Zeus". Pre-alpha.
 
-> While `HANDOFF.md` exists at the repository root it describes the in-flight build and decisions already made; read it first and delete it (and this paragraph) before the repository goes public.
-
 ## Repositories, side by side
 
 | Path | Role |
@@ -19,14 +17,14 @@ Zeus is a free, open-core (Apache-2.0), Rust, local-first session-aware download
 | Path | What |
 |---|---|
 | `crates/zeus-api` | JSON-RPC types, `ClientKind`, `Permission`, method policy table, NDJSON codec, endpoint and discovery, auth handshake, `Client` and `Router`/`serve_connection`, redacted `JobView`. The contract between all front ends and the daemon. |
-| `crates/zeus-daemon` | `zeusd` binary; `Backend` trait + routes, human-decision rules (`approvals.rs`), provisioning, config. The engine adapter is not written yet. |
-| `crates/zeus-mcp` | MCP tools (`zeus_<verb>`): catalogue, dispatch over any `Client`, resources, prompt. The rmcp transport binding is not written yet. |
+| `crates/zeus-daemon` | `zeusd` binary; `Backend` trait + routes, human-decision rules (`approvals.rs`), provisioning, config. The runtime adapts the engine, consent store, workflow runner and model service; see docs/IMPLEMENTATION_STATUS.md for remaining gaps. |
+| `crates/zeus-mcp` | MCP tools (`zeus_<verb>`): catalogue, dispatch over any `Client`, resources, prompt. The rmcp stdio transport is implemented; HTTP remains optional and unavailable. |
 | `crates/zeus-cli` | `zeus` binary, clap tree, exit codes, trust prompt, TUI (`src/tui`). |
-| `crates/zeus-native-host` | `zeus-native-host` binary (framing, argv attestation, allow-list), host manifests install. The relay loop is not written yet. |
+| `crates/zeus-native-host` | `zeus-native-host` binary (framing, argv attestation, allow-list), host manifests install. The bidirectional relay and OS parent checks are implemented; real browser acceptance is pending. |
 | `crates/zeus-workflow` | Plan IR v0, templates, validator, estimators. |
 | `crates/zeus-llm` | Provider ladder, policy manifest, PKCE, spend ledger. |
 | `crates/zeus-a2a` | Agent Card, job to task mapping. |
-| `docs/spec/` | Normative specs 00 to 04 (written), 05 to 12 (planned) and JSON Schemas. Prose wins over schema. |
+| `docs/spec/` | Specs 00–13 and JSON Schemas; 09–12 are new review drafts. Prose wins over schema. |
 | `docs/ARCHITECTURE.md`, `docs/adr/` | Design and decisions. Section 5 to 12 of ARCHITECTURE are the input for the planned specs. |
 | `docs/research/` | Research corpus. Owned by another workflow; do not edit. Unverified unless the front matter says `verified`. |
 | `research.md` | Original market research (historical name "Haul"). |

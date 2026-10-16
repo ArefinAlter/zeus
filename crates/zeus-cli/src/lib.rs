@@ -13,13 +13,15 @@
 //! | [`commands`] | One function per command, generic over [`zeus_api::Client`] so tests use a fake daemon. |
 //! | [`tui`] | The ratatui interface: pure state and reducer first, rendering second. |
 
-#![forbid(unsafe_code)]
+#![deny(unsafe_code)]
 
+pub mod auth;
 pub mod cli;
 pub mod commands;
 pub mod connect;
 pub mod exit;
 pub mod output;
+mod terminal_os;
 pub mod trust;
 pub mod tui;
 

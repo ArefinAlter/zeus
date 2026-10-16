@@ -23,13 +23,12 @@ use zeus_api::methods::jobs::{
     JobsVerifyParams, JobsWaitParams, NewJob, ProbeParams, WaitUntil,
 };
 use zeus_api::methods::sessions::{
-    ApprovalsDecideParams, ApprovalsGetParams, ApprovalsListParams, DecideOutcome,
-    SessionsListParams, SessionsRevokeParams,
+    ApprovalsListParams, DecideOutcome, SessionsListParams, SessionsRevokeParams,
 };
 use zeus_api::methods::{
-    ApprovalsDecide, ApprovalsGet, ApprovalsList, AuditTail, AuditVerify, ConfigGet, ConfigSet,
-    DaemonShutdown, DaemonStatus, DoctorRun, JobsControl, JobsEnqueue, JobsGet, JobsList,
-    JobsProbe, JobsVerify, JobsWait, SessionsList, SessionsRevoke,
+    ApprovalsList, AuditTail, AuditVerify, ConfigGet, ConfigSet, DaemonShutdown, DaemonStatus,
+    DoctorRun, JobsControl, JobsEnqueue, JobsGet, JobsList, JobsProbe, JobsVerify, JobsWait,
+    SessionsList, SessionsRevoke,
 };
 use zeus_api::{ApiError, ApiResult, Client, PageRequest, call};
 use zeus_native_host::install::{self, Browser, InstallRequest, Os, SystemRegistrar};
@@ -69,7 +68,7 @@ impl CmdOutput {
         }
     }
 
-    fn new(text: impl Into<String>, json: &impl Serialize) -> Self {
+    pub(crate) fn new(text: impl Into<String>, json: &impl Serialize) -> Self {
         Self {
             text: text.into(),
             json: serde_json::to_value(json).unwrap_or(Value::Null),
@@ -369,6 +368,65 @@ pub async fn run_remote<C: Client + ?Sized>(
             };
             Ok(CmdOutput::new(text, &result).with_exit(exit))
         }
+        Command::Daemon(sub @ (DaemonCommand::KillSwitch | DaemonCommand::Release)) => {
+            use std::io::Write;
+            use zeus_api::methods::daemon::{KillSwitchAction, KillSwitchParams};
+            let terminal = terminal.ok_or_else(|| {
+                ApiError::new(
+                    codes::HUMAN_REQUIRED,
+                    "This action needs a controlling terminal.",
+                )
+            })?;
+            let release = matches!(sub, DaemonCommand::Release);
+            terminal
+                .output
+                .write_all(if release {
+                    b"Release the stop latch? Jobs stay paused. Type release: "
+                } else {
+                    b"Stop all downloads and revoke session grants? Type stop: "
+                })
+                .map_err(|e| ApiError::internal(e.to_string()))?;
+            terminal
+                .output
+                .flush()
+                .map_err(|e| ApiError::internal(e.to_string()))?;
+            std::thread::sleep(std::time::Duration::from_millis(750));
+            terminal
+                .discard_pending()
+                .map_err(|e| ApiError::internal(e.to_string()))?;
+            let mut answer = String::new();
+            terminal
+                .input
+                .read_line(&mut answer)
+                .map_err(|e| ApiError::internal(e.to_string()))?;
+            if answer.trim() != if release { "release" } else { "stop" } {
+                return Ok(CmdOutput::new(
+                    "Nothing changed.",
+                    &json!({"changed":false}),
+                ));
+            }
+            let result = call::<zeus_api::methods::DaemonKillSwitch, C>(
+                client,
+                KillSwitchParams {
+                    action: if release {
+                        KillSwitchAction::Release
+                    } else {
+                        KillSwitchAction::Engage
+                    },
+                    surface: Some(Surface::CliInteractive),
+                    reason: None,
+                },
+            )
+            .await?;
+            Ok(CmdOutput::new(
+                if result.engaged {
+                    "All work stopped; session grants revoked."
+                } else {
+                    "Stop latch released. Resume jobs individually."
+                },
+                &result,
+            ))
+        }
         Command::Daemon(DaemonCommand::Stop) => {
             let result = call::<DaemonShutdown, C>(client, ShutdownParams::default()).await?;
             Ok(CmdOutput::new(
@@ -433,9 +491,10 @@ pub async fn run_remote<C: Client + ?Sized>(
             Ok(CmdOutput::new(lines.join("\n"), &result).with_exit(worst))
         }
         other => Err(ApiError::not_implemented(match other {
-            Command::Auth => "zeus auth (provider wizard; llm.* methods are a later phase)",
+            Command::Auth => "auth needs the controlling-terminal command runner",
             Command::Tui => "zeus tui",
             Command::Mcp { .. } => "zeus mcp (rmcp transport binding)",
+            Command::A2a { .. } => "zeus a2a (standalone authenticated bridge)",
             _ => "this command needs no daemon connection",
         })),
     }
@@ -632,6 +691,7 @@ async fn wait_for<C: Client + ?Sized>(
     color: bool,
 ) -> ApiResult<CmdOutput> {
     let started = Instant::now();
+    let mut since_seq = None;
     loop {
         let remaining = timeout.map(|t| t.saturating_sub(started.elapsed()));
         if remaining.is_some_and(|r| r.is_zero()) {
@@ -641,6 +701,8 @@ async fn wait_for<C: Client + ?Sized>(
                     job_ids: ids.clone(),
                     until: WaitUntil::AnyChange,
                     timeout_ms: 1,
+                    since_seq,
+                    progress_bytes: None,
                 },
             )
             .await?;
@@ -655,11 +717,14 @@ async fn wait_for<C: Client + ?Sized>(
             client,
             JobsWaitParams {
                 job_ids: ids.clone(),
-                until: WaitUntil::AllTerminal,
+                until: WaitUntil::SettledOrBlocked,
                 timeout_ms: slice,
+                since_seq,
+                progress_bytes: None,
             },
         )
         .await?;
+        since_seq = Some(result.head_seq);
         let blocked_on_person = result.jobs.iter().any(|j| {
             matches!(
                 j.state,
@@ -730,7 +795,7 @@ async fn decide<C: Client + ?Sized>(
     let approval_id = id.parse().map_err(|_| {
         ApiError::invalid_params("an approval id looks like ap_ followed by 26 characters")
     })?;
-    let view = call::<ApprovalsGet, C>(client, ApprovalsGetParams { approval_id }).await?;
+    let view = read_approval(client, approval_id).await?;
     let choice = trust::prompt(&view, terminal)
         .map_err(|e| ApiError::new(codes::HUMAN_REQUIRED, e.to_string()))?;
     let (outcome, scope) = match (choice, deny) {
@@ -765,23 +830,64 @@ async fn decide<C: Client + ?Sized>(
             (never || chose_never).then_some(GrantScope::Never),
         ),
     };
-    let result = call::<ApprovalsDecide, C>(
-        client,
-        ApprovalsDecideParams {
-            approval_id,
-            request_hash: view.request_hash,
-            outcome,
-            scope,
-            channel: Surface::CliInteractive,
-        },
-    )
-    .await?;
-    let text = format!(
-        "{}  {}",
-        result.approval.approval.id,
-        wire(&result.approval.approval.state)
-    );
+    let result = send_decision(client, &view, outcome, scope, Surface::CliInteractive).await?;
+    let text = format!("{}  decision recorded", view.approval.id);
     Ok(CmdOutput::new(text, &result))
+}
+
+async fn read_approval<C: Client + ?Sized>(
+    client: &C,
+    id: zeus_types::ApprovalId,
+) -> ApiResult<zeus_api::methods::sessions::ApprovalView> {
+    let value = client
+        .call_raw("approvals.get", json!({"approval_id": id}))
+        .await?;
+    let request = value
+        .get("approval")
+        .ok_or_else(|| ApiError::internal("approval response is missing its request"))?;
+    trust::validate_request(request)?;
+    serde_json::from_value(request.clone())
+        .map_err(|_| ApiError::internal("invalid approval from daemon"))
+}
+
+async fn send_decision<C: Client + ?Sized>(
+    client: &C,
+    view: &zeus_api::methods::sessions::ApprovalView,
+    outcome: DecideOutcome,
+    scope: Option<GrantScope>,
+    surface: Surface,
+) -> ApiResult<Value> {
+    let hash = zeus_verify::canonical::request_hash(&view.facts)
+        .map_err(|_| ApiError::internal("invalid approval facts"))?;
+    let confirmation = if outcome == DecideOutcome::Deny {
+        "gesture"
+    } else {
+        trust::confirmation(view, scope)?
+    };
+    let mut params = json!({"approval_id": view.approval.id, "request_hash": hash, "outcome": outcome, "channel": surface, "confirmation": confirmation});
+    if let Some(scope) = scope {
+        params["scope"] = json!(scope);
+    }
+    client.call_raw("approvals.decide", params).await
+}
+
+/// Review from the TUI using the same controlling-terminal trust surface as CLI approvals.
+pub async fn review_approval<C: Client + ?Sized>(
+    client: &C,
+    id: zeus_types::ApprovalId,
+) -> ApiResult<String> {
+    let view = read_approval(client, id).await?;
+    let mut terminal =
+        trust::open_terminal().map_err(|e| ApiError::new(codes::HUMAN_REQUIRED, e.to_string()))?;
+    let choice = trust::prompt(&view, &mut terminal)
+        .map_err(|e| ApiError::new(codes::HUMAN_REQUIRED, e.to_string()))?;
+    let (outcome, scope) = match choice {
+        Choice::Later => return Ok("Left pending.".into()),
+        Choice::Approve(scope) => (DecideOutcome::Approve, scope),
+        Choice::Deny { never } => (DecideOutcome::Deny, never.then_some(GrantScope::Never)),
+    };
+    send_decision(client, &view, outcome, scope, Surface::CliInteractive).await?;
+    Ok("Decision recorded.".into())
 }
 
 /// Run a command that needs no daemon connection.
@@ -814,9 +920,7 @@ pub async fn run_local(
         }
         Command::Daemon(DaemonCommand::Status) => daemon_status_local(paths),
         Command::Daemon(DaemonCommand::Install) => daemon_run(&["init"]),
-        Command::Daemon(DaemonCommand::Start) => Err(ApiError::not_implemented(
-            "zeus daemon start (spawning zeusd detached, autostart registration)",
-        )),
+        Command::Daemon(DaemonCommand::Start) => daemon_start(paths).await,
         Command::NativeHost(sub) => native_host(sub, global, paths),
         _ => Err(ApiError::internal("not a local command")),
     }
@@ -831,6 +935,7 @@ pub fn needs_daemon(command: &Command) -> bool {
             | Command::Daemon(DaemonCommand::Install | DaemonCommand::Start)
             | Command::NativeHost(_)
             | Command::Mcp { .. }
+            | Command::A2a { .. }
             | Command::Tui
             | Command::Auth
     )
@@ -871,6 +976,60 @@ fn zeusd_path() -> ApiResult<PathBuf> {
                 "zeusd was not found next to zeus or on PATH",
             )
         })
+}
+
+async fn daemon_start(paths: &ZeusPaths) -> ApiResult<CmdOutput> {
+    use crate::connect::{Identity, connect};
+    if connect(paths, Identity::Cli).await.is_ok() {
+        return Ok(CmdOutput::new(
+            "daemon is already running",
+            &json!({"running": true}),
+        ));
+    }
+    // Installation is explicit: never silently create a new identity during a failed connection.
+    crate::connect::load_secret(paths)?;
+    crate::connect::load_credential(paths, Identity::Cli)?;
+    let mut command = std::process::Command::new(zeusd_path()?);
+    command
+        .arg("run")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x0000_0008 | 0x0000_0200); // DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+    }
+    let mut child = command.spawn().map_err(|e| {
+        ApiError::new(
+            codes::UNAVAILABLE,
+            format!("cannot start zeusd: {}", e.kind()),
+        )
+    })?;
+    for _ in 0..50 {
+        if connect(paths, Identity::Cli).await.is_ok() {
+            return Ok(CmdOutput::new(
+                "daemon started",
+                &json!({"running":true,"pid":child.id()}),
+            ));
+        }
+        if let Some(status) = child
+            .try_wait()
+            .map_err(|e| ApiError::internal(e.to_string()))?
+        {
+            return Err(ApiError::new(
+                codes::UNAVAILABLE,
+                format!(
+                    "zeusd stopped during startup ({status}); run zeusd run to see the diagnostic"
+                ),
+            ));
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    Err(ApiError::new(
+        codes::UNAVAILABLE,
+        "zeusd did not become ready in five seconds; run zeusd run to see the diagnostic",
+    ))
 }
 
 fn daemon_run(args: &[&str]) -> ApiResult<CmdOutput> {
@@ -1102,6 +1261,8 @@ mod tests {
                 session: AuthenticateResult {
                     client_id: "cli_x".into(),
                     kind: ClientKind::Admin,
+                    credential_kind: ClientKind::Admin,
+                    downgraded: false,
                     role: ClientRole::Cli,
                     permissions: vec![],
                     limits: ConnectionLimits::STANDARD,
@@ -1313,27 +1474,23 @@ mod tests {
     #[tokio::test]
     async fn an_approval_is_decided_with_the_hash_the_person_saw() {
         let fake = Fake::new();
-        let view = json!({
-            "id": "ap_01M45NHJ3XS0QXG9T42HHN2YR8", "kind": "session_grant", "state": "pending",
-            "origin": "https://portal.example.org", "allowed_scopes": ["once", "site"], "reason_codes": ["session.first_use"],
-            "summary": { "title": "x" }, "created_at": "2026-10-05T09:15:30.301Z", "expires_at": "2026-10-06T09:15:30.301Z",
-            "request_hash": "ab".repeat(32), "facts": { "files": 1 }
-        });
-        fake.answer("approvals.get", Ok(view.clone()));
+        let view = trust::test_request();
+        fake.answer("approvals.get", Ok(json!({"approval":view.clone()})));
         let mut decided = view.clone();
         decided["state"] = json!("approved");
         fake.answer("approvals.decide", Ok(json!({ "approval": decided })));
         let mut terminal = Terminal {
             input: Box::new(std::io::Cursor::new(b"2\n".to_vec())),
             output: Box::new(Vec::new()),
+            physical_input: None,
         };
         let cli = parse(&["approvals", "approve", "ap_01M45NHJ3XS0QXG9T42HHN2YR8"]);
         let output = run_remote(&cli.command, &cli.global, &fake, false, Some(&mut terminal))
             .await
             .unwrap();
-        assert!(output.text.contains("approved"));
+        assert!(output.text.contains("decision recorded"));
         let sent = &fake.calls_to("approvals.decide")[0];
-        assert_eq!(sent["request_hash"], "ab".repeat(32));
+        assert_eq!(sent["request_hash"], view["request_hash"]);
         assert_eq!(sent["scope"], "site");
         assert_eq!(sent["channel"], "cli_interactive");
     }
@@ -1341,15 +1498,12 @@ mod tests {
     #[tokio::test]
     async fn a_mismatched_choice_decides_nothing() {
         let fake = Fake::new();
-        let view = json!({
-            "id": "ap_01M45NHJ3XS0QXG9T42HHN2YR8", "kind": "session_grant", "state": "pending", "allowed_scopes": ["once", "site"],
-            "reason_codes": [], "summary": { "title": "x" }, "created_at": "2026-10-05T09:15:30.301Z",
-            "expires_at": "2026-10-06T09:15:30.301Z", "request_hash": "cd".repeat(32), "facts": {}
-        });
-        fake.answer("approvals.get", Ok(view));
+        let view = trust::test_request();
+        fake.answer("approvals.get", Ok(json!({"approval":view})));
         let mut terminal = Terminal {
             input: Box::new(std::io::Cursor::new(b"n\n".to_vec())),
             output: Box::new(Vec::new()),
+            physical_input: None,
         };
         let cli = parse(&["approvals", "approve", "ap_01M45NHJ3XS0QXG9T42HHN2YR8"]);
         let output = run_remote(&cli.command, &cli.global, &fake, false, Some(&mut terminal))

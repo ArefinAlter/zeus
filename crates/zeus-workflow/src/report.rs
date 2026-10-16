@@ -79,6 +79,9 @@ pub struct PlannedItem {
 /// Result of `workflows.dry_run`: what would happen, without downloading anything.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct DryRunReport {
+    /// Whether sampling finished within the deadline; incomplete reports cannot authorize a run.
+    #[serde(default)]
+    pub complete: bool,
     /// Hash of the plan this report is about.
     pub plan_hash: String,
     /// When the dry run happened.

@@ -214,6 +214,8 @@ mod tests {
             outcome,
             scope,
             channel,
+            confirmation: Default::default(),
+            idempotency_key: None,
         }
     }
 

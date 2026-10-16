@@ -20,12 +20,33 @@ pub mod validate;
 
 pub use expr::{ExprError, Template};
 pub use plan::{
-    Budgets, ConvertStep, Extract, Extraction, FetchPolicy, Field, Filter, ManifestFormat,
-    ManifestSink, PLAN_VERSION, Pagination, Plan, PlanId, Post, Selector, SessionRequirement,
-    Sinks, Source, StopRules,
+    Budgets, ConvertStep, DateFormat, DateOrder, Extract, Extraction, FetchPolicy, Field,
+    FieldPattern, Filter, Follow, ItemsFormat, ItemsSink, ManifestFormat, ManifestSink, OnDrift,
+    OnExisting, PLAN_VERSION, Pagination, Plan, PlanId, Post, RouteCondition, RouteRule, Selector,
+    SessionRequirement, Sinks, Source, StopRules, UnknownMime,
 };
 pub use planner::{DryRunPlanner, Estimate, NotImplementedPlanner, PageFetcher, PageSample};
 pub use report::{
     Checkpoint, Diagnostic, DryRunReport, PlannedItem, RunReport, RunStatus, Severity,
 };
 pub use validate::{has_errors, validate_plan, validate_samples};
+
+#[cfg(feature = "runtime")]
+mod extract;
+
+#[cfg(feature = "runtime")]
+pub mod pagination;
+
+#[cfg(feature = "runtime")]
+pub mod runtime;
+#[cfg(feature = "runtime")]
+pub use runtime::{
+    Document, FetchRequest, JobIntent, JobTotals, RunAction, RunSnapshot, RuntimeError,
+    RuntimePort, RuntimeResult, WorkflowRuntime,
+};
+
+#[cfg(feature = "runtime")]
+pub use planner::BoundedPlanner;
+
+#[cfg(all(test, feature = "runtime"))]
+mod runtime_tests;

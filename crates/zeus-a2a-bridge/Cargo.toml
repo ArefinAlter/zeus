@@ -1,0 +1,30 @@
+[package]
+name = "zeus-a2a-bridge"
+description = "Local authenticated A2A bridge backed by the Zeus daemon"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+zeus-a2a.workspace = true
+zeus-api.workspace = true
+zeus-types.workspace = true
+zeus-verify.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+redb.workspace = true
+blake3.workspace = true
+ulid.workspace = true
+url.workspace = true
+
+[dev-dependencies]
+async-trait.workspace = true
+tempfile.workspace = true

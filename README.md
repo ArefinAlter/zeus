@@ -4,9 +4,9 @@
 
 Your agents can find it. Zeus makes sure they actually get it: verified, filed and accounted for. It works with your real browser, never reads your cookie database, and keeps a tamper-evident record of what it did.
 
-> **Status: pre-alpha.** This repository currently holds the architecture, the normative specifications and the compiling skeleton of the application. The transfer engine lives in the sibling [`zeus-core`](https://github.com/ArefinAlter/zeus-core) repository and is being implemented in parallel. Most methods return a typed `NotImplemented` error. Nothing here is ready to use, and there is no release. Expect breaking changes everywhere.
+> **Status: pre-alpha, implementation in progress.** The daemon, transfer engine, native relay, MCP stdio server, terminal interfaces, public-page workflow runner and model adapters now have executable implementations and hermetic tests. Real browser acceptance, cross-platform release validation and several roadmap capabilities remain unfinished. There is no public release or frozen API. See the [implementation and remaining-work ledger](docs/IMPLEMENTATION_STATUS.md).
 
-Zeus is **not** an IDM clone. It is a local daemon with a small, strict API that an agent, a terminal or a browser extension can call to download files reliably, resume them after failures, use the user's own logged-in session **only with a human's consent**, and leave a verifiable trail.
+Zeus combines familiar download queues, resumable transfers and a link inbox with explicit agent plans, human approvals and per-run budgets. The [download workspace design](docs/design/download-workspace.md) includes a runnable visual prototype; its queue and agent controls are simulations until connected to the daemon.
 
 ## What it is for
 
@@ -41,8 +41,8 @@ One daemon owns all state; everything else is a client of its local JSON-RPC API
 
 | Repository | Role |
 |---|---|
-| **zeus** (this one) | Daemon `zeusd`, CLI `zeus` with TUI, MCP server, native-messaging host, workflow engine, LLM provider ladder, A2A types, specs. |
-| [zeus-core](https://github.com/ArefinAlter/zeus-core) | The embeddable engine library (`zeus-types`, `zeus-control`, `zeus-fs`, `zeus-verify`, `zeus-journal`, `zeus-session`, `zeus-http`, `zeus-engine`). |
+| **zeus** (this one) | Daemon `zeusd`, CLI `zeus` with TUI, MCP server, native-messaging host, workflow engine, LLM provider ladder, optional A2A bridge, specs. |
+| [zeus-core](https://github.com/ArefinAlter/zeus-core) | The embeddable engine library (`zeus-types`, `zeus-control`, `zeus-fs`, `zeus-verify`, `zeus-journal`, `zeus-session`, `zeus-http`, `zeus-engine`, `zeus-artifact`). |
 | [zeus-extension](https://github.com/ArefinAlter/zeus-extension) | Manifest V3 browser extension (Chrome and Edge first, Firefox build target). |
 
 Clone them **side by side**: this workspace refers to `../zeus-core`.
@@ -63,21 +63,28 @@ zeus-workspace/
 | `zeus-mcp` | MCP server library (`zeus_<verb>` tools). |
 | `zeus-cli` | The `zeus` binary, including the TUI. |
 | `zeus-native-host` | The `zeus-native-host` binary and host-manifest installation. |
-| `zeus-workflow` | Plan IR, validator, dry-run planner. |
-| `zeus-llm` | Provider ladder, policy manifest, spend accounting. |
+| `zeus-workflow` | Strict plan IR, validator, extraction, pagination, dry-run planner and checkpointed execution. |
+| `zeus-llm` | HTTP and OAuth adapters, OS keyring integration, signed-policy validation and durable spend reservations. |
 | `zeus-a2a` | A2A Agent Card and task mapping types. |
+| `zeus-a2a-bridge` | Optional loopback bridge with dedicated agent credentials, task ownership and restart recovery. |
 
 ## Quickstart (developers)
 
 Requirements: a recent stable Rust toolchain (MSRV 1.90), the three repositories side by side.
 
+Building requires access to `zeus-core`, which is currently a private repository. When reviewing coordinated changes, check out the companion core revision identified in the pull request; this workspace uses sibling path dependencies, including `zeus-artifact`.
+
 ```sh
 git clone https://github.com/ArefinAlter/zeus.git
 git clone https://github.com/ArefinAlter/zeus-core.git
 cd zeus
-cargo check --workspace
+cargo build --workspace --bins
 cargo test --workspace
 cargo run -p zeus-cli -- --help
+# With all sibling binaries built, provision credentials and register their executable pins:
+cargo run -p zeus-daemon -- init
+# Run in a separate terminal, then use zeus get/status/tui/mcp:
+cargo run -p zeus-daemon -- run
 ```
 
 On a small machine set `CARGO_BUILD_JOBS=3` and a shared `CARGO_TARGET_DIR`, and run one cargo command at a time. Windows without the MSVC build tools: see [CONTRIBUTING.md](CONTRIBUTING.md).
@@ -95,10 +102,12 @@ npm run validate
 - No telemetry. The only network traffic is what a download, a workflow or a configured model provider explicitly causes.
 - Session cookies are never persisted or logged. Zeus never reads a browser cookie database.
 - Models see metadata only by default, with secrets redacted at every level.
-- Downloaded files are never auto-opened and carry the OS's mark-of-the-web.
+- Downloaded files are never auto-opened. Supported OS provenance marks are applied and the attributes actually written are recorded.
 
 ## Documentation
 
+- [`docs/IMPLEMENTATION_STATUS.md`](docs/IMPLEMENTATION_STATUS.md): implemented paths, verification evidence and remaining release blockers.
+- [`docs/design/download-workspace.md`](docs/design/download-workspace.md): interaction design and visual prototype.
 - [`docs/spec`](docs/spec/README.md): normative specifications and JSON Schemas.
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md), [`docs/adr`](docs/adr): design and decisions.
 - [`docs/research`](docs/research): the research corpus behind the design (unverified drafts until marked verified).

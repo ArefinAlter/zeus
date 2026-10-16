@@ -43,15 +43,31 @@ fn print(output: &CmdOutput, settings: Output) {
 async fn run(cli: &Cli, paths: &ZeusPaths, settings: Output) -> ApiResult<CmdOutput> {
     match &cli.command {
         Command::Tui => zeus_cli::tui::run().await.map(|()| CmdOutput::empty()),
+        Command::Mcp { http: true, .. } => Err(ApiError::not_implemented(
+            "MCP HTTP requires an authenticated Origin-checked bridge; use zeus mcp for stdio",
+        )),
         Command::Mcp { .. } => {
             let client = connect(paths, Identity::Agent).await?;
             zeus_mcp::transport::serve_stdio(Arc::new(client))
                 .await
                 .map(|()| CmdOutput::empty())
         }
-        Command::Auth => Err(ApiError::not_implemented(
-            "zeus auth (provider wizard; the llm.* methods are a later phase)",
-        )),
+        Command::A2a { token_file, port } => {
+            let config = zeus_a2a_bridge::Config::from_token_file(
+                *port,
+                token_file,
+                paths.state_dir.join("a2a-index.redb"),
+            )?;
+            let client = connect(paths, Identity::A2a).await?;
+            let bridge = zeus_a2a_bridge::Bridge::open(config, Arc::new(client))?;
+            zeus_a2a_bridge::serve(Arc::new(bridge))
+                .await
+                .map(|()| CmdOutput::empty())
+        }
+        Command::Auth => {
+            let client = connect(paths, Identity::Cli).await?;
+            zeus_cli::auth::run(&client).await
+        }
         command if !commands::needs_daemon(command) => {
             commands::run_local(command, &cli.global, paths).await
         }
@@ -63,6 +79,9 @@ async fn run(cli: &Cli, paths: &ZeusPaths, settings: Output) -> ApiResult<CmdOut
                 Command::Approvals(
                     zeus_cli::cli::ApprovalsCommand::Approve { .. }
                         | zeus_cli::cli::ApprovalsCommand::Deny { .. }
+                ) | Command::Daemon(
+                    zeus_cli::cli::DaemonCommand::KillSwitch
+                        | zeus_cli::cli::DaemonCommand::Release
                 )
             ) {
                 trust::open_terminal().ok()

@@ -2,6 +2,7 @@
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use clap_complete::Shell;
+use std::path::PathBuf;
 
 /// Zeus: the session-aware download and file layer for AI agents.
 #[derive(Debug, Parser)]
@@ -177,7 +178,11 @@ pub enum DaemonCommand {
     Stop,
     /// Show whether the daemon runs and what it is doing.
     Status,
-    /// Create first-run state (secrets, credentials) and register the daemon for autostart.
+    /// Stop all work and revoke active session grants.
+    KillSwitch,
+    /// Release the stop latch; jobs stay paused and permissions stay revoked.
+    Release,
+    /// Create first-run state (secrets and credentials).
     Install,
 }
 
@@ -323,6 +328,15 @@ pub enum Command {
         http: bool,
         /// Port for --http.
         #[arg(long, default_value_t = 4747)]
+        port: u16,
+    },
+    /// Run the optional authenticated A2A bridge on loopback.
+    A2a {
+        /// Dedicated JSON peer-token file; never use an IPC credential as a bearer token.
+        #[arg(long)]
+        token_file: PathBuf,
+        /// Loopback port (the daemon itself never listens on TCP).
+        #[arg(long, default_value_t = 4750)]
         port: u16,
     },
     /// Install or remove the browser integration.

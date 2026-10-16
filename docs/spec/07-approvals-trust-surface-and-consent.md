@@ -879,6 +879,38 @@ Only `workflow` grants renew, and only through a human decision:
 }
 ```
 
+Renewal emits the updated grant without session material:
+
+```json validate=domain#/$defs/Event
+{
+  "seq": 52001,
+  "ts": "2026-10-06T08:52:10.000Z",
+  "type": "grant.renewed",
+  "data": {
+    "grant": {
+      "id": "gr_01M3RRNJM04D9FTTF4SY2YMFE8",
+      "origin": "https://portal.example.org",
+      "scope": "workflow",
+      "state": "active",
+      "created_at": "2026-09-30T09:00:00.000Z",
+      "expires_at": "2026-10-13T08:52:10.000Z",
+      "run_id": "run_01M3RRNJM041DSY9CRWM6A07TQ",
+      "approval_id": "ap_01M3RRK4G0T5PVF241SY96S258",
+      "decided_by": {
+        "kind": "human",
+        "surface": "tui"
+      },
+      "uses": 412,
+      "last_used_at": "2026-10-06T08:51:00.000Z",
+      "revoked_at": null,
+      "renewable": true,
+      "renewal_count": 1,
+      "renewed_at": "2026-10-06T08:52:10.000Z"
+    }
+  }
+}
+```
+
 ### 6.4 Revocation
 
 1. A human revokes a grant through `sessions.revoke` (spec 05), `grant.revoke` (02 section 10.1), the TUI, or the kill switch. Revocation is human-only (`sessions.revoke` permission, `api.human_required` for agents and services). It needs no approving-surface evidence because it only removes authority, **except** revoking a `never` grant, which widens authority and therefore needs the evidence of an approve decision (section 7.1).

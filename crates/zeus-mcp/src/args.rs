@@ -89,6 +89,9 @@ pub struct WaitArgs {
     /// What to wait for.
     #[serde(default)]
     pub until: WaitUntilArg,
+    /// Durable event cursor returned by the previous wait, for example `ev_48640`.
+    #[serde(default)]
+    pub since: Option<String>,
 }
 
 /// Control action.

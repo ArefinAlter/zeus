@@ -45,10 +45,12 @@ impl PrivacyTier {
     /// Whether `provider` may receive prompts at this tier.
     pub fn check_provider(self, provider: ProviderKind) -> Result<(), LlmError> {
         match (self, provider.locality()) {
-            (Self::LocalOnly, Locality::Remote) => Err(LlmError::PrivacyViolation {
-                tier: self.as_str(),
-                reason: "provider is not local",
-            }),
+            (Self::LocalOnly, Locality::Remote | Locality::HostAgent) => {
+                Err(LlmError::PrivacyViolation {
+                    tier: self.as_str(),
+                    reason: "provider is not local",
+                })
+            }
             _ => Ok(()),
         }
     }
@@ -90,15 +92,19 @@ fn redact_line(line: &str) -> String {
 }
 
 fn redact_bearer(line: &str) -> String {
-    let lower = line.to_ascii_lowercase();
-    let Some(pos) = lower.find("bearer ") else {
-        return line.to_string();
-    };
-    let start = pos + "bearer ".len();
-    let end = line[start..]
-        .find(|c: char| c.is_whitespace() || c == '"' || c == '\'')
-        .map_or(line.len(), |n| start + n);
-    format!("{}{REDACTED}{}", &line[..start], &line[end..])
+    let mut out = String::with_capacity(line.len());
+    let mut rest = line;
+    while let Some(pos) = rest.to_ascii_lowercase().find("bearer ") {
+        let start = pos + "bearer ".len();
+        let end = rest[start..]
+            .find(|c: char| c.is_whitespace() || c == '"' || c == '\'' || c == ',')
+            .map_or(rest.len(), |n| start + n);
+        out.push_str(&rest[..start]);
+        out.push_str(REDACTED);
+        rest = &rest[end..];
+    }
+    out.push_str(rest);
+    out
 }
 
 fn redact_urls(line: &str) -> String {
@@ -118,8 +124,9 @@ fn redact_urls(line: &str) -> String {
 }
 
 fn find_scheme(text: &str) -> Option<usize> {
-    let a = text.find("http://");
-    let b = text.find("https://");
+    let lowercase = text.to_ascii_lowercase();
+    let a = lowercase.find("http://");
+    let b = lowercase.find("https://");
     match (a, b) {
         (Some(x), Some(y)) => Some(x.min(y)),
         (x, y) => x.or(y),
