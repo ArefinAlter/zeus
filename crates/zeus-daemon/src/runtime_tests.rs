@@ -1,0 +1,420 @@
+use super::*;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use zeus_api::server::Notifier;
+use zeus_api::{ClientIdentity, ClientKind, ClientRole, auth::CredentialStore};
+use zeus_types::{Actor, HttpUrl};
+
+fn contract(def: &str, value: &impl serde::Serialize) {
+    static SCHEMAS: std::sync::OnceLock<zeus_types::spec_testing::SpecSchemas> =
+        std::sync::OnceLock::new();
+    SCHEMAS
+        .get_or_init(zeus_types::spec_testing::SpecSchemas::load)
+        .check(
+            true,
+            "daemon-api.v1",
+            def,
+            &serde_json::to_value(value).unwrap(),
+        )
+        .unwrap();
+}
+fn paths(root: &Path) -> zeus_api::endpoint::ZeusPaths {
+    zeus_api::endpoint::ZeusPaths {
+        state_dir: root.join("state"),
+        config_dir: root.join("config"),
+        runtime_dir: root.join("runtime"),
+        user_identity: "test".into(),
+    }
+}
+async fn setup(root: &Path) -> Arc<RuntimeBackend> {
+    let paths = paths(root);
+    crate::provision::provision(&paths, Timestamp::now()).unwrap();
+    RuntimeBackend::open(
+        paths.state_dir,
+        DaemonConfig {
+            write_roots: vec![root.join("downloads")],
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap()
+}
+fn context(
+    root: &Path,
+    name: &str,
+) -> (
+    CallContext,
+    tokio::sync::mpsc::Receiver<zeus_api::jsonrpc::Message>,
+) {
+    let paths = paths(root);
+    let store =
+        crate::provision::FileCredentialStore::load(&paths.state_dir.join("credentials.json"))
+            .unwrap();
+    let credential = store
+        .get(
+            &crate::provision::load_client_credential(&paths, name)
+                .unwrap()
+                .id,
+        )
+        .unwrap();
+    let (notifier, receiver) = Notifier::channel(256);
+    (
+        CallContext {
+            reply: Default::default(),
+            peer: Default::default(),
+            attach: None,
+            identity: ClientIdentity {
+                credential_id: credential.id,
+                kind: credential.kind,
+                role: credential.role,
+                permissions: credential.permissions,
+                client_name: "untrusted test name".into(),
+            },
+            connection_id: zeus_types::IdGenerator::new().connection_id(),
+            notifier,
+            limits: zeus_api::methods::daemon::ConnectionLimits::STANDARD,
+        },
+        receiver,
+    )
+}
+async fn http(data: Vec<u8>) -> (HttpUrl, tokio::task::JoinHandle<()>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = HttpUrl::parse(&format!(
+        "http://{}/fixture.bin",
+        listener.local_addr().unwrap()
+    ))
+    .unwrap();
+    let data = Arc::new(data);
+    let task = tokio::spawn(async move {
+        loop {
+            let Ok((mut stream, _)) = listener.accept().await else {
+                break;
+            };
+            let data = data.clone();
+            tokio::spawn(async move {
+                let mut request = Vec::new();
+                let mut buf = [0; 1024];
+                while !request.ends_with(b"\r\n\r\n") && request.len() < 16384 {
+                    let Ok(n) = stream.read(&mut buf).await else {
+                        return;
+                    };
+                    if n == 0 {
+                        return;
+                    }
+                    request.extend_from_slice(&buf[..n]);
+                }
+                let request = String::from_utf8_lossy(&request);
+                let range = request.lines().find_map(|line| {
+                    line.to_ascii_lowercase()
+                        .strip_prefix("range: bytes=")
+                        .map(str::to_owned)
+                });
+                let (start, end) = range
+                    .as_deref()
+                    .and_then(|s| s.split_once('-'))
+                    .map(|(a, b)| {
+                        (
+                            a.trim().parse::<usize>().unwrap(),
+                            b.trim().parse::<usize>().unwrap_or(data.len() - 1),
+                        )
+                    })
+                    .unwrap_or((0, data.len() - 1));
+                let end = end.min(data.len() - 1);
+                if start > end {
+                    return;
+                }
+                let header = format!(
+                    "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes {start}-{end}/{}\r\nContent-Length: {}\r\nETag: \"fixture-1\"\r\nContent-Type: application/octet-stream\r\nConnection: close\r\n\r\n",
+                    data.len(),
+                    end - start + 1
+                );
+                if stream.write_all(header.as_bytes()).await.is_ok() {
+                    let _ = stream.write_all(&data[start..=end]).await;
+                }
+            });
+        }
+    });
+    (url, task)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn authenticated_api_download_survives_restart_with_receipts_and_provenance() {
+    use zeus_api::{
+        client::{Client, ClientConfig, IpcClient, call},
+        methods::*,
+        server::{ServerContext, serve_connection},
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let backend = setup(dir.path()).await;
+    let paths = paths(dir.path());
+    let data = (0..300_000).map(|n| (n % 251) as u8).collect::<Vec<_>>();
+    let (url, http) = http(data.clone()).await;
+    let secret = Arc::new(crate::provision::load_ipc_secret(&paths).unwrap());
+    let server = Arc::new(ServerContext {
+        secret: secret.clone(),
+        credentials: Arc::new(
+            crate::provision::FileCredentialStore::load(&paths.state_dir.join("credentials.json"))
+                .unwrap(),
+        ),
+        daemon: backend.info(),
+        router: Arc::new(crate::build_router(backend.clone())),
+    });
+    let (a, b) = tokio::io::duplex(256 * 1024);
+    let serving = tokio::spawn(serve_connection(b, server));
+    let client = IpcClient::from_stream(
+        a,
+        crate::provision::load_client_credential(&paths, "agent").unwrap(),
+        &secret,
+        ClientConfig::new(ClientInfo {
+            name: "synthetic agent".into(),
+            version: "0".into(),
+            role: ClientRole::Mcp,
+        }),
+    )
+    .await
+    .unwrap();
+    contract("DaemonAuthenticateResult", client.session());
+    assert_eq!(client.session().kind, ClientKind::Agent);
+    let request: EnqueueParams = serde_json::from_value(serde_json::json!({"jobs":[{"url":url,"filename":"verified.bin","expected_sha256":zeus_verify::hash_bytes(&data).sha256}],"idempotency_key":"batch-one"})).unwrap();
+    let first = call::<JobsEnqueue, _>(&client, request.clone())
+        .await
+        .unwrap();
+    contract("JobsEnqueueResult", &first);
+    let id = first.jobs[0].job_id.unwrap();
+    let repeated = call::<JobsEnqueue, _>(&client, request.clone())
+        .await
+        .unwrap();
+    assert_eq!(first.jobs, repeated.jobs);
+    assert!(repeated.replayed);
+    let mut changed = request.clone();
+    changed.jobs[0].filename = Some("different.bin".into());
+    assert_eq!(
+        call::<JobsEnqueue, _>(&client, changed)
+            .await
+            .unwrap_err()
+            .envelope()
+            .code
+            .as_str(),
+        "api.idempotency_conflict"
+    );
+    let completed = call::<JobsWait, _>(
+        &client,
+        JobsWaitParams {
+            job_ids: vec![id],
+            until: WaitUntil::AllTerminal,
+            timeout_ms: 10000,
+            since_seq: None,
+            progress_bytes: None,
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        completed.jobs[0].state,
+        JobState::Completed,
+        "{:?}",
+        completed.jobs[0].last_error
+    );
+    contract("JobsWaitResult", &completed);
+    assert!(completed.jobs[0].state_seq.is_some());
+    assert_eq!(
+        std::fs::read(dir.path().join("downloads/verified.bin")).unwrap(),
+        data
+    );
+    let quiet = call::<JobsWait, _>(
+        &client,
+        JobsWaitParams {
+            job_ids: vec![id],
+            until: WaitUntil::SettledOrBlocked,
+            timeout_ms: 20,
+            since_seq: Some(completed.head_seq),
+            progress_bytes: None,
+        },
+    )
+    .await
+    .unwrap();
+    assert!(quiet.timed_out);
+    backend.flush_outbox().await.unwrap();
+    let audit = call::<AuditVerify, _>(&client, AuditVerifyParams::default())
+        .await
+        .unwrap();
+    assert!(audit.ok);
+    let manifest =
+        std::fs::read_to_string(dir.path().join("downloads/.zeus/manifest.jsonl")).unwrap();
+    assert_eq!(manifest.lines().count(), 2);
+    assert!(manifest.contains(&id.to_string()));
+    let meta = backend.journal.meta().unwrap();
+    assert_eq!(meta.artifact_cursor, meta.last_event_seq);
+    drop(client);
+    serving.abort();
+    let _ = serving.await;
+    backend.engine.shutdown().await.unwrap();
+    drop(backend);
+    let second = setup(dir.path()).await;
+    let (ctx, _rx) = context(dir.path(), "agent");
+    let replay = second.jobs_enqueue(&ctx, request).await.unwrap();
+    assert_eq!(replay.jobs, first.jobs);
+    assert!(replay.replayed);
+    second.flush_outbox().await.unwrap();
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("downloads/.zeus/manifest.jsonl"))
+            .unwrap()
+            .lines()
+            .count(),
+        2
+    );
+    second.engine.shutdown().await.unwrap();
+    http.abort();
+}
+
+#[tokio::test]
+async fn emergency_stop_persists_and_unverified_clients_cannot_release_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let backend = setup(dir.path()).await;
+    backend
+        .change_kill_switch(Actor::human(Surface::CliInteractive), true, None)
+        .await
+        .unwrap();
+    let (agent, _rx) = context(dir.path(), "agent");
+    let (human, _rx2) = context(dir.path(), "cli");
+    for ctx in [&agent, &human] {
+        assert!(
+            backend
+                .daemon_kill_switch(
+                    ctx,
+                    KillSwitchParams {
+                        action: KillSwitchAction::Release,
+                        surface: Some(Surface::CliInteractive),
+                        reason: None
+                    }
+                )
+                .await
+                .is_err()
+        );
+    }
+    let request =
+        serde_json::from_value(serde_json::json!({"jobs":[{"url":"https://example.org/file"}]}))
+            .unwrap();
+    assert_eq!(
+        backend
+            .jobs_enqueue(&agent, request)
+            .await
+            .unwrap_err()
+            .envelope()
+            .code
+            .as_str(),
+        "policy.kill_switch_engaged"
+    );
+    backend.engine.shutdown().await.unwrap();
+    drop(backend);
+    let backend = setup(dir.path()).await;
+    assert!(backend.journal.meta().unwrap().kill_switch_engaged());
+    backend
+        .change_kill_switch(Actor::human(Surface::CliInteractive), false, None)
+        .await
+        .unwrap();
+    backend.engine.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn unverified_admin_is_downgraded_before_authentication_reply() {
+    use zeus_api::{
+        client::{Client, ClientConfig, IpcClient, call},
+        methods::*,
+        server::{ServerContext, serve_connection},
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let backend = setup(dir.path()).await;
+    let paths = paths(dir.path());
+    let classify = backend.clone();
+    let router = crate::build_router(backend.clone())
+        .on_authenticate(move |ctx| classify.classify_client(ctx));
+    let secret = Arc::new(crate::provision::load_ipc_secret(&paths).unwrap());
+    let server = Arc::new(ServerContext {
+        secret: secret.clone(),
+        credentials: Arc::new(
+            crate::provision::FileCredentialStore::load(&paths.state_dir.join("credentials.json"))
+                .unwrap(),
+        ),
+        daemon: backend.info(),
+        router: Arc::new(router),
+    });
+    let (a, b) = tokio::io::duplex(64 * 1024);
+    let task = tokio::spawn(serve_connection(b, server));
+    let client = IpcClient::from_stream(
+        a,
+        crate::provision::load_client_credential(&paths, "cli").unwrap(),
+        &secret,
+        ClientConfig::new(ClientInfo {
+            name: "forged trusted terminal".into(),
+            version: "0".into(),
+            role: ClientRole::Cli,
+        }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(client.session().credential_kind, ClientKind::Admin);
+    contract("DaemonAuthenticateResult", client.session());
+    assert_eq!(client.session().kind, ClientKind::Agent);
+    assert!(client.session().downgraded);
+    assert!(
+        !client
+            .session()
+            .permissions
+            .contains(&zeus_api::Permission::ApprovalsDecide)
+    );
+    assert!(
+        call::<DaemonShutdown, _>(&client, ShutdownParams { grace_ms: None })
+            .await
+            .is_err()
+    );
+    assert!(
+        call::<DaemonStatus, _>(&client, StatusParams {})
+            .await
+            .is_ok()
+    );
+    drop(client);
+    task.abort();
+    let _ = task.await;
+    backend.engine.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn native_handoff_cannot_launder_browser_security_or_cancel_decisions() {
+    use zeus_session::protocol as nm;
+    let dir = tempfile::tempdir().unwrap();
+    let backend = setup(dir.path()).await;
+    let (mut ctx, _rx) = context(dir.path(), "host");
+    let extension = "abcdefghijklmnopabcdefghijklmnop";
+    ctx.attach = Some(zeus_api::methods::daemon::AttachInfo {
+        browser: zeus_types::BrowserName::Chrome,
+        attested_extension: extension.into(),
+        host_version: "0.1.0".into(),
+        parent_verified: true,
+    });
+    let hello=serde_json::from_value(serde_json::json!({"client":"zeus-extension","extension_id":extension,"extension_version":"0.1.0","browser":{"name":"chrome","version":"130"},"protocol_versions":[1],"capabilities":["handoff"],"profile_id":"11111111111111111111111111111111","sw_instance_id":"2222222222222222"})).unwrap();
+    let connection = backend.browser.attach(ctx, hello, true).unwrap();
+    for reason in [
+        Some("FILE_VIRUS_INFECTED"),
+        Some("FILE_BLOCKED"),
+        Some("FILE_SECURITY_CHECK_FAILED"),
+        Some("SERVER_CERT_PROBLEM"),
+        Some("USER_CANCELED"),
+        None,
+    ] {
+        let body=serde_json::from_value(serde_json::json!({"offer_key":"synthetic","trigger":"interrupted","download":{"browser_download_id":1,"url":"https://example.org/file","final_url":"https://example.org/file","referrer":null,"filename":"file.bin","mime":null,"bytes_received":0,"total_bytes":null,"start_time":"2026-10-16T00:00:00.000Z","incognito":false,"can_resume":false,"interrupt_reason":reason}})).unwrap();
+        let result = backend
+            .native_request(
+                &connection,
+                &nm::MessageId::new("e1").unwrap(),
+                nm::ExtensionBody::HandoffOffer(body),
+            )
+            .await;
+        assert_eq!(
+            result.unwrap_err().envelope().code.as_str(),
+            "api.permission_denied"
+        );
+    }
+    assert!(backend.journal.list_incomplete().unwrap().is_empty());
+    backend.browser.disconnect(connection.ctx.connection_id);
+    backend.engine.shutdown().await.unwrap();
+}

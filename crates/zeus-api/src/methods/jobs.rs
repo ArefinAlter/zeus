@@ -131,9 +131,6 @@ pub struct EnqueuedJob {
     /// Approval the job waits for.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub approval_id: Option<ApprovalId>,
-    /// True when an identical request (same idempotency key) already created this job.
-    #[serde(default)]
-    pub deduplicated: bool,
     /// Present on a dry run.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plan: Option<PlannedJob>,
@@ -145,6 +142,9 @@ pub struct EnqueuedJob {
 /// `jobs.enqueue` result.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct EnqueueResult {
+    /// True when this response replays a durable mutation receipt.
+    #[serde(default)]
+    pub replayed: bool,
     /// One entry per requested job.
     pub jobs: Vec<EnqueuedJob>,
     /// Echo of the request flag.
@@ -212,6 +212,7 @@ pub enum WaitUntil {
     #[default]
     SettledOrBlocked,
     /// Every watched job reaches a terminal state or `failed`.
+    #[serde(rename = "all_final", alias = "all_terminal")]
     AllTerminal,
     /// Any state change at all.
     AnyChange,
@@ -230,6 +231,12 @@ pub struct JobsWaitParams {
     pub until: WaitUntil,
     /// Maximum wait, 1 to 60 000 ms (the MCP tool maps `timeout_s` to this).
     pub timeout_ms: u64,
+    /// Durable state cursor returned by the previous wait.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub since_seq: Option<u64>,
+    /// Also return after this many new committed bytes on any watched job.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub progress_bytes: Option<u64>,
 }
 
 /// `jobs.wait` result.
@@ -279,6 +286,9 @@ pub struct JobsControlParams {
 /// `jobs.control` result.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct JobsControlResult {
+    /// True when this response replays a durable mutation receipt.
+    #[serde(default)]
+    pub replayed: bool,
     /// The job after the action. Illegal transitions fail with `api.invalid_transition` instead.
     pub job: JobSummary,
 }

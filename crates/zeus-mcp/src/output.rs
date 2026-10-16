@@ -207,6 +207,12 @@ pub struct JobsOutput {
     /// True when `zeus_wait` hit its timeout.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timed_out: Option<bool>,
+    /// Durable cursor to pass as `since` on the next wait.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
+    /// Whether every watched job completed, failed or was canceled.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub all_settled: Option<bool>,
 }
 
 /// `zeus_control` output.

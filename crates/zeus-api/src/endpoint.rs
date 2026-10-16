@@ -60,15 +60,9 @@ pub fn unix_socket_path(runtime_dir: &Path, user_identity: &str) -> PathBuf {
         .join("zeusd.sock")
 }
 
-/// The identity used for endpoint naming: `DOMAIN\user` on Windows, the login name elsewhere.
-pub fn current_user_identity() -> String {
-    let user = std::env::var("USERNAME")
-        .or_else(|_| std::env::var("USER"))
-        .unwrap_or_else(|_| "unknown".into());
-    match std::env::var("USERDOMAIN") {
-        Ok(domain) if cfg!(windows) => format!(r"{domain}\{user}"),
-        _ => user,
-    }
+/// OS identity used for endpoint naming: SID on Windows, effective uid on Unix.
+pub fn current_user_identity() -> Result<String, ApiError> {
+    crate::transport::user_identity()
 }
 
 /// The directories Zeus uses for one user.
@@ -90,7 +84,7 @@ impl ZeusPaths {
         Self::resolve(
             |key| std::env::var(key).ok(),
             BaseDirs::new(),
-            current_user_identity(),
+            current_user_identity()?,
         )
     }
 

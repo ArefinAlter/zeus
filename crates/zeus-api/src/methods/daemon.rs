@@ -109,6 +109,9 @@ pub struct AttachInfo {
     pub attested_extension: String,
     /// Version of the host.
     pub host_version: String,
+    /// Browser-parent attestation; false until the host has verified the parent.
+    #[serde(default)]
+    pub parent_verified: bool,
 }
 
 /// `daemon.authenticate` parameters.
@@ -126,6 +129,10 @@ pub struct AuthenticateParams {
 /// `daemon.authenticate` result.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct AuthenticateResult {
+    /// Authority on the stored credential, before executable verification.
+    pub credential_kind: ClientKind,
+    /// The daemon reduced human/admin authority because peer verification failed.
+    pub downgraded: bool,
     /// The credential id, echoed.
     pub client_id: String,
     /// Authority class of the credential.
@@ -191,13 +198,35 @@ pub struct ShutdownParams {
 /// `daemon.shutdown` result.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ShutdownResult {
+    /// True when this response replays a durable mutation receipt.
+    #[serde(default)]
+    pub replayed: bool,
     /// The daemon accepted the request and is stopping.
     pub accepted: bool,
+    /// Accepted grace period before connections close; default 10 000, at most 60 000.
+    pub grace_ms: u64,
+}
+
+/// A human may engage or explicitly release the persistent kill switch.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum KillSwitchAction {
+    /// Revoke permissions and pause work.
+    #[default]
+    Engage,
+    /// Clear the latch without resuming jobs or restoring grants.
+    Release,
 }
 
 /// `daemon.kill_switch` parameters.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct KillSwitchParams {
+    /// Requested state transition.
+    #[serde(default)]
+    pub action: KillSwitchAction,
+    /// Human trust surface, checked against the authenticated role.
+    #[serde(default)]
+    pub surface: Option<zeus_types::Surface>,
     /// Free text for the audit record. Untrusted, at most 280 characters.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
@@ -206,6 +235,16 @@ pub struct KillSwitchParams {
 /// `daemon.kill_switch` result.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct KillSwitchResult {
+    /// Whether the durable latch changed value; engage still sweeps when already engaged.
+    #[serde(default)]
+    pub changed: bool,
+    /// Whether a durable API receipt supplied the result.
+    #[serde(default)]
+    pub replayed: bool,
+    /// Persisted state after the action.
+    pub engaged: bool,
+    /// Pending approvals invalidated when engaged.
+    pub approvals_pending: u32,
     /// Grants revoked by this call.
     pub grants_revoked: u32,
     /// Jobs paused by this call.

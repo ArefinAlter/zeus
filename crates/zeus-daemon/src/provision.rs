@@ -42,10 +42,11 @@ fn io(what: &'static str) -> impl Fn(std::io::Error) -> ProvisionError {
     move |source| ProvisionError::Io { what, source }
 }
 
-/// The three default credentials, by file name.
+/// The default credentials, by file name.
 pub const DEFAULT_CREDENTIALS: &[(&str, ClientKind, ClientRole)] = &[
     ("cli", ClientKind::Admin, ClientRole::Cli),
     ("agent", ClientKind::Agent, ClientRole::Mcp),
+    ("a2a", ClientKind::Agent, ClientRole::A2a),
     ("host", ClientKind::Human, ClientRole::NativeHost),
 ];
 
@@ -54,7 +55,7 @@ pub const DEFAULT_CREDENTIALS: &[(&str, ClientKind, ClientRole)] = &[
 pub struct ProvisionReport {
     /// The IPC secret file was created.
     pub created_ipc_secret: bool,
-    /// Credential files created, by name (`cli`, `agent`, `host`).
+    /// Credential files created, by name (`cli`, `agent`, `a2a`, `host`).
     pub created_credentials: Vec<String>,
 }
 
@@ -67,12 +68,11 @@ fn create_private_dir(path: &Path) -> Result<(), ProvisionError> {
             .recursive(true)
             .mode(0o700)
             .create(path)
-            .map_err(io("create state directory"))
+            .map_err(io("create state directory"))?;
     }
     #[cfg(not(unix))]
-    {
-        std::fs::create_dir_all(path).map_err(io("create state directory"))
-    }
+    std::fs::create_dir_all(path).map_err(io("create state directory"))?;
+    zeus_api::transport::secure_private_directory(path).map_err(io("protect private directory"))
 }
 
 /// Write a file owner-only, atomically (temp file then rename).
@@ -94,6 +94,7 @@ fn write_private(path: &Path, bytes: &[u8]) -> Result<(), ProvisionError> {
     }
     let _ = std::fs::remove_file(&temp);
     let mut file = options.open(&temp).map_err(io("create temporary file"))?;
+    zeus_api::transport::secure_private_file(&temp).map_err(io("protect private file"))?;
     file.write_all(bytes).map_err(io("write file"))?;
     file.sync_all().map_err(io("sync file"))?;
     drop(file);
@@ -216,8 +217,13 @@ pub fn provision(paths: &ZeusPaths, now: Timestamp) -> Result<ProvisionReport, P
         )?;
         report.created_ipc_secret = true;
     }
+    zeus_api::transport::secure_private_file(&secret_path).map_err(io("protect IPC secret"))?;
 
     let store_path = paths.state_dir.join("credentials.json");
+    if store_path.exists() {
+        zeus_api::transport::secure_private_file(&store_path)
+            .map_err(io("protect credential index"))?;
+    }
     let mut records: Vec<StoredCredential> = match std::fs::read(&store_path) {
         Ok(bytes) => {
             serde_json::from_slice::<StoreFile>(&bytes)
@@ -236,6 +242,8 @@ pub fn provision(paths: &ZeusPaths, now: Timestamp) -> Result<ProvisionReport, P
     for (name, kind, role) in DEFAULT_CREDENTIALS {
         let file = paths.credential_file(name);
         if file.exists() {
+            zeus_api::transport::secure_private_file(&file)
+                .map_err(io("protect existing credential"))?;
             continue;
         }
         let token = Token::generate();
@@ -299,7 +307,7 @@ mod tests {
         let paths = paths(dir.path());
         let first = provision(&paths, Timestamp::now()).unwrap();
         assert!(first.created_ipc_secret);
-        assert_eq!(first.created_credentials, ["cli", "agent", "host"]);
+        assert_eq!(first.created_credentials, ["cli", "agent", "a2a", "host"]);
         let before = std::fs::read(paths.credential_file("agent")).unwrap();
         let secret_before = std::fs::read(paths.ipc_secret_file()).unwrap();
 
@@ -321,7 +329,7 @@ mod tests {
         let paths = paths(dir.path());
         provision(&paths, Timestamp::now()).unwrap();
         let store_text = std::fs::read_to_string(paths.state_dir.join("credentials.json")).unwrap();
-        for name in ["cli", "agent", "host"] {
+        for name in ["cli", "agent", "a2a", "host"] {
             let client = load_client_credential(&paths, name).unwrap();
             let token_hex = &client.token.to_text()[4..];
             assert!(
@@ -411,6 +419,7 @@ mod tests {
                     browser: zeus_types::BrowserName::Chrome,
                     attested_extension: "abcdefghijklmnopabcdefghijklmnop".into(),
                     host_version: "0.1.0".into(),
+                    parent_verified: false,
                 });
             }
             let client = IpcClient::from_stream(client_end, credential, &secret, config)

@@ -1,7 +1,7 @@
 //! Registers a [`Backend`] on a [`zeus_api::Router`].
 //!
 //! `daemon.ping` is answered here; every other MVP method is forwarded to the backend. Later-stage methods
-//! (workflows, files organize/convert/undo, llm, clients) are deliberately not registered: the router answers
+//! (files organize/convert/undo and clients) remain unregistered: the router answers
 //! `api.not_implemented` for them while the policy table still enforces who may call them.
 
 use std::sync::Arc;
@@ -12,7 +12,13 @@ use zeus_api::methods::{
     ApprovalsDecide, ApprovalsGet, ApprovalsList, AuditTail, AuditVerify, ConfigGet, ConfigSet,
     DaemonKillSwitch, DaemonPing, DaemonShutdown, DaemonStatus, DoctorRun, EventsSubscribe,
     EventsUnsubscribe, FilesList, JobsControl, JobsEnqueue, JobsGet, JobsList, JobsProbe,
-    JobsVerify, JobsWait, SessionsList, SessionsRequest, SessionsRevoke,
+    JobsVerify, JobsWait, LlmAuthCancel, LlmAuthSignOut, LlmAuthStart, LlmAuthStatus, LlmConfigure,
+    LlmStatus, SessionsList, SessionsRequest, SessionsRevoke, WorkflowsControl, WorkflowsDryRun,
+    WorkflowsGet, WorkflowsList, WorkflowsManifest, WorkflowsPlan, WorkflowsRun,
+};
+use zeus_api::methods::{
+    CloudAccountsConfigure, CloudAccountsList, CloudAccountsRevoke, CloudControl, CloudGet,
+    CloudList, CloudPlan, CloudSubmit,
 };
 use zeus_types::Timestamp;
 
@@ -35,6 +41,19 @@ pub fn build_router<B: Backend>(backend: Arc<B>) -> Router {
             server_time: Timestamp::now(),
         })
     });
+    let router = forward!(router, backend, CloudAccountsList, cloud_accounts_list);
+    let router = forward!(
+        router,
+        backend,
+        CloudAccountsConfigure,
+        cloud_accounts_configure
+    );
+    let router = forward!(router, backend, CloudAccountsRevoke, cloud_accounts_revoke);
+    let router = forward!(router, backend, CloudPlan, cloud_plan);
+    let router = forward!(router, backend, CloudSubmit, cloud_submit);
+    let router = forward!(router, backend, CloudList, cloud_list);
+    let router = forward!(router, backend, CloudGet, cloud_get);
+    let router = forward!(router, backend, CloudControl, cloud_control);
     let router = forward!(router, backend, DaemonStatus, daemon_status);
     let router = forward!(router, backend, DaemonShutdown, daemon_shutdown);
     let router = forward!(router, backend, DaemonKillSwitch, daemon_kill_switch);
@@ -58,6 +77,19 @@ pub fn build_router<B: Backend>(backend: Arc<B>) -> Router {
     let router = forward!(router, backend, AuditVerify, audit_verify);
     let router = forward!(router, backend, ConfigGet, config_get);
     let router = forward!(router, backend, ConfigSet, config_set);
+    let router = forward!(router, backend, LlmAuthStart, llm_auth_start);
+    let router = forward!(router, backend, LlmAuthStatus, llm_auth_status);
+    let router = forward!(router, backend, LlmAuthCancel, llm_auth_cancel);
+    let router = forward!(router, backend, LlmAuthSignOut, llm_auth_sign_out);
+    let router = forward!(router, backend, LlmStatus, llm_status);
+    let router = forward!(router, backend, LlmConfigure, llm_configure);
+    let router = forward!(router, backend, WorkflowsPlan, workflows_plan);
+    let router = forward!(router, backend, WorkflowsDryRun, workflows_dry_run);
+    let router = forward!(router, backend, WorkflowsRun, workflows_run);
+    let router = forward!(router, backend, WorkflowsGet, workflows_get);
+    let router = forward!(router, backend, WorkflowsList, workflows_list);
+    let router = forward!(router, backend, WorkflowsControl, workflows_control);
+    let router = forward!(router, backend, WorkflowsManifest, workflows_manifest);
     forward!(router, backend, DoctorRun, doctor_run)
 }
 
@@ -76,6 +108,9 @@ mod tests {
     fn ctx(kind: ClientKind, role: ClientRole) -> CallContext {
         let (notifier, _rx) = Notifier::channel(8);
         CallContext {
+            reply: Default::default(),
+            peer: Default::default(),
+            attach: None,
             identity: ClientIdentity {
                 credential_id: CredentialId::generate(),
                 kind,
@@ -103,7 +138,19 @@ mod tests {
                 method.name
             );
         }
-        for method in METHODS.iter().filter(|m| m.stage == Stage::Later) {
+        for method in METHODS.iter().filter(|m| {
+            m.stage == Stage::Later
+                && !matches!(
+                    m.name,
+                    "llm.status"
+                        | "llm.configure"
+                        | "llm.auth.start"
+                        | "llm.auth.status"
+                        | "llm.auth.cancel"
+                        | "llm.auth.sign_out"
+                )
+                && !m.name.starts_with("workflows.")
+        }) {
             assert!(
                 !registered.contains(method.name),
                 "{} is later but routed",

@@ -17,12 +17,16 @@ use zeus_types::ConnectionId;
 
 use crate::auth::{CredentialStore, IpcSecret, ServerHandshake};
 use crate::error::{ApiError, codes};
-use crate::framing::{FrameError, LineLimits, read_line, write_message};
+use crate::framing::{LineLimits, read_line, write_message};
 use crate::jsonrpc::{Message, Notification, Request, Response};
 use crate::kind::ClientIdentity;
 use crate::methods::RpcMethod;
 use crate::methods::daemon::{ConnectionLimits, DaemonInfo};
 use crate::policy;
+
+#[path = "server_shutdown.rs"]
+mod lifecycle;
+pub use lifecycle::{ShutdownController, ShutdownNotice};
 
 /// Why a notification could not be queued.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -42,6 +46,19 @@ pub struct Notifier {
 }
 
 impl Notifier {
+    /// Queue a replay or terminal lag notification with a bounded wait for the connection writer.
+    pub async fn notify_wait(&self, method: &str, params: Value) -> Result<(), NotifyError> {
+        tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            self.tx.send(Message::Notification(Notification::new(
+                method,
+                Some(params),
+            ))),
+        )
+        .await
+        .map_err(|_| NotifyError::Full)?
+        .map_err(|_| NotifyError::Closed)
+    }
     /// A notifier and the receiver of what it sends (for tests and for the connection's writer task).
     pub fn channel(capacity: usize) -> (Self, mpsc::Receiver<Message>) {
         let (tx, rx) = mpsc::channel(capacity);
@@ -67,9 +84,34 @@ impl Notifier {
     }
 }
 
+/// Barrier ensuring a subscription response is queued before its first notification.
+#[derive(Debug, Clone)]
+pub struct ReplyFence(tokio::sync::watch::Sender<bool>);
+impl Default for ReplyFence {
+    fn default() -> Self {
+        Self(tokio::sync::watch::channel(false).0)
+    }
+}
+impl ReplyFence {
+    /// Wait until the RPC response has been queued on this same connection.
+    pub async fn wait(&self) {
+        let _ = self.0.subscribe().wait_for(|sent| *sent).await;
+    }
+    /// Mark the response queued; only the owning transport invokes this.
+    pub fn release(&self) {
+        self.0.send_replace(true);
+    }
+}
+
 /// Everything a handler knows about the call.
 #[derive(Debug, Clone)]
 pub struct CallContext {
+    /// Barrier for notifications which must follow this call's response.
+    pub reply: ReplyFence,
+    /// Operating-system peer evidence; absent for unverified embedded transports.
+    pub peer: crate::transport::PeerProcess,
+    /// Attach data authenticated with the native-host credential; used only with verified host evidence.
+    pub attach: Option<crate::methods::daemon::AttachInfo>,
     /// The authenticated caller.
     pub identity: ClientIdentity,
     /// This connection, for logs.
@@ -80,6 +122,7 @@ pub struct CallContext {
     pub limits: ConnectionLimits,
 }
 
+type AuthenticationHook = dyn Fn(&mut CallContext) -> Result<(), ApiError> + Send + Sync;
 type BoxedHandler =
     Box<dyn Fn(CallContext, Value) -> BoxFuture<'static, Result<Value, ApiError>> + Send + Sync>;
 
@@ -87,6 +130,10 @@ type BoxedHandler =
 #[derive(Default)]
 pub struct Router {
     routes: HashMap<&'static str, BoxedHandler>,
+    native_frames: Option<BoxedHandler>,
+    disconnected: Option<BoxedHandler>,
+    authenticated: Option<Box<AuthenticationHook>>,
+    shutdown: Option<ShutdownController>,
 }
 
 impl Router {
@@ -118,6 +165,59 @@ impl Router {
         self
     }
 
+    /// Handle native frames after role and permission checks; no other notification is dispatched.
+    #[must_use]
+    pub fn native_messaging<F, Fut>(mut self, handler: F) -> Self
+    where
+        F: Fn(CallContext, Value) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<(), ApiError>> + Send + 'static,
+    {
+        let handler = Arc::new(handler);
+        self.native_frames = Some(Box::new(move |ctx, params| {
+            let handler = handler.clone();
+            Box::pin(async move {
+                handler(ctx, params).await?;
+                Ok(Value::Null)
+            })
+        }));
+        self
+    }
+
+    /// Release connection-owned subscriptions and browser leases when the socket closes.
+    #[must_use]
+    pub fn on_disconnect<F, Fut>(mut self, handler: F) -> Self
+    where
+        F: Fn(CallContext) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = ()> + Send + 'static,
+    {
+        let handler = Arc::new(handler);
+        self.disconnected = Some(Box::new(move |ctx, _| {
+            let handler = handler.clone();
+            Box::pin(async move {
+                handler(ctx).await;
+                Ok(Value::Null)
+            })
+        }));
+        self
+    }
+
+    /// Apply daemon-owned peer classification once, before any authenticated request can run.
+    #[must_use]
+    pub fn on_authenticate<F>(mut self, handler: F) -> Self
+    where
+        F: Fn(&mut CallContext) -> Result<(), ApiError> + Send + Sync + 'static,
+    {
+        self.authenticated = Some(Box::new(handler));
+        self
+    }
+
+    /// Apply one shared admission and connection-drain deadline to this server.
+    #[must_use]
+    pub fn with_shutdown(mut self, controller: ShutdownController) -> Self {
+        self.shutdown = Some(controller);
+        self
+    }
+
     /// Names of the registered methods.
     pub fn registered(&self) -> Vec<&'static str> {
         let mut names: Vec<_> = self.routes.keys().copied().collect();
@@ -139,6 +239,14 @@ impl Router {
         ctx: &CallContext,
         request: &Request,
     ) -> Result<Value, ApiError> {
+        if self
+            .shutdown
+            .as_ref()
+            .is_some_and(|controller| controller.notice().is_some())
+        {
+            return Err(ApiError::new(codes::UNAVAILABLE, "daemon is stopping")
+                .with_detail("reason", "stopping"));
+        }
         let spec = policy::lookup(&request.method).ok_or_else(|| {
             ApiError::new(
                 codes::METHOD_NOT_FOUND,
@@ -195,6 +303,17 @@ pub async fn serve_connection<S>(stream: S, ctx: Arc<ServerContext>) -> Result<(
 where
     S: AsyncRead + AsyncWrite + Send + Unpin + 'static,
 {
+    serve_connection_with_peer(stream, ctx, Default::default()).await
+}
+
+async fn serve_connection_with_peer<S>(
+    stream: S,
+    ctx: Arc<ServerContext>,
+    peer: crate::transport::PeerProcess,
+) -> Result<(), ApiError>
+where
+    S: AsyncRead + AsyncWrite + Send + Unpin + 'static,
+{
     let (read_half, mut write_half) = tokio::io::split(stream);
     let mut reader = BufReader::new(read_half);
     let (notifier, mut outgoing) =
@@ -202,22 +321,51 @@ where
 
     let writer = tokio::spawn(async move {
         while let Some(message) = outgoing.recv().await {
-            if write_message(&mut write_half, &message).await.is_err() {
+            if !matches!(
+                tokio::time::timeout(
+                    std::time::Duration::from_secs(30),
+                    write_message(&mut write_half, &message)
+                )
+                .await,
+                Ok(Ok(()))
+            ) {
                 break;
             }
         }
     });
 
-    let outcome = connection_loop(&mut reader, &ctx, &notifier).await;
+    // Dropping an accept-loop task must also close its detached writer and socket half.
+    let _writer_guard = AbortWriter(writer.abort_handle());
+    let mut call_ctx = None;
+    let outcome = connection_loop(&mut reader, &ctx, &notifier, &mut call_ctx, &peer).await;
+    if let (Some(call), Some(handler)) = (call_ctx, &ctx.router.disconnected) {
+        let _ = handler(call, Value::Null).await;
+    }
     drop(notifier);
-    let _ = writer.await;
+    // Give queued replies a bounded opportunity to flush, then release all socket handles.
+    let mut writer = writer;
+    if tokio::time::timeout(std::time::Duration::from_millis(250), &mut writer)
+        .await
+        .is_err()
+    {
+        writer.abort();
+    }
     outcome
+}
+
+struct AbortWriter(tokio::task::AbortHandle);
+impl Drop for AbortWriter {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
 }
 
 async fn connection_loop<R>(
     reader: &mut BufReader<R>,
     ctx: &Arc<ServerContext>,
     notifier: &Notifier,
+    call_ctx: &mut Option<CallContext>,
+    peer: &crate::transport::PeerProcess,
 ) -> Result<(), ApiError>
 where
     R: AsyncRead + Unpin,
@@ -225,19 +373,64 @@ where
     let mut handshake =
         ServerHandshake::new(&ctx.secret, ctx.credentials.as_ref(), ctx.daemon.clone());
     let mut limits = LineLimits::STANDARD;
-    let mut call_ctx: Option<CallContext> = None;
+    let mut tasks = tokio::task::JoinSet::new();
     let mut in_flight: Option<Arc<Semaphore>> = None;
+    let shutdown = ctx.router.shutdown.clone().unwrap_or_default();
+    let mut stopping = shutdown.subscribe();
+    let mut stopping_notified = false;
 
     loop {
-        let line = match read_line(reader, limits.max_request_bytes).await {
+        while tasks.try_join_next().is_some() {}
+        let read = {
+            // Keep an incomplete line alive while announcing shutdown; the framing reader may
+            // already have consumed bytes and is not safe to cancel and restart mid-frame.
+            let read = async {
+                let read = read_line(reader, limits.max_request_bytes);
+                if call_ctx.is_none() {
+                    tokio::time::timeout(std::time::Duration::from_secs(5), read)
+                        .await
+                        .map_err(|_| {
+                            ApiError::new(codes::TIMEOUT, "authentication deadline exceeded")
+                        })?
+                        .map_err(ApiError::from)
+                } else {
+                    read.await.map_err(ApiError::from)
+                }
+            };
+            tokio::pin!(read);
+            loop {
+                let notice = shutdown.notice();
+                if let Some(notice) = &notice {
+                    if call_ctx.is_none() {
+                        return Ok(());
+                    }
+                    if !stopping_notified {
+                        notifier.notify("daemon.stopping", serde_json::json!({"reason":notice.reason,"grace_ms":notice.grace_ms}))
+                            .map_err(|_| ApiError::new(codes::SLOW_CONSUMER,"shutdown notification could not be queued"))?;
+                        stopping_notified = true;
+                    }
+                    if tokio::time::Instant::now() >= notice.deadline {
+                        return Ok(());
+                    }
+                }
+                tokio::select! {
+                    biased;
+                    _ = stopping.changed() => continue,
+                    _ = async { match notice { Some(notice) => tokio::time::sleep_until(notice.deadline).await, None => std::future::pending().await } } => return Ok(()),
+                    result = &mut read => break result,
+                }
+            }
+        };
+        let line = match read {
             Ok(Some(line)) => line,
             Ok(None) => return Ok(()),
-            Err(error @ FrameError::TooLong { .. }) => {
-                let api: ApiError = error.into();
-                let _ = notifier_send(notifier, Message::Response(Response::failure(None, &api)));
-                return Err(api);
+            Err(error) => {
+                if error.envelope().code.as_str() == codes::PAYLOAD_TOO_LARGE {
+                    let _ =
+                        notifier_send(notifier, Message::Response(Response::failure(None, &error)));
+                }
+                return Err(error);
             }
-            Err(error) => return Err(error.into()),
         };
         let message = match Message::parse(&line) {
             Ok(message) => message,
@@ -248,14 +441,38 @@ where
         };
         let request = match message {
             Message::Request(request) => request,
-            // Clients send notifications only for `nm.frame`; the daemon-side relay is a later task.
-            Message::Notification(_) | Message::Response(_) => continue,
+            Message::Notification(note) => {
+                if stopping_notified {
+                    continue;
+                }
+                let call = call_ctx.as_ref().ok_or_else(ApiError::not_authenticated)?;
+                if note.method != "nm.frame"
+                    || call.identity.role != crate::ClientRole::NativeHost
+                    || !call.identity.has(crate::Permission::NmRelay)
+                {
+                    return Err(ApiError::new(
+                        codes::PERMISSION_DENIED,
+                        "notification is not permitted",
+                    ));
+                }
+                if let Some(handler) = &ctx.router.native_frames {
+                    handler(call.clone(), note.params.unwrap_or(Value::Null)).await?;
+                } else {
+                    return Err(ApiError::not_implemented("native messaging endpoint"));
+                }
+                continue;
+            }
+            Message::Response(_) => continue,
         };
 
         let response = match request.method.as_str() {
             crate::methods::names::DAEMON_HELLO => handle_handshake(&mut handshake, &request, true),
             crate::methods::names::DAEMON_AUTHENTICATE => {
-                let response = handle_handshake(&mut handshake, &request, false);
+                let mut response = handle_handshake(&mut handshake, &request, false);
+                if let Some(error) = response.error.clone() {
+                    let _ = notifier_send(notifier, Message::Response(response));
+                    return Err(ApiError::from_error_object(&error));
+                }
                 if let Some(identity) = handshake.identity() {
                     let connection_limits = ConnectionLimits::for_role(identity.role);
                     limits = LineLimits {
@@ -265,12 +482,45 @@ where
                     in_flight = Some(Arc::new(Semaphore::new(
                         connection_limits.max_in_flight_requests as usize,
                     )));
-                    call_ctx = Some(CallContext {
+                    let credential_kind = identity.kind;
+                    let mut call = CallContext {
+                        reply: Default::default(),
+                        peer: peer.clone(),
+                        attach: request
+                            .params
+                            .clone()
+                            .and_then(|p| {
+                                serde_json::from_value::<
+                                        crate::methods::daemon::AuthenticateParams,
+                                    >(p)
+                                    .ok()
+                            })
+                            .and_then(|p| p.attach),
                         identity: identity.clone(),
                         connection_id: connection_id_from(&response),
                         notifier: notifier.clone(),
                         limits: connection_limits,
-                    });
+                    };
+                    if let Some(classify) = &ctx.router.authenticated
+                        && let Err(error) = classify(&mut call)
+                    {
+                        let _ = notifier_send(
+                            notifier,
+                            Message::Response(Response::failure(Some(request.id.clone()), &error)),
+                        );
+                        return Err(error);
+                    }
+                    if let Some(result) = response.result.as_mut() {
+                        result["credential_kind"] = serde_json::to_value(credential_kind)
+                            .map_err(|_| ApiError::internal("identity serialization"))?;
+                        result["kind"] = serde_json::to_value(call.identity.kind)
+                            .map_err(|_| ApiError::internal("identity serialization"))?;
+                        result["downgraded"] =
+                            serde_json::json!(credential_kind != call.identity.kind);
+                        result["permissions"] = serde_json::to_value(&call.identity.permissions)
+                            .map_err(|_| ApiError::internal("identity serialization"))?;
+                    }
+                    *call_ctx = Some(call);
                 } else if let Some(error) = response.error.clone() {
                     // One authentication attempt per connection: a failed proof ends it, so a hostile peer cannot
                     // grind guesses against a fixed pair of nonces.
@@ -280,7 +530,7 @@ where
                 response
             }
             _ => {
-                let Some(call) = call_ctx.clone() else {
+                let Some(mut call) = call_ctx.clone() else {
                     let error = ApiError::not_authenticated();
                     let _ = notifier_send(
                         notifier,
@@ -289,15 +539,34 @@ where
                     // A peer that sends work before authenticating is not a client we want to keep.
                     return Err(error);
                 };
+                if shutdown.notice().is_some() {
+                    let error = ApiError::new(codes::UNAVAILABLE, "daemon is stopping")
+                        .with_detail("reason", "stopping");
+                    let _ = notifier_send(
+                        notifier,
+                        Message::Response(Response::failure(Some(request.id), &error)),
+                    );
+                    continue;
+                }
                 let permit = match in_flight.clone() {
-                    Some(semaphore) => semaphore.acquire_owned().await.ok(),
+                    Some(semaphore) => tokio::select! {
+                        biased;
+                        _ = stopping.changed() => {
+                            let error = ApiError::new(codes::UNAVAILABLE,"daemon is stopping").with_detail("reason","stopping");
+                            let _ = notifier_send(notifier,Message::Response(Response::failure(Some(request.id),&error)));
+                            continue;
+                        },
+                        permit = semaphore.acquire_owned() => permit.ok(),
+                    },
                     None => None,
                 };
                 let router = Arc::clone(&ctx.router);
                 let out = notifier.clone();
-                tokio::spawn(async move {
+                call.reply = Default::default();
+                tasks.spawn(async move {
                     let response = router.dispatch(&call, request).await;
                     let _ = out.tx.send(Message::Response(response)).await;
+                    call.reply.release();
                     drop(permit);
                 });
                 continue;
@@ -349,13 +618,65 @@ fn connection_id_from(response: &Response) -> ConnectionId {
         .unwrap_or_else(|| zeus_types::IdGenerator::new().connection_id())
 }
 
-/// Accept loop over a bound listener. Not implemented in the skeleton: it needs the hardened bind of
-/// [`crate::transport::bind`] first.
+/// Accept connections through an owner-only listener. Drop this future to stop accepting.
 pub async fn serve(
-    _ctx: Arc<ServerContext>,
-    _endpoint: &crate::endpoint::Endpoint,
+    ctx: Arc<ServerContext>,
+    endpoint: &crate::endpoint::Endpoint,
 ) -> Result<(), ApiError> {
-    Err(ApiError::not_implemented(
-        "zeus_api::server::serve (accept loop over the hardened listener)",
-    ))
+    let listener = crate::transport::bind(endpoint)?;
+    serve_listener(ctx, listener).await
+}
+
+/// Serve an already-bound listener, so the daemon publishes discovery only after binding succeeds.
+pub async fn serve_listener(
+    ctx: Arc<ServerContext>,
+    listener: crate::transport::IpcListener,
+) -> Result<(), ApiError> {
+    let shutdown = ctx.router.shutdown.clone().unwrap_or_default();
+    let connections = Arc::new(Semaphore::new(64));
+    let mut tasks = tokio::task::JoinSet::new();
+    let notice = loop {
+        while tasks.try_join_next().is_some() {}
+        let permit = tokio::select! {
+            biased;
+            notice = shutdown.stopping() => break notice,
+            permit = connections.clone().acquire_owned() => permit.map_err(|_| ApiError::internal("connection limiter closed"))?,
+        };
+        let accepted = tokio::select! {
+            biased;
+            notice = shutdown.stopping() => break notice,
+            accepted = listener.accept() => accepted,
+        };
+        match accepted {
+            Ok(stream) => {
+                let peer = crate::transport::peer_process(&stream);
+                let ctx = ctx.clone();
+                tasks.spawn(async move {
+                    let _permit = permit;
+                    if let Err(error) = serve_connection_with_peer(stream, ctx, peer).await {
+                        tracing::debug!(code = %error.envelope().code, "IPC connection ended");
+                    }
+                });
+            }
+            Err(error) => {
+                drop(permit);
+                tracing::warn!(code = %error.envelope().code, "IPC accept rejected");
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+        }
+    };
+    drop(listener);
+    // Reads and handlers end at the deadline. Permit only the existing bounded writer drain
+    // afterward, including grace_ms=0, so the accepted response precedes the final notification.
+    let deadline = notice.deadline + std::time::Duration::from_millis(250);
+    if tokio::time::timeout_at(deadline, async {
+        while tasks.join_next().await.is_some() {}
+    })
+    .await
+    .is_err()
+    {
+        tasks.abort_all();
+        while tasks.join_next().await.is_some() {}
+    }
+    Ok(())
 }

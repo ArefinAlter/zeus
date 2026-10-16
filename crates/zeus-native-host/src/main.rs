@@ -45,7 +45,10 @@ fn main() -> ExitCode {
             return ExitCode::from(1);
         }
     };
-    match runtime.block_on(zeus_native_host::relay::run(&launch)) {
+    let result = runtime.block_on(zeus_native_host::relay::run(&launch));
+    // Tokio stdin may still have a blocking OS read outstanding after daemon EOF.
+    runtime.shutdown_background();
+    match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("zeus-native-host: {error}");

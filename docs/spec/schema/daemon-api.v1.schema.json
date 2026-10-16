@@ -3794,6 +3794,14 @@
         "replayed": {
           "description": "True when the result was returned from the idempotency store instead of executing the call (section 12).",
           "type": "boolean"
+        },
+        "content": {
+          "type": "string",
+          "maxLength": 524288,
+          "description": "Redacted UTF-8 export included only when at most 512 KiB."
+        },
+        "sha256": {
+          "$ref": "https://zeus.invalid/schema/common#/$defs/Hex256"
         }
       }
     },
@@ -4321,7 +4329,7 @@
       ]
     },
     "LlmConfigureParams": {
-      "description": "Parameters of llm.configure (later).",
+      "description": "Human-only local model configuration. Download-only remains the default; enabling a model never grants download or session authority.",
       "type": "object",
       "properties": {
         "privacy": {
@@ -4345,13 +4353,19 @@
         },
         "api_key": {
           "x-zeus-secret": true,
-          "description": "Goes straight to the OS keyring; never echoed, logged or stored elsewhere.",
+          "description": "Goes straight to the OS keyring; never echoed, logged or stored elsewhere. An empty string deletes this provider key.",
           "type": "string",
-          "minLength": 1,
+          "minLength": 0,
           "maxLength": 4096
         },
         "idempotency_key": {
           "$ref": "#/$defs/IdempotencyKey"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "adapter": {
+          "$ref": "#/$defs/HttpProviderConfig"
         }
       }
     },
@@ -5123,6 +5137,18 @@
         },
         {
           "$ref": "#/$defs/ArtifactsIngestRequest"
+        },
+        {
+          "$ref": "#/$defs/LlmAuthStartRequest"
+        },
+        {
+          "$ref": "#/$defs/LlmAuthStatusRequest"
+        },
+        {
+          "$ref": "#/$defs/LlmAuthCancelRequest"
+        },
+        {
+          "$ref": "#/$defs/LlmAuthSignOutRequest"
         }
       ]
     },
@@ -5344,6 +5370,754 @@
       "oneOf": [
         {
           "$ref": "#/$defs/NmFrameToDaemonNotification"
+        }
+      ]
+    },
+    "ModelPricing": {
+      "type": "object",
+      "properties": {
+        "input_micro_usd_per_million": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "output_micro_usd_per_million": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "max_input_tokens": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        }
+      },
+      "required": [
+        "input_micro_usd_per_million",
+        "output_micro_usd_per_million",
+        "max_input_tokens"
+      ]
+    },
+    "HttpProviderConfig": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "maxLength": 64
+        },
+        "endpoint": {
+          "type": "string",
+          "format": "uri",
+          "maxLength": 4096,
+          "description": "Complete method URL. Credentials, query strings, fragments and non-loopback cleartext are refused."
+        },
+        "dialect": {
+          "enum": [
+            "open_ai_responses",
+            "chat_completions",
+            "anthropic_messages",
+            "ollama"
+          ]
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "pricing": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ModelPricing"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "timeout_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 300
+        }
+      },
+      "required": [
+        "kind",
+        "endpoint",
+        "dialect",
+        "model",
+        "pricing",
+        "timeout_seconds"
+      ]
+    },
+    "LlmAuthStartParams": {
+      "type": "object",
+      "properties": {
+        "provider": {
+          "enum": [
+            "chatgpt_oauth",
+            "openrouter_oauth"
+          ]
+        },
+        "account_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "provider"
+      ]
+    },
+    "LlmAuthStartResult": {
+      "type": "object",
+      "properties": {
+        "flow_id": {
+          "type": "string"
+        },
+        "authorization_url": {
+          "type": "string",
+          "format": "uri",
+          "x-zeus-secret": true,
+          "description": "One-use browser sign-in URL. Never log or expose to agent clients."
+        },
+        "expires_at": {
+          "$ref": "https://zeus.invalid/schema/common#/$defs/Timestamp"
+        }
+      },
+      "required": [
+        "flow_id",
+        "authorization_url",
+        "expires_at"
+      ]
+    },
+    "LlmAuthStatusParams": {
+      "type": "object",
+      "properties": {
+        "flow_id": {
+          "type": "string"
+        }
+      }
+    },
+    "LlmAuthFlow": {
+      "type": "object",
+      "properties": {
+        "flow_id": {
+          "type": "string"
+        },
+        "provider": {
+          "enum": [
+            "chatgpt_oauth",
+            "openrouter_oauth"
+          ]
+        },
+        "state": {
+          "enum": [
+            "waiting",
+            "connected",
+            "failed",
+            "canceled",
+            "expired"
+          ]
+        },
+        "account_id": {
+          "type": "string"
+        },
+        "expires_at": {
+          "$ref": "https://zeus.invalid/schema/common#/$defs/Timestamp"
+        }
+      },
+      "required": [
+        "flow_id",
+        "provider",
+        "state",
+        "expires_at"
+      ]
+    },
+    "LlmAccount": {
+      "type": "object",
+      "properties": {
+        "account_id": {
+          "type": "string"
+        },
+        "email": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "plan_enabled": {
+          "type": "boolean"
+        },
+        "active": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "account_id",
+        "email",
+        "plan_enabled",
+        "active"
+      ]
+    },
+    "LlmAuthStatusResult": {
+      "type": "object",
+      "properties": {
+        "flow": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LlmAuthFlow"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "accounts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/LlmAccount"
+          }
+        }
+      },
+      "required": [
+        "flow",
+        "accounts"
+      ]
+    },
+    "LlmAuthCancelParams": {
+      "type": "object",
+      "properties": {
+        "flow_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "flow_id"
+      ]
+    },
+    "LlmAuthCancelResult": {
+      "$ref": "#/$defs/LlmAuthFlow"
+    },
+    "LlmAuthSignOutParams": {
+      "type": "object",
+      "properties": {
+        "provider": {
+          "enum": [
+            "chatgpt_oauth",
+            "openrouter_oauth"
+          ]
+        },
+        "account_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "provider"
+      ]
+    },
+    "LlmAuthSignOutResult": {
+      "type": "object",
+      "properties": {
+        "cleared": {
+          "type": "boolean"
+        },
+        "remote_revocation_confirmed": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "cleared",
+        "remote_revocation_confirmed"
+      ]
+    },
+    "LlmAuthStartRequest": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/RequestBase"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "method": {
+              "const": "llm.auth.start"
+            },
+            "params": {
+              "$ref": "#/$defs/LlmAuthStartParams"
+            }
+          },
+          "required": [
+            "method"
+          ]
+        }
+      ]
+    },
+    "LlmAuthStartResponse": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/SuccessBase"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "result": {
+              "$ref": "#/$defs/LlmAuthStartResult"
+            }
+          }
+        }
+      ]
+    },
+    "LlmAuthStatusRequest": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/RequestBase"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "method": {
+              "const": "llm.auth.status"
+            },
+            "params": {
+              "$ref": "#/$defs/LlmAuthStatusParams"
+            }
+          },
+          "required": [
+            "method"
+          ]
+        }
+      ]
+    },
+    "LlmAuthStatusResponse": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/SuccessBase"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "result": {
+              "$ref": "#/$defs/LlmAuthStatusResult"
+            }
+          }
+        }
+      ]
+    },
+    "LlmAuthCancelRequest": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/RequestBase"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "method": {
+              "const": "llm.auth.cancel"
+            },
+            "params": {
+              "$ref": "#/$defs/LlmAuthCancelParams"
+            }
+          },
+          "required": [
+            "method"
+          ]
+        }
+      ]
+    },
+    "LlmAuthCancelResponse": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/SuccessBase"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "result": {
+              "$ref": "#/$defs/LlmAuthCancelResult"
+            }
+          }
+        }
+      ]
+    },
+    "LlmAuthSignOutRequest": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/RequestBase"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "method": {
+              "const": "llm.auth.sign_out"
+            },
+            "params": {
+              "$ref": "#/$defs/LlmAuthSignOutParams"
+            }
+          },
+          "required": [
+            "method"
+          ]
+        }
+      ]
+    },
+    "LlmAuthSignOutResponse": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/SuccessBase"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "result": {
+              "$ref": "#/$defs/LlmAuthSignOutResult"
+            }
+          }
+        }
+      ]
+    },
+    "CloudAccountsConfigureParams": {
+      "$ref": "https://zeus.invalid/schema/cloud.v1#/$defs/CloudAccountsConfigureParams"
+    },
+    "CloudAccountsConfigureResult": {
+      "$ref": "https://zeus.invalid/schema/cloud.v1#/$defs/CloudAccountMutationResult"
+    },
+    "CloudAccountsConfigureRequest": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/RequestBase"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "method": {
+              "const": "cloud.accounts.configure"
+            },
+            "params": {
+              "$ref": "#/$defs/CloudAccountsConfigureParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ]
+        }
+      ]
+    },
+    "CloudAccountsConfigureResponse": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/SuccessBase"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "result": {
+              "$ref": "#/$defs/CloudAccountsConfigureResult"
+            }
+          }
+        }
+      ]
+    },
+    "CloudAccountsListParams": {
+      "$ref": "https://zeus.invalid/schema/cloud.v1#/$defs/CloudAccountsListParams"
+    },
+    "CloudAccountsListResult": {
+      "$ref": "https://zeus.invalid/schema/cloud.v1#/$defs/CloudAccountsListResult"
+    },
+    "CloudAccountsListRequest": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/RequestBase"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "method": {
+              "const": "cloud.accounts.list"
+            },
+            "params": {
+              "$ref": "#/$defs/CloudAccountsListParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ]
+        }
+      ]
+    },
+    "CloudAccountsListResponse": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/SuccessBase"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "result": {
+              "$ref": "#/$defs/CloudAccountsListResult"
+            }
+          }
+        }
+      ]
+    },
+    "CloudAccountsRevokeParams": {
+      "$ref": "https://zeus.invalid/schema/cloud.v1#/$defs/CloudAccountsRevokeParams"
+    },
+    "CloudAccountsRevokeResult": {
+      "$ref": "https://zeus.invalid/schema/cloud.v1#/$defs/CloudAccountMutationResult"
+    },
+    "CloudAccountsRevokeRequest": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/RequestBase"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "method": {
+              "const": "cloud.accounts.revoke"
+            },
+            "params": {
+              "$ref": "#/$defs/CloudAccountsRevokeParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ]
+        }
+      ]
+    },
+    "CloudAccountsRevokeResponse": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/SuccessBase"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "result": {
+              "$ref": "#/$defs/CloudAccountsRevokeResult"
+            }
+          }
+        }
+      ]
+    },
+    "CloudControlParams": {
+      "$ref": "https://zeus.invalid/schema/cloud.v1#/$defs/CloudControlParams"
+    },
+    "CloudControlResult": {
+      "$ref": "https://zeus.invalid/schema/cloud.v1#/$defs/CloudMutationResult"
+    },
+    "CloudControlRequest": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/RequestBase"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "method": {
+              "const": "cloud.control"
+            },
+            "params": {
+              "$ref": "#/$defs/CloudControlParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ]
+        }
+      ]
+    },
+    "CloudControlResponse": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/SuccessBase"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "result": {
+              "$ref": "#/$defs/CloudControlResult"
+            }
+          }
+        }
+      ]
+    },
+    "CloudGetParams": {
+      "$ref": "https://zeus.invalid/schema/cloud.v1#/$defs/CloudGetParams"
+    },
+    "CloudGetResult": {
+      "$ref": "https://zeus.invalid/schema/cloud.v1#/$defs/CloudDeliveryView"
+    },
+    "CloudGetRequest": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/RequestBase"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "method": {
+              "const": "cloud.get"
+            },
+            "params": {
+              "$ref": "#/$defs/CloudGetParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ]
+        }
+      ]
+    },
+    "CloudGetResponse": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/SuccessBase"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "result": {
+              "$ref": "#/$defs/CloudGetResult"
+            }
+          }
+        }
+      ]
+    },
+    "CloudListParams": {
+      "$ref": "https://zeus.invalid/schema/cloud.v1#/$defs/CloudListParams"
+    },
+    "CloudListResult": {
+      "$ref": "https://zeus.invalid/schema/cloud.v1#/$defs/CloudListResult"
+    },
+    "CloudListRequest": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/RequestBase"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "method": {
+              "const": "cloud.list"
+            },
+            "params": {
+              "$ref": "#/$defs/CloudListParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ]
+        }
+      ]
+    },
+    "CloudListResponse": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/SuccessBase"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "result": {
+              "$ref": "#/$defs/CloudListResult"
+            }
+          }
+        }
+      ]
+    },
+    "CloudPlanParams": {
+      "$ref": "https://zeus.invalid/schema/cloud.v1#/$defs/CloudPlanParams"
+    },
+    "CloudPlanResult": {
+      "$ref": "https://zeus.invalid/schema/cloud.v1#/$defs/CloudPlanResult"
+    },
+    "CloudPlanRequest": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/RequestBase"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "method": {
+              "const": "cloud.plan"
+            },
+            "params": {
+              "$ref": "#/$defs/CloudPlanParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ]
+        }
+      ]
+    },
+    "CloudPlanResponse": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/SuccessBase"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "result": {
+              "$ref": "#/$defs/CloudPlanResult"
+            }
+          }
+        }
+      ]
+    },
+    "CloudSubmitParams": {
+      "$ref": "https://zeus.invalid/schema/cloud.v1#/$defs/CloudSubmitParams"
+    },
+    "CloudSubmitResult": {
+      "$ref": "https://zeus.invalid/schema/cloud.v1#/$defs/CloudMutationResult"
+    },
+    "CloudSubmitRequest": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/RequestBase"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "method": {
+              "const": "cloud.submit"
+            },
+            "params": {
+              "$ref": "#/$defs/CloudSubmitParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ]
+        }
+      ]
+    },
+    "CloudSubmitResponse": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/SuccessBase"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "result": {
+              "$ref": "#/$defs/CloudSubmitResult"
+            }
+          }
         }
       ]
     }

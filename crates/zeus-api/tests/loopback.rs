@@ -214,3 +214,111 @@ fn decide_params() -> zeus_api::methods::sessions::ApprovalsDecideParams {
     }))
     .unwrap()
 }
+
+#[tokio::test]
+async fn shutdown_notifies_all_clients_drains_existing_calls_and_refuses_new_work() {
+    use zeus_api::methods::{
+        DaemonShutdown,
+        daemon::{ShutdownParams, ShutdownResult},
+    };
+    use zeus_api::server::ShutdownController;
+    let controller = ShutdownController::default();
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let finish = Arc::new(tokio::sync::Notify::new());
+    let entered_handler = entered.clone();
+    let finish_handler = finish.clone();
+    let stop = controller.clone();
+    let mut h = harness();
+    h.router = Arc::new(
+        Router::new()
+            .with_shutdown(controller.clone())
+            .route::<DaemonPing, _, _>(move |_ctx, _params| {
+                let entered = entered_handler.clone();
+                let finish = finish_handler.clone();
+                async move {
+                    entered.notify_one();
+                    finish.notified().await;
+                    Ok(PingResult {
+                        server_time: Timestamp::now(),
+                    })
+                }
+            })
+            .route::<DaemonShutdown, _, _>(move |ctx, params| {
+                let stop = stop.clone();
+                async move {
+                    let grace_ms = stop.request(
+                        params.grace_ms.unwrap_or(10_000),
+                        "shutdown_requested",
+                        Some(ctx.reply),
+                    );
+                    Ok(ShutdownResult {
+                        accepted: true,
+                        replayed: false,
+                        grace_ms,
+                    })
+                }
+            }),
+    );
+    let admin = connect(
+        &h,
+        add_credential(&h, ClientKind::Admin, ClientRole::Cli),
+        ClientRole::Cli,
+    )
+    .await
+    .unwrap();
+    let human = Arc::new(
+        connect(
+            &h,
+            add_credential(&h, ClientKind::Human, ClientRole::Cli),
+            ClientRole::Cli,
+        )
+        .await
+        .unwrap(),
+    );
+    let mut admin_notes = admin.notifications();
+    let mut human_notes = human.notifications();
+    let running = human.clone();
+    let pending = tokio::spawn(async move {
+        call::<DaemonPing, _>(running.as_ref(), PingParams::default()).await
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(1), entered.notified())
+        .await
+        .unwrap();
+    let result = call::<DaemonShutdown, _>(
+        &admin,
+        ShutdownParams {
+            grace_ms: Some(300),
+        },
+    )
+    .await
+    .unwrap();
+    assert!(result.accepted);
+    assert_eq!(result.grace_ms, 300);
+    for receiver in [&mut admin_notes, &mut human_notes] {
+        let note = tokio::time::timeout(std::time::Duration::from_secs(1), receiver.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(note.method, "daemon.stopping");
+        assert_eq!(note.params.unwrap()["grace_ms"], 300);
+    }
+    finish.notify_one();
+    assert!(
+        pending.await.unwrap().is_ok(),
+        "a previously accepted request must complete during grace"
+    );
+    let rejected = call::<DaemonPing, _>(&admin, PingParams::default())
+        .await
+        .unwrap_err();
+    assert_eq!(rejected.envelope().code.as_str(), "api.unavailable");
+    assert_eq!(
+        serde_json::to_value(rejected.envelope()).unwrap()["details"]["reason"],
+        "stopping"
+    );
+    tokio::time::timeout(std::time::Duration::from_secs(2), admin.closed())
+        .await
+        .unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(2), human.closed())
+        .await
+        .unwrap();
+}

@@ -21,6 +21,7 @@ http = ["rmcp/transport-streamable-http-server", "dep:axum", "dep:tower"]
 zeus-api.workspace = true
 # core:begin
 zeus-types.workspace = true
+zeus-verify.workspace = true
 # core:end
 rmcp.workspace = true
 serde.workspace = true

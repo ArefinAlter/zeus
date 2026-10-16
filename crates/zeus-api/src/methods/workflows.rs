@@ -33,6 +33,9 @@ pub struct WorkflowsPlanParams {
 /// `workflows.plan` result.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct WorkflowsPlanResult {
+    /// True when this response replays a durable mutation receipt.
+    #[serde(default)]
+    pub replayed: bool,
     /// The stored draft.
     pub plan_id: PlanId,
     /// Page samples for the agent to write selectors against (bounded, untrusted content).
@@ -76,6 +79,9 @@ pub struct WorkflowsRunParams {
 /// `workflows.run` result.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct WorkflowsRunResult {
+    /// True when this response replays a durable mutation receipt.
+    #[serde(default)]
+    pub replayed: bool,
     /// The run, created immediately (state `awaiting_approval` until a human approves).
     pub run_id: RunId,
     /// State.
@@ -130,6 +136,9 @@ pub struct WorkflowsControlParams {
 /// `workflows.control` result.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct WorkflowsControlResult {
+    /// True when this response replays a durable mutation receipt.
+    #[serde(default)]
+    pub replayed: bool,
     /// The run after the action.
     pub run: RunReport,
 }
@@ -146,8 +155,17 @@ pub struct WorkflowsManifestParams {
 /// `workflows.manifest` result.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct WorkflowsManifestResult {
+    /// True when this response replays a durable mutation receipt.
+    #[serde(default)]
+    pub replayed: bool,
     /// Path of the manifest inside a write root.
     pub path: String,
     /// Records written.
     pub records: u64,
+    /// Redacted export content when at most 512 KiB; larger exports remain on disk.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content: Option<String>,
+    /// Digest of the complete exported file, allowing safe inline resource verification.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<zeus_types::Hex256>,
 }

@@ -15,7 +15,8 @@ workspace = true
 [features]
 # Wire types only by default; the daemon enables the network and keyring backends.
 default = []
-http = ["dep:reqwest"]
+http = ["dep:reqwest", "dep:jsonwebtoken", "runtime"]
+runtime = ["dep:redb", "dep:tokio", "dep:jsonschema", "dep:semver"]
 os-keyring = ["dep:keyring"]
 
 [dependencies]
@@ -35,7 +36,14 @@ time.workspace = true
 tracing.workspace = true
 reqwest = { workspace = true, optional = true }
 keyring = { workspace = true, optional = true }
+jsonwebtoken = { workspace = true, optional = true }
+redb = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true }
+jsonschema = { workspace = true, optional = true }
+semver = { workspace = true, optional = true }
 
 [dev-dependencies]
 proptest.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
+
+tempfile.workspace = true

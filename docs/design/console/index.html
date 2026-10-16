@@ -1,0 +1,485 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <title>Zeus — download workspace concept</title>
+    <link rel="stylesheet" href="console.css" />
+    <script src="console.js" defer></script>
+  </head>
+  <body>
+    <a href="#content" class="skip">Skip to workspace</a>
+    <div class="app">
+      <aside class="sidebar" aria-label="Workspace navigation">
+        <a href="#downloads" class="brand">Zeus <span>by Verne</span></a>
+        <p class="eyebrow">Your workspace</p>
+        <nav>
+          <button data-view="downloads" aria-current="page">
+            <span>↓</span> Downloads <b id="download-count">6</b>
+          </button>
+          <button data-view="inbox">
+            <span>＋</span> Link inbox <b id="inbox-count">0</b>
+          </button>
+          <button data-view="runs"><span>◇</span> Agent runs <b>1</b></button>
+          <button data-view="destinations"><span>⇧</span> Cloud destinations</button>
+          <button data-view="approvals">
+            <span>☑</span> Approvals <b id="approval-count">1</b>
+          </button>
+          <button data-view="queues"><span>≡</span> Queues & schedules</button>
+        </nav>
+        <div class="sidebar-note">
+          <span class="dot"></span> Local workspace<br /><small
+            >Files, permissions and receipts<br />stay under your
+            control.</small
+          >
+        </div>
+        <p class="prototype">
+          DESIGN PROTOTYPE<br /><small
+            >Sample data. No daemon connection.<br />Every action is
+            simulated.</small
+          >
+        </p>
+      </aside>
+      <div class="workspace">
+        <header class="topbar">
+          <div>
+            <span class="status-dot" id="workspace-dot"></span
+            ><span id="workspace-state">Ready for your next download</span>
+          </div>
+          <div class="top-actions">
+            <button id="release-stop" hidden>Release stop</button
+            ><button id="global-stop" class="stop">■ Stop all work</button>
+          </div>
+        </header>
+        <main id="content" tabindex="-1">
+          <div class="page-heading">
+            <div>
+              <p class="eyebrow" id="page-eyebrow">THE DOWNLOAD DESK</p>
+              <h1 id="page-title">Everything in motion.</h1>
+              <p id="page-description">
+                One place for the files you asked for, and the ones your agents
+                are bringing home.
+              </p>
+            </div>
+            <button id="add-links" class="primary">＋ Add links</button>
+          </div>
+          <div
+            id="message"
+            class="message"
+            role="status"
+            aria-live="polite"
+            hidden
+          ></div>
+
+          <section data-panel="downloads">
+            <div class="metrics">
+              <article>
+                <span>In progress</span
+                ><strong id="active-count">2 <small>downloads</small></strong>
+              </article>
+              <article>
+                <span>Saved this session</span
+                ><strong>2.81 <small>GB</small></strong>
+              </article>
+              <article>
+                <span>Needs your attention</span
+                ><strong id="attention-count">2 <small>items</small></strong>
+              </article>
+              <article>
+                <span>Verified files</span
+                ><strong id="verified-count">1 <small>receipt</small></strong>
+              </article>
+            </div>
+            <div class="queue-strip">
+              <div>
+                <span class="dot blue"></span><strong>Main queue</strong
+                ><small>2 transfers · 4 connections each</small>
+              </div>
+              <span class="muted">Next: Night queue, 00:30 · Asia/Dhaka</span>
+            </div>
+            <div class="toolbar">
+              <div class="filters" role="group" aria-label="Filter downloads">
+                <button data-filter="all" aria-pressed="true">All</button
+                ><button data-filter="active">Active</button
+                ><button data-filter="attention">Needs attention</button
+                ><button data-filter="completed">Completed</button>
+              </div>
+              <input
+                id="search"
+                type="search"
+                placeholder="Find a file, site or requester…"
+                aria-label="Search downloads"
+              />
+            </div>
+            <div class="desk">
+              <section class="table-area" aria-label="Downloads queue">
+                <div class="table-scroll">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>
+                          <input
+                            id="select-all"
+                            type="checkbox"
+                            aria-label="Select visible downloads"
+                          />
+                        </th>
+                        <th>File / source</th>
+                        <th>Asked by</th>
+                        <th>State</th>
+                        <th>Saved</th>
+                        <th>Speed / left</th>
+                        <th>Queue</th>
+                      </tr>
+                    </thead>
+                    <tbody id="jobs"></tbody>
+                  </table>
+                </div>
+                <div class="batchbar">
+                  <span id="selection-count">0 selected</span
+                  ><button data-batch="pause">Pause</button
+                  ><button data-batch="resume">Resume / retry</button
+                  ><button data-batch="cancel">Cancel</button
+                  ><small>Cancel keeps completed files.</small>
+                </div>
+              </section>
+              <aside
+                id="inspector"
+                class="inspector"
+                aria-label="Selected download"
+              ></aside>
+            </div>
+            <p class="section-note">
+              Saved bytes are durable progress. A finished transfer is checked
+              before it becomes a completed file.
+            </p>
+          </section>
+
+          <section data-panel="inbox" hidden>
+            <div class="split">
+              <article class="card">
+                <p class="eyebrow">COLLECT BEFORE YOU START</p>
+                <h2>A place for your links.</h2>
+                <p>
+                  Paste one URL per line. Review duplicate links, the package
+                  and destination before adding them to a queue.
+                </p>
+                <label for="link-input">Links</label
+                ><textarea
+                  id="link-input"
+                  rows="7"
+                  placeholder="https://example.org/files/report.pdf&#10;https://example.org/files/data.csv"
+                ></textarea>
+                <div class="form-row">
+                  <label
+                    >Package<input
+                      id="package-name"
+                      value="Research collection" /></label
+                  ><label
+                    >Queue<select id="inbox-queue">
+                      <option>Main</option>
+                      <option>Night</option>
+                      <option>Archive</option>
+                    </select></label
+                  >
+                </div>
+                <button id="inspect-links" class="primary">
+                  Inspect links
+                </button>
+                <p class="muted">
+                  This preview only parses URLs. It does not contact the
+                  websites.
+                </p>
+              </article>
+              <article class="card">
+                <h2>Ready for review <span id="link-total">0</span></h2>
+                <div id="link-preview" class="empty">
+                  Add links to see their sites and suggested names.
+                </div>
+                <button id="queue-links" disabled>
+                  Queue selected package
+                </button>
+              </article>
+            </div>
+          </section>
+
+          <section data-panel="runs" hidden>
+            <article class="run-heading card">
+              <div>
+                <span class="tag">PLAN REVIEW</span>
+                <h2>Collect the climate reference set</h2>
+                <p>
+                  Asked by <strong>Research assistant</strong> · MCP · 24
+                  candidate files across 2 public sites
+                </p>
+              </div>
+              <button id="review-run">Review permission</button>
+            </article>
+            <div class="pipeline" aria-label="Run stages">
+              <div class="done">1. Discover<small>24 links found</small></div>
+              <div class="done">2. Preview<small>22 unique files</small></div>
+              <div class="waiting">3. Review<small>Waiting for you</small></div>
+              <div>4. Fetch<small>Queued after review</small></div>
+              <div>5. Verify<small>Hash every file</small></div>
+              <div>6. Organize<small>Preview before moves</small></div>
+            </div>
+            <div class="split">
+              <article class="card">
+                <h2>The plan, in plain words</h2>
+                <ol class="plan-list">
+                  <li>
+                    Read the dataset index on <strong>data.example.org</strong>.
+                  </li>
+                  <li>
+                    Follow pagination for at most <strong>5 pages</strong>. Stay
+                    on the listed sites.
+                  </li>
+                  <li>
+                    Keep <strong>CSV and PDF</strong> files. Skip duplicates
+                    already in your library.
+                  </li>
+                  <li>
+                    Save files under
+                    <strong>Downloads/Climate reference</strong>.
+                  </li>
+                  <li>
+                    Verify each file and write a provenance receipt. Ask again
+                    before changing existing files.
+                  </li>
+                </ol>
+                <div class="agent-quote">
+                  <strong>Agent explanation · untrusted text</strong>
+                  <p>
+                    “These reference tables will help compare the reports. I
+                    expect about 1.2 GB.”
+                  </p>
+                </div>
+                <p class="notice">
+                  2 files have unknown size. Zeus stops at your byte limit even
+                  if the agent's estimate was low.
+                </p>
+              </article>
+              <article class="card">
+                <h2>Limits you control</h2>
+                <div class="form-grid">
+                  <label
+                    >Maximum files<input
+                      id="budget-files"
+                      type="number"
+                      min="1"
+                      max="500"
+                      value="30" /></label
+                  ><label
+                    >Maximum GB<input
+                      id="budget-gb"
+                      type="number"
+                      min="1"
+                      max="100"
+                      value="2" /></label
+                  ><label
+                    >Maximum minutes<input
+                      id="budget-minutes"
+                      type="number"
+                      min="1"
+                      max="240"
+                      value="45" /></label
+                  ><label
+                    >Parallel downloads<input
+                      id="budget-parallel"
+                      type="number"
+                      min="1"
+                      max="8"
+                      value="2"
+                  /></label>
+                </div>
+                <button id="save-budget">Update preview</button>
+                <p id="budget-summary">
+                  Stop after 30 files, 2 GB or 45 minutes. Download at most 2 at
+                  a time.
+                </p>
+                <p class="muted">
+                  Changing these limits creates a new review revision. This
+                  prototype has no workflow runner.
+                </p>
+              </article>
+            </div>
+          </section>
+
+          <section data-panel="approvals" hidden>
+            <div class="approval-inbox card">
+              <p class="eyebrow">A DECISION ONLY YOU CAN MAKE</p>
+              <h2>Review what was requested.</h2>
+              <p>
+                A request stays pending until you review its website, requester,
+                files, destination and duration.
+              </p>
+              <div id="approval-card"></div>
+              <p class="muted">
+                Approvals are separate from agent explanations. A changed
+                request requires a fresh review.
+              </p>
+            </div>
+          </section>
+
+          <section data-panel="destinations" hidden>
+            <div class="split">
+              <article class="card">
+                <p class="eyebrow">EXAMPLE CLOUD DELIVERY</p>
+                <h2>Choose where the file goes.</h2>
+                <p>All accounts and progress below are sample data. This preview cannot sign in, read files or upload anything.</p>
+                <div class="form-grid">
+                  <label>Destination account<select id="cloud-account"><option value="drive">Google Drive · Research (sample)</option><option value="yandex">Yandex Disk · Archive (sample)</option><option value="rclone">Configured rclone remote (sample)</option><option value="baidu">Baidu Netdisk · App folder (sample)</option></select></label>
+                  <label>Configured destination folder<input id="cloud-folder" value="Research/Climate reference" readonly /></label><label>Remote filename<input id="cloud-name" value="climate-reference.zip" maxlength="160" /></label>
+                  <label>Source<select id="cloud-source"><option value="public">Public HTTPS file URL</option><option value="local">Completed, verified local download</option><option value="session">File requiring a browser session</option></select></label>
+                  <label>Delivery mode<select id="cloud-mode"><option value="staged_upload">Download, verify, then upload</option><option value="stream_upload">Relay with bounded buffering</option><option value="remote_import">Ask the provider to fetch the URL</option></select></label>
+                </div>
+                <p class="muted">The account fixes the allowed folder. Changing that scope requires human account setup. Object names receive a unique delivery suffix to prevent overwrites.</p>
+                <label class="check-row"><input type="checkbox" id="cloud-remote-optin" /> For provider fetch, accept that the provider may exceed the local byte cap or continue after cancellation.</label>
+                <label class="check-row"><input type="checkbox" id="cloud-block-manifest" /> Sample Baidu source has a verified 4 MiB block-MD5 manifest available before streaming.</label>
+                <div id="cloud-capability" class="notice" role="status"></div>
+                <p id="cloud-exposure" class="muted"></p>
+                <button id="cloud-plan">Preview delivery facts</button>
+                <p class="muted">A real delivery needs a separate human approval bound to the account, folder, source, mode and limits. Choosing another mode never grants permission to fall back to it.</p>
+              </article>
+              <article class="card">
+                <h2>What will be reviewed</h2>
+                <dl id="cloud-facts" class="cloud-facts"></dl>
+                <p class="agent-quote"><strong>Agent explanation · untrusted text</strong><br />“Keep the climate reference set with the research team.”</p>
+                <p id="cloud-review-state" class="notice">No delivery plan has been previewed.</p>
+              </article>
+            </div>
+            <article class="card cloud-progress-card">
+              <div class="cloud-progress-heading"><div><p class="eyebrow">ILLUSTRATIVE PROGRESS ONLY</p><h2>See each leg of the delivery.</h2></div><button id="cloud-example">Show sample progress</button></div>
+              <div id="cloud-progress" class="cloud-progress"></div>
+              <p id="cloud-assurance" class="muted"></p>
+              <p class="muted">A provider’s receipt or reported size is not an independent remote-content checksum. Provider-fetch delivery does not give Zeus a local SHA-256.</p>
+            </article>
+          </section>
+
+          <section data-panel="queues" hidden>
+            <div class="split">
+              <article class="card">
+                <h2>Queues that fit your connection</h2>
+                <p>
+                  Group work by purpose. Limit parallel transfers independently
+                  of connections per file.
+                </p>
+                <div class="queue-list">
+                  <button data-queue="Main" aria-pressed="true">
+                    <strong>Main</strong
+                    ><small>Start immediately · 2 downloads</small></button
+                  ><button data-queue="Night">
+                    <strong>Night</strong
+                    ><small>00:30–06:00 · 1 download</small></button
+                  ><button data-queue="Archive">
+                    <strong>Archive</strong
+                    ><small>Paused · lowest priority</small>
+                  </button>
+                </div>
+              </article>
+              <article class="card">
+                <h2 id="queue-title">Main queue</h2>
+                <div class="form-grid">
+                  <label
+                    >Parallel downloads<input
+                      id="queue-parallel"
+                      type="number"
+                      min="1"
+                      max="16"
+                      value="2" /></label
+                  ><label
+                    >Speed limit (MB/s)<input
+                      id="queue-speed"
+                      type="number"
+                      min="0"
+                      max="1000"
+                      value="0" /></label
+                  ><label
+                    >Start time<input
+                      id="queue-start"
+                      type="time"
+                      value="00:30" /></label
+                  ><label
+                    >Stop time<input id="queue-end" type="time" value="06:00"
+                  /></label>
+                </div>
+                <label class="check"
+                  ><input id="queue-scheduled" type="checkbox" /> Use this daily
+                  window (Asia/Dhaka)</label
+                ><label class="check"
+                  ><input type="checkbox" checked /> Stop new transfers on a
+                  metered connection</label
+                ><button id="save-queue">Save queue preview</button>
+                <p class="muted">
+                  0 means unlimited speed. Schedules and metered-connection
+                  policy are interface proposals, not active services.
+                </p>
+              </article>
+            </div>
+          </section>
+        </main>
+        <footer>
+          <span>Prototype · sample data · nothing leaves this page</span
+          ><span
+            >DESIGNED AND BUILT BY
+            <a href="https://vernesystems.com">Verne Ltd.</a></span
+          >
+        </footer>
+      </div>
+    </div>
+
+    <dialog
+      id="approval-dialog"
+      aria-labelledby="review-title"
+      class="trust-dialog"
+    >
+      <form method="dialog">
+        <button class="close" aria-label="Close review" value="close">×</button>
+      </form>
+      <p class="simulation">SIMULATED REVIEW — NO REAL APPROVAL AUTHORITY</p>
+      <h2 id="review-title">Review website access</h2>
+      <dl>
+        <dt>Website</dt>
+        <dd>portal.example.org</dd>
+        <dt>Asked by</dt>
+        <dd>Research assistant · MCP · client …49029B</dd>
+        <dt>For</dt>
+        <dd>
+          1 file · annual-report.pdf · 18 MB<br />Save to Downloads/Climate
+          reference
+        </dd>
+        <dt>Lasts</dt>
+        <dd>Once, for this file only</dd>
+      </dl>
+      <p>
+        Allows this download to use your website login. Your agent does not
+        receive cookies.
+      </p>
+      <blockquote>
+        <strong>Agent explanation · untrusted text</strong>
+        <p>“Please fetch the report that I found in the research portal.”</p>
+      </blockquote>
+      <div class="binding">
+        <span>Example request code</span><strong>17M-4F1</strong
+        ><small
+          >Example hash 09e8478513076b8b · revision
+          <span id="approval-revision">1</span></small
+        >
+      </div>
+      <label for="confirm-code"
+        >Type the example code to confirm this simulation</label
+      ><input
+        id="confirm-code"
+        autocomplete="off"
+        spellcheck="false"
+        placeholder="17M-4F1"
+      />
+      <p id="review-hint" role="status">Take a moment to read the request.</p>
+      <div class="decision-actions">
+        <button id="approve-demo" disabled>Allow once (simulation)</button
+        ><button id="deny-demo">Deny (simulation)</button>
+      </div>
+    </dialog>
+  </body>
+</html>

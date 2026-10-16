@@ -9,6 +9,7 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 
 pub mod admin;
+pub mod cloud;
 pub mod daemon;
 pub mod events;
 pub mod files;
@@ -53,6 +54,7 @@ macro_rules! rpc_methods {
 }
 
 use self::admin::*;
+use self::cloud::*;
 use self::daemon::*;
 use self::events::*;
 use self::files::*;
@@ -61,6 +63,22 @@ use self::sessions::*;
 use self::workflows::*;
 
 rpc_methods! {
+    /// `cloud.accounts.list`.
+    CloudAccountsList = "cloud.accounts.list" (CloudAccountsListParams) -> CloudAccountsListResult;
+    /// `cloud.accounts.configure`.
+    CloudAccountsConfigure = "cloud.accounts.configure" (CloudAccountsConfigureParams) -> CloudAccountMutationResult;
+    /// `cloud.accounts.revoke`.
+    CloudAccountsRevoke = "cloud.accounts.revoke" (CloudAccountsRevokeParams) -> CloudAccountMutationResult;
+    /// `cloud.plan`.
+    CloudPlan = "cloud.plan" (CloudPlanParams) -> CloudPlanResult;
+    /// `cloud.submit`.
+    CloudSubmit = "cloud.submit" (CloudSubmitParams) -> CloudMutationResult;
+    /// `cloud.list`.
+    CloudList = "cloud.list" (CloudListParams) -> CloudListResult;
+    /// `cloud.get`.
+    CloudGet = "cloud.get" (CloudGetParams) -> CloudDeliveryView;
+    /// `cloud.control`.
+    CloudControl = "cloud.control" (CloudControlParams) -> CloudMutationResult;
     /// Negotiate the protocol version and capabilities; first call on a connection.
     DaemonHello = "daemon.hello" (HelloParams) -> HelloResult;
     /// Prove possession of the credential; second call on a connection.
@@ -104,7 +122,7 @@ rpc_methods! {
     /// List approvals.
     ApprovalsList = "approvals.list" (ApprovalsListParams) -> ApprovalsListResult;
     /// Get one approval.
-    ApprovalsGet = "approvals.get" (ApprovalsGetParams) -> ApprovalView;
+    ApprovalsGet = "approvals.get" (ApprovalsGetParams) -> ApprovalsGetResult;
     /// Decide an approval (human, with channel evidence).
     ApprovalsDecide = "approvals.decide" (ApprovalsDecideParams) -> ApprovalsDecideResult;
 
@@ -146,6 +164,14 @@ rpc_methods! {
     LlmStatus = "llm.status" (LlmStatusParams) -> LlmStatusResult;
     /// Configure LLM providers (human, later).
     LlmConfigure = "llm.configure" (LlmConfigureParams) -> LlmConfigureResult;
+    /// Begin provider sign-in on a trusted human surface.
+    LlmAuthStart = "llm.auth.start" (LlmAuthStartParams) -> LlmAuthStartResult;
+    /// Inspect sign-in/account status on a trusted human surface.
+    LlmAuthStatus = "llm.auth.status" (LlmAuthStatusParams) -> LlmAuthStatusResult;
+    /// Cancel an owned provider sign-in.
+    LlmAuthCancel = "llm.auth.cancel" (LlmAuthCancelParams) -> LlmAuthFlow;
+    /// Clear provider credentials and request remote revocation.
+    LlmAuthSignOut = "llm.auth.sign_out" (LlmAuthSignOutParams) -> LlmAuthSignOutResult;
     /// List client credentials (admin, later).
     ClientsList = "clients.list" (ClientsListParams) -> ClientsListResult;
     /// Revoke a client credential (admin, later).
@@ -211,10 +237,10 @@ mod tests {
         let mut seen = BTreeSet::new();
         for name in ALL_NAMES {
             assert!(seen.insert(*name), "{name}");
-            let (namespace, verb) = name.split_once('.').expect("dotted");
-            for part in [namespace, verb] {
+            assert!(name.contains('.'), "dotted");
+            for part in name.split('.') {
                 assert!(
-                    part.bytes().all(|b| b.is_ascii_lowercase() || b == b'_'),
+                    !part.is_empty() && part.bytes().all(|b| b.is_ascii_lowercase() || b == b'_'),
                     "{name}"
                 );
             }

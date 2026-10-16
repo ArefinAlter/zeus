@@ -221,6 +221,15 @@ pub trait LlmProvider: Send + Sync {
     /// True when credentials or endpoints are configured so a call can be attempted. Must not touch the network.
     fn is_configured(&self) -> bool;
 
+    /// Maximum expected cost reserved durably before a request. Remote implementations must
+    /// provide a conservative quote; local and host-provided inference costs Zeus nothing.
+    fn cost_ceiling(&self, _request: &LlmRequest) -> Result<u64, LlmError> {
+        match self.kind().locality() {
+            Locality::Local | Locality::HostAgent => Ok(0),
+            Locality::Remote => Err(LlmError::NotConfigured),
+        }
+    }
+
     /// Run one request. The caller has already applied the privacy tier, redaction and spend check.
     async fn complete(&self, request: LlmRequest) -> Result<LlmResponse, LlmError>;
 }
@@ -262,4 +271,46 @@ mod tests {
             );
         }
     }
+}
+
+/// Wire dialect. The selected provider kind must be compatible with this dialect.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum HttpDialect {
+    /// OpenAI Responses API, with persistence disabled.
+    OpenAiResponses,
+    /// OpenAI-compatible chat completions (OpenRouter, llama.cpp and LM Studio).
+    ChatCompletions,
+    /// Anthropic Messages API using an explicitly supplied API key.
+    AnthropicMessages,
+    /// Ollama's local chat API, with streaming disabled.
+    Ollama,
+}
+
+/// User-configured conservative pricing. No model prices are guessed or downloaded implicitly.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema)]
+pub struct Pricing {
+    /// Ceiling per million input tokens, in micro-USD.
+    pub input_micro_usd_per_million: u64,
+    /// Ceiling per million generated tokens (including reasoning), in micro-USD.
+    pub output_micro_usd_per_million: u64,
+    /// Provider/model input-context limit. The full limit is reserved before every paid request.
+    pub max_input_tokens: u64,
+}
+/// Non-secret adapter configuration. Endpoint is the complete method URL.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct HttpProviderConfig {
+    /// Provider rung.
+    pub kind: ProviderKind,
+    /// Complete endpoint, without credentials, query or fragment.
+    #[schemars(with = "String")]
+    pub endpoint: url::Url,
+    /// API wire format.
+    pub dialect: HttpDialect,
+    /// Explicit model identifier; no automatic model substitution.
+    pub model: String,
+    /// Price upper bounds; mandatory for remote requests, absent for local models.
+    pub pricing: Option<Pricing>,
+    /// Total request deadline, in seconds (1–300).
+    pub timeout_seconds: u64,
 }

@@ -7,6 +7,8 @@
 //        node mcp-catalogue.mjs --json     the catalogue as JSON on stdout (implementations may embed it)
 //        node mcp-catalogue.mjs --check    exit 1 when a budget of 06 section 12 is exceeded
 import canonicalize from 'canonicalize';
+import Ajv2020 from 'ajv/dist/2020.js';
+import addFormats from 'ajv-formats';
 import { blake3 } from '@noble/hashes/blake3.js';
 import { bytesToHex, utf8ToBytes } from '@noble/hashes/utils.js';
 import { readFileSync, readdirSync } from 'node:fs';
@@ -114,6 +116,28 @@ if (process.argv.includes('--json')) {
   console.log(JSON.stringify(report, null, 2));
   if (process.argv.includes('--check')) {
     const problems = [];
+    const expectedNames = ['zeus_probe', 'zeus_enqueue', 'zeus_status', 'zeus_wait', 'zeus_control', 'zeus_verify', 'zeus_session_list', 'zeus_session_request', 'zeus_files_list', 'zeus_cloud'];
+    if (JSON.stringify(tools.map(tool => tool.name)) !== JSON.stringify(expectedNames)) problems.push('the original nine tools and appended cloud tool must retain their catalogue order');
+    const cloud = tools.find(tool => tool.name === 'zeus_cloud');
+    if (!cloud || !cloud.annotations.destructiveHint || cloud.annotations.readOnlyHint || !cloud.annotations.idempotentHint || !cloud.annotations.openWorldHint) problems.push('cloud annotations do not describe its mutation/cancellation surface');
+    if (cloud) {
+      const ajv = new Ajv2020({ strict: false, allErrors: true });
+      addFormats(ajv);
+      const validate = ajv.compile(cloud.inputSchema);
+      const wrap = request => ({idempotency_key: 'catalogue-check', request});
+      for (const request of [
+        {action: 'accounts'}, {action: 'list'}, {action: 'get', delivery_id: 'cld_01M48AKW2RDVBCR29C5HZ0ZD6Y'},
+        {action: 'control', delivery_id: 'cld_01M48AKW2RDVBCR29C5HZ0ZD6Y', operation: 'cancel'},
+        {action: 'submit', plan_id: 'clp_01M48AKW2RDVBCR29C5HZ0ZD6Y', plan_hash: 'a'.repeat(64)},
+        {action: 'plan', account_id: 'research', mode: 'staged_upload', source: {kind:'public_url', url:'https://example.org/report.zip', size_bytes:42}, remote_name:'report.zip', max_bytes:42, max_seconds:1800},
+      ]) if (!validate(wrap(request))) problems.push(`cloud ${request.action} request rejected: ${ajv.errorsText(validate.errors)}`);
+      for (const request of [
+        {action:'configure', credential:'secret'}, {action:'revoke'}, {action:'decide'},
+        {action:'accounts', config_file:'ambient'}, {action:'control', delivery_id:'cld_example', operation:'delete'},
+        {action:'plan', account_id:'research', source:{kind:'public_url',url:'https://example.org/report.zip',size_bytes:42},remote_name:'report.zip',max_bytes:42,max_seconds:60},
+      ]) if (validate(wrap(request))) problems.push(`cloud accepted forbidden or incomplete ${request.action} request`);
+      if (validate({...wrap({action:'accounts'}), credential:'secret'})) problems.push('cloud accepted unknown top-level credential field');
+    }
     if (report.tools_array_bytes > 24000) problems.push('tools array above 24,000 bytes');
     for (const t of tools) {
       if (size(t) > 4096) problems.push(`${t.name} above 4,096 bytes`);

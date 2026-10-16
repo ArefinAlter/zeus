@@ -95,6 +95,18 @@ use Permission::*;
 
 /// Every method of the daemon API. See ARCHITECTURE section 5.4.
 pub const METHODS: &[MethodSpec] = &[
+    MethodSpec::needs("cloud.accounts.list", JobsRead),
+    MethodSpec::needs("cloud.accounts.configure", ConfigWrite)
+        .mutates()
+        .human(),
+    MethodSpec::needs("cloud.accounts.revoke", ConfigWrite)
+        .mutates()
+        .human(),
+    MethodSpec::needs("cloud.plan", JobsWrite).mutates(),
+    MethodSpec::needs("cloud.submit", JobsWrite).mutates(),
+    MethodSpec::needs("cloud.list", JobsRead),
+    MethodSpec::needs("cloud.get", JobsRead),
+    MethodSpec::needs("cloud.control", JobsControl).mutates(),
     MethodSpec::pre_auth("daemon.hello"),
     MethodSpec::pre_auth("daemon.authenticate"),
     MethodSpec::needs("daemon.ping", DaemonRead),
@@ -157,6 +169,18 @@ pub const METHODS: &[MethodSpec] = &[
     MethodSpec::needs("llm.status", LlmRead).later(),
     MethodSpec::needs("llm.configure", LlmConfigure)
         .mutates()
+        .human()
+        .later(),
+    MethodSpec::needs("llm.auth.start", LlmConfigure)
+        .human()
+        .later(),
+    MethodSpec::needs("llm.auth.status", LlmConfigure)
+        .human()
+        .later(),
+    MethodSpec::needs("llm.auth.cancel", LlmConfigure)
+        .human()
+        .later(),
+    MethodSpec::needs("llm.auth.sign_out", LlmConfigure)
         .human()
         .later(),
     MethodSpec::needs("clients.list", DaemonAdmin)
@@ -287,6 +311,9 @@ mod tests {
             .map(|m| m.name)
             .collect();
         let expected: BTreeSet<&str> = [
+            "cloud.plan",
+            "cloud.submit",
+            "cloud.control",
             "jobs.enqueue",
             "jobs.control",
             "sessions.request",

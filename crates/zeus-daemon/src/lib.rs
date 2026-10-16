@@ -27,3 +27,31 @@ pub mod routes;
 pub use backend::{Backend, NotImplementedBackend};
 pub use config::DaemonConfig;
 pub use routes::build_router;
+
+/// Persistent engine-backed daemon runtime.
+pub mod runtime;
+
+/// Daemon startup and shutdown.
+pub mod run;
+
+/// Executable registration and terminal evidence.
+pub mod trust;
+
+/// Journal-backed human approval lifecycle.
+pub mod consent;
+
+/// Native messaging session broker.
+pub mod browser;
+mod browser_proxy;
+mod mutations;
+mod outbox;
+
+/// Explicit model configuration and budgeted execution.
+pub mod models;
+
+mod workflow_network;
+/// Durable bounded workflow orchestration.
+pub mod workflows;
+
+/// Approval-bound, durable cloud delivery operations.
+pub mod cloud;

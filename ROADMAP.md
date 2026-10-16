@@ -2,10 +2,12 @@
 
 Derived from `research.md` section 5.8 and the sequencing agreed during planning. Dates are targets from the start of public development, not promises. Every phase ends with benchmarks and a written threat-model review.
 
-## Phase 0: contracts and skeleton (now)
+Implementation evidence and remaining work are tracked in [docs/IMPLEMENTATION_STATUS.md](docs/IMPLEMENTATION_STATUS.md). A working component does not by itself satisfy a phase exit criterion.
 
-- Normative specs 00 to 08 and 13 written (daemon API, MCP tools, approvals, workflow plan, artifacts); specs 09 to 12 **planned** (LLM provider, A2A, CLI, security invariants), designed in `docs/ARCHITECTURE.md` and `docs/adr/`.
-- Three repositories scaffolded and compiling: `zeus`, `zeus-core`, `zeus-extension`.
+## Phase 0: contracts and skeleton
+
+- Specs 00–14 exist, including draft cloud delivery contracts. Contract reconciliation and review remain open, so API v1 is not frozen.
+- Three repositories contain implementations and tests: `zeus`, `zeus-core`, `zeus-extension`. Shared schema copies are regenerated from the app specifications.
 - Research corpus drafted in `docs/research` (unverified until marked verified).
 
 ## Phase 1: MVP (months 0 to 3)
@@ -28,6 +30,7 @@ Exit criteria: handoff success of at least 85 percent on a 200-URL failure test 
 - Provider ladder and signed policy manifest (spec 09); `zeus auth` wizard.
 - Daemon API frozen as v1.
 - Firefox build of the extension.
+- Cloud destinations (spec 14): verified download then upload, bounded streaming, and provider-side URL fetch where an official API supports it. Native Drive/Yandex/Baidu and explicitly configured rclone adapters have implementation coverage; live accounts, OAuth onboarding/refresh, provider quotas and installed-helper acceptance remain release gates. Cloud account setup and delivery consent remain human-controlled.
 
 ## Phase 3: interoperability and GUI (months 6 to 9)
 

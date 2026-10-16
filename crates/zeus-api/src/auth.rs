@@ -539,6 +539,8 @@ impl<'a> ServerHandshake<'a> {
                 .collect(),
         };
         let result = AuthenticateResult {
+            credential_kind: credential.kind,
+            downgraded: false,
             client_id: credential.id.to_string(),
             kind: credential.kind,
             role: credential.role,
@@ -824,6 +826,7 @@ mod tests {
             browser: BrowserName::Chrome,
             attested_extension: "abcdefghijklmnopabcdefghijklmnop".into(),
             host_version: "0.1.0".into(),
+            parent_verified: false,
         };
         let (identity, result) = full_handshake(&host, Some(attach.clone())).unwrap();
         assert!(identity.has(Permission::NmRelay));
