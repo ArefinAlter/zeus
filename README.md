@@ -47,6 +47,7 @@ One daemon owns all state; everything else is a client of its local JSON-RPC API
 | **zeus** (this one) | Daemon `zeusd`, CLI `zeus` with TUI, MCP server, native-messaging host, workflow engine, LLM provider ladder, optional A2A bridge, specs. |
 | [zeus-core](https://github.com/ArefinAlter/zeus-core) | The embeddable engine library (`zeus-types`, `zeus-control`, `zeus-fs`, `zeus-verify`, `zeus-journal`, `zeus-session`, `zeus-http`, `zeus-engine`, `zeus-artifact`). |
 | [zeus-extension](https://github.com/ArefinAlter/zeus-extension) | Manifest V3 browser extension (Chrome and Edge first, Firefox build target). |
+| [zeus-site](https://github.com/ArefinAlter/zeus-site) | Static marketing site and a clearly labeled interactive product preview using sample state. |
 
 Clone them **side by side**: this workspace refers to `../zeus-core`.
 
@@ -55,6 +56,7 @@ zeus-workspace/
   zeus/            <- this repository
   zeus-core/
   zeus-extension/
+  zeus-site/      <- website and preview; optional for runtime development
 ```
 
 ## Crates
@@ -110,6 +112,8 @@ npm run validate
 
 ## Documentation
 
+- [End-to-end roadmap](ROADMAP.md): all planned phases, completed implementation, remaining work and release gates across the four repositories.
+- [Project handoff](docs/PROJECT_HANDOFF.md): companion revisions and PRs, setup, operating procedures, recorded validation and known gaps.
 - [`docs/IMPLEMENTATION_STATUS.md`](docs/IMPLEMENTATION_STATUS.md): implemented paths, verification evidence and remaining release blockers.
 - [`docs/design/download-workspace.md`](docs/design/download-workspace.md): interaction design and visual prototype.
 - [`docs/spec`](docs/spec/README.md): normative specifications and JSON Schemas.

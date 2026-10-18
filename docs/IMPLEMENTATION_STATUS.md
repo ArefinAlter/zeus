@@ -2,6 +2,8 @@
 
 Reviewed 2026-10-16. This is an implementation ledger, not a release announcement or an API freeze. The original roadmap exit criteria remain in [ROADMAP.md](../ROADMAP.md). All three implementation repositories must be updated together because the app uses a sibling path dependency on `zeus-core`.
 
+The [2026-10-18 project handoff](PROJECT_HANDOFF.md) records the exact companion revisions, operating instructions and additional source-review findings; its [discrepancy register](PROJECT_HANDOFF.md#known-gaps-and-documentation-discrepancies) includes unwired configuration, emergency-stop audit recovery and missing model-to-product integration. The [end-to-end roadmap](../ROADMAP.md) covers all four repositories, including the site preview. The test results below remain the October 16 baseline, not a fresh rerun.
+
 ## Roadmap position
 
 | Phase | Implemented in this change | Still required to finish the phase |
@@ -40,6 +42,8 @@ A2A runs as a separate opt-in loopback process with a dedicated agent credential
 The workflow runner supports bounded public HTTP pages, CSS/JSON/regex extraction, numeric/cursor/next/date pagination, filtering, naming/routing and deduplication. A completed dry run and human approval bind the exact plan before execution. Durable job intents close the crash-after-enqueue gap, and audit receipts prevent duplicate run-start/end records after interrupted checkpoints; commit guards enforce run byte budgets across concurrent downloads. Unsupported authenticated page/render, sitemap/scroll, conversion, destructive replace and item-sink capabilities are rejected before execution. They are not simulated as successful work.
 
 Model work includes explicitly configured OpenAI Responses/compatible, Anthropic and local adapters; OpenRouter PKCE and ChatGPT sign-in; signed-policy validation/antirollback; OS keyring storage and durable spend reservations. Download-only is the default. No real account login, browser profile, external paid model call or production signing key was used in tests. Host-agent use works through the ordinary MCP workflow; MCP sampling and CLI-delegate provider adapters remain unimplemented.
+
+The model completion wrapper is not yet called by production workflow or classification paths. Current workflow planning samples pages and validates a caller-supplied candidate; it does not generate a plan from a natural-language goal. Workflow creation/execution is available through the daemon API, while dedicated CLI commands and MCP workflow tools remain unimplemented. Existing MCP resources can expose an already-created run's manifest.
 
 ### zeus-extension
 
