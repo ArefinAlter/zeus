@@ -3,7 +3,8 @@
 //! * Windows endpoint: `\\.\pipe\zeusd-<h>`, `h` = first 16 hex digits of BLAKE3 over `"zeus-endpoint-v1"` and the
 //!   user's identity (ADR 0002). The identity is `DOMAIN\user` here; a SID-based identity is a transport detail
 //!   that does not change the derivation function.
-//! * Unix endpoint: `<runtime>/zeus/zeusd.sock` inside a `0700` directory; if the path would not fit `sun_path`
+//! * Unix endpoint: `<runtime>/zeus/zeusd.sock` (`zeusd-<profile>.sock` for a selected profile) inside a `0700`
+//!   directory; if the path would not fit `sun_path`
 //!   (104 bytes on macOS, 108 on Linux) a short fallback under the temp directory is used.
 //! * State layout follows spec 03 section 3.1: `%LOCALAPPDATA%\Zeus`, `~/Library/Application Support/Zeus`,
 //!   `$XDG_STATE_HOME/zeus`.
@@ -48,9 +49,11 @@ pub fn pipe_name_for(user_identity: &str) -> String {
 /// Longest socket path accepted before falling back (below the smallest `sun_path`, 104 on macOS).
 const MAX_SOCKET_PATH_BYTES: usize = 100;
 
-/// Socket path inside `runtime_dir`, or a short fallback when it would not fit.
-pub fn unix_socket_path(runtime_dir: &Path, user_identity: &str) -> PathBuf {
-    let preferred = runtime_dir.join("zeus").join("zeusd.sock");
+/// Socket path inside `runtime_dir`, or a short fallback when it would not fit. A selected profile gets its own
+/// socket name, so profiles that share an explicit runtime directory never share a daemon.
+pub fn unix_socket_path(runtime_dir: &Path, user_identity: &str, profile: Option<&str>) -> PathBuf {
+    let name = profile.map_or_else(|| "zeusd.sock".to_owned(), |p| format!("zeusd-{p}.sock"));
+    let preferred = runtime_dir.join("zeus").join(name);
     if preferred.as_os_str().len() <= MAX_SOCKET_PATH_BYTES {
         return preferred;
     }
@@ -206,6 +209,7 @@ impl ZeusPaths {
             Endpoint::UnixSocket(unix_socket_path(
                 &self.runtime_dir,
                 &self.endpoint_identity(),
+                self.profile.as_deref(),
             ))
         }
     }
@@ -321,10 +325,12 @@ mod tests {
 
     #[test]
     fn socket_paths_fall_back_when_too_long() {
-        let short = unix_socket_path(Path::new("/run/user/1000"), "ada");
+        let short = unix_socket_path(Path::new("/run/user/1000"), "ada", None);
         assert_eq!(short, Path::new("/run/user/1000/zeus/zeusd.sock"));
+        let work = unix_socket_path(Path::new("/run/user/1000"), "ada", Some("work"));
+        assert_eq!(work, Path::new("/run/user/1000/zeus/zeusd-work.sock"));
         let long_dir = PathBuf::from(format!("/{}", "x".repeat(120)));
-        let fallback = unix_socket_path(&long_dir, "ada");
+        let fallback = unix_socket_path(&long_dir, "ada", None);
         assert!(fallback.as_os_str().len() <= MAX_SOCKET_PATH_BYTES + 20);
         assert!(fallback.starts_with(std::env::temp_dir()));
     }
@@ -391,7 +397,21 @@ mod tests {
         )
         .unwrap();
         assert_eq!(explicit.state_dir, Path::new("/s"));
-        assert_eq!(explicit.endpoint(), work.endpoint());
+        // Profiles that share an explicit runtime directory still get their own endpoint.
+        let shared = |profile: &str| {
+            let env: HashMap<&str, &str> = [
+                ("ZEUS_STATE_DIR", "/s"),
+                ("ZEUS_CONFIG_DIR", "/c"),
+                ("ZEUS_RUNTIME_DIR", "/r"),
+                ("ZEUS_PROFILE", profile),
+            ]
+            .into();
+            ZeusPaths::resolve(|k| env.get(k).map(|v| (*v).to_string()), None, "ada".into())
+                .unwrap()
+                .endpoint()
+        };
+        assert_ne!(shared("work"), shared("home"));
+        assert_ne!(shared("work"), shared("default"));
     }
 
     #[test]
