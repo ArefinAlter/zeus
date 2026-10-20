@@ -173,6 +173,23 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_parent_table_cannot_carry_an_ineffective_setting() {
+        let old = DaemonConfig::default();
+        let mut scheduler = serde_json::to_value(&old.scheduler).unwrap();
+        scheduler["segment_size_mib"] = serde_json::json!(32);
+        let error = apply_setting(&old, "scheduler", scheduler).unwrap_err();
+        assert_eq!(
+            error.envelope().code.as_str(),
+            zeus_api::error::codes::NOT_IMPLEMENTED
+        );
+        // The same table without that change is accepted.
+        let mut scheduler = serde_json::to_value(&old.scheduler).unwrap();
+        scheduler["concurrent_jobs"] = serde_json::json!(8);
+        let (config, _) = apply_setting(&old, "scheduler", scheduler).unwrap();
+        assert_eq!(config.scheduler.concurrent_jobs, 8);
+    }
+
+    #[test]
     fn settings_replace_existing_keys_and_create_service_rates() {
         let old = DaemonConfig::default();
         let (config, previous) = apply_setting(
