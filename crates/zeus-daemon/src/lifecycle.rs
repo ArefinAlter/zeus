@@ -30,10 +30,14 @@ impl RuntimeBackend {
             "reason_blake3".into(),
             serde_json::json!(reason.map(|s| blake3::hash(s.as_bytes()).to_hex().to_string())),
         );
-        let audit = self.audit.append(entry).map_err(error);
-        // The emergency stop remains available even when the audit volume is full.
+        let retained = entry.clone();
+        let audit = self.append_kill_switch_audit(entry);
+        // The emergency stop remains available even when the audit volume is full; its record is retained
+        // and appended once the log recovers (04 section 4.6 item 8). Release fails closed.
         if !engaged {
             audit?;
+        } else if audit.is_err() {
+            self.deferred_audit.retain(&retained);
         }
         let outcome = self
             .engine
@@ -144,8 +148,30 @@ impl RuntimeBackend {
         }
         Ok(())
     }
+    fn append_kill_switch_audit(
+        &self,
+        entry: AuditEntry,
+    ) -> ApiResult<zeus_verify::audit::AuditRecord> {
+        #[cfg(test)]
+        if self
+            .fail_kill_switch_audit
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            return Err(ApiError::new("audit.unavailable", "audit log unavailable"));
+        }
+        self.audit.append(entry).map_err(error)
+    }
+    /// Append retained kill-switch records once the audit log accepts writes again.
+    pub(super) fn replay_deferred_audit(&self) {
+        if self.deferred_audit.is_pending() {
+            let audit = self.audit.clone();
+            self.deferred_audit
+                .replay(audit.as_ref(), &Default::default());
+        }
+    }
     /// Run one bounded maintenance tick. Replaying terminal approvals repairs interrupted decisions.
     pub async fn maintain(&self) -> ApiResult<()> {
+        self.replay_deferred_audit();
         let now = Timestamp::now();
         let origins = self.journal.transact(|tx| {
             let mut origins = std::collections::BTreeSet::new();

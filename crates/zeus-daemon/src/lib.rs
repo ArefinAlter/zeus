@@ -43,6 +43,7 @@ pub mod consent;
 /// Native messaging session broker.
 pub mod browser;
 mod browser_proxy;
+mod deferred_audit;
 mod mutations;
 mod outbox;
 
