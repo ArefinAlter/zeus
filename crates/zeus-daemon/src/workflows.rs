@@ -67,6 +67,8 @@ pub(crate) struct StoredRun {
     pub snapshot: RunSnapshot,
     pub approval_id: Option<ApprovalId>,
     pending: Vec<JobIntent>,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
+    retired_admission_keys: std::collections::BTreeSet<String>,
     jobs: BTreeMap<String, JobId>,
     exports: BTreeMap<String, ExportReceipt>,
     #[serde(default)]
@@ -77,6 +79,36 @@ pub(crate) struct StoredRun {
     run_receipt: Option<WorkflowsRunResult>,
     #[serde(default)]
     requested_dry_run: Option<DryRunReport>,
+}
+impl StoredRun {
+    fn retire_pending(&mut self) {
+        self.retired_admission_keys.extend(
+            self.pending
+                .iter()
+                .filter_map(|intent| intent.spec.idempotency_key.clone()),
+        );
+        self.pending.clear();
+    }
+    fn skip_existing_intent(&mut self, intent: &JobIntent) -> bool {
+        let Some(index) = self.pending.iter().position(|pending| {
+            pending.index == intent.index
+                && pending.spec.idempotency_key == intent.spec.idempotency_key
+        }) else {
+            return false;
+        };
+        self.pending.remove(index);
+        self.snapshot.report.files_enqueued = self.snapshot.report.files_enqueued.saturating_sub(1);
+        if let Some(counts) = &mut self.snapshot.report.counts {
+            counts.items_skipped_existing = counts.items_skipped_existing.saturating_add(1);
+        }
+        true
+    }
+    fn record_admission(&mut self, key: &str, job_id: JobId) {
+        self.jobs.insert(key.into(), job_id);
+        self.retired_admission_keys.remove(key);
+        self.pending
+            .retain(|intent| intent.spec.idempotency_key.as_deref() != Some(key));
+    }
 }
 /// Separate private state database, with atomic intent+checkpoint reservations.
 pub(crate) struct WorkflowStore {
@@ -259,7 +291,7 @@ impl WorkflowStore {
                 row.snapshot.report.stop_reason = Some(reason.into());
                 row.snapshot.report.finished_at = Some(Timestamp::now());
                 row.snapshot.checkpoint_seq = row.snapshot.checkpoint_seq.saturating_add(1);
-                row.pending.clear();
+                row.retire_pending();
             }
             Ok(())
         })
@@ -270,7 +302,7 @@ impl WorkflowStore {
         next: &RunSnapshot,
         intents: &[JobIntent],
     ) -> RuntimeResult<()> {
-        self.commit_with_receipt(expected, next, intents, None)
+        self.commit_with_receipt(expected, next, intents, None, None)
     }
     fn commit_with_receipt(
         &self,
@@ -278,7 +310,17 @@ impl WorkflowStore {
         next: &RunSnapshot,
         intents: &[JobIntent],
         binding: Option<&Binding>,
+        projected_receipt: Option<&RunReport>,
     ) -> RuntimeResult<()> {
+        if binding.is_some()
+            && projected_receipt.is_none_or(|report| {
+                report.run_id != next.report.run_id
+                    || report.plan_hash != next.report.plan_hash
+                    || report.counts.is_some() != next.report.counts.is_some()
+            })
+        {
+            return Err(RuntimeError::CheckpointConflict);
+        }
         let mut tx = self.db.begin_write().map_err(|_| runtime_fail())?;
         tx.set_durability(redb::Durability::Immediate)
             .map_err(|_| runtime_fail())?;
@@ -314,7 +356,7 @@ impl WorkflowStore {
                 next.report.status,
                 RunStatus::Canceled | RunStatus::Failed | RunStatus::BudgetExhausted
             ) {
-                row.pending.clear();
+                row.retire_pending();
             } else {
                 row.pending.extend_from_slice(intents);
             }
@@ -323,10 +365,33 @@ impl WorkflowStore {
                 .insert(key.as_str(), data.as_slice())
                 .map_err(|_| runtime_fail())?;
             if let Some(binding) = binding {
+                // Public job totals are read before this write transaction. The checkpoint
+                // keeps intent counters for budgets; only the atomic response uses admitted jobs.
+                let projected = projected_receipt.ok_or_else(runtime_fail)?;
+                let mut report = row.snapshot.report.clone();
+                report.plan_id = Some(row.plan_id);
+                report.approval_id = row.approval_id;
+                if report.report_version == 0 {
+                    report.created_at = report.created_at.or(report.started_at.take());
+                }
+                report.files_enqueued = projected.files_enqueued;
+                report.files_completed = projected.files_completed;
+                report.files_failed = projected.files_failed;
+                report.bytes_done = projected.bytes_done;
+                if let (Some(counts), Some(projected_counts)) =
+                    (&mut report.counts, &projected.counts)
+                {
+                    counts.files_enqueued = projected_counts.files_enqueued;
+                    counts.files_completed = projected_counts.files_completed;
+                    counts.files_failed = projected_counts.files_failed;
+                    counts.files_canceled = projected_counts.files_canceled;
+                    counts.files_quarantined = projected_counts.files_quarantined;
+                    counts.bytes_done = projected_counts.bytes_done;
+                }
                 let bytes = binding
                     .bytes(&WorkflowsControlResult {
                         replayed: false,
-                        run: row.snapshot.report.clone(),
+                        run: report,
                     })
                     .map_err(|_| runtime_fail())?;
                 table
@@ -855,6 +920,7 @@ impl WorkflowService {
                 snapshot,
                 approval_id: None,
                 pending: vec![],
+                retired_admission_keys: Default::default(),
                 jobs: BTreeMap::new(),
                 exports: BTreeMap::new(),
                 active_since: None,
@@ -912,6 +978,11 @@ impl WorkflowService {
         self.public_report(self.owned_run(identity, p.run_id)?)
     }
     fn public_report(&self, row: StoredRun) -> ApiResult<RunReport> {
+        let jobs = if row.snapshot.report.counts.is_some() {
+            Some(self.admitted_jobs(&row)?)
+        } else {
+            None
+        };
         let elapsed = self.store.elapsed(&row);
         let mut report = row.snapshot.report;
         report.plan_id = Some(row.plan_id);
@@ -932,38 +1003,13 @@ impl WorkflowService {
             .as_deref()
             .is_some_and(|reason| reason.starts_with("budget_") || reason == "drift");
         if let Some(counts) = &mut report.counts {
-            let jobs = self
-                .journal
-                .read(|tx| {
-                    let mut ids = row
-                        .jobs
-                        .values()
-                        .copied()
-                        .collect::<std::collections::BTreeSet<_>>();
-                    // An enqueue can commit before the outbox records its returned ID.
-                    for intent in &row.pending {
-                        if let Some(key) = &intent.spec.idempotency_key
-                            && let Some(receipt) = tx.idempotency(&row.owner, key)?
-                        {
-                            ids.insert(receipt.job_id);
-                        }
-                    }
-                    ids.into_iter()
-                        .map(|id| tx.job(id))
-                        .collect::<zeus_journal::JournalResult<Vec<_>>>()
-                })
-                .map_err(|_| fail())?;
             counts.files_enqueued = 0;
             counts.files_completed = 0;
             counts.files_failed = 0;
             counts.files_canceled = 0;
             counts.files_quarantined = 0;
             counts.bytes_done = 0;
-            for record in jobs
-                .into_iter()
-                .flatten()
-                .filter(|record| record.job.spec.source.run_id == Some(report.run_id))
-            {
+            for record in jobs.into_iter().flatten() {
                 counts.files_enqueued = counts.files_enqueued.saturating_add(1);
                 counts.bytes_done = counts
                     .bytes_done
@@ -984,6 +1030,110 @@ impl WorkflowService {
             report.bytes_done = counts.bytes_done;
         }
         Ok(report)
+    }
+    // Resolve only this run's durable mappings and owner-bound admission receipts. Retired
+    // keys cover an enqueue that commits after cancellation discarded its pending intent.
+    fn admitted_jobs(&self, row: &StoredRun) -> ApiResult<Vec<zeus_journal::JobRecord>> {
+        let records = self
+            .journal
+            .read(|tx| {
+                let mut ids = row
+                    .jobs
+                    .values()
+                    .copied()
+                    .collect::<std::collections::BTreeSet<_>>();
+                let keys = row
+                    .pending
+                    .iter()
+                    .filter_map(|intent| intent.spec.idempotency_key.as_ref())
+                    .chain(row.retired_admission_keys.iter());
+                for key in keys {
+                    if let Some(receipt) = tx.idempotency(&row.owner, key)? {
+                        ids.insert(receipt.job_id);
+                    }
+                }
+                ids.into_iter()
+                    .map(|id| tx.job(id))
+                    .collect::<zeus_journal::JournalResult<Vec<_>>>()
+            })
+            .map_err(|_| fail())?;
+        Ok(records
+            .into_iter()
+            .flatten()
+            .filter(|record| {
+                record.job.spec.source.run_id == Some(row.snapshot.report.run_id)
+                    && record
+                        .job
+                        .spec
+                        .source
+                        .client_id
+                        .as_deref()
+                        .is_none_or(|owner| owner == row.owner)
+            })
+            .collect())
+    }
+    fn existing_admission(&self, row: &StoredRun, key: &str) -> ApiResult<Option<JobId>> {
+        self.journal
+            .read(|tx| {
+                let Some(receipt) = tx.idempotency(&row.owner, key)? else {
+                    return Ok(None);
+                };
+                Ok(tx
+                    .job(receipt.job_id)?
+                    .filter(|record| {
+                        record.job.spec.source.run_id == Some(row.snapshot.report.run_id)
+                            && record
+                                .job
+                                .spec
+                                .source
+                                .client_id
+                                .as_deref()
+                                .is_none_or(|owner| owner == row.owner)
+                    })
+                    .map(|record| record.id()))
+            })
+            .map_err(|_| fail())
+    }
+    fn control_targets(
+        &self,
+        row: &StoredRun,
+        action: RunAction,
+    ) -> RuntimeResult<Vec<(JobId, zeus_engine::ControlAction)>> {
+        let jobs = self.admitted_jobs(row).map_err(|_| runtime_fail())?;
+        Ok(jobs
+            .into_iter()
+            .filter_map(|record| {
+                let control = match action {
+                    RunAction::Pause
+                        if matches!(
+                            record.job.state,
+                            JobState::Queued
+                                | JobState::Probing
+                                | JobState::Downloading
+                                | JobState::RetryScheduled
+                        ) =>
+                    {
+                        zeus_engine::ControlAction::Pause
+                    }
+                    RunAction::Resume if record.job.state == JobState::Paused => {
+                        zeus_engine::ControlAction::Resume
+                    }
+                    RunAction::Cancel
+                        if !matches!(
+                            record.job.state,
+                            JobState::Completed
+                                | JobState::Canceled
+                                | JobState::Verifying
+                                | JobState::Finalizing
+                        ) =>
+                    {
+                        zeus_engine::ControlAction::Cancel
+                    }
+                    _ => return None,
+                };
+                Some((record.id(), control))
+            })
+            .collect())
     }
     /// List only runs visible to this identity.
     pub fn list(
@@ -1080,12 +1230,7 @@ impl WorkflowService {
         }
         Ok(WorkflowsControlResult {
             replayed: false,
-            run: self
-                .store
-                .run(p.run_id)?
-                .ok_or_else(missing)?
-                .snapshot
-                .report,
+            run: self.public_report(self.store.run(p.run_id)?.ok_or_else(missing)?)?,
         })
     }
     /// Export provenance records after the journal outbox has caught up.
@@ -1377,6 +1522,21 @@ impl WorkflowService {
             let Some(mut intent) = row.pending.first().cloned() else {
                 return Ok(());
             };
+            if let Some(key) = &intent.spec.idempotency_key
+                && let Some(job_id) = self
+                    .existing_admission(&row, key)
+                    .map_err(|_| runtime_fail())?
+            {
+                // A previous enqueue can have completed the destination before its outbox
+                // mapping was saved. Recover that admission before applying on-existing rules.
+                self.store
+                    .mutate_run(run, |row| {
+                        row.record_admission(key, job_id);
+                        Ok(())
+                    })
+                    .map_err(|_| runtime_fail())?;
+                continue;
+            }
             let root = zeus_fs::WriteRoots::open(&self.roots)
                 .map_err(|_| RuntimeError::Policy("policy.path_outside_roots"))?;
             let dir = Path::new(intent.spec.dest_dir.as_deref().ok_or_else(runtime_fail)?);
@@ -1392,13 +1552,7 @@ impl WorkflowService {
             {
                 self.store
                     .mutate_run(run, |r| {
-                        r.pending.remove(0);
-                        r.snapshot.report.files_enqueued =
-                            r.snapshot.report.files_enqueued.saturating_sub(1);
-                        if let Some(counts) = &mut r.snapshot.report.counts {
-                            counts.items_skipped_existing =
-                                counts.items_skipped_existing.saturating_add(1);
-                        }
+                        r.skip_existing_intent(&intent);
                         Ok(())
                     })
                     .map_err(|_| runtime_fail())?;
@@ -1424,9 +1578,7 @@ impl WorkflowService {
                 .ok_or_else(runtime_fail)?;
             self.store
                 .mutate_run(run, |r| {
-                    r.jobs.insert(key.clone(), outcome.job.id);
-                    r.pending
-                        .retain(|p| p.spec.idempotency_key.as_ref() != Some(&key));
+                    r.record_admission(&key, outcome.job.id);
                     Ok(())
                 })
                 .map_err(|_| runtime_fail())?;
@@ -1564,37 +1716,8 @@ impl RuntimePort for WorkflowService {
             .run(run)
             .map_err(|_| runtime_fail())?
             .ok_or_else(runtime_fail)?;
-        for id in row.jobs.values() {
-            let job = self.engine()?.get(*id).await.map_err(|_| runtime_fail())?;
-            let action = match action {
-                RunAction::Pause
-                    if matches!(
-                        job.state,
-                        JobState::Queued
-                            | JobState::Probing
-                            | JobState::Downloading
-                            | JobState::RetryScheduled
-                    ) =>
-                {
-                    zeus_engine::ControlAction::Pause
-                }
-                RunAction::Resume if job.state == JobState::Paused => {
-                    zeus_engine::ControlAction::Resume
-                }
-                RunAction::Cancel
-                    if !matches!(
-                        job.state,
-                        JobState::Completed
-                            | JobState::Canceled
-                            | JobState::Verifying
-                            | JobState::Finalizing
-                    ) =>
-                {
-                    zeus_engine::ControlAction::Cancel
-                }
-                _ => continue,
-            };
-            let _ = self.engine()?.control_workflow(*id, action).await;
+        for (id, action) in self.control_targets(&row, action)? {
+            let _ = self.engine()?.control_workflow(id, action).await;
         }
         Ok(())
     }
@@ -1798,6 +1921,232 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn control_reports_admitted_jobs_without_changing_checkpoint_intent_budgets() {
+        for keyed in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let service = receipt_service(dir.path());
+            let identity = receipt_identity();
+            let mut stored = row();
+            stored.owner = identity.credential_id.to_string();
+            stored.snapshot.report.status = RunStatus::Running;
+            stored.snapshot.report.pages_fetched = 2;
+            stored.snapshot.report.files_enqueued = 3;
+            stored.snapshot.report.counts = Some(RunCounts {
+                pages_fetched: 2,
+                items_seen: 9,
+                items_duplicate: 2,
+                files_enqueued: 3,
+                ..Default::default()
+            });
+            let run_id = stored.snapshot.report.run_id;
+            stored.pending = vec![
+                report_intent(run_id, "wf:control:admitted", 1),
+                report_intent(run_id, "wf:control:later", 2),
+                report_intent(run_id, "wf:control:not-admitted", 3),
+            ];
+            // Enqueue committed, while the outbox has not yet saved its returned job ID.
+            let mut admitted = report_job(run_id, JobState::Completed, 64);
+            let now = Timestamp::now();
+            service
+                .journal
+                .transact(|tx| {
+                    tx.put_job(&admitted)?;
+                    tx.put_idempotency(&zeus_journal::IdempotencyRow {
+                        client_id: stored.owner.clone(),
+                        key: "wf:control:admitted".into(),
+                        request_hash: zeus_types::Hex256::from_bytes([0; 32]),
+                        job_id: admitted.id(),
+                        method: Some("jobs.enqueue".into()),
+                        result: None,
+                        created_at: now,
+                        expires_at: now.saturating_add_ms(86_400_000),
+                    })
+                })
+                .unwrap();
+            service.store.reserve(&stored, None).unwrap();
+            let params = WorkflowsControlParams {
+                idempotency_key: keyed.then(|| "control-projected-retry".into()),
+                run_id,
+                action: RunControl::Pause,
+            };
+            let first = service.control(&identity, params.clone()).await.unwrap();
+            assert!(!first.replayed);
+            assert_eq!(first.run.status, RunStatus::Paused);
+            assert_eq!(first.run.plan_id, Some(stored.plan_id));
+            assert_eq!((first.run.files_enqueued, first.run.bytes_done), (1, 64));
+            let counts = first.run.counts.as_ref().unwrap();
+            assert_eq!((counts.files_enqueued, counts.bytes_done), (1, 64));
+            assert_eq!(
+                (
+                    counts.pages_fetched,
+                    counts.items_seen,
+                    counts.items_duplicate
+                ),
+                (2, 9, 2)
+            );
+            let checkpoint = service.store.run(run_id).unwrap().unwrap();
+            assert_eq!(checkpoint.snapshot.report.files_enqueued, 3);
+            assert_eq!(
+                checkpoint
+                    .snapshot
+                    .report
+                    .counts
+                    .as_ref()
+                    .unwrap()
+                    .files_enqueued,
+                3
+            );
+            assert_eq!(checkpoint.pending.len(), 3);
+            assert_eq!(checkpoint.snapshot.checkpoint_seq, 1);
+
+            if !keyed {
+                continue;
+            }
+            // Current jobs can change after the receipt, without changing that exact response.
+            admitted.job.state = JobState::Failed;
+            admitted.job.progress.bytes_done = 96;
+            let later = report_job(run_id, JobState::Completed, 32);
+            service
+                .journal
+                .transact(|tx| {
+                    tx.put_job(&admitted)?;
+                    tx.put_job(&later)?;
+                    tx.put_idempotency(&zeus_journal::IdempotencyRow {
+                        client_id: stored.owner.clone(),
+                        key: "wf:control:later".into(),
+                        request_hash: zeus_types::Hex256::from_bytes([0; 32]),
+                        job_id: later.id(),
+                        method: Some("jobs.enqueue".into()),
+                        result: None,
+                        created_at: now,
+                        expires_at: now.saturating_add_ms(86_400_000),
+                    })
+                })
+                .unwrap();
+            let current = service
+                .get(&identity, WorkflowsGetParams { run_id })
+                .unwrap();
+            assert_eq!(
+                (
+                    current.files_enqueued,
+                    current.files_completed,
+                    current.files_failed,
+                    current.bytes_done
+                ),
+                (2, 1, 1, 128)
+            );
+            drop(service);
+            let service = receipt_service(dir.path());
+            let mut replay = service.control(&identity, params).await.unwrap();
+            assert!(replay.replayed);
+            replay.replayed = false;
+            assert_eq!(replay, first);
+            let checkpoint = service.store.run(run_id).unwrap().unwrap();
+            assert_eq!(checkpoint.snapshot.report.files_enqueued, 3);
+            assert_eq!(
+                checkpoint
+                    .snapshot
+                    .report
+                    .counts
+                    .as_ref()
+                    .unwrap()
+                    .files_enqueued,
+                3
+            );
+            assert_eq!(checkpoint.snapshot.checkpoint_seq, 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn keyed_control_receipt_normalizes_legacy_public_metadata_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let service = receipt_service(dir.path());
+        let identity = receipt_identity();
+        let mut legacy = row();
+        legacy.owner = identity.credential_id.to_string();
+        legacy.snapshot.report.report_version = 0;
+        legacy.snapshot.report.counts = None;
+        legacy.snapshot.report.status = RunStatus::AwaitingApproval;
+        legacy.snapshot.report.created_at = None;
+        let reservation = Timestamp::UNIX_EPOCH.saturating_add_ms(1000);
+        legacy.snapshot.report.started_at = Some(reservation);
+        let run_id = legacy.snapshot.report.run_id;
+        let plan_id = legacy.plan_id.clone();
+        service.store.reserve(&legacy, None).unwrap();
+        let receipt = service
+            .control(
+                &identity,
+                WorkflowsControlParams {
+                    idempotency_key: Some("legacy-public-metadata".into()),
+                    run_id,
+                    action: RunControl::Pause,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(receipt.run.plan_id, Some(plan_id));
+        assert_eq!(receipt.run.created_at, Some(reservation));
+        assert_eq!(receipt.run.started_at, None);
+        assert!(receipt.run.counts.is_none());
+        let checkpoint = service.store.run(run_id).unwrap().unwrap();
+        assert_eq!(checkpoint.snapshot.report.created_at, None);
+        assert_eq!(checkpoint.snapshot.report.started_at, Some(reservation));
+    }
+
+    #[test]
+    fn stale_control_projection_cannot_publish_a_receipt_without_its_checkpoint() {
+        let dir = tempfile::tempdir().unwrap();
+        let service = receipt_service(dir.path());
+        let identity = receipt_identity();
+        let stored = row();
+        let run_id = stored.snapshot.report.run_id;
+        service.store.reserve(&stored, None).unwrap();
+        let params = WorkflowsControlParams {
+            idempotency_key: Some("control-stale-projection".into()),
+            run_id,
+            action: RunControl::Pause,
+        };
+        let binding = Binding::new(
+            &identity,
+            "workflows.control",
+            params.idempotency_key.as_deref(),
+            &params,
+        )
+        .unwrap()
+        .unwrap();
+        let mut next = stored.snapshot.clone();
+        next.checkpoint_seq = 1;
+        next.report.status = RunStatus::Paused;
+        let mut projected_row = stored;
+        projected_row.snapshot = next.clone();
+        let projected = service.public_report(projected_row).unwrap();
+        service
+            .store
+            .mutate_run(run_id, |row| {
+                row.snapshot.checkpoint_seq = 1;
+                row.snapshot.report.status = RunStatus::Canceled;
+                Ok(())
+            })
+            .unwrap();
+        assert!(matches!(
+            service
+                .store
+                .commit_with_receipt(0, &next, &[], Some(&binding), Some(&projected)),
+            Err(RuntimeError::CheckpointConflict)
+        ));
+        assert!(
+            service
+                .store
+                .replay::<WorkflowsControlResult>(Some(&binding))
+                .unwrap()
+                .is_none()
+        );
+        let current = service.store.run(run_id).unwrap().unwrap();
+        assert_eq!(current.snapshot.report.status, RunStatus::Canceled);
+        assert_eq!(current.snapshot.checkpoint_seq, 1);
+    }
+
     #[test]
     fn keyed_manifest_replays_a_snapshot_and_uncertain_publication_never_exports_again() {
         let dir = tempfile::tempdir().unwrap();
@@ -1892,6 +2241,7 @@ mod tests {
             plan,
             approval_id: None,
             pending: vec![],
+            retired_admission_keys: Default::default(),
             jobs: BTreeMap::new(),
             exports: BTreeMap::new(),
             active_since: None,
@@ -2168,6 +2518,274 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn retired_admission_keys_keep_late_jobs_visible_and_control_targeted_after_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let service = receipt_service(dir.path());
+        let identity = receipt_identity();
+        let mut stored = row();
+        stored.owner = identity.credential_id.to_string();
+        stored.snapshot.report.status = RunStatus::Running;
+        stored.snapshot.report.files_enqueued = 4;
+        let run_id = stored.snapshot.report.run_id;
+        stored.pending = vec![
+            report_intent(run_id, "wf:retired:late", 1),
+            report_intent(run_id, "wf:retired:other-owner", 2),
+            report_intent(run_id, "wf:retired:other-run", 3),
+            report_intent(run_id, "wf:retired:never-admitted", 4),
+        ];
+        stored.pending[0].spec.url =
+            zeus_types::HttpUrl::parse("https://example.org/file?token=ZEUS-CANARY-RETIRED-INTENT")
+                .unwrap();
+        service.store.reserve(&stored, None).unwrap();
+        let canceled = service
+            .control(
+                &identity,
+                WorkflowsControlParams {
+                    idempotency_key: None,
+                    run_id,
+                    action: RunControl::Cancel,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(canceled.run.status, RunStatus::Canceled);
+        assert_eq!(canceled.run.files_enqueued, 0);
+        let checkpoint = service.store.run(run_id).unwrap().unwrap();
+        assert!(checkpoint.pending.is_empty());
+        assert_eq!(checkpoint.retired_admission_keys.len(), 4);
+        assert!(
+            !serde_json::to_string(&checkpoint)
+                .unwrap()
+                .contains("ZEUS-CANARY-")
+        );
+        assert!(
+            service
+                .control_targets(&checkpoint, RunAction::Cancel)
+                .unwrap()
+                .is_empty()
+        );
+        drop(service);
+
+        let service = receipt_service(dir.path());
+        let before = service
+            .get(&identity, WorkflowsGetParams { run_id })
+            .unwrap();
+        assert_eq!(before.files_enqueued, 0);
+        let mut admitted = report_job(run_id, JobState::Downloading, 64);
+        admitted.job.spec.source.client_id = Some(identity.credential_id.to_string());
+        let other_owner = report_job(run_id, JobState::Downloading, 9000);
+        let other_run = report_job(
+            zeus_types::IdGenerator::new().run_id(),
+            JobState::Downloading,
+            8000,
+        );
+        let now = Timestamp::now();
+        service
+            .journal
+            .transact(|tx| {
+                for record in [&admitted, &other_owner, &other_run] {
+                    tx.put_job(record)?;
+                }
+                for (owner, key, job_id) in [
+                    (stored.owner.as_str(), "wf:retired:late", admitted.id()),
+                    ("another-owner", "wf:retired:other-owner", other_owner.id()),
+                    (
+                        stored.owner.as_str(),
+                        "wf:retired:other-run",
+                        other_run.id(),
+                    ),
+                ] {
+                    tx.put_idempotency(&zeus_journal::IdempotencyRow {
+                        client_id: owner.into(),
+                        key: key.into(),
+                        request_hash: zeus_types::Hex256::from_bytes([0; 32]),
+                        job_id,
+                        method: Some("jobs.enqueue".into()),
+                        result: None,
+                        created_at: now,
+                        expires_at: now.saturating_add_ms(86_400_000),
+                    })?;
+                }
+                Ok(())
+            })
+            .unwrap();
+
+        let current = service
+            .get(&identity, WorkflowsGetParams { run_id })
+            .unwrap();
+        assert_eq!((current.files_enqueued, current.bytes_done), (1, 64));
+        let checkpoint = service.store.run(run_id).unwrap().unwrap();
+        let targets = service
+            .control_targets(&checkpoint, RunAction::Cancel)
+            .unwrap();
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0].0, admitted.id());
+        assert!(matches!(targets[0].1, zeus_engine::ControlAction::Cancel));
+        service
+            .store
+            .mutate_run(run_id, |row| {
+                row.record_admission("wf:retired:late", admitted.id());
+                Ok(())
+            })
+            .unwrap();
+        let mapped = service.store.run(run_id).unwrap().unwrap();
+        assert!(!mapped.retired_admission_keys.contains("wf:retired:late"));
+        assert_eq!(service.public_report(mapped).unwrap().files_enqueued, 1);
+
+        admitted.job.state = JobState::Canceled;
+        service
+            .journal
+            .transact(|tx| tx.put_job(&admitted))
+            .unwrap();
+        let checkpoint = service.store.run(run_id).unwrap().unwrap();
+        assert!(
+            service
+                .control_targets(&checkpoint, RunAction::Cancel)
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            service
+                .public_report(checkpoint)
+                .unwrap()
+                .counts
+                .unwrap()
+                .files_canceled,
+            1
+        );
+    }
+
+    #[test]
+    fn skip_existing_removes_only_the_matching_intent_and_is_safe_after_cancel() {
+        let mut stored = row();
+        let run_id = stored.snapshot.report.run_id;
+        let first = report_intent(run_id, "wf:skip:first", 1);
+        let second = report_intent(run_id, "wf:skip:second", 2);
+        stored.pending = vec![first.clone(), second.clone()];
+        stored.snapshot.report.files_enqueued = 2;
+        assert!(stored.skip_existing_intent(&second));
+        assert_eq!(stored.pending.len(), 1);
+        assert_eq!(
+            stored.pending[0].spec.idempotency_key,
+            first.spec.idempotency_key
+        );
+        assert_eq!(stored.snapshot.report.files_enqueued, 1);
+        assert_eq!(
+            stored
+                .snapshot
+                .report
+                .counts
+                .as_ref()
+                .unwrap()
+                .items_skipped_existing,
+            1
+        );
+        assert!(!stored.skip_existing_intent(&second));
+        stored.retire_pending();
+        assert!(stored.pending.is_empty());
+        assert!(!stored.skip_existing_intent(&first));
+        assert_eq!(stored.snapshot.report.files_enqueued, 1);
+        assert_eq!(
+            stored
+                .snapshot
+                .report
+                .counts
+                .as_ref()
+                .unwrap()
+                .items_skipped_existing,
+            1
+        );
+        assert!(stored.retired_admission_keys.contains("wf:skip:first"));
+    }
+
+    #[tokio::test]
+    async fn drain_recovers_completed_admission_before_skipping_its_existing_destination() {
+        let dir = tempfile::tempdir().unwrap();
+        let service = receipt_service(dir.path());
+        let mut stored = row();
+        stored.snapshot.report.status = RunStatus::Running;
+        stored.snapshot.report.files_enqueued = 1;
+        stored
+            .snapshot
+            .report
+            .counts
+            .as_mut()
+            .unwrap()
+            .files_enqueued = 1;
+        let run_id = stored.snapshot.report.run_id;
+        let key = "wf:drain:completed-before-mapping";
+        let mut intent = report_intent(run_id, key, 1);
+        intent.spec.dest_dir = Some(dir.path().display().to_string());
+        intent.spec.filename = Some("already-downloaded.bin".into());
+        let destination = dir.path().join("already-downloaded.bin");
+        let bytes = b"verified fixture contents";
+        std::fs::write(&destination, bytes).unwrap();
+        let mut admitted = report_job(run_id, JobState::Completed, bytes.len() as u64);
+        admitted.job.spec = intent.spec.clone();
+        admitted.job.spec.source.client_id = Some(stored.owner.clone());
+        stored.pending.push(intent);
+        let approval_id = zeus_types::IdGenerator::new().approval_id();
+        stored.approval_id = Some(approval_id);
+        let now = Timestamp::now();
+        let approval: zeus_types::Approval = serde_json::from_value(serde_json::json!({
+            "id":approval_id, "kind":"workflow_plan", "state":"approved",
+            "run_id":run_id, "allowed_scopes":[], "reason_codes":[],
+            "summary":{"title":"Fixture plan"}, "created_at":now,
+            "expires_at":now.saturating_add_ms(86_400_000),
+            "facts":{"plan_blake3":stored.snapshot.report.plan_hash.clone()}
+        }))
+        .unwrap();
+        service
+            .journal
+            .transact(|tx| {
+                tx.put_job(&admitted)?;
+                tx.put_approval(&approval)?;
+                tx.put_idempotency(&zeus_journal::IdempotencyRow {
+                    client_id: stored.owner.clone(),
+                    key: key.into(),
+                    request_hash: zeus_types::Hex256::from_bytes([0; 32]),
+                    job_id: admitted.id(),
+                    method: Some("jobs.enqueue".into()),
+                    result: None,
+                    created_at: now,
+                    expires_at: now.saturating_add_ms(86_400_000),
+                })
+            })
+            .unwrap();
+        service.store.reserve(&stored, None).unwrap();
+        drop(service);
+
+        // Restart after enqueue/file completion but before its returned ID was saved.
+        let service = receipt_service(dir.path());
+        service.drain(run_id).await.unwrap();
+        let recovered = service.store.run(run_id).unwrap().unwrap();
+        assert!(recovered.pending.is_empty());
+        assert_eq!(recovered.jobs.get(key), Some(&admitted.id()));
+        assert_eq!(recovered.snapshot.report.files_enqueued, 1);
+        let counts = recovered.snapshot.report.counts.as_ref().unwrap();
+        assert_eq!(counts.files_enqueued, 1);
+        assert_eq!(counts.items_skipped_existing, 0);
+        let report = service.public_report(recovered).unwrap();
+        assert_eq!(
+            (
+                report.files_enqueued,
+                report.files_completed,
+                report.bytes_done
+            ),
+            (1, 1, bytes.len() as u64)
+        );
+        assert_eq!(std::fs::read(destination).unwrap(), bytes.to_vec());
+    }
+
+    #[test]
+    fn legacy_workflow_rows_default_to_no_retired_admission_keys() {
+        let encoded = serde_json::to_value(row()).unwrap();
+        assert!(encoded.get("retired_admission_keys").is_none());
+        let legacy: StoredRun = serde_json::from_value(encoded).unwrap();
+        assert!(legacy.retired_admission_keys.is_empty());
+    }
+
     #[test]
     fn durable_intents_and_keys_commit_together_and_stale_checkpoints_cannot_undo_pause() {
         let dir = tempfile::TempDir::new().unwrap();
@@ -2222,6 +2840,8 @@ mod tests {
         row.snapshot.report.status = RunStatus::Running;
         row.active_since = Some(store.now());
         let id = row.snapshot.report.run_id;
+        row.pending
+            .push(report_intent(id, "wf:exhausted:pending", 1));
         store.reserve(&row, None).unwrap();
         store.exhausted(id, "budget_bytes").unwrap();
         let actual = store.run(id).unwrap().unwrap();
@@ -2231,6 +2851,12 @@ mod tests {
             Some("budget_bytes")
         );
         assert!(actual.active_since.is_none());
+        assert!(actual.pending.is_empty());
+        assert!(
+            actual
+                .retired_admission_keys
+                .contains("wf:exhausted:pending")
+        );
         assert!(matches!(
             store.commit(0, &row.snapshot, &[]),
             Err(RuntimeError::CheckpointConflict)

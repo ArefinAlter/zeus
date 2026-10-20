@@ -153,9 +153,31 @@ impl RuntimePort for ControlPort<'_> {
             self.authorize(next.report.run_id, &next.report.plan_hash)
                 .await?;
         }
-        self.service
-            .store
-            .commit_with_receipt(expected, next, jobs, self.binding)
+        let projected = if self.binding.is_some() {
+            // Finish all journal reads before acquiring the workflow database write lock.
+            // Its checkpoint CAS fences a concurrent control/discovery update.
+            let mut row = self
+                .service
+                .store
+                .run(next.report.run_id)
+                .map_err(|_| runtime_fail())?
+                .ok_or_else(runtime_fail)?;
+            row.snapshot = next.clone();
+            Some(
+                self.service
+                    .public_report(row)
+                    .map_err(|_| runtime_fail())?,
+            )
+        } else {
+            None
+        };
+        self.service.store.commit_with_receipt(
+            expected,
+            next,
+            jobs,
+            self.binding,
+            projected.as_ref(),
+        )
     }
     async fn control_jobs(&self, run: RunId, action: RunAction) -> RuntimeResult<()> {
         self.service.control_jobs(run, action).await

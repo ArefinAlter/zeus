@@ -212,9 +212,9 @@ jobs:
       - name: Headless bridge tests
         working-directory: zeus
         run: cargo test --manifest-path apps/desktop/Cargo.toml --no-default-features --locked
-      - name: Bundled desktop source check
+      - name: Build bundled desktop executable
         working-directory: zeus
-        run: cargo check --manifest-path apps/desktop/Cargo.toml --all-targets --locked
+        run: cargo build --manifest-path apps/desktop/Cargo.toml --locked
       - name: Desktop Clippy
         working-directory: zeus
         run: cargo clippy --manifest-path apps/desktop/Cargo.toml --all-targets --locked -- -D warnings
