@@ -21,7 +21,8 @@ use zeus_api::methods::events::{
     SubscribeParams, SubscribeResult, UnsubscribeParams, UnsubscribeResult,
 };
 use zeus_api::methods::files::{
-    FilesListParams, FilesListResult, FilesRootsRegisterParams, FilesRootsRegisterResult,
+    FilesListParams, FilesListResult, FilesOrganizeParams, FilesOrganizeResult,
+    FilesRootsRegisterParams, FilesRootsRegisterResult, FilesUndoParams, FilesUndoResult,
 };
 use zeus_api::methods::jobs::{
     EnqueueParams, EnqueueResult, JobsControlParams, JobsControlResult, JobsGetParams,
@@ -108,6 +109,10 @@ backend! {
     approvals_decide(ApprovalsDecideParams) -> ApprovalsDecideResult;
     /// `files.list`.
     files_list(FilesListParams) -> FilesListResult;
+    /// `files.organize`: dry run by default; applying raises a `destructive_op` approval.
+    files_organize(FilesOrganizeParams) -> FilesOrganizeResult;
+    /// `files.undo`: plans the inverse of an applied operation behind a new approval.
+    files_undo(FilesUndoParams) -> FilesUndoResult;
     /// `files.roots.register` (role `service` only).
     files_roots_register(FilesRootsRegisterParams) -> FilesRootsRegisterResult;
     /// `clients.list` (admin, human-only).

@@ -11,11 +11,11 @@ use zeus_api::methods::daemon::{PingParams, PingResult};
 use zeus_api::methods::{
     ApprovalsDecide, ApprovalsGet, ApprovalsList, AuditTail, AuditVerify, ClientsAdd, ClientsList,
     ClientsRevoke, ConfigGet, ConfigSet, DaemonKillSwitch, DaemonPing, DaemonShutdown,
-    DaemonStatus, DoctorRun, EventsSubscribe, EventsUnsubscribe, FilesList, FilesRootsRegister,
-    JobsControl, JobsEnqueue, JobsGet, JobsList, JobsProbe, JobsVerify, JobsWait, LlmAuthCancel,
-    LlmAuthSignOut, LlmAuthStart, LlmAuthStatus, LlmConfigure, LlmStatus, SessionsList,
-    SessionsRequest, SessionsRevoke, WorkflowsControl, WorkflowsDryRun, WorkflowsGet,
-    WorkflowsList, WorkflowsManifest, WorkflowsPlan, WorkflowsRun,
+    DaemonStatus, DoctorRun, EventsSubscribe, EventsUnsubscribe, FilesList, FilesOrganize,
+    FilesRootsRegister, FilesUndo, JobsControl, JobsEnqueue, JobsGet, JobsList, JobsProbe,
+    JobsVerify, JobsWait, LlmAuthCancel, LlmAuthSignOut, LlmAuthStart, LlmAuthStatus, LlmConfigure,
+    LlmStatus, SessionsList, SessionsRequest, SessionsRevoke, WorkflowsControl, WorkflowsDryRun,
+    WorkflowsGet, WorkflowsList, WorkflowsManifest, WorkflowsPlan, WorkflowsRun,
 };
 use zeus_api::methods::{
     CloudAccountsConfigure, CloudAccountsList, CloudAccountsRevoke, CloudControl, CloudGet,
@@ -75,6 +75,8 @@ pub fn build_router<B: Backend>(backend: Arc<B>) -> Router {
     let router = forward!(router, backend, ApprovalsDecide, approvals_decide);
     let router = forward!(router, backend, FilesList, files_list);
     let router = forward!(router, backend, FilesRootsRegister, files_roots_register);
+    let router = forward!(router, backend, FilesOrganize, files_organize);
+    let router = forward!(router, backend, FilesUndo, files_undo);
     let router = forward!(router, backend, ClientsList, clients_list);
     let router = forward!(router, backend, ClientsAdd, clients_add);
     let router = forward!(router, backend, ClientsRevoke, clients_revoke);
@@ -155,6 +157,7 @@ mod tests {
                         | "llm.auth.sign_out"
                 )
                 && !m.name.starts_with("workflows.")
+                && !matches!(m.name, "files.organize" | "files.undo")
         }) {
             assert!(
                 !registered.contains(method.name),

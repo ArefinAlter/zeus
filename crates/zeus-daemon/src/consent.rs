@@ -41,6 +41,20 @@ struct ApprovalPreparation<'a> {
     reason_codes: &'a [String],
 }
 
+/// Daemon-computed facts of one file operation list (07 `FactsDestructiveOp`).
+pub(crate) struct DestructiveFacts {
+    pub operation_set_blake3: Hex256,
+    pub counts: serde_json::Value,
+    pub total_bytes: u64,
+    pub quarantined_count: u64,
+    pub sample: Vec<serde_json::Value>,
+    pub sample_omitted: u64,
+    /// Summary title built from the canonical directory (a measured path, not requester text).
+    pub title: String,
+    /// The list sends files to the trash.
+    pub deletes: bool,
+}
+
 /// Owns serialized approval mutations and the write-ahead audit boundary.
 pub struct ConsentManager {
     journal: Journal,
@@ -555,6 +569,47 @@ impl ConsentManager {
         self.credential(id).is_ok()
     }
 
+    /// Raise a `destructive_op` approval for one stored operation list (07 section 4.4). The approval creates no
+    /// grant; approving runs exactly the list whose hash is `operation_set_blake3`.
+    pub(crate) async fn request_destructive(
+        &self,
+        requester: &ClientIdentity,
+        facts: DestructiveFacts,
+    ) -> ApiResult<ApprovalId> {
+        let _gate = self.gate.lock().await;
+        let credential = self.credential(requester.credential_id.as_str())?;
+        let pending = self
+            .journal
+            .read(|tx| tx.approvals(Some(&[ApprovalState::Pending])))
+            .map_err(error)?;
+        self.check_caps(&pending, Some(requester.credential_id.as_str()))?;
+        let now = Timestamp::now();
+        let expires = now.saturating_add_ms(86_400_000);
+        let id = IdGenerator::new().approval_id();
+        let label = match credential.role {
+            zeus_api::ClientRole::Cli | zeus_api::ClientRole::Tui => "cli",
+            _ => "agent",
+        };
+        let mut reasons = Vec::new();
+        if facts.deletes {
+            reasons.push("files.delete");
+        }
+        reasons.push("files.move");
+        let value = serde_json::json!({"t":"zeus.approval.facts.v1","approval_id":id,"revision":1,"kind":"destructive_op",
+            "requester":{"kind":credential.kind,"role":credential.role,"client_id":requester.credential_id.as_str(),"label":label,"registered_at":credential.created_at},
+            "issued_at":now,"expires_at":expires,"allowed_scopes":[],"confirmation":{"approve":"typed_code"},
+            "reason_codes":reasons,"agent_says_blake3":null,"operation_set_blake3":facts.operation_set_blake3,"plan_id":null,
+            "counts":facts.counts,"total_bytes":facts.total_bytes,"to_trash":true,"quarantined_count":facts.quarantined_count,
+            "sample":facts.sample,"sample_omitted":facts.sample_omitted});
+        let approval: Approval = serde_json::from_value(serde_json::json!({"id":id,"kind":"destructive_op","state":"pending",
+            "allowed_scopes":[],"reason_codes":reasons,"summary":{"title":clean(&facts.title),"total_bytes":facts.total_bytes},
+            "created_at":now,"expires_at":expires,"request_hash":crate::approvals::facts_hash(&value)?,
+            "requested_by":requester.credential_id.as_str(),"revision":1,"facts":value}))
+            .map_err(|_| ApiError::internal("cannot bind file operation approval"))?;
+        self.store(&approval)?;
+        Ok(id)
+    }
+
     /// Bind one immutable cloud plan; this approval never creates a website-session grant.
     pub async fn request_cloud(
         &self,
@@ -628,11 +683,14 @@ impl ConsentManager {
             ));
         }
         let mut a = self.get(identity, p.approval_id)?;
-        if a.kind == ApprovalKind::CloudDelivery
-            && !matches!(p.channel, Surface::CliInteractive | Surface::Tui)
+        // Browser surfaces do not render these facts yet, so they fail closed (07 section 4.4).
+        if matches!(
+            a.kind,
+            ApprovalKind::CloudDelivery | ApprovalKind::DestructiveOp
+        ) && !matches!(p.channel, Surface::CliInteractive | Surface::Tui)
         {
             return Err(ApiError::human_required(
-                "cloud delivery requires a verified physical terminal",
+                "this approval requires a verified physical terminal",
             ));
         }
         let view = ApprovalView::try_from(a.clone())?;
@@ -671,6 +729,7 @@ impl ConsentManager {
                 | ApprovalKind::Handoff
                 | ApprovalKind::WorkflowPlan
                 | ApprovalKind::CloudDelivery
+                | ApprovalKind::DestructiveOp
         ) {
             return Err(ApiError::not_implemented("this approval kind"));
         }

@@ -125,9 +125,12 @@ pub struct FilesOrganizeResult {
     pub steps: Vec<FileStep>,
     /// Whether the plan was applied.
     pub applied: bool,
-    /// The approval needed to apply destructive steps.
+    /// The `destructive_op` approval a person must give before anything moves.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub approval_id: Option<ApprovalId>,
+    /// The stored operation; `files.undo` reverts it once it ran.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operation_id: Option<String>,
 }
 
 /// `files.convert` parameters.
@@ -165,6 +168,9 @@ pub struct FilesConvertResult {
 pub struct FilesUndoParams {
     /// Identifier of the operation in the undo journal.
     pub operation_id: String,
+    /// Idempotency key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idempotency_key: Option<String>,
 }
 
 /// `files.undo` result.
@@ -173,8 +179,14 @@ pub struct FilesUndoResult {
     /// True when this response replays a durable mutation receipt.
     #[serde(default)]
     pub replayed: bool,
-    /// Steps reverted.
+    /// The inverse steps, planned now and run after a person approves them.
     pub steps: Vec<FileStep>,
+    /// The `destructive_op` approval for the undo (absent when there is nothing to revert).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval_id: Option<ApprovalId>,
+    /// The undo's own operation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operation_id: Option<String>,
 }
 
 #[cfg(test)]

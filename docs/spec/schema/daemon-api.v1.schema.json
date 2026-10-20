@@ -3236,7 +3236,7 @@
       }
     },
     "FilesUndoResult": {
-      "description": "Result of files.undo.",
+      "description": "Result of files.undo. The inverse steps are planned now and run only after a person approves the destructive_op approval (07 section 4.1).",
       "type": "object",
       "required": [
         "steps",
@@ -3248,6 +3248,16 @@
           "items": {
             "$ref": "#/$defs/FileStep"
           }
+        },
+        "approval_id": {
+          "description": "The destructive_op approval for the undo; absent when there is nothing to revert.",
+          "$ref": "https://zeus.invalid/schema/common#/$defs/ApprovalId"
+        },
+        "operation_id": {
+          "description": "The undo's own operation.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
         },
         "replayed": {
           "description": "True when the result was returned from the idempotency store instead of executing the call (section 12).",
