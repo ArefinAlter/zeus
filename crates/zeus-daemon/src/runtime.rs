@@ -941,16 +941,7 @@ impl Backend for RuntimeBackend {
             self.admit()?;
         }
         let (approval, grant) = self.consent.decide(&ctx.identity, &p, evidence).await?;
-        if approval.job_id.is_some() {
-            self.engine
-                .apply_approval(zeus_engine::api::ApprovalResolution {
-                    approval: approval.clone(),
-                    grant: grant.clone(),
-                    job_id: approval.job_id,
-                })
-                .await
-                .map_err(error)?;
-        }
+        self.apply_decision(&approval, &grant).await?;
         Ok(ApprovalsDecideResult {
             replayed: false,
             approval: approval.try_into()?,

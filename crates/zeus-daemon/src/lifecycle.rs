@@ -102,6 +102,48 @@ impl RuntimeBackend {
             .map_err(error)?;
         Ok(grant)
     }
+    /// Apply a durable decision to every job it covers (07 section 4.7 rule 5). A covered job that already left
+    /// the approval, for example by being canceled, is skipped; the maintenance tick rechecks the rest.
+    pub(super) async fn apply_decision(
+        &self,
+        approval: &Approval,
+        grant: &Option<SessionGrant>,
+    ) -> ApiResult<()> {
+        let mut jobs: Vec<JobId> = approval
+            .facts
+            .as_ref()
+            .and_then(|f| f.get("transfer"))
+            .and_then(|t| t["job_ids"].as_array())
+            .map(|ids| {
+                ids.iter()
+                    .filter_map(|v| v.as_str()?.parse().ok())
+                    .collect()
+            })
+            .unwrap_or_default();
+        if jobs.is_empty() {
+            jobs.extend(approval.job_id);
+        }
+        let single = jobs.len() == 1;
+        for job_id in jobs {
+            let applied = self
+                .engine
+                .apply_approval(zeus_engine::api::ApprovalResolution {
+                    approval: approval.clone(),
+                    grant: grant.clone(),
+                    job_id: Some(job_id),
+                })
+                .await;
+            match applied {
+                Ok(()) => {}
+                Err(e) if single => return Err(error(e)),
+                Err(e) => tracing::debug!(
+                    code = %e.to_envelope().code,
+                    "a batched job no longer waits for this approval"
+                ),
+            }
+        }
+        Ok(())
+    }
     /// Run one bounded maintenance tick. Replaying terminal approvals repairs interrupted decisions.
     pub async fn maintain(&self) -> ApiResult<()> {
         let now = Timestamp::now();
