@@ -31,7 +31,11 @@ macro_rules! forward {
         let backend = Arc::clone(&$backend);
         $router.route::<$marker, _, _>(move |ctx, params| {
             let backend = Arc::clone(&backend);
-            async move { backend.$method(&ctx, params).await }
+            async move {
+                crate::consent::REQUESTER_KIND
+                    .scope(ctx.identity.kind, backend.$method(&ctx, params))
+                    .await
+            }
         })
     }};
 }
