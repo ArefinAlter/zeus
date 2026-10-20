@@ -1,6 +1,6 @@
 # Zeus project handoff
 
-Snapshot reviewed **2026-10-18**. Runtime/test baseline recorded **2026-10-16**. Audience: the maintainer and developers taking over implementation, integration and release work across the four Zeus repositories.
+Snapshot reviewed **2026-10-18**. Runtime/test baseline recorded **2026-10-16** and rerun **2026-10-18** after the continuation work. Audience: the maintainer and developers taking over implementation, integration and release work across the four Zeus repositories.
 
 Zeus has an executable pre-alpha download engine, persistent daemon, CLI/TUI, MCP stdio, browser relay, public-page workflow runtime, model adapters and cloud delivery. It is **not a released product**. Installed browser/provider acceptance, important contract/security gaps, model-to-product integration, conversion/organization and the production GUI remain unfinished. Start with the [end-to-end roadmap](../ROADMAP.md), then use the commands and discrepancy register below.
 
@@ -20,6 +20,16 @@ The app depends on nine `zeus-core` crates through sibling paths. Do not combine
 GitHub showed successful CodeRabbit statuses on all four PRs and successful Vercel preview checks on the site PR. Those statuses **do not establish Rust or browser test CI**. No tracked GitHub Actions workflows were found in the app/core baseline despite older prose claiming CI coverage. Required test/MSRV/security CI is an open task.
 
 All product source is in these original repositories. `.implementation/` is ignored local build/review/log material, not a fifth product repository or an installable source tree. Historical temporary copies there must not become a source of truth. No release/store submission was performed as part of the implementation work; a Vercel preview check is not production release acceptance.
+
+### Continuation of 2026-10-18 (uncommitted)
+
+The continuation work in the [implementation ledger](IMPLEMENTATION_STATUS.md#2026-10-18-continuation) sits as uncommitted changes on the branches above; nothing was committed or pushed. It touches three repositories, which must land together:
+
+- `zeus`: daemon, API, CLI, MCP, workflow crates, specs 01/05/07/09/10/11/12/14, the normative daemon API schema, ADR 0012, `deny.toml`, `tools/bench-daemon.mjs` and `.github/workflows/ci.yml`.
+- `zeus-core`: `ApprovalResolution.job_id` (engine), two registered policy codes (`zeus-types`), the `zeus-control` algorithms, resynchronized `spec-fixtures/` and `.github/workflows/ci.yml`.
+- `zeus-extension`: resynchronized `schema/` copies and `.github/workflows/ci.yml`.
+
+To enable CI, add the repository secret `ZEUS_CORE_TOKEN` (a fine-grained token with read-only Contents access to `ArefinAlter/zeus-core`) to `zeus`, push, confirm a green run, then mark the Linux, Windows, MSRV, contracts and deny jobs as required checks. The core and extension workflows read the public `zeus` repository and need no secret.
 
 ## Architecture and ownership
 
@@ -66,10 +76,10 @@ Ogun's architecture embeds `zeus-core` while keeping its own product state, poli
 | Public URL → local file | Daemon/CLI and API execute download, verification, provenance and recovery. Windows actual-process smoke passed. | Broad platform/origin/fault acceptance and advanced scheduling. |
 | Browser failure → rescued file | Extension, native host and daemon/core pieces execute under fixtures. | No installed Chrome/Edge/Firefox end-to-end acceptance recorded. Refresh/redirect integration is incomplete. |
 | Agent → daemon | Ten MCP tools over stdio; API events/wait and constrained cloud tool. | Host compatibility and dedicated workflow tools; optional MCP HTTP. |
-| Workflow → files | Caller-supplied plans can be sampled, validated, approved and run through the daemon API with budgets/checkpoints. | Goal-to-plan model invocation, authenticated rendering, remaining strategies and CLI/MCP workflow commands. |
-| Model configuration/auth | Provider adapters, auth flows, keyring port, policy verification and spend ledger exist. | Production caller integration, actual account/keyring validation and production policy distribution. |
+| Workflow → files | Caller-supplied plans can be sampled, validated, approved and run through the daemon API with budgets/checkpoints; since 2026-10-18 a terminal user can ask for model-drafted selectors, and `zeus workflow` drives runs. | Authenticated rendering, remaining strategies and MCP workflow tools. |
+| Model configuration/auth | Provider adapters, auth flows, keyring port, policy verification and spend ledger exist; workflow drafting is the first production caller (2026-10-18). | Further callers such as file classification, actual account/keyring validation and production policy distribution. |
 | Cloud destination | Staged/streaming/native URL-import modes with durable approvals/reconciliation and provider fixtures. | Native cloud OAuth/refresh, live providers, richer recovery/progress and archival. |
-| Files → organization/conversion | Contracts, plans and artifact primitives exist. | Actual organizer/converter/undo handlers and confined process execution. |
+| Files → organization/conversion | Since 2026-10-18: the organiser and undo, each applied only after a terminal-decided approval, and `artifacts.*` reads, lineage and ingest. | Converter and confined process execution, model-assisted classification, artifact retention/deletion/materialization through the API. |
 | Human desktop workspace | Live Rust TUI plus interactive HTML design/site previews. | Production Tauri client, scheduler, persistent inbox and trusted GUI decisions. |
 | Other agents → Zeus | Authenticated local A2A submit/get/list/cancel with restart recovery. | External SDK conformance and any additional/remote profile. |
 
@@ -160,7 +170,7 @@ Verified Zeus-owned staging survives restart without re-fetching an expired sour
 
 `max_bytes` bounds object size on each local transfer leg, not total traffic/billing. Remote receipts distinguish local SHA-256, actual provider hash and size-only evidence. Status has provider-confirmed bytes; the preview's separate source/upload meters are not wired.
 
-Current cloud capacity limits include 64 accounts, 128 nonterminal deliveries, 128 unexpired plans per requester, 1,024 plans total and 4,096 private records. Serialized state is bounded to 256 MiB with a 64 MiB update reserve and 2 MiB per record; these are not physical redb/disk-size limits. There is no archival/GC command yet. **Do not delete `cloud.redb` to clear a limit or an uncertain operation.** Preserve receipts and implement/use reviewed retention/reconciliation. See the [daemon guide](../crates/zeus-daemon/src/cloud/README.md).
+Current cloud capacity limits include 64 accounts, 128 nonterminal deliveries, 128 unexpired plans per requester, 1,024 plans total and 4,096 private records. Serialized state is bounded to 256 MiB with a 64 MiB update reserve and 2 MiB per record; these are not physical redb/disk-size limits. Since 2026-10-18, retention runs automatically (finished deliveries after 30 days, expired unused plans, receipts a week after their delivery finished; uncertain operations are kept). **Do not delete `cloud.redb` to clear a limit or an uncertain operation.** Preserve receipts and implement/use reviewed retention/reconciliation. See the [daemon guide](../crates/zeus-daemon/src/cloud/README.md).
 
 ## State and recovery
 
@@ -184,21 +194,23 @@ After a crash, restart with the same reviewed binaries, configuration and state,
 
 ## Recorded validation evidence
 
-The following are the **October 16 implementation results**, reviewed for this handoff, not a claim that the suites were rerun on October 18. Synthetic credentials and loopback fixtures were used; live browser/cloud/model accounts were not exercised.
+Rows dated 2026-10-18 were rerun after the continuation work; the others are the **October 16 implementation results**, reviewed for this handoff. Synthetic credentials and loopback fixtures were used; live browser/cloud/model accounts were not exercised.
 
 | Check | Result and scope |
 | --- | --- |
-| App workspace, all features | **400 passed**, zero failed. Includes cloud tests below; do not add them again to the total. |
+| App workspace, all features | **437 passed** on 2026-10-18 (400 on October 16), zero failed. Includes cloud tests below; do not add them again to the total. |
+| App workspace on the declared MSRV | `cargo +1.90.0 check --workspace --all-features --locked` passed on 2026-10-18. |
 | Cloud provider library | **25 tests**, including native HTTP and real child-process fixtures; no live providers. |
-| Daemon cloud service | **13 regressions**, including authorization, recovery, cancellation, staging, retention and cleanup. |
-| Core full runtime baseline | **273 passed**, one intentionally ignored documentation example; includes 20 engine integration tests. This predates the cloud contract change. |
+| Daemon cloud service | **14 regressions** on 2026-10-18, including authorization, recovery, cancellation, staging, cleanup and the automatic retention pass. |
+| Core full runtime | **284 passed** on 2026-10-18 after the `zeus-control` algorithms, one intentionally ignored documentation example; includes 20 engine integration tests. Strict Clippy and formatting passed. |
 | Core cloud-related types/session/conformance | **123 passed**; generated schema and 195 fixture files synchronized. This is the focused rerun, not another full core baseline. |
-| Rust style/static checks | App all-target/all-feature strict Clippy and format passed; preceding core runtime strict checks passed, with current core formatting/conformance checked. |
-| Extension | **321 passed across 22 files**; TypeScript, lint/format, Chrome/Firefox development/store bundles and repository checks passed. |
+| Rust style/static checks | App and core all-target/all-feature strict Clippy and formatting passed on 2026-10-18. |
+| Extension | **321 passed across 22 files** on 2026-10-18; TypeScript, lint/format, Chrome/Firefox development/store bundles and repository checks passed. |
 | Contracts | 244 JSON documents checked, four partial fragments skipped, 15 specs scanned; cloud drift check passed; ten-tool MCP catalogue checked at 23,991 bytes. |
 | Windows actual processes | **14 smoke checkpoints passed**, including real download, verification, idempotency, audit, restart and abrupt owned-child recovery. |
 | Site and UI | Recorded 25-page site build and 21 browser interaction groups; desktop/390px mobile, no external requests/CSP errors in that run. Preview behavior only. |
-| Dependency/license/advisory gate | `cargo deny` **not run** in the recorded environment because it was not installed. |
+| Loopback benchmark | Release build, `tools/bench-daemon.mjs`, 2026-10-18, Ryzen 7 5800X, Windows 11: 512 MiB at 1/4/16 connections **34.1/45.7/39.4 MiB/s** on NVMe, **12.3/10.7/7.0 MiB/s** on a SATA HDD; about 15 MiB working set idle and 26 MiB with ten active jobs. Reports in `target/bench-runs/` (machine-local). |
+| Dependency/license/advisory gate | `cargo deny check` **passed** for app and core on 2026-10-18 (cargo-deny 0.20.2) after updating rustls to 0.23.46; two documented ignores in the app `deny.toml`. |
 
 The crash smoke interrupted an 8,388,608-byte file after 4,194,304 committed bytes, resumed from that offset with the original validator, and matched the final SHA-256. It does not prove every power-loss point or filesystem.
 
@@ -268,15 +280,15 @@ Treat these as explicit follow-up work. Normative prose still governs contracts;
 
 | Priority | Finding | Source and next action |
 | --- | --- | --- |
-| Before alpha | Emergency stop removes authority even if audit append fails, but deferred persistence/replay of the failed audit record was not found. | [lifecycle.rs](../crates/zeus-daemon/src/lifecycle.rs), [spec 12](spec/12-security-invariants.md). Complete retained emergency audit evidence and failure/restart tests. |
+| Resolved 2026-10-18 | Emergency stop removes authority even if audit append fails; the record is now retained and replayed. | [deferred_audit.rs](../crates/zeus-daemon/src/deferred_audit.rs), [spec 12](spec/12-security-invariants.md). Failure and restart tests added. |
 | Before alpha | Parent-directory/symlink/reparse races and platform trust/IPC/keyring acceptance remain. | [security invariants](spec/12-security-invariants.md). Publish supported combinations only after adversarial and installed-platform tests. |
 | Before alpha | Real browser rescue, full fault matrix, rescue corpus, performance and cargo-deny gates remain unrecorded. | [roadmap phase 1](../ROADMAP.md#phase-1-working-mvp-and-public-alpha). Unit tests cannot replace these results. |
-| Contract review | Some configuration is parsed but ineffective: `scheduler.segment_size_mib`, `approvals.max_pending`, `approvals.decisions_per_minute`, `log_filter`; `--profile` is unused. | [config.rs](../crates/zeus-daemon/src/config.rs), [runtime.rs](../crates/zeus-daemon/src/runtime.rs), [CLI](../crates/zeus-cli/src/cli.rs). Wire and test or reject/document the settings. Current logging uses `ZEUS_LOG`. |
+| Mostly resolved 2026-10-18 | `approvals.max_pending`, `approvals.decisions_per_minute`, `log_filter` and `--profile` now take effect. `scheduler.segment_size_mib` is still not used by the engine; `config.set` refuses it and startup warns. | [config.rs](../crates/zeus-daemon/src/config.rs), [endpoint.rs](../crates/zeus-api/src/endpoint.rs). Real segment planning is an engine change (core `engine.rs`). |
 | Contract review | The engine's nominal per-host connection bound uses a shared semaphore; concurrency is static and commit units are submitted individually. Authenticated standalone probe and URL/auth refresh integration remain incomplete. | Core `crates/zeus-engine/src/engine.rs`. Do not present daemon-wide batching, true host fairness or authenticated probes as complete. |
-| Contract review | 17 active `NotImplemented` functions remain in advanced core control modules; unused error variants elsewhere are not executable stubs. | Core `estimate.rs`, `mirror.rs`, `hedge.rs`, `math.rs`, `cusum.rs`. Implement or explicitly defer advanced algorithms; Linux reflink exists, other platforms/acceptance remain partial. |
-| Contract review | Spec 10 still lists bridge/CLI/pin/index implementation as missing; architecture says no app redb dependencies and only daemon durable state. | [spec 10](spec/10-a2a.md), [architecture](ARCHITECTURE.md), [actual bridge guide](../crates/zeus-a2a-bridge/README.md). Reconcile historical prose with the bounded local implementation. |
-| Phase 2 | `ModelService::complete` has no production caller; planning validates a supplied candidate, not an autonomous model-generated goal. | [models.rs](../crates/zeus-daemon/src/models.rs), [workflows.rs](../crates/zeus-daemon/src/workflows.rs). Wire bounded model requests into product flows with consent/accounting. |
-| Phase 2 | Workflow CLI/MCP operations, organizer/convert/undo and client-administration routes remain absent despite some schemas/policy declarations. | [routes](../crates/zeus-daemon/src/routes.rs), [MCP catalogue](../crates/zeus-mcp/src/catalogue.rs), [CLI tree](../crates/zeus-cli/src/cli.rs). Follow roadmap C02/W01–W06. |
+| Resolved 2026-10-18 | The 17 `NotImplemented` functions of the core control modules are implemented and tested (windowed rate, Kalman, ETA band, P-squared quantile and hedge trigger, UCB1, Thompson and sliding-window UCB, reliability formulas, CUSUM). The engine scheduler does not call the advanced selectors yet. | Core `estimate.rs`, `mirror.rs`, `hedge.rs`, `math.rs`, `cusum.rs`. Linux reflink exists; other platforms/acceptance remain partial. |
+| Resolved 2026-10-18 | Spec 10 and ARCHITECTURE now describe the running bridge, the app-owned stores and the A2A index. | [spec 10](spec/10-a2a.md), [architecture](ARCHITECTURE.md), [ADR 0012](adr/0012-app-owned-stores-beside-the-journal.md) (Proposed; needs review). |
+| Partly resolved 2026-10-18 | Workflow selector drafting now calls the model (human terminal only, structure-only prompt). Classification has no caller yet. | [workflow_draft.rs](../crates/zeus-daemon/src/workflow_draft.rs). |
+| Partly resolved 2026-10-18 | Workflow and file CLI commands, `files.organize`/`files.undo` and `clients.*` exist. `files.convert` and MCP workflow/file tools remain; the MCP tools need a decision on the spec 06 catalogue budget. | [routes](../crates/zeus-daemon/src/routes.rs), [MCP catalogue](../crates/zeus-mcp/src/catalogue.rs). |
 | Phase 2 | Native cloud OAuth, live provider validation, policy-signing distribution and comprehensive artifact/cloud retention UX remain. | [cloud guide](../crates/zeus-daemon/src/cloud/README.md), [model spec](spec/09-llm-provider.md). Obtain real operational inputs and record acceptance separately from fixtures. |
 | Phase 3 | Web preview simulates inbox/packages/schedules/approvals/cloud; no production Tauri, GUI trust channel or MCP App views. | [design](design/download-workspace.md). Connect actual capabilities before changing simulation labels. |
 

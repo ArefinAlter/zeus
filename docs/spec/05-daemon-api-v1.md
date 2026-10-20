@@ -1357,7 +1357,7 @@ sequenceDiagram
 
 ## 18. Differences from the draft code and other documents
 
-Decided while writing this document; the code and the named documents are to follow.
+Decided while writing this document; the code and the named documents are to follow. Implemented since (2026-10-18): the `service` kind, role and `files.roots.register` permission with human-capable checks instead of kind ordering; `clients.list`, `clients.add`, `clients.revoke` (revocation closes live connections and withdraws pending approvals); `files.roots.register`; the section 7.5 visibility rules for agents and services; the four `artifacts.*` methods of section 9.13 with capability `artifacts`; list parameters with `limit` and `cursor` at the top level (00 section 10). The rate buckets of section 13.2 are enforced with their defaults (the router applies `mutating`, `read`, `probe` and `session_request`; the daemon applies `decide` and `admin`). Capability gating at authorisation step 4 (with `idempotency_key` and `since_seq` as gated parameters) and the configurable `api.rate_limits.*` values followed later the same day. Still to follow from this table: the narrowed host credential.
 
 | Item | Decision | Follow-up |
 |---|---|---|
