@@ -260,6 +260,10 @@ impl RuntimeBackend {
     pub fn credentials(&self) -> Arc<crate::provision::FileCredentialStore> {
         self.credentials.clone()
     }
+    /// Share the router's token buckets, so enqueued jobs that raise a session prompt spend `session_request`.
+    pub fn share_rate_limiter(&self, rates: Arc<zeus_api::rate::RateLimiter>) {
+        self.consent.share_rate_limiter(rates);
+    }
     /// Bind the configuration file selected by startup flags/environment.
     pub fn set_config_path(&self, path: PathBuf) -> ApiResult<()> {
         self.config_path.set(path).map_err(|_| internal())
@@ -1078,17 +1082,28 @@ impl Backend for RuntimeBackend {
             return Err(ApiError::invalid_params("audit limit must be 1 to 100"));
         }
         let audit = self.audit.clone();
+        let after = p.after_seq.unwrap_or(0);
+        // A service sees the records its own credential caused (05 section 7.5). The filter runs inside the scan,
+        // so its newest records are never crowded out by other clients' newer ones.
         let (records, head) = tokio::task::spawn_blocking(move || {
-            audit.tail(p.after_seq.unwrap_or(0), limit as usize)
+            let mut records = std::collections::VecDeque::new();
+            let head = audit.visit_records(|record| {
+                if record.seq > after && scope.audit(record.actor.client_id.as_deref()) {
+                    records.push_back(record.clone());
+                    if records.len() > limit as usize {
+                        records.pop_front();
+                    }
+                }
+                Ok(())
+            })?;
+            Ok::<_, zeus_verify::VerifyError>((records, head))
         })
         .await
         .map_err(|_| internal())?
         .map_err(error)?;
         Ok(AuditTailResult {
-            // A service sees the records its own credential caused (05 section 7.5).
             records: records
                 .into_iter()
-                .filter(|r| scope.audit(r.actor.client_id.as_deref()))
                 .map(serde_json::to_value)
                 .collect::<Result<_, _>>()
                 .map_err(|_| internal())?,
