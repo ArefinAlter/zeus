@@ -49,8 +49,12 @@ retain their staging; existing downloaded user files are never cleanup candidate
 Current bounded retention is deliberate: at most 64 accounts, 128 nonterminal deliveries, 128
 unexpired plans per requester and 1,024 plans overall. The private store permits 4,096 records,
 2 MiB per serialized record and 256 MiB total serialized state, reserving 64 MiB for updating existing
-operations. State and idempotency receipts are retained rather than automatically expired; reaching a
-limit returns `cloud.capacity_exceeded`. There is no automatic archival/garbage-collection command yet.
+operations. Reaching a limit returns `cloud.capacity_exceeded`. Retention runs at startup and then at most hourly, in one
+write transaction, and is audited as `cloud.retention`: a completed, failed or canceled delivery goes 30 days
+after its last change once its staging file is gone and no cleanup is pending; a plan goes once it expired
+without a live delivery; an idempotency receipt goes 7 days after it was written once the delivery it names is
+gone or finished (receipts from older stores are stamped on the first pass and age from then). `remote_pending`,
+`reconciling` and `remote_cancellation_unavailable` deliveries, and their receipts, are never removed.
 Do not delete the private database to clear an uncertain operation: inspect the provider's reserved
 object and preserve the receipt for reconciliation. These logical bounds do not cap redb's physical
 file allocation or transient filesystem space.

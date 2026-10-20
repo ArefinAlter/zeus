@@ -73,6 +73,9 @@ pub(super) struct Delivery {
 pub(super) struct Receipt {
     pub hash: String,
     pub result: serde_json::Value,
+    /// When the receipt was written; older stores lack it until the first retention pass stamps it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<Timestamp>,
 }
 pub(super) struct Store(Database);
 impl Store {
@@ -189,6 +192,7 @@ impl Store {
             let bytes = serde_json::to_vec(&row).map_err(|_| fail())?;
             insert_record(&mut table, &mut limits, row_key.as_str(), bytes.as_slice())?;
             let bytes = serde_json::to_vec(&Receipt {
+                created_at: Some(Timestamp::now()),
                 hash,
                 result: serde_json::to_value(&result).map_err(|_| fail())?,
             })
@@ -228,6 +232,112 @@ impl Store {
         Ok(result)
     }
 }
+/// What one retention pass removed (and how many old receipts it first stamped with a time).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(super) struct Pruned {
+    pub deliveries: u64,
+    pub plans: u64,
+    pub receipts: u64,
+    pub stamped: u64,
+}
+
+impl Store {
+    /// Retention (roadmap D05): finished history ages out, live evidence never does. A delivery goes only when it
+    /// is completed, failed or canceled, its staging file is gone, no cleanup is pending and it has not changed
+    /// for `terminal_ms`; `remote_pending`, `reconciling` and `remote_cancellation_unavailable` are never
+    /// removed. A plan goes once it expired without a live delivery. An idempotency receipt goes `receipt_ms`
+    /// after it was written, once the delivery it names is gone or finished. One write transaction.
+    pub fn prune(
+        &self,
+        now: Timestamp,
+        terminal_ms: u64,
+        receipt_ms: u64,
+        staging: &Path,
+    ) -> ApiResult<Pruned> {
+        let older = |at: Timestamp, ms: u64| at.saturating_add_ms(ms) <= now;
+        let mut tx = self.0.begin_write().map_err(|_| fail())?;
+        tx.set_durability(redb::Durability::Immediate)
+            .map_err(|_| fail())?;
+        let mut pruned = Pruned::default();
+        {
+            let mut table = tx.open_table(RECORDS).map_err(|_| fail())?;
+            let mut limits = tx.open_table(LIMITS).map_err(|_| fail())?;
+            let mut rows = Vec::new();
+            for entry in table.iter().map_err(|_| fail())? {
+                let (k, v) = entry.map_err(|_| fail())?;
+                rows.push((k.value().to_owned(), v.value().to_vec()));
+            }
+            // delivery id -> (finished, removable now)
+            let mut deliveries = BTreeMap::new();
+            for (key, bytes) in &rows {
+                if let Some(id) = key.strip_prefix("delivery:") {
+                    let row: Delivery = serde_json::from_slice(bytes).map_err(|_| fail())?;
+                    let finished = terminal(row.view.state);
+                    let removable = finished
+                        && !row.view.cleanup_pending
+                        && older(row.view.updated_at, terminal_ms)
+                        && !staging.join(format!("{id}.part")).exists();
+                    deliveries.insert(id.to_owned(), (finished, removable));
+                }
+            }
+            let live = |id: &str| deliveries.get(id).is_some_and(|(_, removable)| !removable);
+            let mut remove = Vec::new();
+            let mut stamp = Vec::new();
+            for (key, bytes) in &rows {
+                if let Some(id) = key.strip_prefix("delivery:") {
+                    if deliveries.get(id).is_some_and(|(_, removable)| *removable) {
+                        remove.push((key.clone(), bytes.len()));
+                        pruned.deliveries += 1;
+                    }
+                } else if key.starts_with("plan:") {
+                    let plan: Plan = serde_json::from_slice(bytes).map_err(|_| fail())?;
+                    if plan.view.expires_at <= now && !live(&plan.view.delivery_id) {
+                        remove.push((key.clone(), bytes.len()));
+                        pruned.plans += 1;
+                    }
+                } else if key.starts_with("receipt:") {
+                    let mut receipt: Receipt = serde_json::from_slice(bytes).map_err(|_| fail())?;
+                    let Some(created) = receipt.created_at else {
+                        receipt.created_at = Some(now);
+                        stamp.push((
+                            key.clone(),
+                            serde_json::to_vec(&receipt).map_err(|_| fail())?,
+                        ));
+                        continue;
+                    };
+                    let names = receipt.result["delivery"]["delivery_id"]
+                        .as_str()
+                        .or_else(|| receipt.result["plan"]["delivery_id"].as_str());
+                    let settled = names
+                        .is_none_or(|id| deliveries.get(id).is_none_or(|(finished, _)| *finished));
+                    if older(created, receipt_ms) && settled {
+                        remove.push((key.clone(), bytes.len()));
+                        pruned.receipts += 1;
+                    }
+                }
+            }
+            let mut freed = 0u64;
+            for (key, size) in &remove {
+                table.remove(key.as_str()).map_err(|_| fail())?;
+                freed = freed.saturating_add(*size as u64);
+            }
+            let used = limits
+                .get("bytes")
+                .map_err(|_| fail())?
+                .map_or(0, |v| v.value());
+            limits
+                .insert("bytes", used.saturating_sub(freed))
+                .map_err(|_| fail())?;
+            for (key, value) in &stamp {
+                insert_record(&mut table, &mut limits, key, value)?;
+                pruned.stamped += 1;
+            }
+        }
+        tx.commit().map_err(|_| fail())?;
+        Ok(pruned)
+    }
+}
+
 pub(super) fn encoded<T: Serialize>(key: String, value: &T) -> ApiResult<(String, Vec<u8>)> {
     Ok((key, serde_json::to_vec(value).map_err(|_| fail())?))
 }
