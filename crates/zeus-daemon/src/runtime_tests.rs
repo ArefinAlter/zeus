@@ -504,6 +504,34 @@ async fn service_clients_are_confined_to_their_roots_jobs_and_records() {
             .iter()
             .all(|r| r["actor"]["client_id"] == service.identity.credential_id.as_str())
     );
+    // Newer records of other clients never crowd out the service's own.
+    for _ in 0..3 {
+        zeus_verify::audit::AuditSink::append(
+            backend.audit.as_ref(),
+            zeus_verify::audit::AuditEntry::new(
+                Timestamp::now(),
+                agent.identity.action_actor(),
+                "tool.call",
+                zeus_verify::audit::AuditOutcome::Ok,
+            ),
+        )
+        .unwrap();
+    }
+    let newest = backend
+        .audit_tail(
+            &service,
+            AuditTailParams {
+                limit: Some(1),
+                after_seq: None,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(newest.records.len(), 1);
+    assert_eq!(
+        newest.records[0]["actor"]["client_id"],
+        service.identity.credential_id.as_str()
+    );
 
     // Revocation withdraws its pending requests, deactivates its roots and ends authentication.
     let pending = backend
