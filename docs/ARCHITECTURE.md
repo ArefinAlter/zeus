@@ -38,9 +38,9 @@ flowchart LR
 
 Process rules:
 
-1. `zeusd` is the only Zeus process with durable state, and the only process of Zeus or Ogun that holds session material. It has **one** listener, the local IPC endpoint (ADR 0002, ADR 0010).
+1. `zeusd` is the only process of Zeus or Ogun that holds session material, and the only owner of the transfer journal. It has **one** listener, the local IPC endpoint (ADR 0002, ADR 0010). Its app services keep their own stores beside the journal (ADR 0012). The optional A2A bridge is the one other process with durable state, its task index.
 2. Everything else is a client of the daemon API: `zeus` (CLI, TUI, `zeus mcp`), `zeus-native-host`, future GUI, bridge processes.
-3. The binaries are `zeus`, `zeusd` and `zeus-native-host`. `zeus daemon start` launches `zeusd`; the installer registers `zeusd` for per-user autostart.
+3. The binaries are `zeus`, `zeusd` and `zeus-native-host`. `zeus daemon start` launches `zeusd`. Per-user autostart registration by an installer is a release task (roadmap R03); nothing registers it today.
 
 ## 2. Crate map
 
@@ -95,19 +95,21 @@ flowchart TD
 | Crate | Kind | Responsibility | Heavy dependencies |
 |---|---|---|---|
 | `zeus-api` | lib | JSON-RPC 2.0 envelope, NDJSON codec, method catalogue with typed params and results, client kinds and permissions, error mapping to the 00 envelope, endpoint naming and discovery, challenge-response authentication, `Client` and `Server` frameworks, state and config path resolution. | interprocess, tokio |
-| `zeus-daemon` | lib + `zeusd` | The `Backend` trait (one method per MVP API method) and its routing onto a `zeus_api::Router`; the human-decision rules (`approvals`: request-hash binding, scope rules, expiry, rate limit); first-run provisioning (IPC secret, credentials, `zeusd init`); TOML configuration; the seam for the native-messaging endpoint (`nm.frame`). The engine adapter, workflow runner, LLM router wiring, startup recovery and service installation are later tasks. | core crates, reqwest via zeus-llm |
+| `zeus-daemon` | lib + `zeusd` | The `Backend` trait and its routing onto a `zeus_api::Router`; the runtime backend over the engine and journal with startup recovery; human-decision rules and the durable consent store; executable trust and terminal evidence; provisioning and the credential index (`clients.*`, service roots); visibility scoping; the browser broker for `nm.frame`; the workflow runner and model drafting; the model service; cloud orchestration; the file organiser with undo; the audit and provenance outbox. OS service installation is a release task. | core crates, redb (ADR 0012), reqwest via zeus-llm |
+| `zeus-cloud` | lib | Explicit cloud delivery adapters (Google Drive, Yandex Disk, Baidu Netdisk, configured rclone remotes), provider capabilities, private checkpoints and the keyring credential port. The daemon owns approvals, account revisions and orchestration (14). | reqwest, keyring (feature) |
 | `zeus-mcp` | lib | The `zeus_<verb>` tools, resources and prompts (rmcp). A daemon client with an agent credential. Streamable HTTP behind feature `http`. | rmcp |
 | `zeus-cli` | lib + `zeus` | clap command tree, output rendering (human, JSON, NDJSON), exit codes, trust prompt on the controlling terminal, the ratatui TUI (`tui` module), `zeus mcp`, `zeus native-host`. | clap, ratatui |
 | `zeus-native-host` | lib + `zeus-native-host` | Native-messaging relay: verifies which extension launched it from `argv`, enforces frame limits, relays frames to the daemon; install and uninstall of host manifests (registry on Windows, files elsewhere). | winreg (Windows) |
 | `zeus-workflow` | lib | Plan IR v0, expression language, validator, dry-run planner and estimators. Heavy extraction engines behind feature `runtime`. | scraper, jsonpath-rust, regex (feature `runtime`) |
 | `zeus-llm` | lib | Provider ladder, `LlmProvider` trait, privacy tiers and redaction, spend ledger, signed policy manifest verification, OpenRouter PKCE helper, keyring abstraction. Network and OS keyring behind features `http` and `os-keyring`. | reqwest, keyring (features) |
-| `zeus-a2a` | lib | Agent Card types, job to A2A task mapping. Types only; the HTTP endpoint is a phase-2 bridge. | none |
+| `zeus-a2a` | lib | Agent Card types, job to A2A task mapping. Types only. | none |
+| `zeus-a2a-bridge` | lib | The opt-in loopback A2A bridge (`zeus a2a`): a separate process with its own agent credential, per-peer bearer tokens and a durable task index; submit, get, list and cancel for file downloads (10). | axum, redb (ADR 0012) |
 
 Layering rules (enforced by review and by `cargo tree` checks in CI):
 
 - Wire-type crates (`zeus-workflow`, `zeus-llm`, `zeus-a2a`) never depend on `zeus-api`. `zeus-api` depends on the first two with their heavy features **disabled**, so a thin client does not link scraping or HTTP stacks.
 - Only `zeus-daemon` depends on `zeus-engine`, `zeus-journal`, `zeus-fs`, `zeus-verify`, `zeus-http` and `zeus-control`. Clients never link the engine.
-- No crate in this repository depends on `redb` (ADR 0005).
+- Only `zeus-daemon`, `zeus-llm` and `zeus-a2a-bridge` depend on `redb`, each for its own store; none opens the engine journal (ADR 0005, ADR 0012).
 - `zeus-core` has no dependency on this repository.
 
 ## 3. Trust boundaries
@@ -208,7 +210,7 @@ sequenceDiagram
   C->>D: any permitted method
 ```
 
-Before `daemon.authenticate` succeeds every other method fails with `api.not_authenticated` (class `unauthenticated`). `daemon.hello` follows 00 section 4: the first message uses the lowest protocol version, the daemon answers with the highest common one and the intersection of capabilities, or `api.version_unsupported` with `details.supported`. One connection serves one authenticated principal; there is no re-authentication.
+Before `daemon.authenticate` succeeds every other method fails with `api.not_authenticated` (class `unauthenticated`). `daemon.hello` follows 00 section 4: the first message uses the lowest protocol version, the daemon answers with the highest common one and the intersection of capabilities, or `api.version_unsupported` with `details.supported`. A gated method or parameter outside the negotiated set fails with `api.capability_missing` (05 section 8.2). One connection serves one authenticated principal; there is no re-authentication.
 
 ### 5.3 Client kinds, roles, permissions
 
@@ -219,13 +221,13 @@ Before `daemon.authenticate` succeeds every other method fails with `api.not_aut
 | `admin` | `zeus` on a tty with the admin credential | Everything plus `daemon.shutdown` and credential management. |
 | `service` | First-party programs that use `zeusd` unattended; today only Ogun's `ogund` (ADR 0011) | The agent ceiling plus `files.roots.register`. Never human: everything human-only is refused exactly as for `agent`. |
 
-Roles describe the concrete client: `cli`, `tui`, `gui`, `native_host`, `mcp`, `a2a`, `service`, `embedded`, `test`. A credential fixes `(kind, role, permissions)`; the client cannot claim more in `daemon.hello` (the claimed role must equal the credential's, else the single authentication attempt fails). The daemon never infers kind from the claimed name. A role caps the kind a credential may hold: `mcp` and `a2a` at `agent`, `service` at `service`, `tui`, `gui` and `native_host` at `human`, `cli`, `embedded` and `test` at `admin`. A credential may narrow its permissions, never widen them beyond its kind's defaults (plus `nm.relay` for `native_host`).
+Roles describe the concrete client: `cli`, `tui`, `gui`, `native_host`, `mcp`, `a2a`, `service`, `embedded`, `test`. A credential fixes `(kind, role, permissions)`; the client cannot claim more in `daemon.hello` (the claimed role must equal the credential's, else the single authentication attempt fails). The daemon never infers kind from the claimed name. A role fixes the kinds a credential may hold (05 section 7.2): `mcp` and `a2a` only `agent`; `service` only `service`; `tui` and `gui` `agent` or `human`; `native_host` only `human`; `cli` and `embedded` `agent`, `human` or `admin`; `test` any. Kinds are not ordered: human-only checks test for a human-capable kind (`human`, `admin`), never compare kinds. A credential may narrow its permissions, never widen them beyond its kind's defaults (plus `nm.relay` for `native_host`).
 
 `zeusd init` (and `zeus daemon install`) provisions three credential files, owner-only, in `<state>/credentials/`: `cli.token` (kind `admin`, role `cli`, used by `zeus` and the TUI), `agent.token` (kind `agent`, role `mcp`, used by `zeus mcp` and bridges) and `host.token` (kind `human`, role `native_host`, used by `zeus-native-host`), plus the IPC secret `<state>/ipc.secret`. The daemon stores only a verifier derived from each token (`BLAKE3 derive_key`), never the token. No `service` credential exists by default: a human creates one with `zeus clients add --kind service --name <name>` (admin credential, tty), which writes `<state>/credentials/<name>.token` and prints where to point the service. Session use by a service client is bounded by grants that a human created on a trust surface. Every use is audited with the service's client id, and service clients have their own rate limits. These files are readable by any process of the same OS user: kinds separate *kinds of client*, they do not defend against same-user code, which is why a decision also needs channel evidence (ADR 0007).
 
 Permissions (`Permission`, dotted lowercase): `jobs.read`, `jobs.write`, `jobs.control`, `events.read`, `sessions.read`, `sessions.request`, `sessions.revoke`, `approvals.read`, `approvals.decide`, `files.read`, `files.write`, `workflows.plan`, `workflows.run`, `audit.read`, `config.read`, `config.write`, `llm.read`, `llm.configure`, `daemon.read`, `daemon.admin`, `kill_switch`, `nm.relay`, `files.roots.register`. Each kind has a default set (`ClientKind::default_permissions`); a credential may be narrowed, never widened beyond its kind. The method policy table in `zeus_api::policy` is the single source for which method needs which permission, whether it mutates, whether it is human-only and whether it is MVP or later.
 
-Agent and service visibility is scoped: such a client sees only the approvals it caused (`requested_by` equals its client id) and never another client's idempotency keys.
+Agent and service visibility is scoped (05 section 7.5): such a client sees only the approvals it caused (`requested_by` equals its client id) and never another client's idempotency keys. A service additionally sees only its own jobs, files under its registered roots, grants its approvals created or that are bound to its jobs, and audit records it caused; jobs it enqueues land in its roots. An entity outside the view answers `api.not_found`.
 
 ### 5.4 Method catalogue
 
@@ -239,14 +241,14 @@ MVP unless marked later.
 | `events` | `subscribe` (since_seq, type filter, job filter, progress interval), `unsubscribe` |
 | `sessions` | `list` (grants and lease counts, never material), `request` (raises an approval, never blocks on it), `revoke` (human) |
 | `approvals` | `list`, `get`, `decide` (human, channel evidence, request hash) |
-| `files` | `list`, `roots.register` (service: register a write root it owns, inside the user's allowed roots, so jobs it enqueues land there); later `organize` (dry run default), `convert`, `undo` |
+| `files` | `list`, `roots.register` (service: register a write root it owns, inside the user's allowed roots, so jobs it enqueues land there), `organize` (dry run default; applying raises a `destructive_op` approval and runs only the approved operation list), `undo` (the inverse, behind its own approval); later `convert` |
 | `audit` | `tail`, `verify` |
 | `config` | `get`, `set` (human) |
 | `doctor` | `run` |
 | `nm` | `frame` (notification both ways, role `native_host` only) |
 | `workflows` | later: `plan`, `validate`, `dry_run`, `run`, `get`, `list`, `control`, `manifest` |
 | `llm` | later: `status`, `configure` (human) |
-| `clients` | later: `list`, `add` (admin; the only way to create a `service` credential), `revoke` (admin) |
+| `clients` | `list`, `add` (admin; the only way to create a `service` credential), `revoke` (admin; closes the credential's connections and withdraws its pending approvals) |
 | `artifacts` | later: `get`, `list`, `lineage`, `ingest` over the Zeus artifact store (spec 13); every record returned is an export form with privacy applied; `ingest` mutates and takes an `idempotency_key` |
 
 Server-to-client notifications: `events.event` (`{subscription_id, event}`), `events.lagged` (`{subscription_id, dropped, resume_from_seq}`), `daemon.stopping`, `nm.frame`.
@@ -320,7 +322,7 @@ Crate `zeus-workflow`. Plans are JSON documents (`plan_version: 0`), identified 
 - **Pagination strategies.** `rel_next` (Link header or rel=next), `page_param` with bounds, `offset_limit`, `cursor` from a JSON path, `next_selector`, `infinite_scroll` (browser only), `date_range`.
 - **Selectors.** `css`, `json_path`, `regex`, later `xpath`; attribute or text extraction; URL resolution against the page URL.
 - **Expressions are not code.** The only expression form is a template: literals and `{field}` or `{field|filter|filter:arg}` with a closed filter set (`lower`, `upper`, `trim`, `slug`, `truncate:N`, `default:TEXT`, `strip_ext`). No loops, no conditionals, no calls, no I/O; length and filter-count limits are enforced by the validator.
-- **Lifecycle.** `workflows.plan` returns page samples plus the plan JSON Schema (the host agent writes the selectors); the candidate plan is **validated against the samples** (a selector matching zero or too many nodes is rejected) before any approval; `workflows.dry_run` produces the sample, collisions, estimates with uncertainty bands and robots or terms-of-service warnings; `workflows.run` needs an approval of kind `workflow_plan` bound to the plan hash; runs checkpoint and resume, with drift detection hooks.
+- **Lifecycle.** `workflows.plan` returns page samples plus the plan JSON Schema (the host agent writes the selectors); the candidate plan is **validated against the samples** (a selector matching zero or too many nodes is rejected) before any approval; `workflows.dry_run` produces the sample, collisions, estimates with uncertainty bands and robots or terms-of-service warnings; `workflows.run` needs an approval of kind `workflow_plan` bound to the plan hash; runs checkpoint and resume, with drift detection hooks. A person at a verified terminal may instead ask the configured model to draft the selectors (`draft`): the model sees text-free page outlines and proposes only the `extract` member, the daemon fixes domains, budgets, pace and destination and validates the result like any candidate (09).
 
 ## 9. Design for spec 09: LLM provider ladder
 
