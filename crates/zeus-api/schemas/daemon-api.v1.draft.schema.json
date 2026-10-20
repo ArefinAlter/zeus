@@ -643,6 +643,13 @@
     "ApprovalsListParams": {
       "description": "`approvals.list` parameters.",
       "properties": {
+        "cursor": {
+          "description": "Opaque cursor from a previous result. Valid only for the same method and filters.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "kind": {
           "anyOf": [
             {
@@ -654,10 +661,14 @@
           ],
           "description": "Only this kind."
         },
-        "page": {
-          "$ref": "#/$defs/PageRequest",
-          "default": {},
-          "description": "Paging."
+        "limit": {
+          "description": "Page size. Absent: 50. Values above 100 are clamped to 100; 0 is invalid.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
         },
         "state": {
           "anyOf": [
@@ -3258,6 +3269,13 @@
     "FilesListParams": {
       "description": "`files.list` parameters.",
       "properties": {
+        "cursor": {
+          "description": "Opaque cursor from a previous result. Valid only for the same method and filters.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "dir": {
           "description": "A directory inside a write root. Absent: the default root.",
           "type": [
@@ -3270,10 +3288,14 @@
           "description": "Include `.zpart` files of unfinished jobs.",
           "type": "boolean"
         },
-        "page": {
-          "$ref": "#/$defs/PageRequest",
-          "default": {},
-          "description": "Paging."
+        "limit": {
+          "description": "Page size. Absent: 50. Values above 100 are clamped to 100; 0 is invalid.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
         },
         "recursive": {
           "default": false,
@@ -4817,6 +4839,22 @@
     "JobsListParams": {
       "description": "`jobs.list` parameters.",
       "properties": {
+        "cursor": {
+          "description": "Opaque cursor from a previous result. Valid only for the same method and filters.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "limit": {
+          "description": "Page size. Absent: 50. Values above 100 are clamped to 100; 0 is invalid.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "origin": {
           "description": "Only jobs for this origin.",
           "maxLength": 300,
@@ -4825,11 +4863,6 @@
             "string",
             "null"
           ]
-        },
-        "page": {
-          "$ref": "#/$defs/PageRequest",
-          "default": {},
-          "description": "Paging."
         },
         "run_id": {
           "description": "Only this workflow run.",
@@ -5906,28 +5939,6 @@
       "required": [
         "items"
       ],
-      "type": "object"
-    },
-    "PageRequest": {
-      "description": "Paging parameters shared by every list method (00 section 10).",
-      "properties": {
-        "cursor": {
-          "description": "Opaque cursor from a previous result. Valid only for the same method and filters.",
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "limit": {
-          "description": "Page size. Absent: 50. Values above 100 are clamped to 100; 0 is invalid.",
-          "format": "uint32",
-          "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
-        }
-      },
       "type": "object"
     },
     "PageSample": {
@@ -8046,10 +8057,26 @@
     "SessionsListParams": {
       "description": "`sessions.list` parameters.",
       "properties": {
+        "cursor": {
+          "description": "Opaque cursor from a previous result. Valid only for the same method and filters.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "include_inactive": {
           "default": false,
           "description": "Include expired, revoked and consumed grants.",
           "type": "boolean"
+        },
+        "limit": {
+          "description": "Page size. Absent: 50. Values above 100 are clamped to 100; 0 is invalid.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
         },
         "origin": {
           "description": "Only this origin.",
@@ -8059,11 +8086,6 @@
             "string",
             "null"
           ]
-        },
-        "page": {
-          "$ref": "#/$defs/PageRequest",
-          "default": {},
-          "description": "Paging."
         }
       },
       "type": "object"
@@ -9265,10 +9287,21 @@
     "WorkflowsListParams": {
       "description": "`workflows.list` parameters.",
       "properties": {
-        "page": {
-          "$ref": "#/$defs/PageRequest",
-          "default": {},
-          "description": "Paging."
+        "cursor": {
+          "description": "Opaque cursor from a previous result. Valid only for the same method and filters.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "limit": {
+          "description": "Page size. Absent: 50. Values above 100 are clamped to 100; 0 is invalid.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
         }
       },
       "type": "object"

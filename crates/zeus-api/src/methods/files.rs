@@ -12,8 +12,8 @@ use crate::paging::{Page, PageRequest};
 /// `files.list` parameters.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct FilesListParams {
-    /// Paging.
-    #[serde(default)]
+    /// Paging: `limit` and `cursor` sit beside the filters (00 section 10).
+    #[serde(flatten)]
     pub page: PageRequest,
     /// A directory inside a write root. Absent: the default root.
     #[serde(default, skip_serializing_if = "Option::is_none")]
