@@ -17,8 +17,8 @@ use crate::paging::{Page, PageRequest};
 /// `sessions.list` parameters.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct SessionsListParams {
-    /// Paging.
-    #[serde(default)]
+    /// Paging: `limit` and `cursor` sit beside the filters (00 section 10).
+    #[serde(flatten)]
     pub page: PageRequest,
     /// Only this origin.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -67,6 +67,9 @@ pub enum SessionRequestStatus {
 /// `sessions.request` result.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct SessionsRequestResult {
+    /// True when this response replays a durable mutation receipt.
+    #[serde(default)]
+    pub replayed: bool,
     /// What happened.
     pub status: SessionRequestStatus,
     /// The covering grant, for `already_granted`.
@@ -92,6 +95,9 @@ pub struct SessionsRevokeParams {
 /// `sessions.revoke` result.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct SessionsRevokeResult {
+    /// True when this response replays a durable mutation receipt.
+    #[serde(default)]
+    pub replayed: bool,
     /// The grant after revocation (idempotent: revoking a revoked grant returns it unchanged).
     pub grant: SessionGrant,
 }
@@ -113,11 +119,47 @@ pub struct ApprovalView {
     pub agent_says: Option<String>,
 }
 
+impl TryFrom<Approval> for ApprovalView {
+    type Error = crate::ApiError;
+
+    fn try_from(mut approval: Approval) -> Result<Self, Self::Error> {
+        let request_hash = approval.request_hash.take().ok_or_else(|| {
+            crate::ApiError::new(
+                "policy.request_hash_mismatch",
+                "legacy approval must be reissued before it can be decided",
+            )
+        })?;
+        let facts = approval.facts.take().ok_or_else(|| {
+            crate::ApiError::new("policy.request_hash_mismatch", "approval facts are missing")
+        })?;
+        let agent_says = approval.agent_says.take();
+        Ok(Self {
+            approval,
+            request_hash,
+            facts: serde_json::Value::Object(facts),
+            agent_says,
+        })
+    }
+}
+
+/// Confirmation performed by an attested human surface (spec 07).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ConfirmationLevel {
+    /// A deliberate gesture after the arming delay.
+    #[default]
+    Gesture,
+    /// The human typed the request's binding code on the trusted surface.
+    TypedCode,
+    /// An operating-system authentication prompt was completed.
+    OsAuth,
+}
+
 /// `approvals.list` parameters.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ApprovalsListParams {
-    /// Paging.
-    #[serde(default)]
+    /// Paging: `limit` and `cursor` sit beside the filters (00 section 10).
+    #[serde(flatten)]
     pub page: PageRequest,
     /// Only this state. Absent: `pending`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -135,6 +177,16 @@ pub type ApprovalsListResult = Page<ApprovalView>;
 pub struct ApprovalsGetParams {
     /// The approval.
     pub approval_id: ApprovalId,
+}
+
+/// `approvals.get` returns the request and, for human-capable callers, its private decision evidence.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ApprovalsGetResult {
+    /// The request this client may inspect.
+    pub approval: ApprovalView,
+    /// Durable evidence of a completed decision, withheld from unattended clients.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decision_record: Option<serde_json::Value>,
 }
 
 /// The decision a human takes.
@@ -162,11 +214,20 @@ pub struct ApprovalsDecideParams {
     /// The trust surface the decision was taken on. The daemon verifies it against the connection (terminal with a
     /// controlling tty, pinned extension with a gesture attestation) and rejects non-trust surfaces.
     pub channel: Surface,
+    /// Confirmation completed by the human surface. The channel must be verified independently.
+    #[serde(default)]
+    pub confirmation: ConfirmationLevel,
+    /// Optional retry key; it does not permit a different decision on the same approval.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idempotency_key: Option<String>,
 }
 
 /// `approvals.decide` result.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ApprovalsDecideResult {
+    /// True when this response replays a durable mutation receipt.
+    #[serde(default)]
+    pub replayed: bool,
     /// The approval after the decision (immutable from now on).
     pub approval: ApprovalView,
     /// The grant the decision created, if any.

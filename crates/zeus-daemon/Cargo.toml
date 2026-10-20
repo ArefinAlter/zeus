@@ -27,6 +27,9 @@ a2a = ["dep:zeus-a2a"]
 
 [dependencies]
 zeus-api.workspace = true
+zeus-cloud = { workspace = true, features = ["os-keyring"] }
+tokio-util = { workspace = true, features = ["io"] }
+ulid.workspace = true
 zeus-workflow = { workspace = true, features = ["runtime"] }
 zeus-llm = { workspace = true, features = ["http", "os-keyring"] }
 zeus-a2a = { workspace = true, optional = true }
@@ -50,12 +53,28 @@ tracing-subscriber.workspace = true
 tracing-appender.workspace = true
 tokio.workspace = true
 async-trait.workspace = true
+futures.workspace = true
 directories.workspace = true
 blake3.workspace = true
+md-5.workspace = true
 hex.workspace = true
+redb.workspace = true
+unicode-normalization.workspace = true
+unicode-segmentation.workspace = true
+zeus-artifact.workspace = true
 zeroize.workspace = true
+time.workspace = true
+
+reqwest.workspace = true
+http.workspace = true
+bytes.workspace = true
+url.workspace = true
+regex.workspace = true
+
+schemars.workspace = true
 
 [dev-dependencies]
+zeus-types = { workspace = true, features = ["spec-testing"] }
 tempfile.workspace = true
 proptest.workspace = true
 assert_cmd.workspace = true

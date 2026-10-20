@@ -9,6 +9,8 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 
 pub mod admin;
+pub mod artifacts;
+pub mod cloud;
 pub mod daemon;
 pub mod events;
 pub mod files;
@@ -53,6 +55,8 @@ macro_rules! rpc_methods {
 }
 
 use self::admin::*;
+use self::artifacts::*;
+use self::cloud::*;
 use self::daemon::*;
 use self::events::*;
 use self::files::*;
@@ -61,6 +65,22 @@ use self::sessions::*;
 use self::workflows::*;
 
 rpc_methods! {
+    /// `cloud.accounts.list`.
+    CloudAccountsList = "cloud.accounts.list" (CloudAccountsListParams) -> CloudAccountsListResult;
+    /// `cloud.accounts.configure`.
+    CloudAccountsConfigure = "cloud.accounts.configure" (CloudAccountsConfigureParams) -> CloudAccountMutationResult;
+    /// `cloud.accounts.revoke`.
+    CloudAccountsRevoke = "cloud.accounts.revoke" (CloudAccountsRevokeParams) -> CloudAccountMutationResult;
+    /// `cloud.plan`.
+    CloudPlan = "cloud.plan" (CloudPlanParams) -> CloudPlanResult;
+    /// `cloud.submit`.
+    CloudSubmit = "cloud.submit" (CloudSubmitParams) -> CloudMutationResult;
+    /// `cloud.list`.
+    CloudList = "cloud.list" (CloudListParams) -> CloudListResult;
+    /// `cloud.get`.
+    CloudGet = "cloud.get" (CloudGetParams) -> CloudDeliveryView;
+    /// `cloud.control`.
+    CloudControl = "cloud.control" (CloudControlParams) -> CloudMutationResult;
     /// Negotiate the protocol version and capabilities; first call on a connection.
     DaemonHello = "daemon.hello" (HelloParams) -> HelloResult;
     /// Prove possession of the credential; second call on a connection.
@@ -104,7 +124,7 @@ rpc_methods! {
     /// List approvals.
     ApprovalsList = "approvals.list" (ApprovalsListParams) -> ApprovalsListResult;
     /// Get one approval.
-    ApprovalsGet = "approvals.get" (ApprovalsGetParams) -> ApprovalView;
+    ApprovalsGet = "approvals.get" (ApprovalsGetParams) -> ApprovalsGetResult;
     /// Decide an approval (human, with channel evidence).
     ApprovalsDecide = "approvals.decide" (ApprovalsDecideParams) -> ApprovalsDecideResult;
 
@@ -146,10 +166,34 @@ rpc_methods! {
     LlmStatus = "llm.status" (LlmStatusParams) -> LlmStatusResult;
     /// Configure LLM providers (human, later).
     LlmConfigure = "llm.configure" (LlmConfigureParams) -> LlmConfigureResult;
-    /// List client credentials (admin, later).
+    /// Begin provider sign-in on a trusted human surface.
+    LlmAuthStart = "llm.auth.start" (LlmAuthStartParams) -> LlmAuthStartResult;
+    /// Inspect sign-in/account status on a trusted human surface.
+    LlmAuthStatus = "llm.auth.status" (LlmAuthStatusParams) -> LlmAuthStatusResult;
+    /// Cancel an owned provider sign-in.
+    LlmAuthCancel = "llm.auth.cancel" (LlmAuthCancelParams) -> LlmAuthFlow;
+    /// Clear provider credentials and request remote revocation.
+    LlmAuthSignOut = "llm.auth.sign_out" (LlmAuthSignOutParams) -> LlmAuthSignOutResult;
+    /// List client credentials (admin).
     ClientsList = "clients.list" (ClientsListParams) -> ClientsListResult;
-    /// Revoke a client credential (admin, later).
+    /// Create an agent or service credential (admin).
+    ClientsAdd = "clients.add" (ClientsAddParams) -> ClientsAddResult;
+    /// Revoke a client credential (admin).
     ClientsRevoke = "clients.revoke" (ClientsRevokeParams) -> ClientsRevokeResult;
+    /// Register a write root owned by a service client.
+    FilesRootsRegister = "files.roots.register" (FilesRootsRegisterParams) -> FilesRootsRegisterResult;
+    /// One artifact's export form.
+    ArtifactsGet = "artifacts.get" (ArtifactsGetParams) -> ArtifactsGetResult;
+    /// A page of artifact export forms.
+    ArtifactsList = "artifacts.list" (ArtifactsListParams) -> ArtifactsListResult;
+    /// Ancestors or descendants of an artifact.
+    ArtifactsLineage = "artifacts.lineage" (ArtifactsLineageParams) -> ArtifactsLineageResult;
+    /// Register a local file in the artifact store.
+    ArtifactsIngest = "artifacts.ingest" (ArtifactsIngestParams) -> ArtifactsIngestResult;
+    /// Preview an exact artifact retention, tombstone or materialization effect.
+    ArtifactsLifecyclePreview = "artifacts.lifecycle.preview" (ArtifactsLifecyclePreviewParams) -> ArtifactsLifecyclePreviewResult;
+    /// Apply a preview or request its independently decided human approval.
+    ArtifactsLifecycleApply = "artifacts.lifecycle.apply" (ArtifactsLifecycleApplyParams) -> ArtifactsLifecycleApplyResult;
 }
 
 /// Names of notifications sent by the daemon to clients (they have no response).
@@ -211,10 +255,10 @@ mod tests {
         let mut seen = BTreeSet::new();
         for name in ALL_NAMES {
             assert!(seen.insert(*name), "{name}");
-            let (namespace, verb) = name.split_once('.').expect("dotted");
-            for part in [namespace, verb] {
+            assert!(name.contains('.'), "dotted");
+            for part in name.split('.') {
                 assert!(
-                    part.bytes().all(|b| b.is_ascii_lowercase() || b == b'_'),
+                    !part.is_empty() && part.bytes().all(|b| b.is_ascii_lowercase() || b == b'_'),
                     "{name}"
                 );
             }

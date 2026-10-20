@@ -2,6 +2,7 @@
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use clap_complete::Shell;
+use std::path::PathBuf;
 
 /// Zeus: the session-aware download and file layer for AI agents.
 #[derive(Debug, Parser)]
@@ -92,8 +93,12 @@ pub enum StateOpt {
 #[derive(Debug, Clone, Args)]
 pub struct GetArgs {
     /// One or more http(s) URLs.
-    #[arg(required = true, num_args = 1..)]
+    #[arg(required_unless_present = "input_file", num_args = 1..)]
     pub urls: Vec<String>,
+    /// Read one HTTP(S) URL per line (UTF-8, at most 1 MiB). Blank lines and # comments are ignored.
+    /// Combined inputs allow at most 50 unique URLs; exact duplicates are removed in input order.
+    #[arg(short = 'i', long)]
+    pub input_file: Option<PathBuf>,
     /// Destination directory inside a write root (curl-style `-o`; a file name is not accepted: names come from the
     /// server and are sanitised).
     #[arg(short = 'o', long = "output")]
@@ -155,6 +160,62 @@ pub enum SessionsCommand {
     },
 }
 
+/// Kind of credential `zeus clients add` creates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum ClientKindOpt {
+    /// An agent or bridge (the agent ceiling).
+    Agent,
+    /// A first-party unattended program such as Ogun (agent ceiling plus its own roots).
+    Service,
+}
+
+/// Role of a credential `zeus clients add` creates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum ClientRoleOpt {
+    /// An MCP server or bridge.
+    Mcp,
+    /// An A2A bridge.
+    A2a,
+    /// An application embedding a Zeus client.
+    Embedded,
+    /// A service program (kind `service` only).
+    Service,
+}
+
+/// `zeus clients`: credentials for agents and first-party services. Admin only, from a physical terminal.
+#[derive(Debug, Clone, Subcommand)]
+pub enum ClientsCommand {
+    /// List client credentials. Tokens and verifiers are never shown.
+    List {
+        /// Also list revoked credentials.
+        #[arg(long)]
+        include_revoked: bool,
+    },
+    /// Create an agent or service credential and print the path of its owner-only token file.
+    Add {
+        /// Name: lowercase letters, digits, - and _, starting with a letter (becomes `<name>.token`).
+        #[arg(long)]
+        name: String,
+        /// Kind of credential.
+        #[arg(long, value_enum, default_value = "agent")]
+        kind: ClientKindOpt,
+        /// Role; defaults to `service` for services and `mcp` for agents.
+        #[arg(long, value_enum)]
+        role: Option<ClientRoleOpt>,
+        /// Narrow the permissions to these (repeatable), for example `jobs.read`.
+        #[arg(long = "permission")]
+        permissions: Vec<String>,
+        /// Make a retried command safe: the same key returns the first result.
+        #[arg(long)]
+        idempotency_key: Option<String>,
+    },
+    /// Revoke a credential, close its connections and withdraw its pending requests.
+    Revoke {
+        /// The credential id (`cli_...`).
+        credential_id: String,
+    },
+}
+
 /// `zeus audit`.
 #[derive(Debug, Clone, Subcommand)]
 pub enum AuditCommand {
@@ -177,7 +238,11 @@ pub enum DaemonCommand {
     Stop,
     /// Show whether the daemon runs and what it is doing.
     Status,
-    /// Create first-run state (secrets, credentials) and register the daemon for autostart.
+    /// Stop all work and revoke active session grants.
+    KillSwitch,
+    /// Release the stop latch; jobs stay paused and permissions stay revoked.
+    Release,
+    /// Create first-run state (secrets and credentials).
     Install,
 }
 
@@ -246,6 +311,18 @@ pub enum ConfigCommand {
 /// The commands.
 #[derive(Debug, Clone, Subcommand)]
 pub enum Command {
+    /// Plan and manage explicitly approved cloud deliveries.
+    #[command(subcommand)]
+    Cloud(crate::cloud::CloudCommand),
+    /// Sample pages, validate a plan, dry-run it and start an approval-bound workflow run.
+    #[command(subcommand)]
+    Workflow(crate::workflow::WorkflowCommand),
+    /// List files, organise a directory from rules (approval-bound) or undo an operation.
+    #[command(subcommand)]
+    Files(crate::files::FilesCommand),
+    /// Inspect artifact records and provenance, or register a local file.
+    #[command(subcommand)]
+    Artifacts(crate::artifacts::ArtifactsCommand),
     /// Download one or more URLs.
     Get(GetArgs),
     /// Check a URL: size, resumability, type, whether a session is needed.
@@ -310,6 +387,9 @@ pub enum Command {
     /// Manage session permissions.
     #[command(subcommand)]
     Sessions(SessionsCommand),
+    /// Manage agent and service credentials (admin, physical terminal).
+    #[command(subcommand)]
+    Clients(ClientsCommand),
     /// Inspect the audit log.
     #[command(subcommand)]
     Audit(AuditCommand),
@@ -323,6 +403,15 @@ pub enum Command {
         http: bool,
         /// Port for --http.
         #[arg(long, default_value_t = 4747)]
+        port: u16,
+    },
+    /// Run the optional authenticated A2A bridge on loopback.
+    A2a {
+        /// Dedicated JSON peer-token file; never use an IPC credential as a bearer token.
+        #[arg(long)]
+        token_file: PathBuf,
+        /// Loopback port (the daemon itself never listens on TCP).
+        #[arg(long, default_value_t = 4750)]
         port: u16,
     },
     /// Install or remove the browser integration.
@@ -405,6 +494,48 @@ mod tests {
             vec!["config", "get"],
             vec!["config", "set", "scheduler.concurrent_jobs", "8"],
             vec!["config", "path"],
+            vec!["clients", "list", "--include-revoked"],
+            vec!["clients", "add", "--name", "ogun", "--kind", "service"],
+            vec![
+                "clients",
+                "add",
+                "--name",
+                "bridge",
+                "--role",
+                "a2a",
+                "--permission",
+                "jobs.read",
+            ],
+            vec!["clients", "revoke", "cli_x"],
+            vec![
+                "workflow",
+                "plan",
+                "--goal",
+                "papers",
+                "--url",
+                "https://a.example/list",
+                "--candidate",
+                "plan.json",
+            ],
+            vec!["workflow", "dry-run", "plan_x", "--items", "5"],
+            vec!["workflow", "run", "plan_x", "--plan-hash", "ab"],
+            vec!["workflow", "get", "run_x"],
+            vec!["workflow", "ls"],
+            vec!["workflow", "pause", "run_x"],
+            vec!["workflow", "resume", "run_x"],
+            vec!["workflow", "cancel", "run_x"],
+            vec!["workflow", "manifest", "run_x", "--format", "croissant"],
+            vec!["--profile", "work", "status"],
+            vec!["files", "list", "inbox", "--recursive"],
+            vec![
+                "files",
+                "organize",
+                "inbox",
+                "--rules",
+                "rules.json",
+                "--apply",
+            ],
+            vec!["files", "undo", "fop_x"],
             vec!["auth"],
             vec!["doctor"],
             vec!["tui"],

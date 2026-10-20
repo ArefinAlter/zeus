@@ -91,6 +91,56 @@ pub fn validate_plan(plan: &Plan) -> Vec<Diagnostic> {
             "name must be 1 to 120 characters",
         ));
     }
+    if plan.sources.len() > 16
+        || plan.filters.len() > 32
+        || plan.goal.as_ref().is_some_and(|v| v.len() > 2000)
+        || crate::canonical::jcs_of(plan).is_ok_and(|v| v.len() > 65_536)
+    {
+        out.push(Diagnostic::error(
+            "plan.limit_exceeded",
+            "/",
+            "plan exceeds structural limits",
+        ));
+    }
+    if !(1..=8).contains(&plan.fetch.max_connections_per_file) {
+        out.push(Diagnostic::error(
+            "plan.fetch_concurrency",
+            "/fetch/max_connections_per_file",
+            "file connections must be 1 to 8",
+        ));
+    }
+    if let Some(follow) = &plan.extract.follow {
+        if follow.fields.is_empty()
+            || follow.fields.len() > 32
+            || follow
+                .fields
+                .keys()
+                .any(|k| plan.extract.fields.contains_key(k))
+        {
+            out.push(Diagnostic::error(
+                "plan.follow_fields",
+                "/extract/follow",
+                "detail fields must be nonempty and distinct from listing fields",
+            ));
+        }
+        check_template(&follow.url, plan, "/extract/follow/url", &mut out);
+        for (name, field) in &follow.fields {
+            if let Some(selector) = &field.selector {
+                check_selector(
+                    selector,
+                    &format!("/extract/follow/fields/{name}/selector"),
+                    &mut out,
+                );
+            }
+        }
+        if plan.budgets.max_depth < 2 {
+            out.push(Diagnostic::error(
+                "plan.depth_exceeded",
+                "/budgets/max_depth",
+                "detail documents require a file depth of at least 2",
+            ));
+        }
+    }
     check_domains(plan, &mut out);
     check_session(plan, &mut out);
     check_sources(plan, &mut out);
@@ -193,7 +243,7 @@ fn check_sources(plan: &Plan, out: &mut Vec<Diagnostic>) {
                     check_url(url, &format!("/sources/{i}/urls/{j}"), plan, out);
                 }
             }
-            Source::Sitemap { url } | Source::ApiEndpoint { url } => {
+            Source::Sitemap { url, .. } | Source::ApiEndpoint { url, .. } => {
                 check_url(url, &format!("/sources/{i}/url"), plan, out);
             }
         }
@@ -236,6 +286,7 @@ fn check_pagination(plan: &Plan, out: &mut Vec<Diagnostic>) {
             limit_param,
             limit: size,
             max_pages,
+            ..
         } => {
             limit(*max_pages, "/pagination/max_pages", out);
             check_param(offset_param, "/pagination/offset_param", out);
@@ -293,7 +344,22 @@ fn check_pagination(plan: &Plan, out: &mut Vec<Diagnostic>) {
             from,
             to,
             chunk_days,
+            inner,
+            ..
         } => {
+            if matches!(
+                inner.as_ref(),
+                Pagination::DateRange { .. } | Pagination::InfiniteScroll { .. }
+            ) {
+                out.push(Diagnostic::error(
+                    "plan.pagination_inner",
+                    "/pagination/inner",
+                    "date windows require a bounded inner pagination strategy",
+                ));
+            }
+            let mut inner_plan = plan.clone();
+            inner_plan.pagination = Some(*inner.clone());
+            check_pagination(&inner_plan, out);
             check_param(from_param, "/pagination/from_param", out);
             check_param(to_param, "/pagination/to_param", out);
             if !valid_ymd(from) || !valid_ymd(to) || from > to {
@@ -350,7 +416,12 @@ fn check_extract(plan: &Plan, out: &mut Vec<Diagnostic>) {
             format!("1 to {MAX_FIELDS} fields are required"),
         ));
     }
-    if !plan.extract.fields.contains_key("url") {
+    let detail_url = plan
+        .extract
+        .follow
+        .as_ref()
+        .is_some_and(|f| f.fields.contains_key("url"));
+    if plan.extract.fields.contains_key("url") == detail_url {
         out.push(Diagnostic::error(
             "plan.field_url_missing",
             "/extract/fields/url",
@@ -365,11 +436,23 @@ fn check_extract(plan: &Plan, out: &mut Vec<Diagnostic>) {
                 "field names are [a-z][a-z0-9_]{0,31}",
             ));
         }
-        check_selector(
-            &field.selector,
-            &format!("/extract/fields/{name}/selector"),
-            out,
-        );
+        if let Some(selector) = &field.selector {
+            check_selector(selector, &format!("/extract/fields/{name}/selector"), out);
+        }
+        if let Some(source) = &field.from_field
+            && (!matches!(field.selector, Some(Selector::Regex { .. }))
+                || plan
+                    .extract
+                    .fields
+                    .get(source)
+                    .is_none_or(|f| f.from_field.is_some()))
+        {
+            out.push(Diagnostic::error(
+                "plan.from_field_invalid",
+                &format!("/extract/fields/{name}"),
+                "from_field requires a regex and an independent declared source field",
+            ));
+        }
     }
 }
 
@@ -380,9 +463,15 @@ fn check_filters(plan: &Plan, out: &mut Vec<Diagnostic>) {
             Filter::UrlRegex { pattern, .. } => {
                 check_regex(pattern, &format!("{base}/pattern"), out)
             }
-            Filter::FieldRegex { field, pattern } => {
+            Filter::FieldRegex { field, pattern, .. } => {
                 check_regex(pattern, &format!("{base}/pattern"), out);
-                if !plan.extract.fields.contains_key(field) {
+                if !plan.extract.fields.contains_key(field)
+                    && !plan
+                        .extract
+                        .follow
+                        .as_ref()
+                        .is_some_and(|f| f.fields.contains_key(field))
+                {
                     out.push(Diagnostic::error(
                         "plan.filter_field_unknown",
                         &format!("{base}/field"),
@@ -390,7 +479,7 @@ fn check_filters(plan: &Plan, out: &mut Vec<Diagnostic>) {
                     ));
                 }
             }
-            Filter::Mime { allow } => {
+            Filter::Mime { allow, .. } => {
                 if allow.is_empty()
                     || allow
                         .iter()
@@ -418,7 +507,7 @@ fn check_filters(plan: &Plan, out: &mut Vec<Diagnostic>) {
 }
 
 fn check_fetch(plan: &Plan, out: &mut Vec<Diagnostic>) {
-    if plan.fetch.min_interval_ms < MIN_INTERVAL_FLOOR_MS {
+    if !(MIN_INTERVAL_FLOOR_MS..=3_600_000).contains(&plan.fetch.min_interval_ms) {
         out.push(Diagnostic::error(
             "plan.fetch_interval",
             "/fetch/min_interval_ms",
@@ -433,10 +522,10 @@ fn check_fetch(plan: &Plan, out: &mut Vec<Diagnostic>) {
         ));
     }
     if !plan.fetch.respect_robots {
-        out.push(Diagnostic::warning(
-            "plan.robots_disabled",
+        out.push(Diagnostic::error(
+            "plan.robots_override_unsupported",
             "/fetch/respect_robots",
-            "ignoring robots.txt needs a policy_exception approval and is only offered for origins the user owns",
+            "workflow version 0 requires robots.txt enforcement",
         ));
     }
 }
@@ -498,7 +587,14 @@ fn check_template(text: &str, plan: &Plan, path: &str, out: &mut Vec<Diagnostic>
         )),
         Ok(template) => {
             for field in template.fields() {
-                if !plan.extract.fields.contains_key(field) && !BUILTIN_FIELDS.contains(&field) {
+                if !plan.extract.fields.contains_key(field)
+                    && !plan
+                        .extract
+                        .follow
+                        .as_ref()
+                        .is_some_and(|f| f.fields.contains_key(field))
+                    && !BUILTIN_FIELDS.contains(&field)
+                {
                     out.push(Diagnostic::error(
                         "plan.template_unknown_field",
                         path,
@@ -703,7 +799,7 @@ mod samples_runtime {
             return;
         }
         for (name, field) in &plan.extract.fields {
-            let Selector::Css { query } = &field.selector else {
+            let Some(Selector::Css { query }) = &field.selector else {
                 continue;
             };
             let Ok(field_selector) = scraper::Selector::parse(query) else {
@@ -801,6 +897,9 @@ mod tests {
             min_interval_ms: 50,
             max_concurrency_per_host: 9,
             respect_robots: false,
+            max_connections_per_file: 1,
+            priority: zeus_types::Priority::Low,
+            download_accept: None,
         };
         let found = codes(&validate_plan(&plan))
             .into_iter()
@@ -808,7 +907,7 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(found.contains(&"plan.fetch_interval".to_string()));
         assert!(found.contains(&"plan.fetch_concurrency".to_string()));
-        assert!(found.contains(&"plan.robots_disabled".to_string()));
+        assert!(found.contains(&"plan.robots_override_unsupported".to_string()));
     }
 
     #[test]

@@ -36,3 +36,6 @@ tools/research-checks/*.txt
 tools/research-checks/*.c
 tools/research-checks/*.bin
 tools/research-checks/scratch-*
+
+# Local integration staging and build evidence
+/.implementation/

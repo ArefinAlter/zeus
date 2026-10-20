@@ -89,6 +89,7 @@ The kinds are those of 01 section 5.3; this document adds what each kind's facts
 | `policy_exception` | a policy rule that permits a one-subject override (section 4.4) | the client whose request hit the rule | none | `typed_code` | 24 h | no | `policy_change` (one subject) |
 | `workflow_plan` | `workflows.run` (spec 08), and renewal of a `workflow` grant (section 6.3) | the client that asked to run | `workflow` when the plan names a `session_origin`, otherwise none (01 section 5.3) | `typed_code` | 7 days | no | `workflow_run` |
 | `destructive_op` | a file operation that deletes, overwrites or moves files (`files.organize`, `files.undo`, `files.convert`, later), and the end-of-run replacements of a workflow run (spec 08) | the client that asked, or the client that started the run | none | `typed_code` | 24 h | no | `destructive_files` |
+| `cloud_delivery` | `cloud.submit` (14) | the client that submitted the immutable plan | none | `typed_code` | 24 h, no later than plan expiry | no | |
 
 Rules:
 
@@ -151,6 +152,9 @@ The facts are the only content a surface may present as true. Their schema is `R
 | `policy_exception` | `rule` (`path_outside_roots`, `quarantined_file`), `operation` (`write`, `open`, `convert`, `move`, `delete`), `job_id`, `origin`, `subject_path`, `untrusted_name`, `quarantine_reasons` |
 | `workflow_plan` | `plan_id`, `plan_blake3`, `run_id`, `renewal_of`, `untrusted_title`, `allowed_domains`, `allowed_domains_omitted`, `session_origin`, `budgets` (`max_pages`, `max_files`, `max_bytes`, `max_duration_ms`, `max_depth`), `pace` (`min_interval_ms`, `max_concurrency_per_host`), `robots_txt`, `dest_dir`, `estimate` |
 | `destructive_op` | `operation_set_blake3`, `plan_id`, `counts` (`delete`, `overwrite`, `move`, `rename`), `total_bytes`, `to_trash`, `quarantined_count`, `sample`, `sample_omitted` |
+| `cloud_delivery` | `delivery_id`, `plan_blake3`, `plan` (14 public immutable plan), `shares_full_source_url_with_provider`, `remote_byte_cap_enforced`, `remote_cancellation_supported` |
+
+Cloud delivery creates no website-session grant. The initial implementation accepts its decisions only from an independently verified physical terminal (`cli_interactive` or `tui`); browser approval views MUST fail closed for this kind until they implement and attest its complete facts. The public plan withholds source URL paths/query strings, binding them through `source_hash`; destination names remain untrusted display data. The person sees the mode, account revision, destination, budget and remote cancellation/byte-limit exceptions before entering the bind code. An approval cannot authorize a later account revision or a changed plan.
 
 `transfer` holds `job_ids` (every covered job, at most 50), `total_bytes` (sum of known sizes, null when none is known), `unknown_size_count`, `dest_dirs` (canonical directories, at most 8) and `dest_dirs_omitted`. `items` is a sample of at most 20 covered downloads, each with `job_id`, `untrusted_name`, `untrusted_url` (through `redact_url(log)`, 00 section 8.2) and `total_bytes`.
 
@@ -218,6 +222,8 @@ When several needs of the same kind arise for the same origin from the same requ
 5. **Deciding a batch.** One decision applies to every covered job, in one journal transaction: `approve` moves each job through S30, `deny` and `expire` through S31. The events shared by the jobs (`approval.decided`, and `grant.created` for each grant) are emitted once, before the per-job `job.state_changed` events, in `job_ids` order. Approving a batch with scope `once` creates one `once` grant per covered job (section 6.1).
 6. **Stale decisions.** A decision naming the hash of an older revision fails with `policy.request_hash_mismatch`, `details.current_revision`. The error deliberately does not carry the new hash: the surface MUST fetch the approval again (`approvals.get`, `approval.list`) and re-render it, restarting its input delay (section 10.1).
 7. Surfaces SHOULD show what changed between revisions ("1 more download joined").
+
+Implemented (2026-10-21): enqueue batches for `session_grant` and `handoff`, with a 50-job cap, fixed deadline, revision/hash changes and one `once` grant per covered job. Handoffs additionally require the same requesting credential, browser family, nonempty profile and private-window flag. Canceling a covered job (S32) removes it and recomputes transfer facts in the same journal transaction; the final departure stores `job_canceled` and emits one cancellation. If revision 1000 is exhausted, the daemon withdraws that binding and atomically rebinds the surviving jobs to a fresh approval ID at revision 1, preserving the original deadline and scope choices. Display samples retain the daemon's existing sanitized strings. Decisions against older facts fail closed. Joining from transitions other than initial enqueue, and disappearance of a need outside cancellation, remain open.
 
 ### 4.8 Who sees what
 
@@ -876,6 +882,38 @@ Only `workflow` grants renew, and only through a human decision:
   "renewable": true,
   "renewal_count": 1,
   "renewed_at": "2026-10-06T08:52:10.000Z"
+}
+```
+
+Renewal emits the updated grant without session material:
+
+```json validate=domain#/$defs/Event
+{
+  "seq": 52001,
+  "ts": "2026-10-06T08:52:10.000Z",
+  "type": "grant.renewed",
+  "data": {
+    "grant": {
+      "id": "gr_01M3RRNJM04D9FTTF4SY2YMFE8",
+      "origin": "https://portal.example.org",
+      "scope": "workflow",
+      "state": "active",
+      "created_at": "2026-09-30T09:00:00.000Z",
+      "expires_at": "2026-10-13T08:52:10.000Z",
+      "run_id": "run_01M3RRNJM041DSY9CRWM6A07TQ",
+      "approval_id": "ap_01M3RRK4G0T5PVF241SY96S258",
+      "decided_by": {
+        "kind": "human",
+        "surface": "tui"
+      },
+      "uses": 412,
+      "last_used_at": "2026-10-06T08:51:00.000Z",
+      "revoked_at": null,
+      "renewable": true,
+      "renewal_count": 1,
+      "renewed_at": "2026-10-06T08:52:10.000Z"
+    }
+  }
 }
 ```
 

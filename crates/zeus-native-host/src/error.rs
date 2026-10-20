@@ -32,6 +32,9 @@ pub enum HostError {
     /// I/O failure.
     #[error("i/o: {0}")]
     Io(#[from] std::io::Error),
+    /// The authenticated daemon connection failed or lost frames.
+    #[error("the Zeus daemon connection closed or could not be authenticated")]
+    DaemonUnavailable,
     /// Not implemented yet.
     #[error("not implemented: {0}")]
     NotImplemented(&'static str),
@@ -49,7 +52,7 @@ impl HostError {
             Self::FrameTooLarge { .. } => codes::NM_FRAME_TOO_LARGE,
             Self::InvalidJson => codes::NM_INVALID_JSON,
             Self::Truncated => codes::NM_MALFORMED_FRAME,
-            Self::Io(_) | Self::Install(_) => codes::NM_INTERNAL,
+            Self::Io(_) | Self::Install(_) | Self::DaemonUnavailable => codes::NM_INTERNAL,
             Self::NotImplemented(_) => codes::NM_INTERNAL,
         };
         ErrorEnvelope::from_code(code, self.to_string())

@@ -14,6 +14,8 @@ Thank you for helping. Zeus is pre-alpha; the most valuable contributions right 
 
 Clone the repositories **side by side**:
 
+The `zeus-core` and `zeus-extension` repositories currently require access. For coordinated pull requests, use the exact companion revisions named in the PR description so that engine interfaces, schemas and generated browser types agree.
+
 ```
 zeus-workspace/
   zeus/              this repository

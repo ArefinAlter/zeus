@@ -13,7 +13,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use serde_json::Value;
 use tokio::io::{AsyncRead, AsyncWrite, BufReader};
-use tokio::sync::{Mutex, broadcast, mpsc, oneshot};
+use tokio::sync::{Mutex, broadcast, mpsc, oneshot, watch};
 
 use crate::auth::{ClientCredential, ClientHandshake, IpcSecret};
 use crate::endpoint::Endpoint;
@@ -60,15 +60,21 @@ pub struct ClientConfig {
     pub call_timeout: Duration,
     /// Set only by `zeus-native-host`.
     pub attach: Option<AttachInfo>,
+    /// Capabilities offered in `daemon.hello`; every capability this build understands by default.
+    pub capabilities: Vec<String>,
 }
 
 impl ClientConfig {
-    /// Defaults for `info`: 90 s per call, no attach.
+    /// Defaults for `info`: 90 s per call, no attach, every capability.
     pub fn new(info: ClientInfo) -> Self {
         Self {
             info,
             call_timeout: Duration::from_secs(90),
             attach: None,
+            capabilities: crate::capabilities::ALL
+                .iter()
+                .map(|c| (*c).to_string())
+                .collect(),
         }
     }
 }
@@ -82,6 +88,9 @@ pub struct IpcClient {
     session: AuthenticateResult,
     hello: HelloResult,
     timeout: Duration,
+    closed: watch::Receiver<bool>,
+    reader_task: tokio::task::AbortHandle,
+    writer_task: tokio::task::AbortHandle,
 }
 
 impl IpcClient {
@@ -111,24 +120,33 @@ impl IpcClient {
         let pending: Pending = Arc::default();
         let (notifications, _) = broadcast::channel(1024);
 
-        tokio::spawn(async move {
+        let (closed_tx, closed) = watch::channel(false);
+        let writer_closed = closed_tx.clone();
+        let writer = tokio::spawn(async move {
             while let Some(message) = queue.recv().await {
                 if write_message(&mut write_half, &message).await.is_err() {
                     break;
                 }
             }
+            writer_closed.send_replace(true);
         });
+        let writer_task = writer.abort_handle();
 
         let reader_pending = Arc::clone(&pending);
         let reader_notifications = notifications.clone();
-        tokio::spawn(async move {
+        let reader_writer = writer_task.clone();
+        let mut reader_closed = closed.clone();
+        let reader_task = tokio::spawn(async move {
             let mut reader = BufReader::new(read_half);
             loop {
-                let line =
-                    match read_line(&mut reader, LineLimits::STANDARD.max_response_bytes).await {
-                        Ok(Some(line)) => line,
-                        Ok(None) | Err(_) => break,
-                    };
+                let read = tokio::select! {
+                    _ = reader_closed.wait_for(|value| *value) => break,
+                    read = read_line(&mut reader, LineLimits::STANDARD.max_response_bytes) => read,
+                };
+                let line = match read {
+                    Ok(Some(line)) => line,
+                    Ok(None) | Err(_) => break,
+                };
                 match Message::parse(&line) {
                     Ok(Message::Response(response)) => {
                         let Some(id) = response.id.clone() else {
@@ -144,6 +162,8 @@ impl IpcClient {
                     Ok(Message::Request(_)) | Err(_) => {}
                 }
             }
+            closed_tx.send_replace(true);
+            reader_writer.abort();
             // Connection gone: fail everything still waiting.
             let mut waiting = reader_pending.lock().await;
             for (_, waiter) in waiting.drain() {
@@ -162,9 +182,13 @@ impl IpcClient {
             session: placeholder_session(),
             hello: placeholder_hello(),
             timeout: config.call_timeout,
+            closed,
+            reader_task: reader_task.abort_handle(),
+            writer_task,
         };
 
-        let handshake = ClientHandshake::new(credential, config.info);
+        let handshake =
+            ClientHandshake::new(credential, config.info).with_capabilities(config.capabilities);
         let hello: HelloResult =
             call_typed::<DaemonHello>(&client, handshake.hello_params()).await?;
         let auth = handshake.authenticate_params(ipc_secret, &hello, config.attach)?;
@@ -172,6 +196,12 @@ impl IpcClient {
         client.hello = hello;
         client.session = session;
         Ok(client)
+    }
+
+    /// Wait until either side of this connection closes. Safe to call after closure.
+    pub async fn closed(&self) {
+        let mut closed = self.closed.clone();
+        let _ = closed.wait_for(|value| *value).await;
     }
 
     /// The negotiated protocol version and capabilities.
@@ -191,6 +221,13 @@ impl IpcClient {
     }
 }
 
+impl Drop for IpcClient {
+    fn drop(&mut self) {
+        self.reader_task.abort();
+        self.writer_task.abort();
+    }
+}
+
 async fn call_typed<M: RpcMethod>(client: &IpcClient, params: M::Params) -> ApiResult<M::Result> {
     call::<M, IpcClient>(client, params).await
 }
@@ -198,6 +235,12 @@ async fn call_typed<M: RpcMethod>(client: &IpcClient, params: M::Params) -> ApiR
 #[async_trait]
 impl Client for IpcClient {
     async fn call_raw(&self, method: &str, params: Value) -> ApiResult<Value> {
+        if *self.closed.borrow() {
+            return Err(ApiError::new(
+                codes::UNAVAILABLE,
+                "connection to the daemon closed",
+            ));
+        }
         let id = RequestId::Number(self.next_id.fetch_add(1, Ordering::Relaxed));
         let (waiter, response) = oneshot::channel();
         self.pending.lock().await.insert(id.clone(), waiter);
@@ -236,6 +279,8 @@ impl Client for IpcClient {
 
 fn placeholder_session() -> AuthenticateResult {
     AuthenticateResult {
+        credential_kind: crate::kind::ClientKind::Agent,
+        downgraded: false,
         client_id: String::new(),
         kind: crate::kind::ClientKind::Agent,
         role: crate::kind::ClientRole::Test,

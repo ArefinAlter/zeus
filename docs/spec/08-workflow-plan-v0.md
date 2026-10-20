@@ -927,6 +927,10 @@ The duration floor in this example is (62 documents + 1,203 files) at one reques
 
 (18 requests at the 15 s crawl delay: about 4.5 minutes of pacing plus transfer time.)
 
+The implemented report includes `report_version: 1`, plan and approval identity, reservation/start/update/end times, active `elapsed_ms`, pause reason, incomplete status, a trusted error envelope and nested `counts`. The first start time is null while awaiting approval and remains fixed across resumes. Discovery counters commit atomically with frontier, keys and job intents; a failed checkpoint does not increment them. Engine outcome counters reflect current durable jobs, including canceled and quarantined jobs, and exclude pending outbox intents. Retrying a failed job can change current outcome counts. Existing flat progress fields remain compatibility fields during pre-alpha.
+
+Legacy checkpoints deserialize as `report_version: 0` with `counts: null`; unrecorded discovery values are unknown. Their former `started_at` was a reservation timestamp, so the API projects it as `created_at` and leaves the actual first start unknown. Missing legacy update time remains null. Page failures count durable failed document attempts; successful page counters count committed discovery. Conversion counters remain zero while conversion is unsupported.
+
 ### 10.3 Item records
 
 One `ItemRecord` per line of the `items` sink. Field values are untrusted text copied from the site; URL values are redacted (mode `record`).

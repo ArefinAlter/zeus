@@ -7,20 +7,21 @@
 //! 2. speaks the native-messaging framing on stdio ([`frame`]): 4-byte native-endian length, UTF-8 JSON, at most
 //!    4 MiB extension to host and 1,000,000 bytes host to extension;
 //! 3. authenticates to the daemon as role `native_host` (daemon API handshake with an `attach` block) and relays
-//!    frames as `nm.frame` notifications ([`relay`], not implemented yet).
+//!    frames as `nm.frame` notifications ([`relay`]).
 //!
 //! It never writes anything to stdout except frames, never logs frame bodies, never stores cookies.
 //!
 //! The same crate installs and removes the browser host manifests ([`install`]); `zeus native-host install`
 //! calls it.
 
-#![forbid(unsafe_code)]
+#![deny(unsafe_code)]
 
 pub mod allowlist;
 pub mod argv;
 pub mod error;
 pub mod frame;
 pub mod install;
+pub mod parent;
 pub mod relay;
 
 pub use error::HostError;

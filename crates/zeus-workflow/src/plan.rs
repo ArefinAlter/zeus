@@ -69,6 +69,7 @@ impl std::fmt::Display for PlanId {
 
 /// A complete workflow plan.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct Plan {
     /// Must be [`PLAN_VERSION`].
     pub plan_version: u32,
@@ -110,13 +111,29 @@ pub struct Plan {
 impl Plan {
     /// Hex BLAKE3 of the JCS form of the plan: the "plan hash" an approval is bound to (00 section 7).
     pub fn plan_hash(&self) -> Result<String, CanonicalError> {
-        let bytes = jcs_of(self)?;
+        let mut normalized = self.clone();
+        for (name, field) in &mut normalized.extract.fields {
+            if name == "url" {
+                field.required = true;
+                field.resolve_url = true;
+            }
+        }
+        if let Some(follow) = &mut normalized.extract.follow {
+            for (name, field) in &mut follow.fields {
+                if name == "url" {
+                    field.required = true;
+                    field.resolve_url = true;
+                }
+            }
+        }
+        let bytes = jcs_of(&normalized)?;
         Ok(blake3::hash(&bytes).to_hex().to_string())
     }
 }
 
 /// Session requirement of a plan.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct SessionRequirement {
     /// The origin whose session the run uses. Must be covered by `allowed_domains`.
     pub origin: Origin,
@@ -131,7 +148,7 @@ fn default_scope() -> GrantScope {
 
 /// An entry point of the crawl.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Source {
     /// Explicit start pages.
     StartUrls {
@@ -142,17 +159,23 @@ pub enum Source {
     Sitemap {
         /// Sitemap URL.
         url: String,
+        /// Optional restriction on sitemap entry URLs.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        loc_pattern: Option<String>,
     },
     /// A JSON API endpoint that returns the items directly (use with `json_path` selectors).
     ApiEndpoint {
         /// Endpoint URL.
         url: String,
+        /// Requested document media type; absent means application/json.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        accept: Option<String>,
     },
 }
 
 /// How a selector locates content.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Selector {
     /// CSS selector over HTML.
     Css {
@@ -185,7 +208,7 @@ fn one() -> u32 {
 
 /// What to take from a matched node.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Extraction {
     /// The text content.
     #[default]
@@ -199,9 +222,14 @@ pub enum Extraction {
 
 /// One named value extracted from each item.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct Field {
     /// Selector relative to the item node.
-    pub selector: Selector,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selector: Option<Selector>,
+    /// Apply a regex to another extracted field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from_field: Option<String>,
     /// What to take.
     #[serde(default)]
     pub extract: Extraction,
@@ -215,16 +243,30 @@ pub struct Field {
 
 /// Item extraction.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct Extract {
     /// Selector for the item nodes of a page.
     pub items: Selector,
     /// Named fields. Field names are `[a-z][a-z0-9_]{0,31}`. The field `url` is the download URL.
     pub fields: IndexMap<String, Field>,
+    /// One detail document per item, with additional fields.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub follow: Option<Follow>,
+}
+
+/// Bounded detail extraction; nested follows are deliberately impossible.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Follow {
+    /// Template rendering the detail URL.
+    pub url: String,
+    /// Fields evaluated relative to the detail document.
+    pub fields: IndexMap<String, Field>,
 }
 
 /// Pagination strategy.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(tag = "strategy", rename_all = "snake_case")]
+#[serde(tag = "strategy", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Pagination {
     /// Follow `Link: <...>; rel="next"` or `<a rel="next">`.
     RelNext {
@@ -237,6 +279,9 @@ pub enum Pagination {
         param: String,
         /// First value.
         start: u32,
+        /// Last page value, inclusive; omitted legacy plans use max_pages alone.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        end: Option<u32>,
         /// Increment, default 1.
         #[serde(default = "one32")]
         step: u32,
@@ -251,6 +296,9 @@ pub enum Pagination {
         limit_param: String,
         /// Page size.
         limit: u32,
+        /// Initial offset.
+        #[serde(default)]
+        start_offset: u32,
         /// Page limit.
         max_pages: u32,
     },
@@ -289,6 +337,14 @@ pub enum Pagination {
         to: String,
         /// Window length in days.
         chunk_days: u32,
+        /// Date rendering.
+        #[serde(default)]
+        date_format: DateFormat,
+        /// Window order.
+        #[serde(default)]
+        order: DateOrder,
+        /// Pagination inside each date window.
+        inner: Box<Pagination>,
     },
 }
 
@@ -298,7 +354,7 @@ fn one32() -> u32 {
 
 /// An item filter.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Filter {
     /// Keep (or with `invert`, drop) items whose URL matches the pattern.
     UrlRegex {
@@ -312,6 +368,9 @@ pub enum Filter {
     Mime {
         /// Allowed types.
         allow: Vec<String>,
+        /// Treatment of unknown media types.
+        #[serde(default)]
+        unknown: UnknownMime,
     },
     /// Drop items larger than this many bytes (when the size is known).
     MaxSize {
@@ -329,6 +388,9 @@ pub enum Filter {
         field: String,
         /// Pattern.
         pattern: String,
+        /// Drop matches instead of keeping them.
+        #[serde(default)]
+        invert: bool,
     },
     /// Drop items whose key was already seen.
     Dedupe {
@@ -339,6 +401,7 @@ pub enum Filter {
 
 /// Rate and politeness.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct FetchPolicy {
     /// Minimum interval between requests to one host, in milliseconds. At least 200.
     pub min_interval_ms: u64,
@@ -348,6 +411,15 @@ pub struct FetchPolicy {
     /// `policy_exception` and is only offered for origins the user owns.
     #[serde(default = "yes")]
     pub respect_robots: bool,
+    /// Connections allowed for each file.
+    #[serde(default = "one8")]
+    pub max_connections_per_file: u8,
+    /// Download priority.
+    #[serde(default = "low_priority")]
+    pub priority: zeus_types::Priority,
+    /// Optional Accept header for file requests.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub download_accept: Option<String>,
 }
 
 fn yes() -> bool {
@@ -356,6 +428,7 @@ fn yes() -> bool {
 
 /// Mandatory hard limits. Reaching any of them ends the run with status `budget_exhausted`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct Budgets {
     /// Pages fetched (listing pages and API pages).
     pub max_pages: u32,
@@ -371,15 +444,20 @@ pub struct Budgets {
 
 /// Conversion step applied to downloaded files.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ConvertStep {
     /// Source extensions (lowercase, no dot).
     pub from: Vec<String>,
     /// Target extension.
     pub to: String,
+    /// False schedules a later destructive-operation approval; never deletes during execution.
+    #[serde(default = "yes")]
+    pub keep_original: bool,
 }
 
 /// Post-processing.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct Post {
     /// Template for the file name (without directory), for example `{year}-{title|slug|truncate:60}.pdf`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -390,6 +468,9 @@ pub struct Post {
     /// Conversion steps (sandboxed converters, later phase).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub convert: Vec<ConvertStep>,
+    /// First matching rule supplies item naming overrides.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rules: Vec<RouteRule>,
 }
 
 /// Manifest output format.
@@ -406,6 +487,7 @@ pub enum ManifestFormat {
 
 /// Manifest output.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ManifestSink {
     /// Format.
     pub format: ManifestFormat,
@@ -413,16 +495,24 @@ pub struct ManifestSink {
 
 /// Where results go.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct Sinks {
     /// Destination directory. Must lie inside a configured write root.
     pub dest_dir: String,
     /// Manifest output, if wanted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub manifest: Option<ManifestSink>,
+    /// Existing file policy.
+    #[serde(default)]
+    pub on_existing: OnExisting,
+    /// Optional item record output.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub items: Option<ItemsSink>,
 }
 
 /// When pagination stops early.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct StopRules {
     /// Stop after this many consecutive pages that add no new item. 0 disables the rule.
     #[serde(default = "two")]
@@ -430,23 +520,141 @@ pub struct StopRules {
     /// Stop when a page repeats an earlier page's items exactly.
     #[serde(default = "yes")]
     pub stop_on_duplicate_page: bool,
+    /// Response to material drift.
+    #[serde(default)]
+    pub on_drift: OnDrift,
     /// Selector for a "total results" hint used for estimates (never to extend budgets).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub count_hint: Option<Selector>,
 }
 
 fn two() -> u32 {
-    2
+    3
 }
 
 impl Default for StopRules {
     fn default() -> Self {
         Self {
-            no_new_items_pages: 2,
+            no_new_items_pages: 3,
             stop_on_duplicate_page: true,
+            on_drift: OnDrift::Pause,
             count_hint: None,
         }
     }
+}
+
+fn one8() -> u8 {
+    1
+}
+fn low_priority() -> zeus_types::Priority {
+    zeus_types::Priority::Low
+}
+/// Date window format.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum DateFormat {
+    /// ISO date.
+    #[default]
+    IsoDate,
+    /// Compact numeric date.
+    BasicDate,
+}
+/// Date window ordering.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum DateOrder {
+    /// Oldest first.
+    #[default]
+    Ascending,
+    /// Newest first.
+    Descending,
+}
+/// Unknown media type handling.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum UnknownMime {
+    /// Keep until probe.
+    #[default]
+    Keep,
+    /// Reject until known.
+    Drop,
+}
+/// Existing output handling.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum OnExisting {
+    /// Preserve and skip.
+    #[default]
+    Skip,
+    /// Create unique name.
+    Rename,
+    /// Stage replacement for approval.
+    Replace,
+}
+/// Drift response.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum OnDrift {
+    /// Wait for review.
+    #[default]
+    Pause,
+    /// End discovery.
+    Stop,
+    /// Record and proceed within budgets.
+    Continue,
+}
+/// Item records are JSON Lines.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ItemsFormat {
+    /// JSON Lines.
+    Jsonl,
+}
+/// Item record sink.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ItemsSink {
+    /// Output format.
+    pub format: ItemsFormat,
+}
+/// One conditional naming rule.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RouteRule {
+    /// Conditions, combined with AND.
+    pub when: RouteCondition,
+    /// Filename override.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rename: Option<String>,
+    /// Subdirectory override.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subdir: Option<String>,
+}
+/// Routing conditions have no executable expressions.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RouteCondition {
+    /// Extensions.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ext: Vec<String>,
+    /// Media type patterns.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub media_type: Vec<String>,
+    /// URL pattern.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url_regex: Option<String>,
+    /// Field pattern.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub field_regex: Option<FieldPattern>,
+}
+/// Field condition.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct FieldPattern {
+    /// Name.
+    pub field: String,
+    /// Linear-time pattern.
+    pub pattern: String,
 }
 
 #[cfg(test)]
@@ -455,9 +663,10 @@ pub(crate) fn example_plan() -> Plan {
     fields.insert(
         "url".to_string(),
         Field {
-            selector: Selector::Css {
+            selector: Some(Selector::Css {
                 query: "a.pdf".into(),
-            },
+            }),
+            from_field: None,
             extract: Extraction::Attr {
                 name: "href".into(),
             },
@@ -468,7 +677,8 @@ pub(crate) fn example_plan() -> Plan {
     fields.insert(
         "title".to_string(),
         Field {
-            selector: Selector::Css { query: "h3".into() },
+            selector: Some(Selector::Css { query: "h3".into() }),
+            from_field: None,
             extract: Extraction::Text,
             resolve_url: false,
             required: false,
@@ -489,6 +699,7 @@ pub(crate) fn example_plan() -> Plan {
         pagination: Some(Pagination::PageParam {
             param: "page".into(),
             start: 1,
+            end: None,
             step: 1,
             max_pages: 100,
         }),
@@ -497,6 +708,7 @@ pub(crate) fn example_plan() -> Plan {
                 query: "li.paper".into(),
             },
             fields,
+            follow: None,
         },
         filters: vec![Filter::UrlRegex {
             pattern: r"\.pdf$".into(),
@@ -506,6 +718,9 @@ pub(crate) fn example_plan() -> Plan {
             min_interval_ms: 2000,
             max_concurrency_per_host: 2,
             respect_robots: true,
+            max_connections_per_file: 1,
+            priority: zeus_types::Priority::Low,
+            download_accept: None,
         },
         budgets: Budgets {
             max_pages: 100,
@@ -518,9 +733,12 @@ pub(crate) fn example_plan() -> Plan {
             rename: Some("{title|slug|truncate:60}.pdf".into()),
             subdir: None,
             convert: vec![],
+            rules: vec![],
         },
         sinks: Sinks {
             dest_dir: "papers".into(),
+            on_existing: OnExisting::Skip,
+            items: None,
             manifest: Some(ManifestSink {
                 format: ManifestFormat::Jsonl,
             }),

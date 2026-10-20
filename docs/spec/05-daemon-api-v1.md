@@ -96,7 +96,7 @@ Rules:
 | Access control | Every instance carries an explicit security descriptor whose DACL grants read and write access to the user's SID only. It MUST NOT grant access to Everyone, Anonymous Logon, Authenticated Users, Network or the Users group (the default descriptor grants read access to Everyone and Anonymous). The default mandatory integrity label is kept; the daemon MUST NOT lower it, so low-integrity processes cannot write to the pipe. |
 | Continuous ownership | The daemon keeps at least one unconnected instance listening at all times: it creates the next instance before it serves a newly connected one, so the name is never free while the daemon runs. |
 
-**Unix (Linux, macOS, other BSDs).** The endpoint is the stream socket `<runtime>/zeus/zeusd.sock`:
+**Unix (Linux, macOS, other BSDs).** The endpoint is the stream socket `<runtime>/zeus/zeusd.sock` (`zeusd-<profile>.sock` when a profile is selected, 11):
 
 | `runtime` | When |
 |---|---|
@@ -426,9 +426,9 @@ Rules:
 
 | Permission | Grants | A | S | H | Ad |
 |---|---|---|---|---|---|
-| `jobs.read` | `jobs.probe`, `jobs.list`, `jobs.get`, `jobs.wait`, `jobs.verify` | yes | yes | yes | yes |
-| `jobs.write` | `jobs.enqueue` | yes | yes | yes | yes |
-| `jobs.control` | `jobs.control` | yes | yes | yes | yes |
+| `jobs.read` | `jobs.probe`, `jobs.list`, `jobs.get`, `jobs.wait`, `jobs.verify`; `cloud.accounts.list`, `cloud.list`, `cloud.get` | yes | yes | yes | yes |
+| `jobs.write` | `jobs.enqueue`; `cloud.plan`, `cloud.submit` | yes | yes | yes | yes |
+| `jobs.control` | `jobs.control`, `cloud.control` | yes | yes | yes | yes |
 | `events.read` | `events.subscribe`, `events.unsubscribe` | yes | yes | yes | yes |
 | `sessions.read` | `sessions.list` | yes | yes | yes | yes |
 | `sessions.request` | `sessions.request` (raises an approval, never grants) | yes | yes | yes | yes |
@@ -436,13 +436,13 @@ Rules:
 | `approvals.read` | `approvals.list`, `approvals.get` | yes | yes | yes | yes |
 | `approvals.decide` | `approvals.decide` | no | no | yes | yes |
 | `files.read` | `files.list`; `artifacts.get`, `.list`, `.lineage` (later) | yes | yes | yes | yes |
-| `files.write` | `files.organize`, `files.convert`, `files.undo`, `artifacts.ingest` (later) | yes | yes | yes | yes |
+| `files.write` | `files.organize`, `files.convert`, `files.undo`, `artifacts.ingest`, `artifacts.lifecycle.preview`, `artifacts.lifecycle.apply` (later) | yes | yes | yes | yes |
 | `files.roots.register` | `files.roots.register` | no | yes | no | no |
 | `workflows.plan` | `workflows.plan`, `.dry_run`, `.get`, `.list`, `.manifest` (later) | yes | yes | yes | yes |
 | `workflows.run` | `workflows.run`, `workflows.control` (later) | yes | yes | yes | yes |
 | `audit.read` | `audit.tail`, `audit.verify` | yes | yes | yes | yes |
 | `config.read` | `config.get` | yes | yes | yes | yes |
-| `config.write` | `config.set` | no | no | yes | yes |
+| `config.write` | `config.set`; `cloud.accounts.configure`, `cloud.accounts.revoke` (physical terminal) | no | no | yes | yes |
 | `llm.read` | `llm.status` (later) | yes | yes | yes | yes |
 | `llm.configure` | `llm.configure` (later) | no | no | yes | yes |
 | `daemon.read` | `daemon.ping`, `daemon.status`, `doctor.run` | yes | yes | yes | yes |
@@ -532,6 +532,14 @@ ADR 0011 introduces the `service` kind for first-party programs that use the dae
 | `approvals.get` | MVP | `approvals.read` | A S H Ad | no | Scoped for A and S. |
 | `approvals.decide` | MVP | `approvals.decide` | H Ad | yes | Human-only, channel evidence, request hash. |
 | `files.list` | MVP | `files.read` | A S H Ad | no | Paged. |
+| `cloud.accounts.list` | cloud delivery (14) | `jobs.read` | A S H Ad | no | Configured scopes/capabilities, without credentials. |
+| `cloud.accounts.configure` | cloud delivery (14) | `config.write` | H Ad | yes | Independently verified physical terminal; revision-bound scope and keyring credential. |
+| `cloud.accounts.revoke` | cloud delivery (14) | `config.write` | H Ad | yes | Same terminal requirement; invalidates old revision and stops local work. |
+| `cloud.plan` | cloud delivery (14) | `jobs.write` | A S H Ad | yes | Persist immutable dry run; no source reads or remote object mutations. |
+| `cloud.submit` | cloud delivery (14) | `jobs.write` | A S H Ad | yes | Reserve delivery and request human approval; never authorizes it. |
+| `cloud.list` | cloud delivery (14) | `jobs.read` | A S H Ad | no | At most 100 visible delivery records, newest first. |
+| `cloud.get` | cloud delivery (14) | `jobs.read` | A S H Ad | no | Owner-scoped for agent/service clients. |
+| `cloud.control` | cloud delivery (14) | `jobs.control` | A S H Ad | yes | Pause/resume/cancel; retains remote cancellation uncertainty. |
 | `files.roots.register` | MVP | `files.roots.register` | S | yes | Role `service` only. Capability `files.roots`. |
 | `files.organize` | later | `files.write` | A S H Ad | yes | Dry run by default. Capability `files.organize`. |
 | `files.convert` | later | `files.write` | A S H Ad | yes | Dry run by default. Capability `files.convert`. |
@@ -557,6 +565,8 @@ ADR 0011 introduces the `service` kind for first-party programs that use the dae
 | `artifacts.list` | later | `files.read` | A S H Ad | no | Paged. Capability `artifacts`. |
 | `artifacts.lineage` | later | `files.read` | A S H Ad | no | Capability `artifacts`. |
 | `artifacts.ingest` | later | `files.write` | A S H Ad | yes | Capability `artifacts`. |
+| `artifacts.lifecycle.preview` | later | `files.write` | A S H Ad | no | Pure exact-state preview. Capability `artifacts`. |
+| `artifacts.lifecycle.apply` | later | `files.write` | A S H Ad | yes | Required retry key. Requests human approval for a tombstone or weaker retention; never decides it. Capabilities `artifacts` and `idempotency`. |
 
 Notifications:
 
@@ -584,14 +594,14 @@ Capabilities follow 00 section 4.1. A daemon advertises a capability only when i
 | `files.convert` | `files.convert` | later | MAY offer |
 | `workflows` | `workflows.*` | later | MAY offer |
 | `llm` | `llm.status`, `llm.configure` | later | MAY offer |
-| `artifacts` | `artifacts.*` | later | MAY offer |
+| `artifacts` | `artifacts.get`, `.list`, `.lineage`, `.ingest`, `.lifecycle.preview`, `.lifecycle.apply` | later | MAY offer |
 | `approvals.facts_v2` | Approvals whose facts use a later facts tag (07 section 14) | reserved | MUST NOT offer in v1 |
 
 A client lists every capability it understands. Calling a gated method, or sending a gated parameter, outside the negotiated set fails with `api.not_implemented` when this daemon does not implement it, and with `api.capability_missing` (`details.capability`) when the daemon implements it but the client did not negotiate it.
 
 ### 8.3 Common rules for parameters and results
 
-1. **Unknown members** are ignored (00 section 4.1 rule 7). Members that a client must not control (`source` and `run_id` of a job, an actor, a `requested_by`) do not exist in any parameter object; sending them has no effect.
+1. **Unknown members** are ignored (00 section 4.1 rule 7), except the closed lifecycle parameter, plan and operation objects of section 9.13: those reject unknown members with `api.invalid_params` so an unsupported effect cannot be silently discarded. Members that a client must not control (`source` and `run_id` of a job, an actor, a `requested_by`) do not exist in any parameter object; sending them has no effect.
 2. **Invalid parameters** are answered with `api.invalid_params`. The message and `details.fields` name the offending members, never their values: a value can be a secret.
 3. **Units and formats** follow 00 sections 5 and 6: identifiers are prefixed ULIDs, instants are RFC 3339 UTC with three fractional digits, durations end in `_ms`, sizes in `_bytes`, every number is an integer.
 4. **Pagination.** List methods take `limit` (default 50; values above 100 are treated as 100; 0 is `api.invalid_params`) and `cursor` at the top level of `params`, and return `{items, next_cursor}`; `next_cursor` is `null` on the last page. Items are ordered newest first by identifier unless the method says otherwise. Pagination is keyset-based: a page never repeats an item of an earlier page, and items created after the first page may be missed. A cursor is opaque, at most 512 characters, and valid only for the same method and filters; a cursor that does not fit is `api.invalid_params`.
@@ -897,7 +907,7 @@ Paged listing of files under the write roots visible to the caller (section 7.5)
 Role `service` only (section 7.6). Registers a directory the service owns as one of its write roots.
 
 1. `path` is absolute. After canonicalisation (symbolic links resolved) it MUST lie inside one of the user's write roots (configuration `files.write_roots`, set by a human) and MUST NOT be a user write root itself, the state directory or inside it. Otherwise: `policy.path_outside_roots`.
-2. The daemon creates the directory if it does not exist (mode `0700` on Unix), records the root in the journal with the service's credential id, and returns it. Registering the same canonical path again returns the existing record with `created: false`. A path inside another service's root is `api.invalid_params`.
+2. The daemon creates the directory if it does not exist (mode `0700` on Unix), records the root durably with the service's credential id (in the daemon's credential index, beside the credential it belongs to), and returns it. Registering the same canonical path again returns the existing record with `created: false`. A path inside, or containing, another service's root is `api.invalid_params`, so roots never overlap.
 3. At most 16 roots per service (`api.rate_limited` with `details.limit = "service_roots"`).
 4. Roots never widen anything for other kinds: agents and humans keep writing inside the user's write roots, which already contain the service roots.
 
@@ -913,19 +923,25 @@ Role `service` only (section 7.6). Registers a directory the service owns as one
 
 `files.organize` plans moves and renames inside one directory from a rule set (08); `files.convert` plans conversions of up to 100 inputs to a target format. Both default to `dry_run: true` and return `steps` (`move`, `rename`, `convert`, `trash`, each flagged `destructive` when it deletes or overwrites). Applying destructive steps needs an approval of kind `destructive_op` (01 section 5.3), whose id is returned; deletions go to the application trash (01 section 12.3) and every applied operation gets an `operation_id` that `files.undo` reverts. A quarantined file is never converted or moved out of its directory without an approval (01 section 11.3). The exact rule language and converter set belong to 08.
 
+**Implemented organiser (2026-10-18).** The rule set is `{"recursive"?, "rules": [...]}` with 1 to 16 rules. A rule is `{when?, subdir?, rename?, trash?}` and either moves or renames (`subdir`, a relative template below the organised directory of at most 8 levels; `rename`, a file-name template) or sends to the application trash. `when` holds when all present members hold: `ext` (case-insensitive list), `name_regex` (size-bounded), `min_bytes`, `max_bytes`, `older_than_days`. Templates use only `{name}`, `{stem}`, `{ext}`, `{year}`, `{month}` and `{day}` (modification date, UTC); separators produced by a value become `_` and every component is sanitised (01 section 12.3). Unknown members, natural-language rules and escaping paths are `api.invalid_params`. The first matching rule decides a file; other files stay. Collisions take ` (n)` suffixes, so nothing is overwritten. Files of unfinished jobs, `.zpart` files, `.zeus` and links are never touched. At most 10,000 files are examined and 1,000 steps planned. A service organises only inside its registered roots.
+
+Applying (`dry_run: false`) stores the operation list, raises a `destructive_op` approval whose facts (07 section 4.4, `plan_id` null) bind its `operation_set_blake3`, and returns `approval_id` and `operation_id` with `applied: false`; an empty plan returns `applied: true` and raises nothing. Every applied list needs the approval, moves included (07 section 4.1). Until browser surfaces render these facts the approval is decided only at a verified physical terminal (`cli_interactive`, `tui`). After approval the daemon recomputes the hash (07 section 4.4 rule 5) and runs each step write-ahead: it re-checks the planned size and modification time (a changed file is skipped as `source_changed`), stays inside the write root, renames without replacing, moves to the trash instead of deleting, and appends `file.moved`, `file.renamed` or `file.deleted` (04 section 4.4) before the effect. A restart confirms or resumes a started step from the files. The kill switch stops an executing list; its finished steps stay undoable. `files.undo` plans the inverse of the steps that ran (trashed files come back from the application trash), raises its own `destructive_op` approval and returns `steps`, `approval_id` and `operation_id`. An operation is undone at most once, an undo is not itself undoable, and agents and services undo only operations they started. `files.convert` is not implemented (`api.not_implemented`): conversion waits for the sandboxed converter design of 12.
+
 ### 9.7 `workflows.*` (later)
 
 The workflow lifecycle is designed in [ARCHITECTURE](../ARCHITECTURE.md) §8 and specified in 08, which is normative for the contents of plans, samples, diagnostics and reports; the schema of this document types them as objects.
 
 | Method | Parameters | Result | Notes |
 |---|---|---|---|
-| `workflows.plan` | `goal`, `start_urls` (1 to 20), `session_origin?`, `candidate?`, `plan_id?` | `plan_id`, `samples`, `plan_schema`, `diagnostics`, `plan?`, `plan_hash?` | Without `candidate`: fetches samples and returns the plan schema. With `candidate`: validates it against the samples (this replaces a separate validate method). `goal` and samples are untrusted. |
+| `workflows.plan` | `goal`, `start_urls` (1 to 20), `session_origin?`, `candidate?`, `plan_id?`, `draft?` | `plan_id`, `samples`, `plan_schema`, `diagnostics`, `plan?`, `plan_hash?`, `draft?` | Without `candidate`: fetches samples and returns the plan schema. With `candidate`: validates it against the samples (this replaces a separate validate method). `goal` and samples are untrusted. With `draft` (`{max_cost_micro_usd}`, human-only from a verified terminal, exclusive with `candidate`): the configured model proposes only the `extract` member from text-free outlines of the samples (09); the daemon fixes allowed domains (the start URLs' hosts), budgets, pace and destination, validates the plan like a candidate and reports `draft` (provider, model, tokens, cost). A drafted plan is a proposal; running it still needs the `workflow_plan` approval. |
 | `workflows.dry_run` | `plan_id`, `sample_items` (1 to 100) | DryRunReport | Estimates, collisions, warnings. |
 | `workflows.run` | `plan_id`, `plan_hash` | `run_id`, `status`, `approval_id?` | Creates the run in `awaiting_approval` with an approval of kind `workflow_plan` bound to `plan_hash`; a different current hash is `workflow.plan_hash_mismatch` (08). |
 | `workflows.get` | `run_id` | RunReport | |
 | `workflows.list` | `limit`, `cursor` | page of RunReport | |
 | `workflows.control` | `run_id`, `action` (`pause`, `resume`, `cancel`) | `run` | Agent and service clients control only the runs they started (08). |
 | `workflows.manifest` | `run_id`, `format` (`jsonl`, `csv`, `croissant`) | `path`, `records` | Writes the run's manifest (04) inside a write root. |
+
+Keyed sampling/candidate validation and workflow control publish their success receipts atomically with the draft or run checkpoint. Retrying an old control returns its original report and does not repeat the action against newer state. Keyed model drafting is currently unavailable and returns `api.not_implemented` before invoking a provider. A keyed manifest binds an immutable export snapshot; if filesystem publication was interrupted before its final receipt, retries return non-retryable `api.conflict` with `details.reason: "export_receipt_incomplete"`. Inspect existing exports before issuing a new intent key.
 
 ### 9.8 `audit.*`
 
@@ -981,7 +997,7 @@ Admin, human-only; the CLI runs these commands only from an interactive terminal
 |---|---|
 | `name` | `[a-z][a-z0-9_-]{0,31}`, unique, not `cli`, `agent` or `host`. Becomes the file `<state>/credentials/<name>.token`. |
 | `kind` | `agent` or `service`. Human and admin credentials are created only by provisioning (section 6.5). |
-| `role` | Default `service` for kind `service` and `mcp` for kind `agent`; must be allowed for the kind (section 7.2). |
+| `role` | Default `service` for kind `service` and `mcp` for kind `agent`; must be allowed for the kind (section 7.2). Through the API an `agent` credential takes `mcp`, `a2a` or `embedded` only: a role whose job source or approval requester label would read as the person's own CLI (`cli`, `tui`, `gui`, `test`) is refused with `api.invalid_params`. |
 | `permissions` | Optional narrowing within the kind's ceiling (section 7.3). Default: the ceiling. |
 
 The daemon mints the credential id and a token, stores the verifier, writes the token file owner-only, and returns `{client, credential_file, replayed}`. The token is never part of a result. The audit record (`tool.call` with the new credential id, kind and role) is written ahead.
@@ -1040,7 +1056,7 @@ sequenceDiagram
 
 ### 9.13 `artifacts.*` (later)
 
-Zeus registers every completed download in its artifact store (13 section 7.5). These methods expose that store; 13 is normative for records, lineage and ingestion. Every record they return is an **export form** (13 section 10.1): no locations, no absolute paths, privacy reductions applied. They need capability `artifacts`.
+Zeus registers every completed download in its artifact store (13 section 7.5). These methods expose that store; 13 is normative for records, lineage, ingestion, retention and materialization. Every artifact record they return is an **export form** (13 section 10.1): no locations, no absolute paths, privacy reductions applied. Lifecycle plans and copy receipts additionally return the daemon-resolved destination the caller is permitted to use. All six methods need capability `artifacts`; `artifacts.lifecycle.apply` also requires `idempotency`, because its retry key is mandatory.
 
 | Method | Permission | Parameters | Result | Notes |
 |---|---|---|---|---|
@@ -1048,8 +1064,130 @@ Zeus registers every completed download in its artifact store (13 section 7.5). 
 | `artifacts.list` | `files.read` | `limit`, `cursor`, filters `blake3`, `sha256`, `job_id`, `run_id`, `state` | page of export forms, newest first | |
 | `artifacts.lineage` | `files.read` | `artifact_id`, `direction` (`ancestors`, `descendants`), `max_depth` (default 8, at most 64), `max_nodes` (default 100, at most 500) | `{nodes, truncated}` | Node 0 is the start record. Each node carries its id (null for a content-only node), `blake3`, `size_bytes`, `depth`, and `links` to the indexes of its parents or children with the parent `role` (13 section 4.3). Full records are read with `artifacts.get`. |
 | `artifacts.ingest` | `files.write` | `path` (a file inside a write root the caller may use), `name?`, `media_type?`, `parents?`, `operation?`, `metadata?`, `idempotency_key?` | `{artifact, created, replayed}` | Mutating. Ingests a local file the caller produced (13 section 7). With `idempotency_key` the ingest key (13 section 7.3) is `api:` followed by the first 32 hex digits of `BLAKE3(UTF-8(client_id || ":" || idempotency_key))`, so a retry returns the same record. A quarantined file can be ingested only as it is, and stays quarantined. |
+| `artifacts.lifecycle.preview` | `files.write` | `artifact_id`, `operation` | `{plan, plan_hash}` | Non-mutating. Computes an exact, expiring effect without persisting a plan, creating an approval or changing files. |
+| `artifacts.lifecycle.apply` | `files.write` | `plan`, `plan_hash`, required `idempotency_key` | `{applied, approval_id?, artifact?, path?, mode?, replayed}` | Mutating. Revalidates the full preview, requests any required human approval, then executes only the approved or protection-strengthening effect. Repeat the identical request after approval. |
 
 Visibility follows section 7.5: agents and human-capable clients see every record; a service sees the records of its own jobs and those it ingested.
+
+**Implemented (2026-10-18).** Every caller receives the agent-kind export (13 section 14 item 3): `url_query` `dropped`, `session_origin_included` false. `artifacts.list` without `state` lists active records and tombstones; it orders by identifier, newest first, over the first 10,000 records that match the store filters (`blake3`, `job_id`, `run_id`, `state` `active`); `sha256`, `state` `deleted` and visibility are applied after that bound. In `artifacts.lineage`, records outside the caller's view, and records reachable only through them, are omitted and `truncated` is set; a parent with no visible record is a content-only node, so a service learns nothing it could not read from its own record. `artifacts.ingest` takes a regular file (no link, no `.zpart`, nothing under `.zeus` or the state directory) inside a write root the caller may use, a service only its registered roots, else `policy.path_outside_roots`. The daemon hashes the file and passes the digests to the store as expected values, so bytes changed before the store reads them back fail with `artifact.digest_mismatch`. Parents named by an id outside the caller's view fail like unknown ones (`artifact.lineage_invalid`); roles are lowercase `snake_case`. With parents the record is `derived`, without them `local`; `media_type` is recorded as `declared_media_type`; `operation` defaults to `zeus.ingest`. The record is quarantined, with the union of the reasons, when a record with equal content, the download that wrote the path or those bytes, or any parent is quarantined. A service's ingests are listed in an owner table beside the store, because records hold no client ids (13 section 4.5 rule 2). `created` is false, and `replayed` true, when the ingest key returned an earlier record.
+
+#### 9.13.1 Exact lifecycle plans
+
+**Implemented (2026-10-21).** A lifecycle preview accepts one active record in the caller's view and one of these operations:
+
+| `operation` | Effect | Approval |
+|---|---|---|
+| `{kind:"delete"}` | Tombstone the artifact record, with write-ahead audit. Preserve user files, materializations, lineage and shared content. This does not collect CAS bytes. | Required. |
+| `{kind:"set_retention", retention:"keep" or "evictable", retain_until:timestamp or null}` | Change protection for future collection. A supplied deadline MUST be in the future. `keep` protects the content while this record is active. | Required when changing `keep` to `evictable`, or when an `evictable` target shortens or removes an existing deadline. Changing to `keep` strengthens protection. |
+| `{kind:"materialize", path:absolute_path}` | Verify stored bytes and publish a copy to a new file inside a permitted write root, outside daemon state and `.zeus` paths. Existing destinations and `.zpart` files MUST NOT be replaced. | No destructive approval. Quarantine is refused with `policy.quarantine_blocked`; there is no request member that releases it. |
+
+The returned plan MUST carry `version:1`, `artifact_id`, `expected_record_blake3` (BLAKE3 of the JCS form of the current API export), content `blake3`, `sha256`, `size_bytes`, `quarantined`, `current_retention`, `current_retain_until`, the complete `operation`, the daemon-computed `requires_approval`, and `expires_at` 15 minutes after preview. A materialization path is resolved inside the roots visible to this caller; a service may use only its registered roots. `plan_hash = hex(BLAKE3(JCS({"t":"zeus.artifact.lifecycle.v1","plan":plan})))`.
+
+Apply MUST recompute and compare every plan member against current trusted state. A caller cannot remove approval by changing `requires_approval` and recomputing the hash. Changed record snapshots, unsupported versions or amended effects fail with `artifact.plan_stale`; an expired or overlong preview lifetime fails with `artifact.plan_expired`. Both errors require a fresh preview. Unknown or invisible records fail with `artifact.not_found` without disclosing another client's record.
+
+The first apply needing approval returns `applied:false` and an `approval_id`, without executing the effect. The approval is of kind `destructive_op`, with a closed `artifact_plan` equal to the preview, `operation_set_blake3` equal to `plan_hash`, and the same requester and expiry. Its confirmation is `typed_code`; it has no grant scope. The filesystem `sample` is empty and `to_trash:false`: a record tombstone MUST NOT be displayed as moving a user's file to trash. `total_bytes:0` means this request physically deletes no file bytes. The terminal shows the artifact ID, prior protection and exact effect. Only a person at a verified CLI or TUI terminal may approve these facts; an agent-facing method MUST NOT decide them, create a grant or silently renew the plan.
+
+After that decision, the requester repeats the same apply parameters and retry key. A pending retry returns the same approval, with `replayed:true`. A completed retry returns its original receipt with `replayed:true` and does not recreate a materialized file subsequently edited or removed by the user. A successful first execution returns `applied:true`, the complete artifact export (a tombstone for deletion), and, for materialization, `path` and `mode:"copy"`. Retention changes never clear quarantine. This API exposes neither collection nor hardlink/reflink selection.
+
+The daemon persists a started checkpoint before an effect. Interrupted record mutations may reconcile only when the current record equals the exact intended result and all other fields still match the checkpoint. An interrupted materialization with an existing destination fails with `artifact.lifecycle_reconciliation_required`: inspect that destination and obtain a new preview for another path. It MUST NOT adopt an unrelated file or overwrite it. `artifact.operation_in_progress` means a copy is still executing; wait before repeating the same request. These are non-retryable conflict errors for transport purposes; they do not authorize blind execution with changed inputs.
+
+Kill switch, credential and permitted roots are checked again immediately before entering the core operation. A large accepted copy does not hold the global mutation gate, so emergency stop and revocation can proceed; that copy may still finish and publish its verified file. The core operation has no cancellation or pre-publication authorization callback. This interface therefore does not promise atomic cancellation of a materialization already in progress. See the [lifecycle implementation contract](../design/artifact-lifecycle-api.md) for CLI examples and recovery boundaries.
+
+#### 9.13.2 Lifecycle example: preview, request approval, then repeat
+
+At `2026-10-21T10:00:00.000Z`, the caller previews a record tombstone. The digests and size identify the browser-handoff artifact in 13 section 4.6; `expected_record_blake3` hashes its API export after dropping the session origin and adding the export privacy block.
+
+```json validate=daemon-api.v1#/$defs/ArtifactsLifecyclePreviewRequest
+{"jsonrpc":"2.0","id":130,"method":"artifacts.lifecycle.preview","params":{"artifact_id":"art_01M45NK2V7TQ8X3CZD5RWB9HME","operation":{"kind":"delete"}}}
+```
+
+```json validate=daemon-api.v1#/$defs/ArtifactsLifecyclePreviewResponse
+{
+  "jsonrpc":"2.0","id":130,
+  "result":{
+    "plan":{
+      "version":1,"artifact_id":"art_01M45NK2V7TQ8X3CZD5RWB9HME",
+      "expected_record_blake3":"569d40a400931efb7ff119f738a213864cbe57e6504cfe9f56a501ad8382e33e",
+      "blake3":"1e0f07a3c0beca17e28b2d889c3e78a743e9c931e3d5efbff76921fe028ce231",
+      "sha256":"eba4a8587ad422baa9bb314f660b11dfd73563c9af06c6c6ed6ec4bf2da2bc47",
+      "size_bytes":1288490188,"quarantined":false,
+      "current_retention":"evictable","current_retain_until":null,
+      "operation":{"kind":"delete"},"requires_approval":true,
+      "expires_at":"2026-10-21T10:15:00.000Z"
+    },
+    "plan_hash":"6260ca2ad1cb9989e6a742588feb7f0c416f1d6054f62f85af560c26a18671d0"
+  }
+}
+```
+
+The caller submits the complete receipt and a required retry key. This first call raises an approval and executes no tombstone:
+
+```json validate=daemon-api.v1#/$defs/ArtifactsLifecycleApplyRequest
+{
+  "jsonrpc":"2.0","id":131,"method":"artifacts.lifecycle.apply",
+  "params":{
+    "plan":{
+      "version":1,"artifact_id":"art_01M45NK2V7TQ8X3CZD5RWB9HME",
+      "expected_record_blake3":"569d40a400931efb7ff119f738a213864cbe57e6504cfe9f56a501ad8382e33e",
+      "blake3":"1e0f07a3c0beca17e28b2d889c3e78a743e9c931e3d5efbff76921fe028ce231",
+      "sha256":"eba4a8587ad422baa9bb314f660b11dfd73563c9af06c6c6ed6ec4bf2da2bc47",
+      "size_bytes":1288490188,"quarantined":false,
+      "current_retention":"evictable","current_retain_until":null,
+      "operation":{"kind":"delete"},"requires_approval":true,
+      "expires_at":"2026-10-21T10:15:00.000Z"
+    },
+    "plan_hash":"6260ca2ad1cb9989e6a742588feb7f0c416f1d6054f62f85af560c26a18671d0",
+    "idempotency_key":"artifact-tombstone-2026-10-21-1"
+  }
+}
+```
+
+```json validate=daemon-api.v1#/$defs/ArtifactsLifecycleApplyResponse
+{"jsonrpc":"2.0","id":131,"result":{"applied":false,"approval_id":"ap_01M45NQ9SVGC9J80XW97GTEXB2","replayed":false}}
+```
+
+The corresponding approval is returned through `approvals.get` (the example below is its `approval` member). Its hash binds the complete typed plan:
+
+```json validate=approvals.v1#/$defs/ApprovalRequest hash
+{
+  "id":"ap_01M45NQ9SVGC9J80XW97GTEXB2","kind":"destructive_op","state":"pending",
+  "allowed_scopes":[],"reason_codes":["artifacts.delete"],
+  "summary":{"title":"Tombstone artifact art_01M45NK2V7TQ8X3CZD5RWB9HME (keeps user files)","total_bytes":0},
+  "created_at":"2026-10-21T10:00:05.000Z","expires_at":"2026-10-21T10:15:00.000Z",
+  "request_hash":"3e342f03aa2b7c98eaf1a8214b7a94d2f5dad1d5e8cda309c988e7668dedd8a6",
+  "requested_by":"cli_01M45NHJ2AHWMXT8JVJ7BEEJX7","revision":1,
+  "facts":{
+    "t":"zeus.approval.facts.v1","approval_id":"ap_01M45NQ9SVGC9J80XW97GTEXB2","revision":1,"kind":"destructive_op",
+    "requester":{"kind":"agent","role":"mcp","client_id":"cli_01M45NHJ2AHWMXT8JVJ7BEEJX7","label":"agent","registered_at":"2026-10-01T08:00:00.000Z"},
+    "issued_at":"2026-10-21T10:00:05.000Z","expires_at":"2026-10-21T10:15:00.000Z",
+    "allowed_scopes":[],"confirmation":{"approve":"typed_code"},"reason_codes":["artifacts.delete"],"agent_says_blake3":null,
+    "operation_set_blake3":"6260ca2ad1cb9989e6a742588feb7f0c416f1d6054f62f85af560c26a18671d0","plan_id":null,
+    "counts":{"delete":1,"overwrite":0,"move":0,"rename":0},"total_bytes":0,"to_trash":false,
+    "quarantined_count":0,"sample":[],"sample_omitted":0,
+    "artifact_plan":{
+      "version":1,"artifact_id":"art_01M45NK2V7TQ8X3CZD5RWB9HME",
+      "expected_record_blake3":"569d40a400931efb7ff119f738a213864cbe57e6504cfe9f56a501ad8382e33e",
+      "blake3":"1e0f07a3c0beca17e28b2d889c3e78a743e9c931e3d5efbff76921fe028ce231",
+      "sha256":"eba4a8587ad422baa9bb314f660b11dfd73563c9af06c6c6ed6ec4bf2da2bc47",
+      "size_bytes":1288490188,"quarantined":false,
+      "current_retention":"evictable","current_retain_until":null,
+      "operation":{"kind":"delete"},"requires_approval":true,
+      "expires_at":"2026-10-21T10:15:00.000Z"
+    }
+  }
+}
+```
+
+After a person approves this exact request at a verified terminal, the original requester repeats request 131's `params` unchanged, with a new JSON-RPC request ID. The daemon then tombstones the record and stores the successful receipt. Approving the request itself does not execute the effect or create a session grant.
+
+Protection strengthening and a new copy start with the same pure preview method:
+
+```jsonl validate=daemon-api.v1#/$defs/ArtifactsLifecyclePreviewRequest
+{"jsonrpc":"2.0","id":132,"method":"artifacts.lifecycle.preview","params":{"artifact_id":"art_01M45NK2V7TQ8X3CZD5RWB9HME","operation":{"kind":"set_retention","retention":"keep","retain_until":null}}}
+{"jsonrpc":"2.0","id":133,"method":"artifacts.lifecycle.preview","params":{"artifact_id":"art_01M45NK2V7TQ8X3CZD5RWB9HME","operation":{"kind":"materialize","path":"/home/alice/Downloads/dataset-v3-copy.tar.zst"}}}
+```
+
+These are alternative examples before the tombstone is applied. Neither preview writes a file or changes protection. Each returned plan must be separately applied with its own retry key; reusing the tombstone key with another plan fails with `api.idempotency_conflict`.
 
 ## 10. Event streams
 
@@ -1184,7 +1322,7 @@ Codes of other namespaces reach clients unchanged in the envelope with their own
 
 ## 12. Idempotency
 
-1. Every mutating method accepts an optional `idempotency_key` of 1 to 128 characters (00 section 5.4). The MCP tools make it mandatory for their mutating tools (06).
+1. Every mutating method accepts an optional `idempotency_key` of 1 to 128 characters (00 section 5.4), except `artifacts.lifecycle.apply`, where the key is required and bounded to 1 to 128 UTF-8 bytes without control characters. The MCP tools make it mandatory for their mutating tools (06).
 2. **Scope.** Keys are scoped to the credential: the record key is `(client_id, key)` with `client_id` the credential id (03 section 4.1, table `idempotency`). A caller never sees another credential's keys. Clients that share a credential share the namespace; a bridge serving several agents SHOULD prefix the keys it forwards with a per-agent value (open issue O2).
 3. **Request hash.** `request_hash = BLAKE3(JCS({"method": <method>, "params": <params without idempotency_key>}))`, hex. Including the method keeps one key used with two methods apart. (00 section 5.4 defines the hash this way for every protocol.)
 4. **Outcomes.**
@@ -1199,6 +1337,7 @@ Codes of other namespaces reach clients unchanged in the envelope with their own
 5. **Retention.** At least 24 hours from the first call (03 section 13 prunes later). After that, the key is free again.
 6. Dry runs (`jobs.enqueue` with `dry_run`, `files.*` in dry-run mode) execute nothing and store nothing.
 7. Replayed outcomes are not audited again; the original call was.
+8. **Artifact lifecycle checkpoint exception.** `artifacts.lifecycle.apply` follows section 9.13: a pending approval is a durable intermediate result, so the identical retry can execute after a person's decision instead of replaying `applied:false` forever. A copy still executing returns `artifact.operation_in_progress` rather than waiting in another core copy. Interrupted copies with an existing destination require inspection; they are not implicitly adopted. A completed receipt retains the ordinary replay rule.
 
 ## 13. Limits and rate limits
 
@@ -1227,6 +1366,7 @@ Codes of other namespaces reach clients unchanged in the envelope with their own
 | Untrusted free text (`reason`, `agent_says`) | 280 characters | |
 | Pending approvals | 50 in total, 10 per requester (07 section 9.1) | |
 | `audit.tail` | default 20, at most 100 records | |
+| Artifact lifecycle preview | 15 minutes; one complete effect per plan | `plan.expires_at` |
 | Service roots | 16 per service credential | |
 | Shutdown grace | default 10,000 ms, at most 60,000 ms | |
 
@@ -1246,6 +1386,8 @@ Token buckets per credential (all connections of one credential share them), wit
 | `admin` | `clients.add`, `clients.revoke`, `files.roots.register` | 10 per minute |
 
 Exceeding a bucket yields `api.rate_limited` with `details.limit` (the bucket name) and `details.retry_after_ms`. Independent of rates, at most 50 approvals are pending at once (01 section 5.3 rule 4).
+
+**Configuration (implemented 2026-10-18).** The router buckets are set by `api.rate_limits.agent.<rate>` and `api.rate_limits.service.<name>.<rate>`, where `<name>` is the service credential's name and `<rate>` is `mutating_per_s` (1 to 1,000), `read_per_s` (1 to 10,000), `probe_per_s` (1 to 1,000) or `session_request_per_min` (1 to 600). Setting one rate of an unlisted service creates its entry from the defaults; at most 64 services are listed, under credential names that are not reserved. A service without an entry, and every human-capable credential, uses the defaults. `decide` is `approvals.decisions_per_minute`; `admin` is fixed. Changes apply at the next daemon start (`restart_required`).
 
 ## 14. Audit
 
@@ -1341,13 +1483,13 @@ sequenceDiagram
 
 ## 18. Differences from the draft code and other documents
 
-Decided while writing this document; the code and the named documents are to follow.
+Decided while writing this document; the code and the named documents are to follow. Implemented since (2026-10-18): the `service` kind, role and `files.roots.register` permission with human-capable checks instead of kind ordering; `clients.list`, `clients.add`, `clients.revoke` (revocation closes live connections and withdraws pending approvals); `files.roots.register`; the section 7.5 visibility rules for agents and services; the initial four `artifacts.*` methods of section 9.13 with capability `artifacts`; list parameters with `limit` and `cursor` at the top level (00 section 10). The rate buckets of section 13.2 are enforced with their defaults (the router applies `mutating`, `read`, `probe` and `session_request`; the daemon applies `decide` and `admin`). Capability gating at authorisation step 4 (with `idempotency_key` and `since_seq` as gated parameters) and the configurable `api.rate_limits.*` values followed later the same day. On 2026-10-21, `artifacts.lifecycle.preview` and `.apply` added exact snapshot-bound retention, tombstones and copy materialization, with typed human approvals and mandatory retry receipts. The narrowed host credential followed the same day: only `nm.relay` and `daemon.read`, including legacy-store migration and handshake/policy ceilings.
 
 | Item | Decision | Follow-up |
 |---|---|---|
 | Client kinds | Fourth kind `service`, new role `service`, permission `files.roots.register`; kinds are not ordered. | `zeus_api::kind`: add the variants; replace `kind < Human` checks with a human-capable test; role-to-kinds table of section 7.2. |
 | Effective kind | `daemon.authenticate` returns `kind` (effective), `credential_kind` and `downgraded`. | `AuthenticateResult`; downgrade rules come from 07. |
-| Host credential | Provisioned narrowed to `nm.relay` and `daemon.read`. | `zeus-daemon` provisioning. |
+| Host credential | Provisioned narrowed to `nm.relay` and `daemon.read`; legacy records are narrowed without rotating their token or identity. The handshake and policy table enforce the same ceiling. | Implemented 2026-10-21 in `zeus-api` and `zeus-daemon` provisioning. |
 | Pagination | `limit` and `cursor` at the top level of `params`. | `#[serde(flatten)]` on `PageRequest` in list parameters. |
 | `NewJob.run_id` | Removed: an API caller could otherwise attach a job to a workflow run and use its grant. | `zeus_api::methods::jobs`. |
 | `jobs.wait` | `all_terminal` renamed `all_final` (`failed` is not terminal in 01, and 06 uses this name); `since_seq` with per-job `state_seq` semantics and `progress_bytes` added. | `WaitUntil`, `JobsWaitParams`. |
@@ -1365,7 +1507,7 @@ Decided while writing this document; the code and the named documents are to fol
 | `JobSummary` | Optional `state_seq`, `rate_ewma`, `eta_s`, `path`, `sha256`, filled by the daemon (requested by 06). | `zeus_types::JobSummary`; the domain schema was updated. |
 | Approvals | `approvals.list` and `approvals.get` return the 07 `ApprovalRequest`; `approvals.get` wraps it as `{approval, decision_record?}`; the decide parameters are the 07 `ApprovalDecision` (adds `confirmation`); the kill switch uses the 07 `KillSwitchRequest` and `KillSwitchResult`. | `methods::sessions`, `methods::daemon`. |
 | `config.set` | Adds `surface` (approving-surface evidence, 07 section 7.1). | `ConfigSetParams`. |
-| `artifacts.*` | Four later methods for the 13 store, permissions `files.read` and `files.write`, capability `artifacts`. | `policy::METHODS`, `methods`. |
+| `artifacts.*` | Six implemented methods for the 13 store: reads, ingest and exact lifecycle preview/apply; permissions `files.read` and `files.write`, capability `artifacts`. Lifecycle apply additionally requires `idempotency` and a key; tombstones and retention weakening await a human's typed destructive-plan approval. | Implemented in `policy::METHODS`, typed methods, daemon handlers and CLI; collection remains separate. |
 | Schema | This document's schema is hand-written and normative; the generated draft in `crates/zeus-api/schemas` must be reconciled with it and CI should compare the two (ADR 0002 item 9). | `zeus-api` schema test. |
 
 ## 19. Open issues

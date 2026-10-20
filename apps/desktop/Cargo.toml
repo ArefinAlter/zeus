@@ -1,0 +1,51 @@
+[workspace]
+resolver = "3"
+members = ["."]
+
+[workspace.dependencies]
+zeus-api = { path = "../../crates/zeus-api" }
+zeus-types = { path = "../../../zeus-core/crates/zeus-types" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1.53", features = ["sync", "rt-multi-thread", "macros"] }
+tauri = { version = "2.11", default-features = false, features = ["wry", "compression", "common-controls-v6", "x11", "dbus"] }
+tauri-build = { version = "2.6", default-features = false, features = ["config-json"] }
+
+[package]
+name = "zeus-desktop"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.90"
+license = "Apache-2.0"
+publish = false
+description = "Local Zeus desktop client with a closed authenticated daemon bridge"
+
+[features]
+default = ["desktop", "custom-protocol"]
+desktop = ["dep:tauri", "dep:tauri-build"]
+custom-protocol = ["tauri?/custom-protocol"]
+
+[dependencies]
+zeus-api.workspace = true
+zeus-types.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tauri = { workspace = true, optional = true }
+
+[build-dependencies]
+tauri-build = { workspace = true, optional = true }
+
+[[bin]]
+name = "zeus-desktop"
+path = "src/main.rs"
+required-features = ["desktop"]
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[lints.clippy]
+todo = "deny"
+unimplemented = "deny"
+dbg_macro = "warn"

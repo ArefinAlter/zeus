@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-workspace-page"
+description = "Enables the workspace_page command without any pre-configured scope."
+commands.allow = ["workspace_page"]
+
+[[permission]]
+identifier = "deny-workspace-page"
+description = "Denies the workspace_page command without any pre-configured scope."
+commands.deny = ["workspace_page"]

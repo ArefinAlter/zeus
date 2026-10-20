@@ -1,13 +1,13 @@
 //! `audit.*`, `config.*`, `doctor.*`, `llm.*`, `clients.*`.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use zeus_llm::{PrivacyTier, ProviderKind, ProviderStatus, SpendCaps};
 use zeus_types::{AuditHead, SecretString, Timestamp};
 
-use crate::kind::{ClientKind, ClientRole};
+use crate::kind::{ClientKind, ClientRole, Permission};
 
 /// `audit.tail` parameters.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -84,6 +84,9 @@ pub struct ConfigSetParams {
 /// `config.set` result.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ConfigSetResult {
+    /// True when this response replays a durable mutation receipt.
+    #[serde(default)]
+    pub replayed: bool,
     /// Previous value, if any.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub previous: Option<serde_json::Value>,
@@ -172,6 +175,12 @@ pub struct LlmStatusResult {
 /// keyring; it is never echoed, logged or stored anywhere else.
 #[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
 pub struct LlmConfigureParams {
+    /// Explicitly enable or disable model tasks. Default is disabled.
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    /// Explicit model, endpoint and pricing ceilings for one provider; contains no credential.
+    #[serde(default)]
+    pub adapter: Option<zeus_llm::provider::HttpProviderConfig>,
     /// Privacy tier.
     #[serde(default)]
     pub privacy: Option<PrivacyTier>,
@@ -193,12 +202,40 @@ impl Serialize for LlmConfigureParams {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeStruct;
         // Explicit and grep-able: the key is sent over the local pipe by the human's CLI, nowhere else.
-        let mut state = serializer.serialize_struct("LlmConfigureParams", 5)?;
-        state.serialize_field("privacy", &self.privacy)?;
-        state.serialize_field("allow_experimental", &self.allow_experimental)?;
-        state.serialize_field("spend_caps", &self.spend_caps)?;
-        state.serialize_field("provider", &self.provider)?;
-        state.serialize_field("api_key", &self.api_key.as_ref().map(SecretString::expose))?;
+        let fields = [
+            self.enabled.is_some(),
+            self.adapter.is_some(),
+            self.privacy.is_some(),
+            self.allow_experimental.is_some(),
+            self.spend_caps.is_some(),
+            self.provider.is_some(),
+            self.api_key.is_some(),
+        ]
+        .into_iter()
+        .filter(|present| *present)
+        .count();
+        let mut state = serializer.serialize_struct("LlmConfigureParams", fields)?;
+        if let Some(value) = &self.enabled {
+            state.serialize_field("enabled", value)?;
+        }
+        if let Some(value) = &self.adapter {
+            state.serialize_field("adapter", value)?;
+        }
+        if let Some(value) = &self.privacy {
+            state.serialize_field("privacy", value)?;
+        }
+        if let Some(value) = &self.allow_experimental {
+            state.serialize_field("allow_experimental", value)?;
+        }
+        if let Some(value) = &self.spend_caps {
+            state.serialize_field("spend_caps", value)?;
+        }
+        if let Some(value) = &self.provider {
+            state.serialize_field("provider", value)?;
+        }
+        if let Some(value) = &self.api_key {
+            state.serialize_field("api_key", value.expose())?;
+        }
         state.end()
     }
 }
@@ -206,37 +243,98 @@ impl Serialize for LlmConfigureParams {
 /// `llm.configure` result.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct LlmConfigureResult {
+    /// True when this response replays a durable mutation receipt.
+    #[serde(default)]
+    pub replayed: bool,
     /// The ladder after the change.
     pub rungs: Vec<RungStatus>,
 }
 
 /// `clients.list` parameters.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct ClientsListParams {}
+pub struct ClientsListParams {
+    /// Also list revoked credentials. Default false.
+    #[serde(default)]
+    pub include_revoked: bool,
+}
 
-/// A client credential record (never the token).
+/// A client credential as the daemon describes it. Never contains the token or its verifier.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ClientRecord {
     /// Credential id.
     pub credential_id: String,
+    /// File name stem under `<state>/credentials/`.
+    pub name: String,
     /// Authority class.
     pub kind: ClientKind,
     /// Role.
     pub role: ClientRole,
+    /// Effective permissions, a subset of the kind's ceiling.
+    pub permissions: BTreeSet<Permission>,
     /// Creation.
     pub created_at: Timestamp,
-    /// Last successful authentication.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Last successful authentication since the daemon started; `null` when unknown.
+    #[serde(default)]
     pub last_used_at: Option<Timestamp>,
     /// Revoked credentials stay listed.
     pub revoked: bool,
+    /// When it was revoked.
+    #[serde(default)]
+    pub revoked_at: Option<Timestamp>,
+    /// Service clients only: their registered roots (inactive once revoked).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub roots: Vec<ServiceRoot>,
+}
+
+/// A write root registered by a service client (05 section 7.6).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ServiceRoot {
+    /// Absolute, canonical path of the root.
+    pub path: String,
+    /// Optional label, untrusted display text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// The owning service's credential id.
+    pub client_id: String,
+    /// Registration time.
+    pub created_at: Timestamp,
 }
 
 /// `clients.list` result.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ClientsListResult {
-    /// All credentials.
+    /// Credentials, oldest first.
     pub clients: Vec<ClientRecord>,
+}
+
+/// `clients.add` parameters (human-only; 05 section 9.11).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ClientsAddParams {
+    /// `[a-z][a-z0-9_-]{0,31}`, unique, not `cli`, `agent`, `a2a` or `host`.
+    pub name: String,
+    /// `agent` or `service`. Human and admin credentials come only from provisioning.
+    pub kind: ClientKind,
+    /// Default `service` for kind `service`, `mcp` for kind `agent`; must be allowed for the kind.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<ClientRole>,
+    /// Narrowing within the kind's ceiling. Default: the ceiling.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permissions: Option<BTreeSet<Permission>>,
+    /// Idempotency key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idempotency_key: Option<String>,
+}
+
+/// `clients.add` result. The token is written to `credential_file` and never returned.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ClientsAddResult {
+    /// True when this response replays a durable mutation receipt.
+    #[serde(default)]
+    pub replayed: bool,
+    /// The new credential.
+    pub client: ClientRecord,
+    /// Absolute path of the owner-only token file.
+    pub credential_file: String,
 }
 
 /// `clients.revoke` parameters.
@@ -244,13 +342,21 @@ pub struct ClientsListResult {
 pub struct ClientsRevokeParams {
     /// Credential id.
     pub credential_id: String,
+    /// Idempotency key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idempotency_key: Option<String>,
 }
 
 /// `clients.revoke` result.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ClientsRevokeResult {
-    /// The credential after revocation; existing connections using it are closed.
+    /// True when this response replays a durable mutation receipt.
+    #[serde(default)]
+    pub replayed: bool,
+    /// The credential after revocation.
     pub client: ClientRecord,
+    /// Live connections of this credential that were closed.
+    pub connections_closed: u32,
 }
 
 #[cfg(test)]
@@ -270,3 +376,114 @@ mod tests {
         assert_eq!(back.api_key.unwrap().expose(), "ZEUS-CANARY-key");
     }
 }
+
+/// Begin a human-controlled model-provider browser sign-in.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct LlmAuthStartParams {
+    /// Only `chatgpt_oauth` and `openrouter_oauth` support this flow.
+    pub provider: ProviderKind,
+    /// Existing ChatGPT registration to reauthorize; absent creates a new registration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_id: Option<String>,
+}
+/// One-use sign-in URL. It must never be written to logs or analytics.
+#[derive(Clone, Serialize, Deserialize, JsonSchema)]
+pub struct LlmAuthStartResult {
+    /// Opaque flow identifier owned by the requesting credential.
+    pub flow_id: String,
+    /// Browser URL returned only to the initiating trusted human client.
+    pub authorization_url: String,
+    /// Deadline of this flow.
+    pub expires_at: Timestamp,
+}
+impl std::fmt::Debug for LlmAuthStartResult {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LlmAuthStartResult")
+            .field("flow_id", &self.flow_id)
+            .field("authorization_url", &"[REDACTED]")
+            .finish()
+    }
+}
+/// Inspect one owned flow, or list the current user's account registrations.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct LlmAuthStatusParams {
+    /// Opaque flow identifier, absent to list saved accounts only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub flow_id: Option<String>,
+}
+/// Browser sign-in lifecycle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum LlmAuthState {
+    /// Waiting for browser completion.
+    Waiting,
+    /// Credentials were saved successfully.
+    Connected,
+    /// Login failed; no secret-bearing diagnostics are exposed.
+    Failed,
+    /// The owner canceled the pending flow.
+    Canceled,
+    /// The listener deadline elapsed.
+    Expired,
+}
+/// One flow's non-secret status.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct LlmAuthFlow {
+    /// Flow identifier.
+    pub flow_id: String,
+    /// Provider being connected.
+    pub provider: ProviderKind,
+    /// Current lifecycle state.
+    pub state: LlmAuthState,
+    /// Issued ChatGPT account registration after successful connection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_id: Option<String>,
+    /// Expiry time.
+    pub expires_at: Timestamp,
+}
+/// Account identity visible only on the human auth surface.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct LlmAccount {
+    /// Issued registration id.
+    pub account_id: String,
+    /// Verified email for display, not identity.
+    pub email: Option<String>,
+    /// ChatGPT plan permission was granted.
+    pub plan_enabled: bool,
+    /// The registration is selected for inference.
+    pub active: bool,
+}
+/// Flow status and saved account picker data.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct LlmAuthStatusResult {
+    /// Requested flow, absent when only accounts were requested.
+    pub flow: Option<LlmAuthFlow>,
+    /// Saved ChatGPT registrations; never tokens.
+    pub accounts: Vec<LlmAccount>,
+}
+/// Cancel a pending sign-in owned by this credential.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct LlmAuthCancelParams {
+    /// Flow identifier.
+    pub flow_id: String,
+}
+/// Stop using saved credentials and attempt provider revocation.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct LlmAuthSignOutParams {
+    /// Provider to disconnect.
+    pub provider: ProviderKind,
+    /// ChatGPT registration; absent selects the current registration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_id: Option<String>,
+}
+/// Sign-out result, explicitly distinguishing local clearing from remote revocation.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct LlmAuthSignOutResult {
+    /// Local credentials were removed.
+    pub cleared: bool,
+    /// Remote revocation was confirmed; OpenRouter key deletion is managed on its account website.
+    pub remote_revocation_confirmed: bool,
+}
+
+/// Canceling a flow returns its current lifecycle record.
+pub type LlmAuthCancelResult = LlmAuthFlow;

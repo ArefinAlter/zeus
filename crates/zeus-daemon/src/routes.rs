@@ -1,18 +1,27 @@
 //! Registers a [`Backend`] on a [`zeus_api::Router`].
 //!
-//! `daemon.ping` is answered here; every other MVP method is forwarded to the backend. Later-stage methods
-//! (workflows, files organize/convert/undo, llm, clients) are deliberately not registered: the router answers
-//! `api.not_implemented` for them while the policy table still enforces who may call them.
+//! `daemon.ping` is answered here; every other implemented method is forwarded to the backend. Methods that are
+//! catalogued but not built remain unregistered: the router answers `api.not_implemented` for them while the policy
+//! table still enforces who may call them.
 
 use std::sync::Arc;
 
 use zeus_api::Router;
 use zeus_api::methods::daemon::{PingParams, PingResult};
 use zeus_api::methods::{
-    ApprovalsDecide, ApprovalsGet, ApprovalsList, AuditTail, AuditVerify, ConfigGet, ConfigSet,
-    DaemonKillSwitch, DaemonPing, DaemonShutdown, DaemonStatus, DoctorRun, EventsSubscribe,
-    EventsUnsubscribe, FilesList, JobsControl, JobsEnqueue, JobsGet, JobsList, JobsProbe,
-    JobsVerify, JobsWait, SessionsList, SessionsRequest, SessionsRevoke,
+    ApprovalsDecide, ApprovalsGet, ApprovalsList, ArtifactsGet, ArtifactsIngest,
+    ArtifactsLifecycleApply, ArtifactsLifecyclePreview, ArtifactsLineage, ArtifactsList, AuditTail,
+    AuditVerify, ClientsAdd, ClientsList, ClientsRevoke, ConfigGet, ConfigSet, DaemonKillSwitch,
+    DaemonPing, DaemonShutdown, DaemonStatus, DoctorRun, EventsSubscribe, EventsUnsubscribe,
+    FilesList, FilesOrganize, FilesRootsRegister, FilesUndo, JobsControl, JobsEnqueue, JobsGet,
+    JobsList, JobsProbe, JobsVerify, JobsWait, LlmAuthCancel, LlmAuthSignOut, LlmAuthStart,
+    LlmAuthStatus, LlmConfigure, LlmStatus, SessionsList, SessionsRequest, SessionsRevoke,
+    WorkflowsControl, WorkflowsDryRun, WorkflowsGet, WorkflowsList, WorkflowsManifest,
+    WorkflowsPlan, WorkflowsRun,
+};
+use zeus_api::methods::{
+    CloudAccountsConfigure, CloudAccountsList, CloudAccountsRevoke, CloudControl, CloudGet,
+    CloudList, CloudPlan, CloudSubmit,
 };
 use zeus_types::Timestamp;
 
@@ -23,7 +32,11 @@ macro_rules! forward {
         let backend = Arc::clone(&$backend);
         $router.route::<$marker, _, _>(move |ctx, params| {
             let backend = Arc::clone(&backend);
-            async move { backend.$method(&ctx, params).await }
+            async move {
+                crate::consent::REQUESTER_KIND
+                    .scope(ctx.identity.kind, backend.$method(&ctx, params))
+                    .await
+            }
         })
     }};
 }
@@ -35,6 +48,19 @@ pub fn build_router<B: Backend>(backend: Arc<B>) -> Router {
             server_time: Timestamp::now(),
         })
     });
+    let router = forward!(router, backend, CloudAccountsList, cloud_accounts_list);
+    let router = forward!(
+        router,
+        backend,
+        CloudAccountsConfigure,
+        cloud_accounts_configure
+    );
+    let router = forward!(router, backend, CloudAccountsRevoke, cloud_accounts_revoke);
+    let router = forward!(router, backend, CloudPlan, cloud_plan);
+    let router = forward!(router, backend, CloudSubmit, cloud_submit);
+    let router = forward!(router, backend, CloudList, cloud_list);
+    let router = forward!(router, backend, CloudGet, cloud_get);
+    let router = forward!(router, backend, CloudControl, cloud_control);
     let router = forward!(router, backend, DaemonStatus, daemon_status);
     let router = forward!(router, backend, DaemonShutdown, daemon_shutdown);
     let router = forward!(router, backend, DaemonKillSwitch, daemon_kill_switch);
@@ -54,10 +80,45 @@ pub fn build_router<B: Backend>(backend: Arc<B>) -> Router {
     let router = forward!(router, backend, ApprovalsGet, approvals_get);
     let router = forward!(router, backend, ApprovalsDecide, approvals_decide);
     let router = forward!(router, backend, FilesList, files_list);
+    let router = forward!(router, backend, FilesRootsRegister, files_roots_register);
+    let router = forward!(router, backend, FilesOrganize, files_organize);
+    let router = forward!(router, backend, FilesUndo, files_undo);
+    let router = forward!(router, backend, ArtifactsGet, artifacts_get);
+    let router = forward!(router, backend, ArtifactsList, artifacts_list);
+    let router = forward!(router, backend, ArtifactsLineage, artifacts_lineage);
+    let router = forward!(router, backend, ArtifactsIngest, artifacts_ingest);
+    let router = forward!(
+        router,
+        backend,
+        ArtifactsLifecyclePreview,
+        artifacts_lifecycle_preview
+    );
+    let router = forward!(
+        router,
+        backend,
+        ArtifactsLifecycleApply,
+        artifacts_lifecycle_apply
+    );
+    let router = forward!(router, backend, ClientsList, clients_list);
+    let router = forward!(router, backend, ClientsAdd, clients_add);
+    let router = forward!(router, backend, ClientsRevoke, clients_revoke);
     let router = forward!(router, backend, AuditTail, audit_tail);
     let router = forward!(router, backend, AuditVerify, audit_verify);
     let router = forward!(router, backend, ConfigGet, config_get);
     let router = forward!(router, backend, ConfigSet, config_set);
+    let router = forward!(router, backend, LlmAuthStart, llm_auth_start);
+    let router = forward!(router, backend, LlmAuthStatus, llm_auth_status);
+    let router = forward!(router, backend, LlmAuthCancel, llm_auth_cancel);
+    let router = forward!(router, backend, LlmAuthSignOut, llm_auth_sign_out);
+    let router = forward!(router, backend, LlmStatus, llm_status);
+    let router = forward!(router, backend, LlmConfigure, llm_configure);
+    let router = forward!(router, backend, WorkflowsPlan, workflows_plan);
+    let router = forward!(router, backend, WorkflowsDryRun, workflows_dry_run);
+    let router = forward!(router, backend, WorkflowsRun, workflows_run);
+    let router = forward!(router, backend, WorkflowsGet, workflows_get);
+    let router = forward!(router, backend, WorkflowsList, workflows_list);
+    let router = forward!(router, backend, WorkflowsControl, workflows_control);
+    let router = forward!(router, backend, WorkflowsManifest, workflows_manifest);
     forward!(router, backend, DoctorRun, doctor_run)
 }
 
@@ -76,6 +137,9 @@ mod tests {
     fn ctx(kind: ClientKind, role: ClientRole) -> CallContext {
         let (notifier, _rx) = Notifier::channel(8);
         CallContext {
+            reply: Default::default(),
+            peer: Default::default(),
+            attach: None,
             identity: ClientIdentity {
                 credential_id: CredentialId::generate(),
                 kind,
@@ -86,6 +150,7 @@ mod tests {
             connection_id: zeus_types::IdGenerator::new().connection_id(),
             notifier,
             limits: ConnectionLimits::STANDARD,
+            capabilities: zeus_api::capabilities::all(),
         }
     }
 
@@ -103,10 +168,50 @@ mod tests {
                 method.name
             );
         }
-        for method in METHODS.iter().filter(|m| m.stage == Stage::Later) {
+        for method in METHODS.iter().filter(|m| {
+            m.stage == Stage::Later
+                && !matches!(
+                    m.name,
+                    "llm.status"
+                        | "llm.configure"
+                        | "llm.auth.start"
+                        | "llm.auth.status"
+                        | "llm.auth.cancel"
+                        | "llm.auth.sign_out"
+                )
+                && !m.name.starts_with("workflows.")
+                && !matches!(
+                    m.name,
+                    "files.organize"
+                        | "files.undo"
+                        | "artifacts.get"
+                        | "artifacts.list"
+                        | "artifacts.lineage"
+                        | "artifacts.ingest"
+                        | "artifacts.lifecycle.preview"
+                        | "artifacts.lifecycle.apply"
+                )
+        }) {
             assert!(
                 !registered.contains(method.name),
                 "{} is later but routed",
+                method.name
+            );
+        }
+    }
+
+    /// 05 section 8.2: a capability is advertised only when every method it gates is implemented.
+    #[test]
+    fn every_advertised_capability_is_fully_routed() {
+        let router = build_router(Arc::new(NotImplementedBackend));
+        let registered: std::collections::BTreeSet<_> = router.registered().into_iter().collect();
+        for method in METHODS.iter().filter(|m| {
+            m.capability
+                .is_some_and(|c| zeus_api::capabilities::ALL.contains(&c))
+        }) {
+            assert!(
+                registered.contains(method.name),
+                "{} is gated by an advertised capability but has no route",
                 method.name
             );
         }

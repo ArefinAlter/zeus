@@ -15,7 +15,8 @@ use serde_json::{Value, json};
 use zeus_api::endpoint::{DiscoveryRecord, ZeusPaths};
 use zeus_api::error::codes;
 use zeus_api::methods::admin::{
-    AuditTailParams, AuditVerifyParams, ConfigGetParams, ConfigSetParams, DoctorParams,
+    AuditTailParams, AuditVerifyParams, ClientsAddParams, ClientsListParams, ClientsRevokeParams,
+    ConfigGetParams, ConfigSetParams, DoctorParams,
 };
 use zeus_api::methods::daemon::{ShutdownParams, StatusParams};
 use zeus_api::methods::jobs::{
@@ -23,13 +24,12 @@ use zeus_api::methods::jobs::{
     JobsVerifyParams, JobsWaitParams, NewJob, ProbeParams, WaitUntil,
 };
 use zeus_api::methods::sessions::{
-    ApprovalsDecideParams, ApprovalsGetParams, ApprovalsListParams, DecideOutcome,
-    SessionsListParams, SessionsRevokeParams,
+    ApprovalsListParams, DecideOutcome, SessionsListParams, SessionsRevokeParams,
 };
 use zeus_api::methods::{
-    ApprovalsDecide, ApprovalsGet, ApprovalsList, AuditTail, AuditVerify, ConfigGet, ConfigSet,
-    DaemonShutdown, DaemonStatus, DoctorRun, JobsControl, JobsEnqueue, JobsGet, JobsList,
-    JobsProbe, JobsVerify, JobsWait, SessionsList, SessionsRevoke,
+    ApprovalsList, AuditTail, AuditVerify, ClientsAdd, ClientsList, ClientsRevoke, ConfigGet,
+    ConfigSet, DaemonShutdown, DaemonStatus, DoctorRun, JobsControl, JobsEnqueue, JobsGet,
+    JobsList, JobsProbe, JobsVerify, JobsWait, SessionsList, SessionsRevoke,
 };
 use zeus_api::{ApiError, ApiResult, Client, PageRequest, call};
 use zeus_native_host::install::{self, Browser, InstallRequest, Os, SystemRegistrar};
@@ -38,8 +38,9 @@ use zeus_types::{
 };
 
 use crate::cli::{
-    ApprovalsCommand, AuditCommand, BrowserOpt, Command, ConfigCommand, DaemonCommand, GetArgs,
-    GlobalArgs, NativeHostCommand, PriorityOpt, SessionsCommand, StateOpt,
+    ApprovalsCommand, AuditCommand, BrowserOpt, ClientKindOpt, ClientRoleOpt, ClientsCommand,
+    Command, ConfigCommand, DaemonCommand, GetArgs, GlobalArgs, NativeHostCommand, PriorityOpt,
+    SessionsCommand, StateOpt,
 };
 use crate::exit::Exit;
 use crate::output::{error_line, format_bytes, job_line, sanitize};
@@ -69,7 +70,7 @@ impl CmdOutput {
         }
     }
 
-    fn new(text: impl Into<String>, json: &impl Serialize) -> Self {
+    pub(crate) fn new(text: impl Into<String>, json: &impl Serialize) -> Self {
         Self {
             text: text.into(),
             json: serde_json::to_value(json).unwrap_or(Value::Null),
@@ -78,12 +79,12 @@ impl CmdOutput {
         }
     }
 
-    fn with_items(mut self, items: Vec<Value>) -> Self {
+    pub(crate) fn with_items(mut self, items: Vec<Value>) -> Self {
         self.items = items;
         self
     }
 
-    fn with_exit(mut self, exit: Exit) -> Self {
+    pub(crate) fn with_exit(mut self, exit: Exit) -> Self {
         self.exit = exit;
         self
     }
@@ -208,6 +209,10 @@ pub async fn run_remote<C: Client + ?Sized>(
     terminal: Option<&mut Terminal>,
 ) -> ApiResult<CmdOutput> {
     match command {
+        Command::Cloud(command) => crate::cloud::run(command, client, global.dry_run).await,
+        Command::Workflow(command) => crate::workflow::run(command, client, global.dry_run).await,
+        Command::Files(command) => crate::files::run(command, client, global.dry_run).await,
+        Command::Artifacts(command) => crate::artifacts::run(command, client, global.dry_run).await,
         Command::Get(args) => get(args, global, client, color).await,
         Command::Probe { url } => probe(url, client).await,
         Command::Ls {
@@ -332,6 +337,101 @@ pub async fn run_remote<C: Client + ?Sized>(
                 &result,
             ))
         }
+        Command::Clients(ClientsCommand::List { include_revoked }) => {
+            let result = call::<ClientsList, C>(
+                client,
+                ClientsListParams {
+                    include_revoked: *include_revoked,
+                },
+            )
+            .await?;
+            let text = result
+                .clients
+                .iter()
+                .map(|c| {
+                    format!(
+                        "{}  {}  {}  {}  {}{}",
+                        c.credential_id,
+                        c.name,
+                        wire(&c.kind),
+                        wire(&c.role),
+                        if c.revoked { "revoked" } else { "active" },
+                        if c.roots.is_empty() {
+                            String::new()
+                        } else {
+                            format!("  roots {}", c.roots.len())
+                        }
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            let items = result.clients.iter().map(to_value).collect();
+            Ok(CmdOutput::new(text, &result).with_items(items))
+        }
+        Command::Clients(ClientsCommand::Add {
+            name,
+            kind,
+            role,
+            permissions,
+            idempotency_key,
+        }) => {
+            let permissions = if permissions.is_empty() {
+                None
+            } else {
+                Some(
+                    permissions
+                        .iter()
+                        .map(|p| p.parse::<zeus_api::Permission>())
+                        .collect::<ApiResult<std::collections::BTreeSet<_>>>()?,
+                )
+            };
+            let result = call::<ClientsAdd, C>(
+                client,
+                ClientsAddParams {
+                    name: name.clone(),
+                    kind: match kind {
+                        ClientKindOpt::Agent => zeus_api::ClientKind::Agent,
+                        ClientKindOpt::Service => zeus_api::ClientKind::Service,
+                    },
+                    role: role.map(|r| match r {
+                        ClientRoleOpt::Mcp => zeus_api::ClientRole::Mcp,
+                        ClientRoleOpt::A2a => zeus_api::ClientRole::A2a,
+                        ClientRoleOpt::Embedded => zeus_api::ClientRole::Embedded,
+                        ClientRoleOpt::Service => zeus_api::ClientRole::Service,
+                    }),
+                    permissions,
+                    idempotency_key: idempotency_key.clone(),
+                },
+            )
+            .await?;
+            Ok(CmdOutput::new(
+                format!(
+                    "created {} ({} {})\ntoken file: {}\nPoint the program at this file; the token is never printed.",
+                    result.client.name,
+                    wire(&result.client.kind),
+                    result.client.credential_id,
+                    result.credential_file
+                ),
+                &result,
+            ))
+        }
+        Command::Clients(ClientsCommand::Revoke { credential_id }) => {
+            let result = call::<ClientsRevoke, C>(
+                client,
+                ClientsRevokeParams {
+                    credential_id: credential_id.clone(),
+                    idempotency_key: None,
+                },
+            )
+            .await?;
+            Ok(CmdOutput::new(
+                format!(
+                    "revoked {} ({}); closed {} connection(s)",
+                    result.client.name, result.client.credential_id, result.connections_closed
+                ),
+                &result,
+            ))
+        }
         Command::Audit(AuditCommand::Tail { limit }) => {
             let result = call::<AuditTail, C>(
                 client,
@@ -368,6 +468,65 @@ pub async fn run_remote<C: Client + ?Sized>(
                 Exit::Failed(ErrorClass::Integrity)
             };
             Ok(CmdOutput::new(text, &result).with_exit(exit))
+        }
+        Command::Daemon(sub @ (DaemonCommand::KillSwitch | DaemonCommand::Release)) => {
+            use std::io::Write;
+            use zeus_api::methods::daemon::{KillSwitchAction, KillSwitchParams};
+            let terminal = terminal.ok_or_else(|| {
+                ApiError::new(
+                    codes::HUMAN_REQUIRED,
+                    "This action needs a controlling terminal.",
+                )
+            })?;
+            let release = matches!(sub, DaemonCommand::Release);
+            terminal
+                .output
+                .write_all(if release {
+                    b"Release the stop latch? Jobs stay paused. Type release: "
+                } else {
+                    b"Stop all downloads and revoke session grants? Type stop: "
+                })
+                .map_err(|e| ApiError::internal(e.to_string()))?;
+            terminal
+                .output
+                .flush()
+                .map_err(|e| ApiError::internal(e.to_string()))?;
+            std::thread::sleep(std::time::Duration::from_millis(750));
+            terminal
+                .discard_pending()
+                .map_err(|e| ApiError::internal(e.to_string()))?;
+            let mut answer = String::new();
+            terminal
+                .input
+                .read_line(&mut answer)
+                .map_err(|e| ApiError::internal(e.to_string()))?;
+            if answer.trim() != if release { "release" } else { "stop" } {
+                return Ok(CmdOutput::new(
+                    "Nothing changed.",
+                    &json!({"changed":false}),
+                ));
+            }
+            let result = call::<zeus_api::methods::DaemonKillSwitch, C>(
+                client,
+                KillSwitchParams {
+                    action: if release {
+                        KillSwitchAction::Release
+                    } else {
+                        KillSwitchAction::Engage
+                    },
+                    surface: Some(Surface::CliInteractive),
+                    reason: None,
+                },
+            )
+            .await?;
+            Ok(CmdOutput::new(
+                if result.engaged {
+                    "All work stopped; session grants revoked."
+                } else {
+                    "Stop latch released. Resume jobs individually."
+                },
+                &result,
+            ))
         }
         Command::Daemon(DaemonCommand::Stop) => {
             let result = call::<DaemonShutdown, C>(client, ShutdownParams::default()).await?;
@@ -433,9 +592,10 @@ pub async fn run_remote<C: Client + ?Sized>(
             Ok(CmdOutput::new(lines.join("\n"), &result).with_exit(worst))
         }
         other => Err(ApiError::not_implemented(match other {
-            Command::Auth => "zeus auth (provider wizard; llm.* methods are a later phase)",
+            Command::Auth => "auth needs the controlling-terminal command runner",
             Command::Tui => "zeus tui",
             Command::Mcp { .. } => "zeus mcp (rmcp transport binding)",
+            Command::A2a { .. } => "zeus a2a (standalone authenticated bridge)",
             _ => "this command needs no daemon connection",
         })),
     }
@@ -514,18 +674,60 @@ fn default_key(urls: &[String]) -> String {
     format!("cli-{}", &hasher.finalize().to_hex().as_str()[..16])
 }
 
+fn get_inputs(args: &GetArgs) -> ApiResult<Vec<String>> {
+    use std::io::Read;
+    const MAX_BYTES: u64 = 1024 * 1024;
+    let mut urls = args.urls.clone();
+    if let Some(path) = &args.input_file {
+        let error = || {
+            ApiError::invalid_params(
+                "URL input must be a readable UTF-8 regular file of at most 1 MiB",
+            )
+        };
+        let file = std::fs::File::open(path).map_err(|_| error())?;
+        let metadata = file.metadata().map_err(|_| error())?;
+        if !metadata.is_file() || metadata.len() > MAX_BYTES {
+            return Err(error());
+        }
+        // Bound the read even if another process grows the file after metadata().
+        let mut text = String::new();
+        file.take(MAX_BYTES + 1)
+            .read_to_string(&mut text)
+            .map_err(|_| error())?;
+        if text.len() as u64 > MAX_BYTES {
+            return Err(error());
+        }
+        urls.extend(
+            text.trim_start_matches('\u{feff}')
+                .lines()
+                .map(str::trim)
+                .filter(|line| !line.is_empty() && !line.starts_with('#'))
+                .map(str::to_owned),
+        );
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    urls.retain(|url| seen.insert(url.clone()));
+    if urls.is_empty() || urls.len() > 50 {
+        return Err(ApiError::invalid_params(
+            "get accepts 1–50 unique URLs per request",
+        ));
+    }
+    Ok(urls)
+}
+
 async fn get<C: Client + ?Sized>(
     args: &GetArgs,
     global: &GlobalArgs,
     client: &C,
     color: bool,
 ) -> ApiResult<CmdOutput> {
+    let inputs = get_inputs(args)?;
     let mut extra_headers = BTreeMap::new();
     for header in &args.headers {
         let (name, value) = parse_header(header)?;
         extra_headers.insert(name, value);
     }
-    if args.urls.len() > 1 && args.sha256.is_some() {
+    if inputs.len() > 1 && args.sha256.is_some() {
         return Err(ApiError::invalid_params("--sha256 needs exactly one URL"));
     }
     let expected = args
@@ -536,8 +738,7 @@ async fn get<C: Client + ?Sized>(
                 .map_err(|_| ApiError::invalid_params("--sha256 must be 64 hex digits"))
         })
         .transpose()?;
-    let urls = args
-        .urls
+    let urls = inputs
         .iter()
         .map(|u| {
             HttpUrl::parse(u)
@@ -580,7 +781,7 @@ async fn get<C: Client + ?Sized>(
     let key = args
         .idempotency_key
         .clone()
-        .unwrap_or_else(|| default_key(&args.urls));
+        .unwrap_or_else(|| default_key(&inputs));
     let result = call::<JobsEnqueue, C>(
         client,
         EnqueueParams {
@@ -632,6 +833,7 @@ async fn wait_for<C: Client + ?Sized>(
     color: bool,
 ) -> ApiResult<CmdOutput> {
     let started = Instant::now();
+    let mut since_seq = None;
     loop {
         let remaining = timeout.map(|t| t.saturating_sub(started.elapsed()));
         if remaining.is_some_and(|r| r.is_zero()) {
@@ -641,6 +843,8 @@ async fn wait_for<C: Client + ?Sized>(
                     job_ids: ids.clone(),
                     until: WaitUntil::AnyChange,
                     timeout_ms: 1,
+                    since_seq,
+                    progress_bytes: None,
                 },
             )
             .await?;
@@ -655,11 +859,14 @@ async fn wait_for<C: Client + ?Sized>(
             client,
             JobsWaitParams {
                 job_ids: ids.clone(),
-                until: WaitUntil::AllTerminal,
+                until: WaitUntil::SettledOrBlocked,
                 timeout_ms: slice,
+                since_seq,
+                progress_bytes: None,
             },
         )
         .await?;
+        since_seq = Some(result.head_seq);
         let blocked_on_person = result.jobs.iter().any(|j| {
             matches!(
                 j.state,
@@ -730,7 +937,7 @@ async fn decide<C: Client + ?Sized>(
     let approval_id = id.parse().map_err(|_| {
         ApiError::invalid_params("an approval id looks like ap_ followed by 26 characters")
     })?;
-    let view = call::<ApprovalsGet, C>(client, ApprovalsGetParams { approval_id }).await?;
+    let view = read_approval(client, approval_id).await?;
     let choice = trust::prompt(&view, terminal)
         .map_err(|e| ApiError::new(codes::HUMAN_REQUIRED, e.to_string()))?;
     let (outcome, scope) = match (choice, deny) {
@@ -765,23 +972,64 @@ async fn decide<C: Client + ?Sized>(
             (never || chose_never).then_some(GrantScope::Never),
         ),
     };
-    let result = call::<ApprovalsDecide, C>(
-        client,
-        ApprovalsDecideParams {
-            approval_id,
-            request_hash: view.request_hash,
-            outcome,
-            scope,
-            channel: Surface::CliInteractive,
-        },
-    )
-    .await?;
-    let text = format!(
-        "{}  {}",
-        result.approval.approval.id,
-        wire(&result.approval.approval.state)
-    );
+    let result = send_decision(client, &view, outcome, scope, Surface::CliInteractive).await?;
+    let text = format!("{}  decision recorded", view.approval.id);
     Ok(CmdOutput::new(text, &result))
+}
+
+async fn read_approval<C: Client + ?Sized>(
+    client: &C,
+    id: zeus_types::ApprovalId,
+) -> ApiResult<zeus_api::methods::sessions::ApprovalView> {
+    let value = client
+        .call_raw("approvals.get", json!({"approval_id": id}))
+        .await?;
+    let request = value
+        .get("approval")
+        .ok_or_else(|| ApiError::internal("approval response is missing its request"))?;
+    trust::validate_request(request)?;
+    serde_json::from_value(request.clone())
+        .map_err(|_| ApiError::internal("invalid approval from daemon"))
+}
+
+async fn send_decision<C: Client + ?Sized>(
+    client: &C,
+    view: &zeus_api::methods::sessions::ApprovalView,
+    outcome: DecideOutcome,
+    scope: Option<GrantScope>,
+    surface: Surface,
+) -> ApiResult<Value> {
+    let hash = zeus_verify::canonical::request_hash(&view.facts)
+        .map_err(|_| ApiError::internal("invalid approval facts"))?;
+    let confirmation = if outcome == DecideOutcome::Deny {
+        "gesture"
+    } else {
+        trust::confirmation(view, scope)?
+    };
+    let mut params = json!({"approval_id": view.approval.id, "request_hash": hash, "outcome": outcome, "channel": surface, "confirmation": confirmation});
+    if let Some(scope) = scope {
+        params["scope"] = json!(scope);
+    }
+    client.call_raw("approvals.decide", params).await
+}
+
+/// Review from the TUI using the same controlling-terminal trust surface as CLI approvals.
+pub async fn review_approval<C: Client + ?Sized>(
+    client: &C,
+    id: zeus_types::ApprovalId,
+) -> ApiResult<String> {
+    let view = read_approval(client, id).await?;
+    let mut terminal =
+        trust::open_terminal().map_err(|e| ApiError::new(codes::HUMAN_REQUIRED, e.to_string()))?;
+    let choice = trust::prompt(&view, &mut terminal)
+        .map_err(|e| ApiError::new(codes::HUMAN_REQUIRED, e.to_string()))?;
+    let (outcome, scope) = match choice {
+        Choice::Later => return Ok("Left pending.".into()),
+        Choice::Approve(scope) => (DecideOutcome::Approve, scope),
+        Choice::Deny { never } => (DecideOutcome::Deny, never.then_some(GrantScope::Never)),
+    };
+    send_decision(client, &view, outcome, scope, Surface::CliInteractive).await?;
+    Ok("Decision recorded.".into())
 }
 
 /// Run a command that needs no daemon connection.
@@ -813,10 +1061,8 @@ pub async fn run_local(
             ))
         }
         Command::Daemon(DaemonCommand::Status) => daemon_status_local(paths),
-        Command::Daemon(DaemonCommand::Install) => daemon_run(&["init"]),
-        Command::Daemon(DaemonCommand::Start) => Err(ApiError::not_implemented(
-            "zeus daemon start (spawning zeusd detached, autostart registration)",
-        )),
+        Command::Daemon(DaemonCommand::Install) => daemon_run(paths, &["init"]),
+        Command::Daemon(DaemonCommand::Start) => daemon_start(paths).await,
         Command::NativeHost(sub) => native_host(sub, global, paths),
         _ => Err(ApiError::internal("not a local command")),
     }
@@ -831,6 +1077,7 @@ pub fn needs_daemon(command: &Command) -> bool {
             | Command::Daemon(DaemonCommand::Install | DaemonCommand::Start)
             | Command::NativeHost(_)
             | Command::Mcp { .. }
+            | Command::A2a { .. }
             | Command::Tui
             | Command::Auth
     )
@@ -873,17 +1120,78 @@ fn zeusd_path() -> ApiResult<PathBuf> {
         })
 }
 
-fn daemon_run(args: &[&str]) -> ApiResult<CmdOutput> {
-    let exe = zeusd_path()?;
-    let output = std::process::Command::new(&exe)
-        .args(args)
-        .output()
-        .map_err(|e| {
-            ApiError::new(
+async fn daemon_start(paths: &ZeusPaths) -> ApiResult<CmdOutput> {
+    use crate::connect::{Identity, connect};
+    if connect(paths, Identity::Cli).await.is_ok() {
+        return Ok(CmdOutput::new(
+            "daemon is already running",
+            &json!({"running": true}),
+        ));
+    }
+    // Installation is explicit: never silently create a new identity during a failed connection.
+    crate::connect::load_secret(paths)?;
+    crate::connect::load_credential(paths, Identity::Cli)?;
+    let mut command = zeusd_command(paths)?;
+    command
+        .arg("run")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x0000_0008 | 0x0000_0200); // DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+    }
+    let mut child = command.spawn().map_err(|e| {
+        ApiError::new(
+            codes::UNAVAILABLE,
+            format!("cannot start zeusd: {}", e.kind()),
+        )
+    })?;
+    for _ in 0..50 {
+        if connect(paths, Identity::Cli).await.is_ok() {
+            return Ok(CmdOutput::new(
+                "daemon started",
+                &json!({"running":true,"pid":child.id()}),
+            ));
+        }
+        if let Some(status) = child
+            .try_wait()
+            .map_err(|e| ApiError::internal(e.to_string()))?
+        {
+            return Err(ApiError::new(
                 codes::UNAVAILABLE,
-                format!("cannot run {}: {e}", exe.display()),
-            )
-        })?;
+                format!(
+                    "zeusd stopped during startup ({status}); run zeusd run to see the diagnostic"
+                ),
+            ));
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    Err(ApiError::new(
+        codes::UNAVAILABLE,
+        "zeusd did not become ready in five seconds; run zeusd run to see the diagnostic",
+    ))
+}
+
+/// A `zeusd` command bound to the same profile as this CLI, whatever `ZEUS_PROFILE` the shell holds.
+fn zeusd_command(paths: &ZeusPaths) -> ApiResult<std::process::Command> {
+    let mut command = std::process::Command::new(zeusd_path()?);
+    command.env(
+        "ZEUS_PROFILE",
+        paths.profile.as_deref().unwrap_or("default"),
+    );
+    Ok(command)
+}
+
+fn daemon_run(paths: &ZeusPaths, args: &[&str]) -> ApiResult<CmdOutput> {
+    let exe = zeusd_path()?;
+    let output = zeusd_command(paths)?.args(args).output().map_err(|e| {
+        ApiError::new(
+            codes::UNAVAILABLE,
+            format!("cannot run {}: {e}", exe.display()),
+        )
+    })?;
     let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
     let exit = if output.status.success() {
         Exit::Success
@@ -1102,6 +1410,8 @@ mod tests {
                 session: AuthenticateResult {
                     client_id: "cli_x".into(),
                     kind: ClientKind::Admin,
+                    credential_kind: ClientKind::Admin,
+                    downgraded: false,
                     role: ClientRole::Cli,
                     permissions: vec![],
                     limits: ConnectionLimits::STANDARD,
@@ -1154,6 +1464,280 @@ mod tests {
 
     fn parse(args: &[&str]) -> Cli {
         Cli::try_parse_from(std::iter::once("zeus").chain(args.iter().copied())).unwrap()
+    }
+
+    #[tokio::test]
+    async fn artifact_commands_preserve_paging_and_retry_keys_and_dry_run_does_not_ingest() {
+        let fake = Fake::new();
+        fake.answer(
+            "artifacts.list",
+            Ok(json!({"items":[],"next_cursor":"next-page"})),
+        );
+        let cli = parse(&[
+            "artifacts",
+            "ls",
+            "--limit",
+            "7",
+            "--cursor",
+            "old-page",
+            "--state",
+            "active",
+        ]);
+        let output = run_remote(&cli.command, &cli.global, &fake, false, None)
+            .await
+            .unwrap();
+        assert!(output.text.contains("next-page"));
+        assert_eq!(fake.calls_to("artifacts.list")[0]["cursor"], "old-page");
+        assert_eq!(fake.calls_to("artifacts.list")[0]["state"], "active");
+        fake.answer(
+            "artifacts.ingest",
+            Ok(json!({
+                "artifact":{"name":"data"},"created":true,"replayed":false
+            })),
+        );
+        let cli = parse(&[
+            "artifacts",
+            "ingest",
+            "/root/data",
+            "--idempotency-key",
+            "ingest-one",
+        ]);
+        let mut global = cli.global.clone();
+        global.dry_run = true;
+        assert!(
+            run_remote(&cli.command, &global, &fake, false, None)
+                .await
+                .is_err()
+        );
+        assert!(fake.calls_to("artifacts.ingest").is_empty());
+        run_remote(&cli.command, &cli.global, &fake, false, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            fake.calls_to("artifacts.ingest")[0]["idempotency_key"],
+            "ingest-one"
+        );
+        assert!(fake.calls_to("approvals.decide").is_empty());
+    }
+
+    #[tokio::test]
+    async fn artifact_lifecycle_commands_preview_first_and_apply_exact_saved_receipts() {
+        let fake = Fake::new();
+        let id = zeus_types::IdGenerator::new().artifact_id().to_string();
+        let preview = json!({"plan":{
+            "version":1,"artifact_id":id,"expected_record_blake3":"a".repeat(64),
+            "blake3":"b".repeat(64),"sha256":"c".repeat(64),"size_bytes":42,"quarantined":false,
+            "current_retention":"evictable","current_retain_until":null,
+            "operation":{"kind":"materialize","path":"/downloads/new.txt"},"requires_approval":false,
+            "expires_at":"2026-10-21T12:00:00.000Z"},"plan_hash":"d".repeat(64)});
+        fake.answer("artifacts.lifecycle.preview", Ok(preview.clone()));
+        let cli = parse(&["artifacts", "materialize", &id, "/downloads/new.txt"]);
+        run_remote(&cli.command, &cli.global, &fake, false, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            fake.calls_to("artifacts.lifecycle.preview")[0]["operation"],
+            preview["plan"]["operation"]
+        );
+        assert!(fake.calls_to("artifacts.lifecycle.apply").is_empty());
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("preview.json");
+        std::fs::write(&file, serde_json::to_vec(&preview).unwrap()).unwrap();
+        let filename = file.display().to_string();
+        let cli = parse(&[
+            "artifacts",
+            "apply",
+            &filename,
+            "--idempotency-key",
+            "copy-key",
+        ]);
+        let mut dry = cli.global.clone();
+        dry.dry_run = true;
+        run_remote(&cli.command, &dry, &fake, false, None)
+            .await
+            .unwrap();
+        assert!(fake.calls_to("artifacts.lifecycle.apply").is_empty());
+        fake.answer("artifacts.lifecycle.apply", Ok(json!({"applied":true,"artifact":{"id":id},"path":"/downloads/new.txt","mode":"copy","replayed":false})));
+        run_remote(&cli.command, &cli.global, &fake, false, None)
+            .await
+            .unwrap();
+        let applied = &fake.calls_to("artifacts.lifecycle.apply")[0];
+        assert_eq!(applied["plan"], preview["plan"]);
+        assert_eq!(applied["plan_hash"], preview["plan_hash"]);
+        assert_eq!(applied["idempotency_key"], "copy-key");
+        assert!(fake.calls_to("approvals.decide").is_empty());
+        std::fs::write(&file, b"ZEUS-CANARY-invalid-preview").unwrap();
+        let error = run_remote(&cli.command, &cli.global, &fake, false, None)
+            .await
+            .unwrap_err();
+        assert!(!error.to_string().contains("ZEUS-CANARY-"));
+        assert_eq!(fake.calls_to("artifacts.lifecycle.apply").len(), 1);
+    }
+
+    #[tokio::test]
+    async fn input_files_preserve_exact_signed_urls_and_validate_the_whole_batch_before_rpc() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("urls.txt");
+        let signed = "https://example.org/data?signature=ZEUS-CANARY-query";
+        std::fs::write(
+            &path,
+            format!("\u{feff}# comment\r\n{signed}\r\n\n{signed}\nhttps://example.org/other\n"),
+        )
+        .unwrap();
+        let cli = parse(&["get", "--input-file", path.to_str().unwrap()]);
+        let Command::Get(args) = &cli.command else {
+            panic!("expected get");
+        };
+        let urls = get_inputs(args).unwrap();
+        assert_eq!(urls, vec![signed, "https://example.org/other"]);
+        let fake = Fake::new();
+        // A later invalid URL refuses the entire request, including earlier valid lines.
+        std::fs::write(&path, format!("{signed}\nnot-a-url-ZEUS-CANARY-invalid")).unwrap();
+        let error = run_remote(&cli.command, &cli.global, &fake, false, None)
+            .await
+            .unwrap_err();
+        assert!(!error.envelope().message.contains("ZEUS-CANARY-"));
+        assert!(fake.calls_to("jobs.enqueue").is_empty());
+        std::fs::write(&path, "x".repeat(1024 * 1024 + 1)).unwrap();
+        assert!(get_inputs(args).is_err());
+        std::fs::write(
+            &path,
+            (0..51)
+                .map(|i| format!("https://example.org/{i}\n"))
+                .collect::<String>(),
+        )
+        .unwrap();
+        assert!(get_inputs(args).is_err());
+    }
+
+    #[tokio::test]
+    async fn cloud_submit_dispatch_preserves_plan_hash_and_dry_run_never_mutates() {
+        let client = Fake::new();
+        let hash = "a".repeat(64);
+        let cli = parse(&[
+            "cloud",
+            "submit",
+            "clp_example",
+            "--plan-hash",
+            &hash,
+            "--idempotency-key",
+            "retry-key",
+        ]);
+        assert!(
+            run_remote(&cli.command, &cli.global, &client, false, None)
+                .await
+                .is_err()
+        );
+        let calls = client.calls_to("cloud.submit");
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0]["plan_hash"], hash);
+        assert_eq!(calls[0]["idempotency_key"], "retry-key");
+        assert!(client.calls_to("approvals.decide").is_empty());
+        let mut global = cli.global;
+        global.dry_run = true;
+        assert!(
+            run_remote(&cli.command, &global, &client, false, None)
+                .await
+                .is_err()
+        );
+        assert_eq!(client.calls_to("cloud.submit").len(), 1);
+    }
+
+    #[tokio::test]
+    async fn workflow_commands_send_the_plan_file_and_hash_and_never_decide() {
+        let client = Fake::new();
+        let dir = std::env::temp_dir().join(format!("zeus-cli-plan-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("plan.json");
+        std::fs::write(
+            &file,
+            serde_json::json!({"plan_version":0,"name":"papers","allowed_domains":["a.example"],
+                "sources":[{"type":"start_urls","urls":["https://a.example/list"]}],
+                "extract":{"items":{"kind":"css","query":"a[href]"},"fields":{"url":{"extract":{"kind":"attr","name":"href"}}}},
+                "fetch":{"min_interval_ms":1000,"max_concurrency_per_host":1},
+                "budgets":{"max_pages":2,"max_files":5,"max_bytes":1000000,"max_duration_ms":60000,"max_depth":1},
+                "sinks":{"dest_dir":"papers"}})
+            .to_string(),
+        )
+        .unwrap();
+        let plan_id = "plan_01M45NHJ2AHWMXT8JVJ7BEEJX7";
+        let hash = "b".repeat(64);
+        client.answer(
+            "workflows.plan",
+            Ok(serde_json::json!({"plan_id":plan_id,"samples":[],"plan_schema":{},"diagnostics":[],"plan_hash":hash})),
+        );
+        let cli = parse(&[
+            "workflow",
+            "plan",
+            "--goal",
+            "papers",
+            "--url",
+            "https://a.example/list",
+            "--candidate",
+            file.to_str().unwrap(),
+        ]);
+        let output = run_remote(&cli.command, &cli.global, &client, false, None)
+            .await
+            .unwrap();
+        assert!(output.text.contains(&hash));
+        let sent = client.calls_to("workflows.plan");
+        assert_eq!(sent[0]["candidate"]["name"], "papers");
+        assert_eq!(sent[0]["start_urls"][0], "https://a.example/list");
+        client.answer(
+            "workflows.run",
+            Ok(serde_json::json!({"run_id":"run_01M45NHJ2AHWMXT8JVJ7BEEJX7","status":"awaiting_approval",
+                "approval_id":"ap_01M45NHJ2AHWMXT8JVJ7BEEJX7"})),
+        );
+        let run = parse(&["workflow", "run", plan_id, "--plan-hash", &hash]);
+        let output = run_remote(&run.command, &run.global, &client, false, None)
+            .await
+            .unwrap();
+        assert!(output.text.contains("zeus approvals approve ap_"));
+        assert_eq!(client.calls_to("workflows.run")[0]["plan_hash"], hash);
+        assert!(client.calls_to("approvals.decide").is_empty());
+        let mut global = run.global;
+        global.dry_run = true;
+        assert!(
+            run_remote(&run.command, &global, &client, false, None)
+                .await
+                .is_err()
+        );
+        assert_eq!(client.calls_to("workflows.run").len(), 1);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn clients_add_names_the_token_file_and_never_prints_a_token() {
+        let client = Fake::new();
+        client.answer(
+            "clients.add",
+            Ok(serde_json::json!({"client":{"credential_id":"cli_01M45NHJ2AHWMXT8JVJ7BEEJX7","name":"ogun",
+                "kind":"service","role":"service","permissions":["jobs.read"],"created_at":"2026-10-18T00:00:00.000Z",
+                "last_used_at":null,"revoked":false,"revoked_at":null},
+                "credential_file":"/state/credentials/ogun.token","replayed":false})),
+        );
+        let cli = parse(&["clients", "add", "--name", "ogun", "--kind", "service"]);
+        let output = run_remote(&cli.command, &cli.global, &client, false, None)
+            .await
+            .unwrap();
+        assert!(output.text.contains("/state/credentials/ogun.token"));
+        assert!(!output.text.contains("zt1_"));
+        let sent = client.calls_to("clients.add");
+        assert_eq!(sent[0]["kind"], "service");
+        assert_eq!(sent[0]["name"], "ogun");
+    }
+
+    #[tokio::test]
+    async fn cloud_account_setup_refuses_agent_connection_before_collecting_input() {
+        let mut client = Fake::new();
+        client.session.kind = ClientKind::Agent;
+        client.session.downgraded = true;
+        let cli = parse(&["cloud", "accounts", "configure"]);
+        let error = run_remote(&cli.command, &cli.global, &client, false, None)
+            .await
+            .unwrap_err();
+        assert_eq!(error.envelope().code.to_string(), "api.human_required");
+        assert!(client.calls.lock().unwrap().is_empty());
     }
 
     const JOB: &str = "job_01M45NHJ2AHWMXT8JVJ7BEEJX7";
@@ -1313,27 +1897,23 @@ mod tests {
     #[tokio::test]
     async fn an_approval_is_decided_with_the_hash_the_person_saw() {
         let fake = Fake::new();
-        let view = json!({
-            "id": "ap_01M45NHJ3XS0QXG9T42HHN2YR8", "kind": "session_grant", "state": "pending",
-            "origin": "https://portal.example.org", "allowed_scopes": ["once", "site"], "reason_codes": ["session.first_use"],
-            "summary": { "title": "x" }, "created_at": "2026-10-05T09:15:30.301Z", "expires_at": "2026-10-06T09:15:30.301Z",
-            "request_hash": "ab".repeat(32), "facts": { "files": 1 }
-        });
-        fake.answer("approvals.get", Ok(view.clone()));
+        let view = trust::test_request();
+        fake.answer("approvals.get", Ok(json!({"approval":view.clone()})));
         let mut decided = view.clone();
         decided["state"] = json!("approved");
         fake.answer("approvals.decide", Ok(json!({ "approval": decided })));
         let mut terminal = Terminal {
             input: Box::new(std::io::Cursor::new(b"2\n".to_vec())),
             output: Box::new(Vec::new()),
+            physical_input: None,
         };
         let cli = parse(&["approvals", "approve", "ap_01M45NHJ3XS0QXG9T42HHN2YR8"]);
         let output = run_remote(&cli.command, &cli.global, &fake, false, Some(&mut terminal))
             .await
             .unwrap();
-        assert!(output.text.contains("approved"));
+        assert!(output.text.contains("decision recorded"));
         let sent = &fake.calls_to("approvals.decide")[0];
-        assert_eq!(sent["request_hash"], "ab".repeat(32));
+        assert_eq!(sent["request_hash"], view["request_hash"]);
         assert_eq!(sent["scope"], "site");
         assert_eq!(sent["channel"], "cli_interactive");
     }
@@ -1341,15 +1921,12 @@ mod tests {
     #[tokio::test]
     async fn a_mismatched_choice_decides_nothing() {
         let fake = Fake::new();
-        let view = json!({
-            "id": "ap_01M45NHJ3XS0QXG9T42HHN2YR8", "kind": "session_grant", "state": "pending", "allowed_scopes": ["once", "site"],
-            "reason_codes": [], "summary": { "title": "x" }, "created_at": "2026-10-05T09:15:30.301Z",
-            "expires_at": "2026-10-06T09:15:30.301Z", "request_hash": "cd".repeat(32), "facts": {}
-        });
-        fake.answer("approvals.get", Ok(view));
+        let view = trust::test_request();
+        fake.answer("approvals.get", Ok(json!({"approval":view})));
         let mut terminal = Terminal {
             input: Box::new(std::io::Cursor::new(b"n\n".to_vec())),
             output: Box::new(Vec::new()),
+            physical_input: None,
         };
         let cli = parse(&["approvals", "approve", "ap_01M45NHJ3XS0QXG9T42HHN2YR8"]);
         let output = run_remote(&cli.command, &cli.global, &fake, false, Some(&mut terminal))
@@ -1385,6 +1962,7 @@ mod tests {
             config_dir: dir.path().join("c"),
             runtime_dir: dir.path().join("r"),
             user_identity: "t".into(),
+            profile: None,
         };
         let cli = parse(&["completions", "bash"]);
         assert!(!needs_daemon(&cli.command));
@@ -1412,6 +1990,7 @@ mod tests {
             config_dir: dir.path().join("c"),
             runtime_dir: dir.path().join("r"),
             user_identity: "t".into(),
+            profile: None,
         };
         let host = dir.path().join("zeus-native-host");
         let cli = parse(&[

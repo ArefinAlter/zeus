@@ -7,7 +7,7 @@
 use serde_json::Value;
 
 use crate::error::{ApiError, codes};
-use crate::kind::{ClientIdentity, ClientKind, ClientRole, Permission};
+use crate::kind::{ClientIdentity, ClientRole, Permission};
 
 /// Delivery stage of a method.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -35,6 +35,8 @@ pub struct MethodSpec {
     pub human_param: Option<&'static str>,
     /// Restrict to one client role.
     pub role: Option<ClientRole>,
+    /// The capability that gates the method (05 section 8.2), if any.
+    pub capability: Option<&'static str>,
 }
 
 impl MethodSpec {
@@ -47,6 +49,7 @@ impl MethodSpec {
             stage: Stage::Mvp,
             human_param: None,
             role: None,
+            capability: None,
         }
     }
 
@@ -85,6 +88,11 @@ impl MethodSpec {
         self
     }
 
+    const fn gated(mut self, capability: &'static str) -> Self {
+        self.capability = Some(capability);
+        self
+    }
+
     /// True when the method is pre-authentication.
     pub const fn is_pre_auth(&self) -> bool {
         self.permission.is_none()
@@ -95,6 +103,18 @@ use Permission::*;
 
 /// Every method of the daemon API. See ARCHITECTURE section 5.4.
 pub const METHODS: &[MethodSpec] = &[
+    MethodSpec::needs("cloud.accounts.list", JobsRead),
+    MethodSpec::needs("cloud.accounts.configure", ConfigWrite)
+        .mutates()
+        .human(),
+    MethodSpec::needs("cloud.accounts.revoke", ConfigWrite)
+        .mutates()
+        .human(),
+    MethodSpec::needs("cloud.plan", JobsWrite).mutates(),
+    MethodSpec::needs("cloud.submit", JobsWrite).mutates(),
+    MethodSpec::needs("cloud.list", JobsRead),
+    MethodSpec::needs("cloud.get", JobsRead),
+    MethodSpec::needs("cloud.control", JobsControl).mutates(),
     MethodSpec::pre_auth("daemon.hello"),
     MethodSpec::pre_auth("daemon.authenticate"),
     MethodSpec::needs("daemon.ping", DaemonRead),
@@ -109,11 +129,11 @@ pub const METHODS: &[MethodSpec] = &[
     MethodSpec::needs("jobs.enqueue", JobsWrite).mutates(),
     MethodSpec::needs("jobs.list", JobsRead),
     MethodSpec::needs("jobs.get", JobsRead).human_if("reveal_urls"),
-    MethodSpec::needs("jobs.wait", JobsRead),
+    MethodSpec::needs("jobs.wait", JobsRead).gated("jobs.wait"),
     MethodSpec::needs("jobs.control", JobsControl).mutates(),
     MethodSpec::needs("jobs.verify", JobsRead),
-    MethodSpec::needs("events.subscribe", EventsRead),
-    MethodSpec::needs("events.unsubscribe", EventsRead),
+    MethodSpec::needs("events.subscribe", EventsRead).gated("events"),
+    MethodSpec::needs("events.unsubscribe", EventsRead).gated("events"),
     MethodSpec::needs("sessions.list", SessionsRead),
     MethodSpec::needs("sessions.request", SessionsRequest).mutates(),
     MethodSpec::needs("sessions.revoke", SessionsRevoke)
@@ -126,27 +146,42 @@ pub const METHODS: &[MethodSpec] = &[
         .human(),
     MethodSpec::needs("files.list", FilesRead),
     MethodSpec::needs("files.organize", FilesWrite)
+        .gated("files.organize")
         .mutates()
         .later(),
     MethodSpec::needs("files.convert", FilesWrite)
+        .gated("files.convert")
         .mutates()
         .later(),
     MethodSpec::needs("files.undo", FilesWrite)
+        .gated("files.organize")
         .mutates()
         .later(),
     MethodSpec::needs("workflows.plan", WorkflowsPlan)
+        .gated("workflows")
         .mutates()
         .later(),
-    MethodSpec::needs("workflows.dry_run", WorkflowsPlan).later(),
+    MethodSpec::needs("workflows.dry_run", WorkflowsPlan)
+        .gated("workflows")
+        .later(),
     MethodSpec::needs("workflows.run", WorkflowsRun)
+        .gated("workflows")
         .mutates()
         .later(),
-    MethodSpec::needs("workflows.get", WorkflowsPlan).later(),
-    MethodSpec::needs("workflows.list", WorkflowsPlan).later(),
+    MethodSpec::needs("workflows.get", WorkflowsPlan)
+        .gated("workflows")
+        .later(),
+    MethodSpec::needs("workflows.list", WorkflowsPlan)
+        .gated("workflows")
+        .later(),
     MethodSpec::needs("workflows.control", WorkflowsRun)
+        .gated("workflows")
         .mutates()
         .later(),
-    MethodSpec::needs("workflows.manifest", WorkflowsPlan).later(),
+    MethodSpec::needs("workflows.manifest", WorkflowsPlan)
+        .gated("workflows")
+        .mutates()
+        .later(),
     MethodSpec::needs("audit.tail", AuditRead),
     MethodSpec::needs("audit.verify", AuditRead),
     MethodSpec::needs("config.get", ConfigRead),
@@ -154,24 +189,68 @@ pub const METHODS: &[MethodSpec] = &[
         .mutates()
         .human(),
     MethodSpec::needs("doctor.run", DaemonRead),
-    MethodSpec::needs("llm.status", LlmRead).later(),
+    MethodSpec::needs("llm.status", LlmRead)
+        .gated("llm")
+        .later(),
     MethodSpec::needs("llm.configure", LlmConfigure)
+        .gated("llm")
         .mutates()
+        .human()
+        .later(),
+    MethodSpec::needs("llm.auth.start", LlmConfigure)
+        .human()
+        .later(),
+    MethodSpec::needs("llm.auth.status", LlmConfigure)
+        .human()
+        .later(),
+    MethodSpec::needs("llm.auth.cancel", LlmConfigure)
+        .human()
+        .later(),
+    MethodSpec::needs("llm.auth.sign_out", LlmConfigure)
         .human()
         .later(),
     MethodSpec::needs("clients.list", DaemonAdmin)
-        .human()
-        .later(),
-    MethodSpec::needs("clients.revoke", DaemonAdmin)
+        .gated("clients")
+        .human(),
+    MethodSpec::needs("clients.add", DaemonAdmin)
+        .gated("clients")
         .mutates()
-        .human()
+        .human(),
+    MethodSpec::needs("clients.revoke", DaemonAdmin)
+        .gated("clients")
+        .mutates()
+        .human(),
+    MethodSpec::needs("files.roots.register", FilesRootsRegister)
+        .gated("files.roots")
+        .mutates()
+        .only_role(ClientRole::Service),
+    MethodSpec::needs("artifacts.get", FilesRead)
+        .gated("artifacts")
+        .later(),
+    MethodSpec::needs("artifacts.list", FilesRead)
+        .gated("artifacts")
+        .later(),
+    MethodSpec::needs("artifacts.lineage", FilesRead)
+        .gated("artifacts")
+        .later(),
+    MethodSpec::needs("artifacts.ingest", FilesWrite)
+        .gated("artifacts")
+        .mutates()
+        .later(),
+    MethodSpec::needs("artifacts.lifecycle.preview", FilesWrite)
+        .gated("artifacts")
+        .later(),
+    MethodSpec::needs("artifacts.lifecycle.apply", FilesWrite)
+        .gated("artifacts")
+        .mutates()
         .later(),
 ];
 
 /// The relay method for native-messaging frames. It is a notification, not an RPC method, so it has its own
 /// entry: only a `native_host`-role credential holding `nm.relay` may send it.
-pub const NM_FRAME: MethodSpec =
-    MethodSpec::needs("nm.frame", NmRelay).only_role(ClientRole::NativeHost);
+pub const NM_FRAME: MethodSpec = MethodSpec::needs("nm.frame", NmRelay)
+    .gated("nm.relay")
+    .only_role(ClientRole::NativeHost);
 
 /// Look a method up by wire name.
 pub fn lookup(name: &str) -> Option<&'static MethodSpec> {
@@ -190,6 +269,13 @@ pub fn authorize(
         return Ok(());
     }
     let identity = identity.ok_or_else(ApiError::not_authenticated)?;
+    if identity.role == ClientRole::NativeHost
+        && spec
+            .permission
+            .is_some_and(|permission| !ClientRole::native_host_permissions().contains(&permission))
+    {
+        return Err(ApiError::permission_denied(spec.name));
+    }
     if let Some(permission) = spec.permission
         && !identity.has(permission)
     {
@@ -203,7 +289,7 @@ pub fn authorize(
     let human_by_param = spec
         .human_param
         .is_some_and(|name| params.get(name).and_then(Value::as_bool).unwrap_or(false));
-    if (spec.human_only || human_by_param) && identity.kind < ClientKind::Human {
+    if (spec.human_only || human_by_param) && !identity.kind.is_human_capable() {
         return Err(ApiError::new(
             codes::HUMAN_REQUIRED,
             format!("{} can only be called by a human-kind client", spec.name),
@@ -212,10 +298,46 @@ pub fn authorize(
     Ok(())
 }
 
+/// Step 4 of 05 section 7.4: the method's capability, and that of a gated parameter, must have been negotiated in
+/// `daemon.hello`. The gated parameters are `idempotency_key` on mutating methods (`idempotency`) and `since_seq`
+/// of `events.subscribe` (`events.replay`).
+pub fn require_capabilities(
+    spec: &MethodSpec,
+    params: &Value,
+    negotiated: &std::collections::BTreeSet<String>,
+) -> Result<(), ApiError> {
+    let present = |name: &str| params.get(name).is_some_and(|v| !v.is_null());
+    let needed = spec
+        .capability
+        .into_iter()
+        .chain(
+            (spec.mutating && present("idempotency_key"))
+                .then_some(crate::capabilities::IDEMPOTENCY),
+        )
+        .chain(
+            (spec.name == "events.subscribe" && present("since_seq"))
+                .then_some(crate::capabilities::EVENTS_REPLAY),
+        );
+    for capability in needed {
+        if !negotiated.contains(capability) {
+            return Err(ApiError::new(
+                codes::CAPABILITY_MISSING,
+                format!(
+                    "{} needs capability `{capability}`, which this connection did not negotiate",
+                    spec.name
+                ),
+            )
+            .with_detail("capability", capability));
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::auth::CredentialId;
+    use crate::kind::ClientKind;
     use std::collections::BTreeSet;
 
     fn identity(kind: ClientKind, role: ClientRole) -> ClientIdentity {
@@ -287,15 +409,22 @@ mod tests {
             .map(|m| m.name)
             .collect();
         let expected: BTreeSet<&str> = [
+            "cloud.plan",
+            "cloud.submit",
+            "cloud.control",
             "jobs.enqueue",
             "jobs.control",
             "sessions.request",
             "files.organize",
             "files.convert",
             "files.undo",
+            "files.roots.register",
+            "artifacts.ingest",
+            "artifacts.lifecycle.apply",
             "workflows.plan",
             "workflows.run",
             "workflows.control",
+            "workflows.manifest",
         ]
         .into_iter()
         .collect();
@@ -350,12 +479,94 @@ mod tests {
     }
 
     #[test]
+    fn native_relay_cannot_use_broad_legacy_permissions_for_general_api_authority() {
+        let host = identity(ClientKind::Human, ClientRole::NativeHost);
+        // Deliberately inject the old broad identity: the table must still protect every method.
+        assert!(host.has(Permission::ApprovalsDecide));
+        for method in METHODS.iter().filter(|method| !method.is_pre_auth()) {
+            let permitted = method.permission == Some(Permission::DaemonRead);
+            assert_eq!(
+                authorize(Some(&host), method, &serde_json::json!({})).is_ok(),
+                permitted,
+                "{}",
+                method.name
+            );
+        }
+        assert!(authorize(Some(&host), &NM_FRAME, &serde_json::json!({})).is_ok());
+    }
+
+    #[test]
     fn admin_methods_need_the_admin_permission() {
         let human = identity(ClientKind::Human, ClientRole::Cli);
         let admin = identity(ClientKind::Admin, ClientRole::Cli);
         let shutdown = lookup("daemon.shutdown").unwrap();
         assert!(authorize(Some(&human), shutdown, &Value::Null).is_err());
         assert!(authorize(Some(&admin), shutdown, &Value::Null).is_ok());
+    }
+
+    #[test]
+    fn a_service_calls_no_human_only_method_and_alone_registers_roots() {
+        let service = identity(ClientKind::Service, ClientRole::Service);
+        let agent = identity(ClientKind::Agent, ClientRole::Mcp);
+        let admin = identity(ClientKind::Admin, ClientRole::Cli);
+        for method in METHODS.iter().filter(|m| m.human_only) {
+            for params in [
+                serde_json::json!({}),
+                serde_json::json!({"reveal_urls": true}),
+            ] {
+                assert!(
+                    authorize(Some(&service), method, &params).is_err(),
+                    "{}",
+                    method.name
+                );
+            }
+        }
+        let spec = lookup("jobs.get").unwrap();
+        assert!(
+            authorize(
+                Some(&service),
+                spec,
+                &serde_json::json!({"reveal_urls": true})
+            )
+            .is_err()
+        );
+        let roots = lookup("files.roots.register").unwrap();
+        assert!(authorize(Some(&service), roots, &Value::Null).is_ok());
+        assert!(authorize(Some(&agent), roots, &Value::Null).is_err());
+        assert!(authorize(Some(&admin), roots, &Value::Null).is_err());
+        // A forged service-kind identity on another role still cannot register roots.
+        let mut forged = identity(ClientKind::Service, ClientRole::Mcp);
+        forged.permissions.insert(Permission::FilesRootsRegister);
+        assert!(authorize(Some(&forged), roots, &Value::Null).is_err());
+    }
+
+    #[test]
+    fn gated_methods_follow_the_capability_table() {
+        for method in METHODS.iter().chain([&NM_FRAME]) {
+            if let Some(capability) = method.capability {
+                assert!(
+                    crate::capabilities::ALL.contains(&capability) || capability == "files.convert",
+                    "{}",
+                    method.name
+                );
+            }
+        }
+        assert_eq!(
+            lookup("artifacts.ingest").unwrap().capability,
+            Some("artifacts")
+        );
+        assert_eq!(
+            lookup("files.undo").unwrap().capability,
+            Some("files.organize")
+        );
+        assert_eq!(lookup("jobs.list").unwrap().capability, None);
+        assert_eq!(lookup("cloud.submit").unwrap().capability, None);
+        let negotiated = ["events".to_string()].into_iter().collect();
+        let subscribe = lookup("events.subscribe").unwrap();
+        assert!(require_capabilities(subscribe, &serde_json::json!({}), &negotiated).is_ok());
+        let replay = serde_json::json!({"since_seq": 4});
+        let error = require_capabilities(subscribe, &replay, &negotiated).unwrap_err();
+        assert_eq!(error.envelope().code.as_str(), codes::CAPABILITY_MISSING);
     }
 
     #[test]

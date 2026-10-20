@@ -183,6 +183,9 @@ pub fn verify_envelope(
     now: OffsetDateTime,
     highest_accepted_sequence: u64,
 ) -> Result<PolicyManifest, PolicyError> {
+    if envelope.payload.len() > 350_000 || envelope.signatures.len() > 16 {
+        return Err(PolicyError::Malformed("policy too large".into()));
+    }
     if envelope.payload_type != PAYLOAD_TYPE {
         return Err(PolicyError::PayloadType);
     }
@@ -217,6 +220,11 @@ pub fn verify_envelope(
         .map_err(|e| PolicyError::Malformed(format!("expires_at: {e}")))?;
     let issued = OffsetDateTime::parse(&manifest.issued_at, &Rfc3339)
         .map_err(|e| PolicyError::Malformed(format!("issued_at: {e}")))?;
+    if expires <= issued {
+        return Err(PolicyError::Malformed(
+            "expiry must follow issue time".into(),
+        ));
+    }
     if expires <= now {
         return Err(PolicyError::Expired);
     }

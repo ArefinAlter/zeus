@@ -3,15 +3,18 @@
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout};
 use ratatui::style::{Modifier, Style};
-use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph, Row, Sparkline, Table};
+use ratatui::widgets::{
+    Block, Borders, List, ListItem, Paragraph, Row, Sparkline, Table, TableState,
+};
 
 use super::app::{App, Pane};
 use crate::output::{format_bytes, percent, progress_bar, sanitize};
 
 /// Draw the whole interface.
 pub fn render(frame: &mut Frame, app: &App) {
-    let [top, spark, bottom, footer] = Layout::vertical([
+    let [top, details, spark, bottom, footer] = Layout::vertical([
         Constraint::Min(6),
+        Constraint::Length(3),
         Constraint::Length(4),
         Constraint::Length((app.approvals.len().min(5) + 2) as u16),
         Constraint::Length(1),
@@ -27,7 +30,7 @@ pub fn render(frame: &mut Frame, app: &App) {
     };
 
     let rows: Vec<Row> = app
-        .jobs
+        .visible_jobs()
         .iter()
         .enumerate()
         .map(|(i, job)| {
@@ -38,6 +41,10 @@ pub fn render(frame: &mut Frame, app: &App) {
             let row = Row::new([
                 sanitize(job.filename.as_deref().unwrap_or("-")),
                 state,
+                serde_json::to_value(job.source_kind)
+                    .ok()
+                    .and_then(|v| v.as_str().map(str::to_string))
+                    .unwrap_or_default(),
                 progress_bar(job.bytes_done, job.bytes_total, 16),
                 percent(job.bytes_done, job.bytes_total),
                 job.bytes_total.map_or("?".to_string(), format_bytes),
@@ -54,22 +61,78 @@ pub fn render(frame: &mut Frame, app: &App) {
         [
             Constraint::Min(16),
             Constraint::Length(17),
+            Constraint::Length(15),
             Constraint::Length(18),
             Constraint::Length(5),
             Constraint::Length(10),
         ],
     )
     .header(
-        Row::new(["Name", "State", "Progress", "%", "Size"])
+        Row::new(["Name", "State", "Asked by", "Saved", "%", "Size"])
             .style(Style::default().add_modifier(Modifier::BOLD)),
     )
     .block(
         Block::default()
             .borders(Borders::ALL)
-            .title(" Jobs ")
+            .title(format!(
+                " Downloads ({}/{}) /{}{} ",
+                app.visible_jobs().len(),
+                app.jobs.len(),
+                sanitize(&app.query),
+                if app.searching {
+                    " · Enter to finish, Esc to clear"
+                } else {
+                    ""
+                }
+            ))
             .style(focus(Pane::Jobs)),
     );
-    frame.render_widget(table, top);
+    let mut selection = TableState::default();
+    if app.pane == Pane::Jobs {
+        selection.select(Some(app.selected));
+    }
+    frame.render_stateful_widget(table, top, &mut selection);
+
+    let detail = app
+        .selected_job()
+        .map(|job| {
+            let source = job
+                .origin
+                .as_ref()
+                .map_or_else(|| job.url_redacted.to_string(), |o| o.to_string());
+            match &job.last_error {
+                Some(error) => format!(
+                    "{} · {} [{}] · {}",
+                    source,
+                    sanitize(&error.message),
+                    error.code,
+                    match error.class {
+                        zeus_types::ErrorClass::AuthExpired =>
+                            "Open approvals to review website access.",
+                        zeus_types::ErrorClass::Blocked => "Download this file in your browser.",
+                        zeus_types::ErrorClass::Disk => "Free disk space, then retry.",
+                        _ => "Review the error before retrying.",
+                    }
+                ),
+                None => format!(
+                    "{} · {} saved · {}",
+                    source,
+                    format_bytes(job.bytes_done),
+                    job.id
+                ),
+            }
+        })
+        .unwrap_or_else(|| {
+            "Add a URL with zeus get <url>, or send one from your browser or AI app.".into()
+        });
+    frame.render_widget(
+        Paragraph::new(sanitize(&detail)).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" Selected download "),
+        ),
+        details,
+    );
 
     let samples: Vec<u64> = app.throughput.iter().copied().collect();
     let current = samples.last().copied().unwrap_or(0);
@@ -115,7 +178,7 @@ pub fn render(frame: &mut Frame, app: &App) {
     frame.render_widget(approvals, bottom);
 
     let hint = if app.message.is_empty() {
-        "q quit  Tab pane  j/k move  p pause  r resume/retry  c cancel  Enter review"
+        "q quit  / search  Tab pane  j/k move  p pause  r resume/retry  c cancel  Enter review"
     } else {
         app.message.as_str()
     };
@@ -131,7 +194,7 @@ mod tests {
     use zeus_types::JobSummary;
 
     fn screen(app: &App) -> String {
-        let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(120, 28)).unwrap();
         terminal.draw(|frame| render(frame, app)).unwrap();
         let buffer = terminal.backend().buffer().clone();
         buffer
@@ -174,5 +237,17 @@ mod tests {
         let text = screen(&app);
         assert!(!text.contains('\u{1b}') && !text.contains('\u{202e}'));
         assert!(text.contains("evil"));
+    }
+
+    #[test]
+    fn selection_below_the_first_screen_is_visible() {
+        let mut app = App::new(false);
+        app.update(Action::JobsUpdated(
+            (0..100).map(|i| job(&format!("file-{i:03}.zip"))).collect(),
+        ));
+        app.selected = 99;
+        let text = screen(&app);
+        assert!(text.contains("file-099.zip"));
+        assert!(!text.contains("file-000.zip"));
     }
 }

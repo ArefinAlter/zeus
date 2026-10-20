@@ -277,7 +277,7 @@ pub struct Credential {
 }
 
 impl Credential {
-    /// Create a credential with the default permissions of its kind (plus `nm.relay` for the native host).
+    /// Create a credential with its kind's defaults, or the two-permission native relay ceiling.
     ///
     /// Fails when the kind exceeds what the role allows (an MCP credential can never be human or admin).
     pub fn new(
@@ -287,16 +287,20 @@ impl Credential {
         auth_key: AuthKey,
         now: Timestamp,
     ) -> Result<Self, ApiError> {
-        if kind > role.max_kind() {
+        if !role.allows(kind) {
             return Err(ApiError::new(
                 codes::PERMISSION_DENIED,
                 "the role cannot hold that kind",
             ));
         }
-        let mut permissions = kind.default_permissions();
-        if role == ClientRole::NativeHost {
-            permissions.insert(Permission::NmRelay);
-        }
+        let permissions = if role == ClientRole::NativeHost {
+            ClientRole::native_host_permissions()
+                .iter()
+                .copied()
+                .collect()
+        } else {
+            kind.default_permissions()
+        };
         Ok(Self {
             id,
             kind,
@@ -308,13 +312,17 @@ impl Credential {
         })
     }
 
-    /// Narrow the permissions. A permission outside the kind's defaults (and `nm.relay` for the native host) is
+    /// Narrow the permissions. A permission outside the kind's defaults (or the native relay ceiling) is
     /// refused: credentials can shrink, never grow.
     pub fn narrowed(mut self, permissions: BTreeSet<Permission>) -> Result<Self, ApiError> {
-        let mut ceiling = self.kind.default_permissions();
-        if self.role == ClientRole::NativeHost {
-            ceiling.insert(Permission::NmRelay);
-        }
+        let ceiling = if self.role == ClientRole::NativeHost {
+            ClientRole::native_host_permissions()
+                .iter()
+                .copied()
+                .collect()
+        } else {
+            self.kind.default_permissions()
+        };
         if !permissions.is_subset(&ceiling) {
             return Err(ApiError::new(
                 codes::PERMISSION_DENIED,
@@ -408,6 +416,7 @@ pub struct ServerHandshake<'a> {
     daemon: DaemonInfo,
     ids: IdGenerator,
     state: HandshakeState,
+    capabilities: BTreeSet<String>,
 }
 
 enum HandshakeState {
@@ -429,7 +438,13 @@ impl<'a> ServerHandshake<'a> {
             daemon,
             ids: IdGenerator::new(),
             state: HandshakeState::AwaitHello,
+            capabilities: BTreeSet::new(),
         }
+    }
+
+    /// The capabilities negotiated in `daemon.hello` (empty before it).
+    pub fn capabilities(&self) -> &BTreeSet<String> {
+        &self.capabilities
     }
 
     /// The authenticated identity once the handshake completed.
@@ -465,6 +480,7 @@ impl<'a> ServerHandshake<'a> {
             .filter(|c| capabilities::ALL.contains(&c.as_str()))
             .collect();
         let server_nonce = Nonce::generate();
+        self.capabilities = capabilities.clone();
         let result = HelloResult {
             protocol_version: version,
             capabilities,
@@ -508,10 +524,17 @@ impl<'a> ServerHandshake<'a> {
         let dummy = AuthKey::from_bytes([0; 32]);
         let key = stored.as_ref().map_or(&dummy, |c| &c.auth_key);
         let proof_ok = key.verify(&id, &server_nonce, &client_nonce, &params.proof);
-        let credential = match stored {
+        let mut credential = match stored {
             Some(c) if proof_ok && !c.revoked && c.role == client.role => c,
             _ => return Err(bad()),
         };
+        if credential.role == ClientRole::NativeHost {
+            // Older credential stores granted the host the complete Human defaults. Clamp at the
+            // handshake as well as provisioning so alternative stores cannot retain that authority.
+            credential
+                .permissions
+                .retain(|permission| ClientRole::native_host_permissions().contains(permission));
+        }
         match (&params.attach, credential.role) {
             (Some(attach), ClientRole::NativeHost) => validate_attach(attach)?,
             (None, ClientRole::NativeHost) => {
@@ -539,6 +562,8 @@ impl<'a> ServerHandshake<'a> {
                 .collect(),
         };
         let result = AuthenticateResult {
+            credential_kind: credential.kind,
+            downgraded: false,
             client_id: credential.id.to_string(),
             kind: credential.kind,
             role: credential.role,
@@ -567,6 +592,7 @@ pub struct ClientHandshake {
     client: ClientInfo,
     client_nonce: Nonce,
     protocol_versions: Vec<u16>,
+    capabilities: Vec<String>,
 }
 
 impl ClientHandshake {
@@ -577,14 +603,21 @@ impl ClientHandshake {
             client,
             client_nonce: Nonce::generate(),
             protocol_versions: vec![crate::PROTOCOL_VERSION],
+            capabilities: capabilities::ALL.iter().map(|c| (*c).to_string()).collect(),
         }
+    }
+
+    /// Offer only these capabilities in `daemon.hello` (default: everything this build understands).
+    pub fn with_capabilities(mut self, capabilities: Vec<String>) -> Self {
+        self.capabilities = capabilities;
+        self
     }
 
     /// The `daemon.hello` parameters.
     pub fn hello_params(&self) -> HelloParams {
         HelloParams {
             protocol_versions: self.protocol_versions.clone(),
-            capabilities: capabilities::ALL.iter().map(|c| (*c).to_string()).collect(),
+            capabilities: self.capabilities.iter().cloned().collect(),
             client: self.client.clone(),
             client_nonce: self.client_nonce.as_str().to_string(),
         }
@@ -824,13 +857,61 @@ mod tests {
             browser: BrowserName::Chrome,
             attested_extension: "abcdefghijklmnopabcdefghijklmnop".into(),
             host_version: "0.1.0".into(),
+            parent_verified: false,
         };
         let (identity, result) = full_handshake(&host, Some(attach.clone())).unwrap();
         assert!(identity.has(Permission::NmRelay));
+        assert_eq!(
+            identity.permissions,
+            ClientRole::native_host_permissions()
+                .iter()
+                .copied()
+                .collect()
+        );
         assert_eq!(result.limits, ConnectionLimits::NATIVE_HOST);
 
         let cli = fixture(ClientKind::Human, ClientRole::Cli);
         assert!(full_handshake(&cli, Some(attach)).is_err());
+    }
+
+    #[test]
+    fn legacy_native_host_permissions_are_clamped_without_losing_human_channel_evidence() {
+        let host = fixture(ClientKind::Human, ClientRole::NativeHost);
+        let mut legacy = host.store.get(&host.credential.id).unwrap();
+        legacy.permissions = ClientKind::Human.default_permissions();
+        legacy.permissions.insert(Permission::NmRelay);
+        host.store.insert(legacy.clone());
+        let (identity, result) = full_handshake(
+            &host,
+            Some(AttachInfo {
+                browser: BrowserName::Chrome,
+                attested_extension: "abcdefghijklmnopabcdefghijklmnop".into(),
+                host_version: "0.1.0".into(),
+                parent_verified: true,
+            }),
+        )
+        .unwrap();
+        let expected: BTreeSet<_> = ClientRole::native_host_permissions()
+            .iter()
+            .copied()
+            .collect();
+        assert_eq!(identity.kind, ClientKind::Human);
+        assert_eq!(identity.permissions, expected);
+        assert_eq!(
+            result.permissions.into_iter().collect::<BTreeSet<_>>(),
+            expected
+        );
+        assert!(
+            identity
+                .decision_actor(zeus_types::Surface::ExtensionPopup)
+                .is_ok()
+        );
+        assert!(!identity.has(Permission::ApprovalsDecide));
+        assert!(
+            legacy
+                .narrowed([Permission::ApprovalsDecide].into_iter().collect())
+                .is_err()
+        );
     }
 
     #[test]

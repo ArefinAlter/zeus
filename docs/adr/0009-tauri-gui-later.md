@@ -1,25 +1,27 @@
-# ADR 0009: Tauri for the later GUI
+# ADR 0009: Tauri desktop client
 
 | | |
 |---|---|
 | Status | Accepted |
 | Date | 2026-10-05 |
+| Updated | 2026-10-21 |
 
 ## Context
 
-The MVP front ends are the CLI, a ratatui TUI, the MCP server and the browser extension popup (a trust surface). A desktop GUI helps non-terminal users and gives approvals a richer trust surface, but it is not on the critical path and must not distract from the engine.
+The first front ends are the CLI, a ratatui TUI, the MCP server and the browser extension popup (a trust surface). The daemon now supports enough download, workflow, file and artifact operations to implement an initial desktop client. Its authority and dependencies must remain separate from the engine and from attested human approval channels.
 
 ## Decision
 
-1. The GUI comes **after** the MVP and the workflow phase (roadmap: months 6 to 9, beta). It is a **client of the daemon API** like every other front end (ADR 0002): no engine code in the GUI process.
-2. Technology: **Tauri 2** (system WebView, Rust backend), because binaries stay small and the backend language matches the rest of the project. The webview frontend is plain TypeScript with a minimal dependency set.
-3. The GUI is a **trust surface**: it may carry approval decisions with the `gui` channel evidence of ADR 0007. It never receives session material.
-4. The GUI lives in its own repository or directory, added to this workspace only when work starts, so its dependency tree does not burden the daemon builds.
+1. The GUI is a **client of the daemon API** like every other front end (ADR 0002): no engine code in the GUI process. Its initial scope follows existing daemon capabilities; unsupported operations are unavailable rather than simulated.
+2. Technology: **Tauri 2** (system WebView, Rust backend). The initial frontend uses dependency-free ES modules, semantic HTML and CSS, with no transpiler, development server or remote assets. Default Cargo features embed the checked-in frontend through Tauri's production `custom-protocol` mode; direct Cargo builds do not require the Tauri CLI.
+3. The initial GUI is **not an attested human decision surface**. Its dedicated `gui.token` has kind `agent`, role `gui` and an explicit permission subset for reading work and previewing, enqueueing and controlling downloads. The closed Rust command registry never exposes approval decisions, grants, session material, original job URLs or generic RPC. Human review remains in the interactive CLI. A future GUI approval surface requires the `gui` channel evidence of ADR 0007 and a separate reviewed authority upgrade.
+4. The GUI lives in [apps/desktop](../../apps/desktop/README.md), an independent Cargo workspace excluded from the daemon workspace. Its Tauri dependency tree and lockfile do not burden daemon builds. Rust owns the authenticated connection and private link reviews; the bundled main webview receives explicit metadata projections and operation receipts.
 
 ## Consequences
 
-- Nothing in the current crates depends on a GUI toolkit.
-- The approvals and event APIs are designed to be sufficient for a GUI today.
+- None of the daemon workspace crates depends on a GUI toolkit.
+- Current desktop views poll bounded pages and retain selection by stable identity. Event replay, full file indexing, native mobile execution and GUI approval attestation remain separate work.
+- Windows desktop checks and informational macOS checks validate source compilation. Installed system-webview behavior, accessibility, signing and device acceptance still require native runs.
 
 ## Alternatives considered
 

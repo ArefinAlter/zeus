@@ -74,6 +74,13 @@
     "Approval": {
       "description": "A request for a human decision (01 section 5.3). Immutable once decided.",
       "properties": {
+        "agent_says": {
+          "description": "Untrusted requester annotation, shown separately from trusted facts.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "allowed_scopes": {
           "description": "Scopes a human may choose.",
           "items": {
@@ -111,6 +118,14 @@
           "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:([0-5][0-9]|60)\\.[0-9]{3}Z$",
           "type": "string"
         },
+        "facts": {
+          "additionalProperties": true,
+          "description": "Daemon-computed facts, present only on full approval views.",
+          "type": [
+            "object",
+            "null"
+          ]
+        },
         "id": {
           "description": "Identifier.",
           "pattern": "^ap_[0-7][0-9A-HJKMNP-TV-Z]{25}$",
@@ -143,6 +158,30 @@
             "type": "string"
           },
           "type": "array"
+        },
+        "request_hash": {
+          "description": "Daemon-computed BLAKE3 over canonical approval facts.",
+          "pattern": "^[0-9a-f]{64}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "requested_by": {
+          "description": "Authenticated requesting credential, independent of display text.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "revision": {
+          "description": "Revision bound into the decision.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
         },
         "run_id": {
           "description": "The run concerned.",
@@ -253,6 +292,11 @@
           "const": "destructive_op",
           "description": "A file operation that deletes or overwrites.",
           "type": "string"
+        },
+        {
+          "const": "cloud_delivery",
+          "description": "One exact source, cloud account revision, destination, mode and budget.",
+          "type": "string"
         }
       ]
     },
@@ -261,7 +305,7 @@
       "properties": {
         "approval": {
           "$ref": "#/$defs/Approval",
-          "description": "The approval, with daemon-computed facts."
+          "description": "Public approval entity; private facts and requester annotations never enter events."
         }
       },
       "required": [
@@ -437,6 +481,22 @@
           "pattern": "^[0-9a-f]{64}$",
           "type": "string"
         },
+        "requested_by": {
+          "description": "Authenticated requesting credential, independent of display text.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "revision": {
+          "description": "Revision bound into the decision.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "run_id": {
           "description": "The run concerned.",
           "pattern": "^run_[0-7][0-9A-HJKMNP-TV-Z]{25}$",
@@ -479,6 +539,18 @@
         "channel": {
           "$ref": "#/$defs/Surface",
           "description": "The trust surface the decision was taken on. The daemon verifies it against the connection (terminal with a\ncontrolling tty, pinned extension with a gesture attestation) and rejects non-trust surfaces."
+        },
+        "confirmation": {
+          "$ref": "#/$defs/ConfirmationLevel",
+          "default": "gesture",
+          "description": "Confirmation completed by the human surface. The channel must be verified independently."
+        },
+        "idempotency_key": {
+          "description": "Optional retry key; it does not permit a different decision on the same approval.",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "outcome": {
           "$ref": "#/$defs/DecideOutcome",
@@ -526,6 +598,11 @@
             }
           ],
           "description": "The grant the decision created, if any."
+        },
+        "replayed": {
+          "default": false,
+          "description": "True when this response replays a durable mutation receipt.",
+          "type": "boolean"
         }
       },
       "required": [
@@ -547,9 +624,32 @@
       ],
       "type": "object"
     },
+    "ApprovalsGetResult": {
+      "description": "`approvals.get` returns the request and, for human-capable callers, its private decision evidence.",
+      "properties": {
+        "approval": {
+          "$ref": "#/$defs/ApprovalView",
+          "description": "The request this client may inspect."
+        },
+        "decision_record": {
+          "description": "Durable evidence of a completed decision, withheld from unattended clients."
+        }
+      },
+      "required": [
+        "approval"
+      ],
+      "type": "object"
+    },
     "ApprovalsListParams": {
       "description": "`approvals.list` parameters.",
       "properties": {
+        "cursor": {
+          "description": "Opaque cursor from a previous result. Valid only for the same method and filters.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "kind": {
           "anyOf": [
             {
@@ -561,10 +661,14 @@
           ],
           "description": "Only this kind."
         },
-        "page": {
-          "$ref": "#/$defs/PageRequest",
-          "default": {},
-          "description": "Paging."
+        "limit": {
+          "description": "Page size. Absent: 50. Values above 100 are clamped to 100; 0 is invalid.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
         },
         "state": {
           "anyOf": [
@@ -576,6 +680,512 @@
             }
           ],
           "description": "Only this state. Absent: `pending`."
+        }
+      },
+      "type": "object"
+    },
+    "ArtifactLifecycleOperation": {
+      "description": "One explicit artifact lifecycle effect. Collection and quarantine release are separate policies.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Tombstone the record. User files, materializations and shared content remain untouched.",
+          "properties": {
+            "kind": {
+              "const": "delete",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Change object protection. Weakening protection requires a person's approval.",
+          "properties": {
+            "kind": {
+              "const": "set_retention",
+              "type": "string"
+            },
+            "retain_until": {
+              "default": null,
+              "description": "Additional protection deadline, or no deadline.",
+              "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:([0-5][0-9]|60)\\.[0-9]{3}Z$",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "retention": {
+              "$ref": "#/$defs/ArtifactRetention",
+              "description": "Protection policy."
+            }
+          },
+          "required": [
+            "kind",
+            "retention"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Copy verified bytes to a new file inside a write root visible to this caller.",
+          "properties": {
+            "kind": {
+              "const": "materialize",
+              "type": "string"
+            },
+            "path": {
+              "description": "Absolute destination; existing files and partial files are never replaced.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "path"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "ArtifactLifecyclePlan": {
+      "additionalProperties": false,
+      "description": "An exact preview accepted by `artifacts.lifecycle.apply`; requester edits are revalidated by the daemon.",
+      "properties": {
+        "artifact_id": {
+          "description": "Record to change or copy.",
+          "pattern": "^art_[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+          "type": "string"
+        },
+        "blake3": {
+          "description": "Expected CAS content identity.",
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "current_retain_until": {
+          "description": "Protection deadline before the change.",
+          "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:([0-5][0-9]|60)\\.[0-9]{3}Z$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "current_retention": {
+          "$ref": "#/$defs/ArtifactRetention",
+          "description": "Protection policy before the change."
+        },
+        "expected_record_blake3": {
+          "description": "BLAKE3 of the canonical API export before the change (the expected record revision).",
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "expires_at": {
+          "description": "Preview expiration; no more than 15 minutes after it is produced.",
+          "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:([0-5][0-9]|60)\\.[0-9]{3}Z$",
+          "type": "string"
+        },
+        "operation": {
+          "$ref": "#/$defs/ArtifactLifecycleOperation",
+          "description": "Complete effect, including the daemon-resolved destination when copying."
+        },
+        "quarantined": {
+          "description": "Quarantine state; this operation cannot clear it.",
+          "type": "boolean"
+        },
+        "requires_approval": {
+          "description": "A human `destructive_op` approval is required before this effect can execute.",
+          "type": "boolean"
+        },
+        "sha256": {
+          "description": "Expected interoperable content digest.",
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "size_bytes": {
+          "description": "Exact logical length.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "version": {
+          "description": "Plan format, currently 1.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "version",
+        "artifact_id",
+        "expected_record_blake3",
+        "blake3",
+        "sha256",
+        "size_bytes",
+        "quarantined",
+        "current_retention",
+        "operation",
+        "requires_approval",
+        "expires_at"
+      ],
+      "type": "object"
+    },
+    "ArtifactRetention": {
+      "description": "Object protection selected for an active artifact record.",
+      "oneOf": [
+        {
+          "const": "keep",
+          "description": "Protect the stored content while this record remains active.",
+          "type": "string"
+        },
+        {
+          "const": "evictable",
+          "description": "Permit later collection when no other record or lease protects the content.",
+          "type": "string"
+        }
+      ]
+    },
+    "ArtifactStateFilter": {
+      "description": "Record state filter of `artifacts.list`.",
+      "oneOf": [
+        {
+          "const": "active",
+          "description": "Active records.",
+          "type": "string"
+        },
+        {
+          "const": "deleted",
+          "description": "Tombstones of deleted artifacts.",
+          "type": "string"
+        }
+      ]
+    },
+    "ArtifactsGetParams": {
+      "description": "`artifacts.get` parameters.",
+      "properties": {
+        "artifact_id": {
+          "description": "The artifact (`art_...`).",
+          "pattern": "^art_[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "artifact_id"
+      ],
+      "type": "object"
+    },
+    "ArtifactsGetResult": {
+      "description": "`artifacts.get` result.",
+      "properties": {
+        "artifact": {
+          "description": "The export form (artifact.v1 `Artifact`, 13 section 10.1)."
+        }
+      },
+      "required": [
+        "artifact"
+      ],
+      "type": "object"
+    },
+    "ArtifactsIngestParams": {
+      "description": "`artifacts.ingest` parameters: register a local file the caller produced (13 section 7).",
+      "properties": {
+        "idempotency_key": {
+          "description": "Retry key (00 section 5.4); the ingest key is derived from it (05 section 9.13).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "media_type": {
+          "description": "Claimed media type, 1 to 255 characters, recorded as `declared_media_type`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "metadata": {
+          "additionalProperties": true,
+          "description": "Caller metadata (artifact.v1 `Metadata`): at most 32 members. Untrusted data.",
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "name": {
+          "description": "Name hint, 1 to 255 characters; the file name when absent.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "operation": {
+          "description": "The producing operation (artifact.v1 `Operation`); `zeus.ingest` when absent."
+        },
+        "parents": {
+          "description": "Inputs (artifact.v1 `ParentRef`), at most 1024. With parents the record is `derived`.",
+          "items": true,
+          "type": "array"
+        },
+        "path": {
+          "description": "Absolute path of a regular file inside a write root the caller may use (a service: its roots).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "type": "object"
+    },
+    "ArtifactsIngestResult": {
+      "description": "`artifacts.ingest` result.",
+      "properties": {
+        "artifact": {
+          "description": "Export form of the new or existing record."
+        },
+        "created": {
+          "description": "This call committed the record.",
+          "type": "boolean"
+        },
+        "replayed": {
+          "description": "The result came from the idempotency store (05 section 12).",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "artifact",
+        "created",
+        "replayed"
+      ],
+      "type": "object"
+    },
+    "ArtifactsLifecycleApplyParams": {
+      "additionalProperties": false,
+      "description": "`artifacts.lifecycle.apply` parameters. Repeat this exact request after a person approves it.",
+      "properties": {
+        "idempotency_key": {
+          "description": "Required retry key: 1 to 128 UTF-8 bytes, without control characters.",
+          "type": "string"
+        },
+        "plan": {
+          "$ref": "#/$defs/ArtifactLifecyclePlan",
+          "description": "Complete preview, without amendments."
+        },
+        "plan_hash": {
+          "description": "Hash returned with the preview.",
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "plan",
+        "plan_hash",
+        "idempotency_key"
+      ],
+      "type": "object"
+    },
+    "ArtifactsLifecycleApplyResult": {
+      "description": "A pending approval or a durable completed lifecycle receipt.",
+      "properties": {
+        "applied": {
+          "description": "The requested effect completed.",
+          "type": "boolean"
+        },
+        "approval_id": {
+          "description": "Existing approval to review; the API never approves it on the caller's behalf.",
+          "pattern": "^ap_[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "artifact": {
+          "description": "Portable record after completion, including its tombstone for deletion."
+        },
+        "mode": {
+          "description": "Materialization mode actually used (`copy`).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "path": {
+          "description": "Materialized destination, when this effect copied bytes.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "replayed": {
+          "description": "This retry key reused its pending request or completed durable receipt.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "applied",
+        "replayed"
+      ],
+      "type": "object"
+    },
+    "ArtifactsLifecyclePreviewParams": {
+      "additionalProperties": false,
+      "description": "`artifacts.lifecycle.preview` parameters. This method does not persist or execute a plan.",
+      "properties": {
+        "artifact_id": {
+          "description": "Visible active artifact record.",
+          "pattern": "^art_[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+          "type": "string"
+        },
+        "operation": {
+          "$ref": "#/$defs/ArtifactLifecycleOperation",
+          "description": "Requested effect."
+        }
+      },
+      "required": [
+        "artifact_id",
+        "operation"
+      ],
+      "type": "object"
+    },
+    "ArtifactsLifecyclePreviewResult": {
+      "additionalProperties": false,
+      "description": "`artifacts.lifecycle.preview` result. Save this entire receipt for a later apply.",
+      "properties": {
+        "plan": {
+          "$ref": "#/$defs/ArtifactLifecyclePlan",
+          "description": "Daemon-computed effect and expected record snapshot."
+        },
+        "plan_hash": {
+          "description": "BLAKE3 of the canonical `{t:\"zeus.artifact.lifecycle.v1\",plan}` object.",
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "plan",
+        "plan_hash"
+      ],
+      "type": "object"
+    },
+    "ArtifactsLineageParams": {
+      "description": "`artifacts.lineage` parameters.",
+      "properties": {
+        "artifact_id": {
+          "description": "The start record.",
+          "pattern": "^art_[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+          "type": "string"
+        },
+        "direction": {
+          "$ref": "#/$defs/LineageDirection",
+          "description": "Direction of the walk."
+        },
+        "max_depth": {
+          "description": "Levels to follow, 1 to 64 (default 8).",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "max_nodes": {
+          "description": "Nodes to return, 1 to 500 (default 100).",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "artifact_id",
+        "direction"
+      ],
+      "type": "object"
+    },
+    "ArtifactsLineageResult": {
+      "description": "`artifacts.lineage` result. Full records are read with `artifacts.get`.",
+      "properties": {
+        "nodes": {
+          "description": "Node 0 is the start record; records outside the caller's view are omitted.",
+          "items": {
+            "$ref": "#/$defs/LineageNode"
+          },
+          "type": "array"
+        },
+        "truncated": {
+          "description": "A depth or node bound stopped the walk, or records were omitted.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "nodes",
+        "truncated"
+      ],
+      "type": "object"
+    },
+    "ArtifactsListParams": {
+      "description": "`artifacts.list` parameters. Without `state`, active records and tombstones are both listed.",
+      "properties": {
+        "blake3": {
+          "description": "Only artifacts with this BLAKE3 content identity.",
+          "pattern": "^[0-9a-f]{64}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "cursor": {
+          "description": "Opaque cursor from a previous result. Valid only for the same method and filters.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "job_id": {
+          "description": "Only the artifact a job produced.",
+          "pattern": "^job_[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "limit": {
+          "description": "Page size. Absent: 50. Values above 100 are clamped to 100; 0 is invalid.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "run_id": {
+          "description": "Only artifacts of a workflow run.",
+          "pattern": "^run_[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sha256": {
+          "description": "Only artifacts with this SHA-256 digest.",
+          "pattern": "^[0-9a-f]{64}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "state": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactStateFilter"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Only records in this state."
         }
       },
       "type": "object"
@@ -594,6 +1204,11 @@
         "host_version": {
           "description": "Version of the host.",
           "type": "string"
+        },
+        "parent_verified": {
+          "default": false,
+          "description": "Browser-parent attestation; false until the host has verified the parent.",
+          "type": "boolean"
         }
       },
       "required": [
@@ -775,6 +1390,14 @@
           "pattern": "^conn_[0-7][0-9A-HJKMNP-TV-Z]{25}$",
           "type": "string"
         },
+        "credential_kind": {
+          "$ref": "#/$defs/ClientKind",
+          "description": "Authority on the stored credential, before executable verification."
+        },
+        "downgraded": {
+          "description": "The daemon reduced human/admin authority because peer verification failed.",
+          "type": "boolean"
+        },
         "kind": {
           "$ref": "#/$defs/ClientKind",
           "description": "Authority class of the credential."
@@ -796,6 +1419,8 @@
         }
       },
       "required": [
+        "credential_kind",
+        "downgraded",
         "client_id",
         "kind",
         "role",
@@ -889,6 +1514,7 @@
       ]
     },
     "Budgets": {
+      "additionalProperties": false,
       "description": "Mandatory hard limits. Reaching any of them ends the run with status `budget_exhausted`.",
       "properties": {
         "max_bytes": {
@@ -931,6 +1557,56 @@
         "max_depth"
       ],
       "type": "object"
+    },
+    "CapabilityReason": {
+      "description": "Stable, actionable capability reasons.",
+      "oneOf": [
+        {
+          "const": "remote_import_unavailable",
+          "description": "Provider has no verified URL-import implementation.",
+          "type": "string"
+        },
+        {
+          "const": "remote_cancellation_unavailable",
+          "description": "No official remote-operation cancellation implementation exists.",
+          "type": "string"
+        },
+        {
+          "const": "known_size_required",
+          "description": "This implementation requires exact content length.",
+          "type": "string"
+        },
+        {
+          "const": "known_block_hashes_required",
+          "description": "Baidu's upload protocol requires all 4 MiB block MD5 values before starting.",
+          "type": "string"
+        },
+        {
+          "const": "staged_digest_required",
+          "description": "The caller must supply the digest of its verified local file.",
+          "type": "string"
+        },
+        {
+          "const": "resume_unavailable",
+          "description": "This data path cannot replay bytes after restart.",
+          "type": "string"
+        },
+        {
+          "const": "provider_unavailable",
+          "description": "Native implementation is not available.",
+          "type": "string"
+        },
+        {
+          "const": "backend_not_ready",
+          "description": "Explicit provider feature discovery/configuration is required.",
+          "type": "string"
+        },
+        {
+          "const": "remote_hash_unavailable",
+          "description": "A promised expected hash cannot be checked from the provider's returned metadata.",
+          "type": "string"
+        }
+      ]
     },
     "CheckStatus": {
       "description": "Outcome of one health check.",
@@ -976,11 +1652,16 @@
       "type": "object"
     },
     "ClientKind": {
-      "description": "Authority class of a client.",
+      "description": "Authority class of a client. The derived order exists for collections only; authority checks use\n[`ClientKind::is_human_capable`], never a comparison.",
       "oneOf": [
         {
           "const": "agent",
           "description": "MCP server, A2A bridge, scripts holding the agent credential. Never decides approvals.",
+          "type": "string"
+        },
+        {
+          "const": "service",
+          "description": "A first-party program using the daemon unattended (Ogun, ADR 0011): the agent ceiling plus root\nregistration, its own jobs, approvals, roots and audit records only. Never human-capable.",
           "type": "string"
         },
         {
@@ -996,7 +1677,7 @@
       ]
     },
     "ClientRecord": {
-      "description": "A client credential record (never the token).",
+      "description": "A client credential as the daemon describes it. Never contains the token or its verifier.",
       "properties": {
         "created_at": {
           "description": "Creation.",
@@ -1012,26 +1693,57 @@
           "description": "Authority class."
         },
         "last_used_at": {
-          "description": "Last successful authentication.",
+          "default": null,
+          "description": "Last successful authentication since the daemon started; `null` when unknown.",
           "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:([0-5][0-9]|60)\\.[0-9]{3}Z$",
           "type": [
             "string",
             "null"
           ]
         },
+        "name": {
+          "description": "File name stem under `<state>/credentials/`.",
+          "type": "string"
+        },
+        "permissions": {
+          "description": "Effective permissions, a subset of the kind's ceiling.",
+          "items": {
+            "$ref": "#/$defs/Permission"
+          },
+          "type": "array",
+          "uniqueItems": true
+        },
         "revoked": {
           "description": "Revoked credentials stay listed.",
           "type": "boolean"
         },
+        "revoked_at": {
+          "default": null,
+          "description": "When it was revoked.",
+          "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:([0-5][0-9]|60)\\.[0-9]{3}Z$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "role": {
           "$ref": "#/$defs/ClientRole",
           "description": "Role."
+        },
+        "roots": {
+          "description": "Service clients only: their registered roots (inactive once revoked).",
+          "items": {
+            "$ref": "#/$defs/ServiceRoot"
+          },
+          "type": "array"
         }
       },
       "required": [
         "credential_id",
+        "name",
         "kind",
         "role",
+        "permissions",
         "created_at",
         "revoked"
       ],
@@ -1071,6 +1783,11 @@
           "type": "string"
         },
         {
+          "const": "service",
+          "description": "A first-party unattended program holding a `service` credential.",
+          "type": "string"
+        },
+        {
           "const": "embedded",
           "description": "An application embedding Zeus.",
           "type": "string"
@@ -1082,15 +1799,92 @@
         }
       ]
     },
+    "ClientsAddParams": {
+      "description": "`clients.add` parameters (human-only; 05 section 9.11).",
+      "properties": {
+        "idempotency_key": {
+          "description": "Idempotency key.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "kind": {
+          "$ref": "#/$defs/ClientKind",
+          "description": "`agent` or `service`. Human and admin credentials come only from provisioning."
+        },
+        "name": {
+          "description": "`[a-z][a-z0-9_-]{0,31}`, unique, not `cli`, `agent`, `a2a` or `host`.",
+          "type": "string"
+        },
+        "permissions": {
+          "description": "Narrowing within the kind's ceiling. Default: the ceiling.",
+          "items": {
+            "$ref": "#/$defs/Permission"
+          },
+          "type": [
+            "array",
+            "null"
+          ],
+          "uniqueItems": true
+        },
+        "role": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ClientRole"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Default `service` for kind `service`, `mcp` for kind `agent`; must be allowed for the kind."
+        }
+      },
+      "required": [
+        "name",
+        "kind"
+      ],
+      "type": "object"
+    },
+    "ClientsAddResult": {
+      "description": "`clients.add` result. The token is written to `credential_file` and never returned.",
+      "properties": {
+        "client": {
+          "$ref": "#/$defs/ClientRecord",
+          "description": "The new credential."
+        },
+        "credential_file": {
+          "description": "Absolute path of the owner-only token file.",
+          "type": "string"
+        },
+        "replayed": {
+          "default": false,
+          "description": "True when this response replays a durable mutation receipt.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "client",
+        "credential_file"
+      ],
+      "type": "object"
+    },
     "ClientsListParams": {
       "description": "`clients.list` parameters.",
+      "properties": {
+        "include_revoked": {
+          "default": false,
+          "description": "Also list revoked credentials. Default false.",
+          "type": "boolean"
+        }
+      },
       "type": "object"
     },
     "ClientsListResult": {
       "description": "`clients.list` result.",
       "properties": {
         "clients": {
-          "description": "All credentials.",
+          "description": "Credentials, oldest first.",
           "items": {
             "$ref": "#/$defs/ClientRecord"
           },
@@ -1108,6 +1902,13 @@
         "credential_id": {
           "description": "Credential id.",
           "type": "string"
+        },
+        "idempotency_key": {
+          "description": "Idempotency key.",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [
@@ -1120,11 +1921,728 @@
       "properties": {
         "client": {
           "$ref": "#/$defs/ClientRecord",
-          "description": "The credential after revocation; existing connections using it are closed."
+          "description": "The credential after revocation."
+        },
+        "connections_closed": {
+          "description": "Live connections of this credential that were closed.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "replayed": {
+          "default": false,
+          "description": "True when this response replays a durable mutation receipt.",
+          "type": "boolean"
         }
       },
       "required": [
-        "client"
+        "client",
+        "connections_closed"
+      ],
+      "type": "object"
+    },
+    "CloudAccountMutationResult": {
+      "description": "Setup/revocation receipt.",
+      "properties": {
+        "account": {
+          "$ref": "#/$defs/CloudAccountView",
+          "description": "Current account scope."
+        },
+        "replayed": {
+          "description": "Durable receipt was reused.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "account",
+        "replayed"
+      ],
+      "type": "object"
+    },
+    "CloudAccountView": {
+      "description": "Nonsecret scope established by an independently verified human terminal.",
+      "properties": {
+        "account_id": {
+          "description": "Human-selected account alias.",
+          "type": "string"
+        },
+        "capabilities": {
+          "$ref": "#/$defs/ProviderCapabilities",
+          "description": "Actual implementation capabilities."
+        },
+        "destination": {
+          "description": "Configured remote folder, without credentials or local configuration paths.",
+          "type": "string"
+        },
+        "label": {
+          "description": "Untrusted display label.",
+          "type": "string"
+        },
+        "max_bytes_per_delivery": {
+          "description": "Human-established per-delivery byte ceiling.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "provider": {
+          "$ref": "#/$defs/ProviderKind",
+          "description": "Provider family."
+        },
+        "revision": {
+          "description": "Immutable configuration revision, changed by updates and revocation.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "revoked": {
+          "description": "Account cannot authorize new or continuing transfers.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "account_id",
+        "label",
+        "revision",
+        "provider",
+        "destination",
+        "capabilities",
+        "max_bytes_per_delivery",
+        "revoked"
+      ],
+      "type": "object"
+    },
+    "CloudAccountsConfigureParams": {
+      "additionalProperties": false,
+      "description": "Human-terminal-only account setup. The credential goes directly to the OS keyring.",
+      "properties": {
+        "account_id": {
+          "description": "Lowercase alias, 1–64 ASCII letters, digits, underscores or hyphens.",
+          "type": "string"
+        },
+        "config": {
+          "$ref": "#/$defs/ProviderConfig",
+          "description": "Explicit provider configuration; rclone never discovers ambient configuration."
+        },
+        "credential": {
+          "description": "Write-only credential. Omit to retain the existing token or for explicit rclone configuration.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "x-zeus-secret": true
+        },
+        "expected_revision": {
+          "description": "Required current revision for updates; absent only when creating an account.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "idempotency_key": {
+          "description": "Durable request binding.",
+          "type": "string"
+        },
+        "label": {
+          "description": "Display label, at most 128 characters.",
+          "type": "string"
+        },
+        "max_bytes_per_delivery": {
+          "description": "Account scope ceiling.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "account_id",
+        "label",
+        "config",
+        "max_bytes_per_delivery",
+        "idempotency_key"
+      ],
+      "type": "object"
+    },
+    "CloudAccountsListParams": {
+      "additionalProperties": false,
+      "description": "Enumerate configured account scopes; credentials and private config paths are withheld.",
+      "type": "object"
+    },
+    "CloudAccountsListResult": {
+      "description": "Account list.",
+      "properties": {
+        "accounts": {
+          "description": "Configured scopes.",
+          "items": {
+            "$ref": "#/$defs/CloudAccountView"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "accounts"
+      ],
+      "type": "object"
+    },
+    "CloudAccountsRevokeParams": {
+      "additionalProperties": false,
+      "description": "Human-terminal-only revocation invalidates approvals and stops local transfer work.",
+      "properties": {
+        "account_id": {
+          "description": "Account to revoke.",
+          "type": "string"
+        },
+        "expected_revision": {
+          "description": "Revision the person reviewed.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "idempotency_key": {
+          "description": "Durable request binding.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "account_id",
+        "expected_revision",
+        "idempotency_key"
+      ],
+      "type": "object"
+    },
+    "CloudControlAction": {
+      "description": "Local control; cannot manufacture or extend human approval.",
+      "oneOf": [
+        {
+          "const": "pause",
+          "description": "Stop local reads and keep the checkpoint.",
+          "type": "string"
+        },
+        {
+          "const": "resume",
+          "description": "Resume only with the same still-authorized immutable plan.",
+          "type": "string"
+        },
+        {
+          "const": "cancel",
+          "description": "Request cancellation, preserving remote uncertainty.",
+          "type": "string"
+        }
+      ]
+    },
+    "CloudControlParams": {
+      "additionalProperties": false,
+      "description": "Idempotent control request.",
+      "properties": {
+        "action": {
+          "$ref": "#/$defs/CloudControlAction",
+          "description": "Requested action."
+        },
+        "delivery_id": {
+          "description": "Delivery identity.",
+          "type": "string"
+        },
+        "idempotency_key": {
+          "description": "Durable request binding.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "delivery_id",
+        "action",
+        "idempotency_key"
+      ],
+      "type": "object"
+    },
+    "CloudDeliveryState": {
+      "description": "Durable delivery lifecycle, including ambiguous remote operations.",
+      "oneOf": [
+        {
+          "const": "awaiting_approval",
+          "description": "No remote work until an independently attested human decides.",
+          "type": "string"
+        },
+        {
+          "const": "queued",
+          "description": "Authorized and ready to start.",
+          "type": "string"
+        },
+        {
+          "const": "running",
+          "description": "Local transfer is active.",
+          "type": "string"
+        },
+        {
+          "const": "remote_pending",
+          "description": "Provider accepted an asynchronous import; not completed.",
+          "type": "string"
+        },
+        {
+          "const": "paused",
+          "description": "Paused; resuming still requires valid scope and approval.",
+          "type": "string"
+        },
+        {
+          "const": "reconciling",
+          "description": "A private checkpoint needs remote reconciliation before any retry.",
+          "type": "string"
+        },
+        {
+          "const": "completed",
+          "description": "Provider metadata was verified at the evidence level in artifact.",
+          "type": "string"
+        },
+        {
+          "const": "failed",
+          "description": "Failed without claiming remote completion.",
+          "type": "string"
+        },
+        {
+          "const": "canceled",
+          "description": "Local work stopped and no continuing remote import was accepted.",
+          "type": "string"
+        },
+        {
+          "const": "remote_cancellation_unavailable",
+          "description": "Remote provider may continue despite local cancellation; checkpoint retained.",
+          "type": "string"
+        }
+      ]
+    },
+    "CloudDeliveryView": {
+      "description": "Public delivery status. Upload URLs, source query strings and credentials are never included.",
+      "properties": {
+        "approval_id": {
+          "description": "Human approval; absent only during recoverable approval creation.",
+          "pattern": "^ap_[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "artifact": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RemoteArtifact"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Actual remote completion evidence, never inferred from a 202."
+        },
+        "cleanup_pending": {
+          "default": false,
+          "description": "Zeus-owned staging cleanup must be retried; never refers to a user download file.",
+          "type": "boolean"
+        },
+        "committed_bytes": {
+          "description": "Confirmed provider bytes.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "created_at": {
+          "description": "Creation time.",
+          "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:([0-5][0-9]|60)\\.[0-9]{3}Z$",
+          "type": "string"
+        },
+        "delivery_id": {
+          "description": "Durable identity.",
+          "type": "string"
+        },
+        "plan": {
+          "$ref": "#/$defs/CloudPlanView",
+          "description": "Exact immutable plan."
+        },
+        "reason": {
+          "description": "Sanitized stable reason code, no provider response text.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "state": {
+          "$ref": "#/$defs/CloudDeliveryState",
+          "description": "Current state."
+        },
+        "updated_at": {
+          "description": "Last durable change.",
+          "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:([0-5][0-9]|60)\\.[0-9]{3}Z$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "delivery_id",
+        "plan",
+        "state",
+        "committed_bytes",
+        "created_at",
+        "updated_at"
+      ],
+      "type": "object"
+    },
+    "CloudGetParams": {
+      "additionalProperties": false,
+      "description": "Read a caller-owned delivery; human clients may inspect all.",
+      "properties": {
+        "delivery_id": {
+          "description": "Delivery identifier.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "delivery_id"
+      ],
+      "type": "object"
+    },
+    "CloudListParams": {
+      "additionalProperties": false,
+      "description": "List visible deliveries, newest first, with a bounded result.",
+      "properties": {
+        "limit": {
+          "default": 50,
+          "description": "Result limit, 1–100; default 50.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "CloudListResult": {
+      "description": "Bounded delivery list.",
+      "properties": {
+        "deliveries": {
+          "description": "Visible deliveries.",
+          "items": {
+            "$ref": "#/$defs/CloudDeliveryView"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "deliveries"
+      ],
+      "type": "object"
+    },
+    "CloudMutationResult": {
+      "description": "Mutation receipt.",
+      "properties": {
+        "delivery": {
+          "$ref": "#/$defs/CloudDeliveryView",
+          "description": "Durable delivery view."
+        },
+        "replayed": {
+          "description": "Durable receipt was reused.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "delivery",
+        "replayed"
+      ],
+      "type": "object"
+    },
+    "CloudPlanParams": {
+      "additionalProperties": false,
+      "description": "Compute a dry-run plan. Does not fetch source bytes or mutate the remote destination.",
+      "properties": {
+        "account_id": {
+          "description": "Existing configured account scope.",
+          "type": "string"
+        },
+        "allow_unbounded_remote": {
+          "default": false,
+          "description": "Required opt-in for remote imports whose provider cannot enforce byte caps or cancel.",
+          "type": "boolean"
+        },
+        "idempotency_key": {
+          "description": "Durable request binding.",
+          "type": "string"
+        },
+        "max_bytes": {
+          "description": "Maximum source/transmitted bytes for this delivery.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "max_seconds": {
+          "description": "Maximum wall-clock operation lifetime, 1–86400 seconds.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "mode": {
+          "$ref": "#/$defs/DeliveryMode",
+          "description": "Explicit mode, never substituted."
+        },
+        "remote_name": {
+          "description": "Filename only; the result shows its collision-resistant final name.",
+          "type": "string"
+        },
+        "source": {
+          "$ref": "#/$defs/CloudSource",
+          "description": "Source to bind."
+        }
+      },
+      "required": [
+        "account_id",
+        "mode",
+        "source",
+        "remote_name",
+        "max_bytes",
+        "max_seconds",
+        "idempotency_key"
+      ],
+      "type": "object"
+    },
+    "CloudPlanResult": {
+      "description": "Dry-run receipt.",
+      "properties": {
+        "plan": {
+          "$ref": "#/$defs/CloudPlanView",
+          "description": "Immutable reviewed plan."
+        },
+        "replayed": {
+          "description": "Durable receipt was reused.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "plan",
+        "replayed"
+      ],
+      "type": "object"
+    },
+    "CloudPlanView": {
+      "description": "Redacted, immutable dry-run plan returned to every caller.",
+      "properties": {
+        "account_id": {
+          "description": "Account alias.",
+          "type": "string"
+        },
+        "account_revision": {
+          "description": "Exact authorized account revision.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "allow_unbounded_remote": {
+          "description": "Explicitly accepted weaker remote guarantees.",
+          "type": "boolean"
+        },
+        "delivery_id": {
+          "description": "Reserved delivery ULID; retries of this plan never create a second remote object.",
+          "type": "string"
+        },
+        "destination": {
+          "description": "Configured destination root.",
+          "type": "string"
+        },
+        "expected_sha256": {
+          "description": "Source SHA-256 when known.",
+          "pattern": "^[0-9a-f]{64}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "expires_at": {
+          "description": "Deadline to submit and approve this plan.",
+          "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:([0-5][0-9]|60)\\.[0-9]{3}Z$",
+          "type": "string"
+        },
+        "hard_byte_cap": {
+          "description": "True only when Zeus can enforce the transmitted byte ceiling.",
+          "type": "boolean"
+        },
+        "max_bytes": {
+          "description": "Maximum bytes authorized locally.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "max_seconds": {
+          "description": "Maximum local operation lifetime.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "mode": {
+          "$ref": "#/$defs/DeliveryMode",
+          "description": "Explicit mode."
+        },
+        "plan_hash": {
+          "description": "Canonical hash bound by the human approval.",
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "plan_id": {
+          "description": "Prefixed plan ULID.",
+          "type": "string"
+        },
+        "provider": {
+          "$ref": "#/$defs/ProviderKind",
+          "description": "Provider family."
+        },
+        "remote_cancellation_supported": {
+          "description": "True only when the provider can enforce cancellation.",
+          "type": "boolean"
+        },
+        "remote_name": {
+          "description": "Final unique remote object name.",
+          "type": "string"
+        },
+        "size_bytes": {
+          "description": "Exact planned bytes.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "source_hash": {
+          "description": "Hash of the complete private source identity.",
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "source_redacted": {
+          "description": "Source job identity or URL origin; all URL paths and query strings withheld.",
+          "type": "string"
+        },
+        "supported": {
+          "description": "The requested mode is available with these exact constraints.",
+          "type": "boolean"
+        },
+        "unsupported_reason": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CapabilityReason"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Machine-readable unavailable capability."
+        }
+      },
+      "required": [
+        "plan_id",
+        "delivery_id",
+        "plan_hash",
+        "account_id",
+        "account_revision",
+        "provider",
+        "mode",
+        "source_redacted",
+        "source_hash",
+        "destination",
+        "remote_name",
+        "size_bytes",
+        "max_bytes",
+        "max_seconds",
+        "supported",
+        "allow_unbounded_remote",
+        "remote_cancellation_supported",
+        "hard_byte_cap",
+        "expires_at"
+      ],
+      "type": "object"
+    },
+    "CloudSource": {
+      "description": "Approved source identity. Raw URLs occur only on incoming requests and private storage.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "An existing completed download; Zeus never removes this user file.",
+          "properties": {
+            "job_id": {
+              "description": "Download identity.",
+              "pattern": "^job_[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+              "type": "string"
+            },
+            "kind": {
+              "const": "completed_job",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "job_id"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "A public HTTP(S) source with an exact bounded length and no ambient session.",
+          "properties": {
+            "block_md5": {
+              "description": "Optional exact 4 MiB block MD5 manifest for bounded Baidu streaming.",
+              "items": {
+                "type": "string"
+              },
+              "type": [
+                "array",
+                "null"
+              ]
+            },
+            "kind": {
+              "const": "public_url",
+              "type": "string"
+            },
+            "sha256": {
+              "description": "Optional expected SHA-256.",
+              "pattern": "^[0-9a-f]{64}$",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "size_bytes": {
+              "description": "Exact source length; mismatch fails.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "url": {
+              "description": "Potentially sensitive URL; Debug is redacted.",
+              "maxLength": 8192,
+              "minLength": 8,
+              "pattern": "^https?://",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "url",
+            "size_bytes"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "CloudSubmitParams": {
+      "additionalProperties": false,
+      "description": "Reserve a durable delivery and request human approval; never self-authorizes.",
+      "properties": {
+        "idempotency_key": {
+          "description": "Durable request binding.",
+          "type": "string"
+        },
+        "plan_hash": {
+          "description": "Reviewed canonical hash.",
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "plan_id": {
+          "description": "Reviewed plan identifier.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "plan_id",
+        "plan_hash",
+        "idempotency_key"
       ],
       "type": "object"
     },
@@ -1189,6 +2707,11 @@
         "previous": {
           "description": "Previous value, if any."
         },
+        "replayed": {
+          "default": false,
+          "description": "True when this response replays a durable mutation receipt.",
+          "type": "boolean"
+        },
         "restart_required": {
           "description": "A daemon restart is needed for it to apply.",
           "type": "boolean"
@@ -1199,6 +2722,26 @@
         "restart_required"
       ],
       "type": "object"
+    },
+    "ConfirmationLevel": {
+      "description": "Confirmation performed by an attested human surface (spec 07).",
+      "oneOf": [
+        {
+          "const": "gesture",
+          "description": "A deliberate gesture after the arming delay.",
+          "type": "string"
+        },
+        {
+          "const": "typed_code",
+          "description": "The human typed the request's binding code on the trusted surface.",
+          "type": "string"
+        },
+        {
+          "const": "os_auth",
+          "description": "An operating-system authentication prompt was completed.",
+          "type": "string"
+        }
+      ]
     },
     "ConnectionLimits": {
       "description": "Hard maxima for one connection (00 section 10 plus API specifics).",
@@ -1279,6 +2822,7 @@
       ]
     },
     "ConvertStep": {
+      "additionalProperties": false,
       "description": "Conversion step applied to downloaded files.",
       "properties": {
         "from": {
@@ -1287,6 +2831,11 @@
             "type": "string"
           },
           "type": "array"
+        },
+        "keep_original": {
+          "default": true,
+          "description": "False schedules a later destructive-operation approval; never deletes during execution.",
+          "type": "boolean"
         },
         "to": {
           "description": "Target extension.",
@@ -1352,6 +2901,36 @@
         "reason"
       ],
       "type": "object"
+    },
+    "DateFormat": {
+      "description": "Date window format.",
+      "oneOf": [
+        {
+          "const": "iso_date",
+          "description": "ISO date.",
+          "type": "string"
+        },
+        {
+          "const": "basic_date",
+          "description": "Compact numeric date.",
+          "type": "string"
+        }
+      ]
+    },
+    "DateOrder": {
+      "description": "Date window ordering.",
+      "oneOf": [
+        {
+          "const": "ascending",
+          "description": "Oldest first.",
+          "type": "string"
+        },
+        {
+          "const": "descending",
+          "description": "Newest first.",
+          "type": "string"
+        }
+      ]
     },
     "DecideOutcome": {
       "description": "The decision a human takes.",
@@ -1426,6 +3005,26 @@
         {
           "const": "cancel",
           "description": "Withdrawn (written by `system`).",
+          "type": "string"
+        }
+      ]
+    },
+    "DeliveryMode": {
+      "description": "User-selected data path. Unsupported modes are never silently substituted.",
+      "oneOf": [
+        {
+          "const": "staged_upload",
+          "description": "Download to a local file, verify completely, then upload.",
+          "type": "string"
+        },
+        {
+          "const": "stream_upload",
+          "description": "Read through Zeus with bounded buffers and no full local cache.",
+          "type": "string"
+        },
+        {
+          "const": "remote_import",
+          "description": "Cloud provider fetches the approved URL itself.",
           "type": "string"
         }
       ]
@@ -1511,6 +3110,11 @@
     "DryRunReport": {
       "description": "Result of `workflows.dry_run`: what would happen, without downloading anything.",
       "properties": {
+        "complete": {
+          "default": false,
+          "description": "Whether sampling finished within the deadline; incomplete reports cannot authorize a run.",
+          "type": "boolean"
+        },
         "estimate_bytes": {
           "anyOf": [
             {
@@ -1631,6 +3235,11 @@
             "$ref": "#/$defs/EnqueuedJob"
           },
           "type": "array"
+        },
+        "replayed": {
+          "default": false,
+          "description": "True when this response replays a durable mutation receipt.",
+          "type": "boolean"
         }
       },
       "required": [
@@ -1649,11 +3258,6 @@
             "string",
             "null"
           ]
-        },
-        "deduplicated": {
-          "default": false,
-          "description": "True when an identical request (same idempotency key) already created this job.",
-          "type": "boolean"
         },
         "error": {
           "anyOf": [
@@ -1927,6 +3531,7 @@
       "type": "object"
     },
     "Extract": {
+      "additionalProperties": false,
       "description": "Item extraction.",
       "properties": {
         "fields": {
@@ -1935,6 +3540,17 @@
           },
           "description": "Named fields. Field names are `[a-z][a-z0-9_]{0,31}`. The field `url` is the download URL.",
           "type": "object"
+        },
+        "follow": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Follow"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "One detail document per item, with additional fields."
         },
         "items": {
           "$ref": "#/$defs/Selector",
@@ -1951,6 +3567,7 @@
       "description": "What to take from a matched node.",
       "oneOf": [
         {
+          "additionalProperties": false,
           "description": "The text content.",
           "properties": {
             "kind": {
@@ -1964,6 +3581,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "An attribute value.",
           "properties": {
             "kind": {
@@ -1984,10 +3602,26 @@
       ]
     },
     "FetchPolicy": {
+      "additionalProperties": false,
       "description": "Rate and politeness.",
       "properties": {
+        "download_accept": {
+          "description": "Optional Accept header for file requests.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "max_concurrency_per_host": {
           "description": "Simultaneous requests per host, 1 to 8.",
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "max_connections_per_file": {
+          "default": 1,
+          "description": "Connections allowed for each file.",
           "format": "uint8",
           "maximum": 255,
           "minimum": 0,
@@ -1998,6 +3632,11 @@
           "format": "uint64",
           "minimum": 0,
           "type": "integer"
+        },
+        "priority": {
+          "$ref": "#/$defs/Priority",
+          "default": "low",
+          "description": "Download priority."
         },
         "respect_robots": {
           "default": true,
@@ -2012,6 +3651,7 @@
       "type": "object"
     },
     "Field": {
+      "additionalProperties": false,
       "description": "One named value extracted from each item.",
       "properties": {
         "extract": {
@@ -2020,6 +3660,13 @@
             "kind": "text"
           },
           "description": "What to take."
+        },
+        "from_field": {
+          "description": "Apply a regex to another extracted field.",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "required": {
           "default": false,
@@ -2032,12 +3679,35 @@
           "type": "boolean"
         },
         "selector": {
-          "$ref": "#/$defs/Selector",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Selector"
+            },
+            {
+              "type": "null"
+            }
+          ],
           "description": "Selector relative to the item node."
         }
       },
+      "type": "object"
+    },
+    "FieldPattern": {
+      "additionalProperties": false,
+      "description": "Field condition.",
+      "properties": {
+        "field": {
+          "description": "Name.",
+          "type": "string"
+        },
+        "pattern": {
+          "description": "Linear-time pattern.",
+          "type": "string"
+        }
+      },
       "required": [
-        "selector"
+        "field",
+        "pattern"
       ],
       "type": "object"
     },
@@ -2057,6 +3727,10 @@
           "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:([0-5][0-9]|60)\\.[0-9]{3}Z$",
           "type": "string"
         },
+        "partial": {
+          "description": "True for the `.zpart` file of an unfinished job.",
+          "type": "boolean"
+        },
         "path": {
           "description": "Path relative to the write root.",
           "type": "string"
@@ -2064,6 +3738,10 @@
         "quarantined": {
           "description": "Zeus's quarantine flag.",
           "type": "boolean"
+        },
+        "root": {
+          "description": "The write root containing the file (absolute, canonical).",
+          "type": "string"
         },
         "sha256": {
           "description": "SHA-256 recorded when the file was completed by Zeus, if it was.",
@@ -2091,6 +3769,7 @@
         }
       },
       "required": [
+        "root",
         "path",
         "size_bytes",
         "modified_at",
@@ -2198,6 +3877,11 @@
           "description": "Whether anything was done.",
           "type": "boolean"
         },
+        "replayed": {
+          "default": false,
+          "description": "True when this response replays a durable mutation receipt.",
+          "type": "boolean"
+        },
         "steps": {
           "description": "Planned or performed conversions.",
           "items": {
@@ -2222,6 +3906,13 @@
     "FilesListParams": {
       "description": "`files.list` parameters.",
       "properties": {
+        "cursor": {
+          "description": "Opaque cursor from a previous result. Valid only for the same method and filters.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "dir": {
           "description": "A directory inside a write root. Absent: the default root.",
           "type": [
@@ -2234,10 +3925,14 @@
           "description": "Include `.zpart` files of unfinished jobs.",
           "type": "boolean"
         },
-        "page": {
-          "$ref": "#/$defs/PageRequest",
-          "default": {},
-          "description": "Paging."
+        "limit": {
+          "description": "Page size. Absent: 50. Values above 100 are clamped to 100; 0 is invalid.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
         },
         "recursive": {
           "default": false,
@@ -2284,12 +3979,24 @@
           "type": "boolean"
         },
         "approval_id": {
-          "description": "The approval needed to apply destructive steps.",
+          "description": "The `destructive_op` approval a person must give before anything moves.",
           "pattern": "^ap_[0-7][0-9A-HJKMNP-TV-Z]{25}$",
           "type": [
             "string",
             "null"
           ]
+        },
+        "operation_id": {
+          "description": "The stored operation; `files.undo` reverts it once it ran.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "replayed": {
+          "default": false,
+          "description": "True when this response replays a durable mutation receipt.",
+          "type": "boolean"
         },
         "steps": {
           "description": "The plan.",
@@ -2305,9 +4012,66 @@
       ],
       "type": "object"
     },
+    "FilesRootsRegisterParams": {
+      "description": "`files.roots.register` parameters (role `service` only; 05 section 9.6).",
+      "properties": {
+        "idempotency_key": {
+          "description": "Idempotency key.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "label": {
+          "description": "Optional label, 1 to 64 characters. Untrusted display text.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "path": {
+          "description": "Absolute directory inside one of the user's write roots.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "type": "object"
+    },
+    "FilesRootsRegisterResult": {
+      "description": "`files.roots.register` result.",
+      "properties": {
+        "created": {
+          "description": "False when the same canonical path was already registered by this service.",
+          "type": "boolean"
+        },
+        "replayed": {
+          "default": false,
+          "description": "True when this response replays a durable mutation receipt.",
+          "type": "boolean"
+        },
+        "root": {
+          "$ref": "#/$defs/ServiceRoot",
+          "description": "The registered root."
+        }
+      },
+      "required": [
+        "root",
+        "created"
+      ],
+      "type": "object"
+    },
     "FilesUndoParams": {
       "description": "`files.undo` parameters.",
       "properties": {
+        "idempotency_key": {
+          "description": "Idempotency key.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "operation_id": {
           "description": "Identifier of the operation in the undo journal.",
           "type": "string"
@@ -2321,8 +4085,28 @@
     "FilesUndoResult": {
       "description": "`files.undo` result.",
       "properties": {
+        "approval_id": {
+          "description": "The `destructive_op` approval for the undo (absent when there is nothing to revert).",
+          "pattern": "^ap_[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "operation_id": {
+          "description": "The undo's own operation.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "replayed": {
+          "default": false,
+          "description": "True when this response replays a durable mutation receipt.",
+          "type": "boolean"
+        },
         "steps": {
-          "description": "Steps reverted.",
+          "description": "The inverse steps, planned now and run after a person approves them.",
           "items": {
             "$ref": "#/$defs/FileStep"
           },
@@ -2338,6 +4122,7 @@
       "description": "An item filter.",
       "oneOf": [
         {
+          "additionalProperties": false,
           "description": "Keep (or with `invert`, drop) items whose URL matches the pattern.",
           "properties": {
             "invert": {
@@ -2361,6 +4146,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "Keep items with a declared MIME type in the list (prefix `type/*` allowed).",
           "properties": {
             "allow": {
@@ -2373,6 +4159,11 @@
             "type": {
               "const": "mime",
               "type": "string"
+            },
+            "unknown": {
+              "$ref": "#/$defs/UnknownMime",
+              "default": "keep",
+              "description": "Treatment of unknown media types."
             }
           },
           "required": [
@@ -2382,6 +4173,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "Drop items larger than this many bytes (when the size is known).",
           "properties": {
             "bytes": {
@@ -2402,6 +4194,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "Drop items smaller than this many bytes.",
           "properties": {
             "bytes": {
@@ -2422,11 +4215,17 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "Keep items whose field matches a pattern.",
           "properties": {
             "field": {
               "description": "Field name.",
               "type": "string"
+            },
+            "invert": {
+              "default": false,
+              "description": "Drop matches instead of keeping them.",
+              "type": "boolean"
             },
             "pattern": {
               "description": "Pattern.",
@@ -2445,6 +4244,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "Drop items whose key was already seen.",
           "properties": {
             "key": {
@@ -2463,6 +4263,28 @@
           "type": "object"
         }
       ]
+    },
+    "Follow": {
+      "additionalProperties": false,
+      "description": "Bounded detail extraction; nested follows are deliberately impossible.",
+      "properties": {
+        "fields": {
+          "additionalProperties": {
+            "$ref": "#/$defs/Field"
+          },
+          "description": "Fields evaluated relative to the detail document.",
+          "type": "object"
+        },
+        "url": {
+          "description": "Template rendering the detail URL.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "url",
+        "fields"
+      ],
+      "type": "object"
     },
     "GrantCreatedData": {
       "description": "`grant.created`.",
@@ -2677,6 +4499,77 @@
       ],
       "type": "object"
     },
+    "HttpDialect": {
+      "description": "Wire dialect. The selected provider kind must be compatible with this dialect.",
+      "oneOf": [
+        {
+          "const": "open_ai_responses",
+          "description": "OpenAI Responses API, with persistence disabled.",
+          "type": "string"
+        },
+        {
+          "const": "chat_completions",
+          "description": "OpenAI-compatible chat completions (OpenRouter, llama.cpp and LM Studio).",
+          "type": "string"
+        },
+        {
+          "const": "anthropic_messages",
+          "description": "Anthropic Messages API using an explicitly supplied API key.",
+          "type": "string"
+        },
+        {
+          "const": "ollama",
+          "description": "Ollama's local chat API, with streaming disabled.",
+          "type": "string"
+        }
+      ]
+    },
+    "HttpProviderConfig": {
+      "description": "Non-secret adapter configuration. Endpoint is the complete method URL.",
+      "properties": {
+        "dialect": {
+          "$ref": "#/$defs/HttpDialect",
+          "description": "API wire format."
+        },
+        "endpoint": {
+          "description": "Complete endpoint, without credentials, query or fragment.",
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/ProviderKind2",
+          "description": "Provider rung."
+        },
+        "model": {
+          "description": "Explicit model identifier; no automatic model substitution.",
+          "type": "string"
+        },
+        "pricing": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Pricing"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Price upper bounds; mandatory for remote requests, absent for local models."
+        },
+        "timeout_seconds": {
+          "description": "Total request deadline, in seconds (1–300).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "kind",
+        "endpoint",
+        "dialect",
+        "model",
+        "timeout_seconds"
+      ],
+      "type": "object"
+    },
     "HttpVersion": {
       "description": "HTTP protocol version observed.",
       "oneOf": [
@@ -2696,6 +4589,30 @@
           "type": "string"
         }
       ]
+    },
+    "ItemsFormat": {
+      "description": "Item records are JSON Lines.",
+      "oneOf": [
+        {
+          "const": "jsonl",
+          "description": "JSON Lines.",
+          "type": "string"
+        }
+      ]
+    },
+    "ItemsSink": {
+      "additionalProperties": false,
+      "description": "Item record sink.",
+      "properties": {
+        "format": {
+          "$ref": "#/$defs/ItemsFormat",
+          "description": "Output format."
+        }
+      },
+      "required": [
+        "format"
+      ],
+      "type": "object"
     },
     "JobCompletedData": {
       "description": "`job.completed`.",
@@ -3192,6 +5109,15 @@
           "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:([0-5][0-9]|60)\\.[0-9]{3}Z$",
           "type": "string"
         },
+        "eta_s": {
+          "description": "Estimated seconds remaining.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "filename": {
           "default": null,
           "description": "The resolved or hinted name. Untrusted text.",
@@ -3227,9 +5153,33 @@
             "null"
           ]
         },
+        "path": {
+          "description": "Completed local file path.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "quarantined": {
           "description": "Quarantine flag.",
           "type": "boolean"
+        },
+        "rate_ewma": {
+          "description": "Current transfer rate in bytes per second.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "sha256": {
+          "description": "Completed SHA-256 digest.",
+          "pattern": "^[0-9a-f]{64}$",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "source_kind": {
           "$ref": "#/$defs/SourceKind",
@@ -3238,6 +5188,15 @@
         "state": {
           "$ref": "#/$defs/JobState",
           "description": "Current state."
+        },
+        "state_seq": {
+          "description": "Durable event that placed the job in its current state, filled by the daemon.",
+          "maximum": 9007199254740991,
+          "minimum": 1,
+          "type": [
+            "integer",
+            "null"
+          ]
         },
         "updated_at": {
           "description": "Last change.",
@@ -3538,6 +5497,11 @@
         "job": {
           "$ref": "#/$defs/JobSummary",
           "description": "The job after the action. Illegal transitions fail with `api.invalid_transition` instead."
+        },
+        "replayed": {
+          "default": false,
+          "description": "True when this response replays a durable mutation receipt.",
+          "type": "boolean"
         }
       },
       "required": [
@@ -3591,6 +5555,22 @@
     "JobsListParams": {
       "description": "`jobs.list` parameters.",
       "properties": {
+        "cursor": {
+          "description": "Opaque cursor from a previous result. Valid only for the same method and filters.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "limit": {
+          "description": "Page size. Absent: 50. Values above 100 are clamped to 100; 0 is invalid.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "origin": {
           "description": "Only jobs for this origin.",
           "maxLength": 300,
@@ -3599,11 +5579,6 @@
             "string",
             "null"
           ]
-        },
-        "page": {
-          "$ref": "#/$defs/PageRequest",
-          "default": {},
-          "description": "Paging."
         },
         "run_id": {
           "description": "Only this workflow run.",
@@ -3726,6 +5701,24 @@
           },
           "type": "array"
         },
+        "progress_bytes": {
+          "description": "Also return after this many new committed bytes on any watched job.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "since_seq": {
+          "description": "Durable state cursor returned by the previous wait.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "timeout_ms": {
           "description": "Maximum wait, 1 to 60 000 ms (the MCP tool maps `timeout_s` to this).",
           "format": "uint64",
@@ -3772,15 +5765,47 @@
       ],
       "type": "object"
     },
+    "KillSwitchAction": {
+      "description": "A human may engage or explicitly release the persistent kill switch.",
+      "oneOf": [
+        {
+          "const": "engage",
+          "description": "Revoke permissions and pause work.",
+          "type": "string"
+        },
+        {
+          "const": "release",
+          "description": "Clear the latch without resuming jobs or restoring grants.",
+          "type": "string"
+        }
+      ]
+    },
     "KillSwitchParams": {
       "description": "`daemon.kill_switch` parameters.",
       "properties": {
+        "action": {
+          "$ref": "#/$defs/KillSwitchAction",
+          "default": "engage",
+          "description": "Requested state transition."
+        },
         "reason": {
           "description": "Free text for the audit record. Untrusted, at most 280 characters.",
           "type": [
             "string",
             "null"
           ]
+        },
+        "surface": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Surface"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Human trust surface, checked against the authenticated role."
         }
       },
       "type": "object"
@@ -3788,6 +5813,21 @@
     "KillSwitchResult": {
       "description": "`daemon.kill_switch` result.",
       "properties": {
+        "approvals_pending": {
+          "description": "Pending approvals invalidated when engaged.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "changed": {
+          "default": false,
+          "description": "Whether the durable latch changed value; engage still sweeps when already engaged.",
+          "type": "boolean"
+        },
+        "engaged": {
+          "description": "Persisted state after the action.",
+          "type": "boolean"
+        },
         "grants_revoked": {
           "description": "Grants revoked by this call.",
           "format": "uint32",
@@ -3799,9 +5839,16 @@
           "format": "uint32",
           "minimum": 0,
           "type": "integer"
+        },
+        "replayed": {
+          "default": false,
+          "description": "Whether a durable API receipt supplied the result.",
+          "type": "boolean"
         }
       },
       "required": [
+        "engaged",
+        "approvals_pending",
         "grants_revoked",
         "jobs_paused"
       ],
@@ -3854,9 +5901,331 @@
         }
       ]
     },
+    "LineageDirection": {
+      "description": "Which way `artifacts.lineage` walks.",
+      "oneOf": [
+        {
+          "const": "ancestors",
+          "description": "Parents, grandparents, ...",
+          "type": "string"
+        },
+        {
+          "const": "descendants",
+          "description": "Artifacts derived from this one.",
+          "type": "string"
+        }
+      ]
+    },
+    "LineageLink": {
+      "description": "An edge of a lineage node: the index of a parent (ancestors) or child (descendants) in `nodes`.",
+      "properties": {
+        "node": {
+          "description": "Index into `nodes`.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "role": {
+          "description": "The parent role (`input`, `config`, `manifest` or a producer role).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "node",
+        "role"
+      ],
+      "type": "object"
+    },
+    "LineageNode": {
+      "description": "One node of a lineage walk (13 section 4.3).",
+      "properties": {
+        "artifact_id": {
+          "description": "The record; null for a content-only node (a parent known only by its digests).",
+          "pattern": "^art_[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "blake3": {
+          "description": "BLAKE3 content identity.",
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "depth": {
+          "description": "Levels from the start record (0).",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "links": {
+          "description": "Parents (ancestors) or children (descendants) of this node.",
+          "items": {
+            "$ref": "#/$defs/LineageLink"
+          },
+          "type": "array"
+        },
+        "size_bytes": {
+          "description": "Length.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "blake3",
+        "size_bytes",
+        "depth",
+        "links"
+      ],
+      "type": "object"
+    },
+    "LlmAccount": {
+      "description": "Account identity visible only on the human auth surface.",
+      "properties": {
+        "account_id": {
+          "description": "Issued registration id.",
+          "type": "string"
+        },
+        "active": {
+          "description": "The registration is selected for inference.",
+          "type": "boolean"
+        },
+        "email": {
+          "description": "Verified email for display, not identity.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "plan_enabled": {
+          "description": "ChatGPT plan permission was granted.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "account_id",
+        "plan_enabled",
+        "active"
+      ],
+      "type": "object"
+    },
+    "LlmAuthCancelParams": {
+      "description": "Cancel a pending sign-in owned by this credential.",
+      "properties": {
+        "flow_id": {
+          "description": "Flow identifier.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "flow_id"
+      ],
+      "type": "object"
+    },
+    "LlmAuthFlow": {
+      "description": "One flow's non-secret status.",
+      "properties": {
+        "account_id": {
+          "description": "Issued ChatGPT account registration after successful connection.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "expires_at": {
+          "description": "Expiry time.",
+          "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:([0-5][0-9]|60)\\.[0-9]{3}Z$",
+          "type": "string"
+        },
+        "flow_id": {
+          "description": "Flow identifier.",
+          "type": "string"
+        },
+        "provider": {
+          "$ref": "#/$defs/ProviderKind2",
+          "description": "Provider being connected."
+        },
+        "state": {
+          "$ref": "#/$defs/LlmAuthState",
+          "description": "Current lifecycle state."
+        }
+      },
+      "required": [
+        "flow_id",
+        "provider",
+        "state",
+        "expires_at"
+      ],
+      "type": "object"
+    },
+    "LlmAuthSignOutParams": {
+      "description": "Stop using saved credentials and attempt provider revocation.",
+      "properties": {
+        "account_id": {
+          "description": "ChatGPT registration; absent selects the current registration.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "provider": {
+          "$ref": "#/$defs/ProviderKind2",
+          "description": "Provider to disconnect."
+        }
+      },
+      "required": [
+        "provider"
+      ],
+      "type": "object"
+    },
+    "LlmAuthSignOutResult": {
+      "description": "Sign-out result, explicitly distinguishing local clearing from remote revocation.",
+      "properties": {
+        "cleared": {
+          "description": "Local credentials were removed.",
+          "type": "boolean"
+        },
+        "remote_revocation_confirmed": {
+          "description": "Remote revocation was confirmed; OpenRouter key deletion is managed on its account website.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "cleared",
+        "remote_revocation_confirmed"
+      ],
+      "type": "object"
+    },
+    "LlmAuthStartParams": {
+      "description": "Begin a human-controlled model-provider browser sign-in.",
+      "properties": {
+        "account_id": {
+          "description": "Existing ChatGPT registration to reauthorize; absent creates a new registration.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "provider": {
+          "$ref": "#/$defs/ProviderKind2",
+          "description": "Only `chatgpt_oauth` and `openrouter_oauth` support this flow."
+        }
+      },
+      "required": [
+        "provider"
+      ],
+      "type": "object"
+    },
+    "LlmAuthStartResult": {
+      "description": "One-use sign-in URL. It must never be written to logs or analytics.",
+      "properties": {
+        "authorization_url": {
+          "description": "Browser URL returned only to the initiating trusted human client.",
+          "type": "string"
+        },
+        "expires_at": {
+          "description": "Deadline of this flow.",
+          "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:([0-5][0-9]|60)\\.[0-9]{3}Z$",
+          "type": "string"
+        },
+        "flow_id": {
+          "description": "Opaque flow identifier owned by the requesting credential.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "flow_id",
+        "authorization_url",
+        "expires_at"
+      ],
+      "type": "object"
+    },
+    "LlmAuthState": {
+      "description": "Browser sign-in lifecycle.",
+      "oneOf": [
+        {
+          "const": "waiting",
+          "description": "Waiting for browser completion.",
+          "type": "string"
+        },
+        {
+          "const": "connected",
+          "description": "Credentials were saved successfully.",
+          "type": "string"
+        },
+        {
+          "const": "failed",
+          "description": "Login failed; no secret-bearing diagnostics are exposed.",
+          "type": "string"
+        },
+        {
+          "const": "canceled",
+          "description": "The owner canceled the pending flow.",
+          "type": "string"
+        },
+        {
+          "const": "expired",
+          "description": "The listener deadline elapsed.",
+          "type": "string"
+        }
+      ]
+    },
+    "LlmAuthStatusParams": {
+      "description": "Inspect one owned flow, or list the current user's account registrations.",
+      "properties": {
+        "flow_id": {
+          "description": "Opaque flow identifier, absent to list saved accounts only.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "LlmAuthStatusResult": {
+      "description": "Flow status and saved account picker data.",
+      "properties": {
+        "accounts": {
+          "description": "Saved ChatGPT registrations; never tokens.",
+          "items": {
+            "$ref": "#/$defs/LlmAccount"
+          },
+          "type": "array"
+        },
+        "flow": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LlmAuthFlow"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Requested flow, absent when only accounts were requested."
+        }
+      },
+      "required": [
+        "accounts"
+      ],
+      "type": "object"
+    },
     "LlmConfigureParams": {
       "description": "`llm.configure` parameters (human only). The key travels once over the local pipe and goes straight to the OS\nkeyring; it is never echoed, logged or stored anywhere else.",
       "properties": {
+        "adapter": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HttpProviderConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Explicit model, endpoint and pricing ceilings for one provider; contains no credential."
+        },
         "allow_experimental": {
           "default": null,
           "description": "Allow providers marked experimental.",
@@ -3873,6 +6242,14 @@
           ],
           "x-zeus-secret": true
         },
+        "enabled": {
+          "default": null,
+          "description": "Explicitly enable or disable model tasks. Default is disabled.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
         "privacy": {
           "anyOf": [
             {
@@ -3888,7 +6265,7 @@
         "provider": {
           "anyOf": [
             {
-              "$ref": "#/$defs/ProviderKind"
+              "$ref": "#/$defs/ProviderKind2"
             },
             {
               "type": "null"
@@ -3915,6 +6292,11 @@
     "LlmConfigureResult": {
       "description": "`llm.configure` result.",
       "properties": {
+        "replayed": {
+          "default": false,
+          "description": "True when this response replays a durable mutation receipt.",
+          "type": "boolean"
+        },
         "rungs": {
           "description": "The ladder after the change.",
           "items": {
@@ -4002,6 +6384,7 @@
       ]
     },
     "ManifestSink": {
+      "additionalProperties": false,
       "description": "Manifest output.",
       "properties": {
         "format": {
@@ -4178,6 +6561,46 @@
       ],
       "type": "object"
     },
+    "OnDrift": {
+      "description": "Drift response.",
+      "oneOf": [
+        {
+          "const": "pause",
+          "description": "Wait for review.",
+          "type": "string"
+        },
+        {
+          "const": "stop",
+          "description": "End discovery.",
+          "type": "string"
+        },
+        {
+          "const": "continue",
+          "description": "Record and proceed within budgets.",
+          "type": "string"
+        }
+      ]
+    },
+    "OnExisting": {
+      "description": "Existing output handling.",
+      "oneOf": [
+        {
+          "const": "skip",
+          "description": "Preserve and skip.",
+          "type": "string"
+        },
+        {
+          "const": "rename",
+          "description": "Create unique name.",
+          "type": "string"
+        },
+        {
+          "const": "replace",
+          "description": "Stage replacement for approval.",
+          "type": "string"
+        }
+      ]
+    },
     "Overwrite": {
       "description": "What to do if the final path exists (`spec.overwrite`).",
       "oneOf": [
@@ -4313,26 +6736,25 @@
       ],
       "type": "object"
     },
-    "PageRequest": {
-      "description": "Paging parameters shared by every list method (00 section 10).",
+    "Page6": {
+      "description": "One page of results.",
       "properties": {
-        "cursor": {
-          "description": "Opaque cursor from a previous result. Valid only for the same method and filters.",
+        "items": {
+          "description": "The items.",
+          "items": true,
+          "type": "array"
+        },
+        "next_cursor": {
+          "description": "Cursor for the next page, `null` at the end.",
           "type": [
             "string",
             "null"
           ]
-        },
-        "limit": {
-          "description": "Page size. Absent: 50. Values above 100 are clamped to 100; 0 is invalid.",
-          "format": "uint32",
-          "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
         }
       },
+      "required": [
+        "items"
+      ],
       "type": "object"
     },
     "PageSample": {
@@ -4364,6 +6786,7 @@
       "description": "Pagination strategy.",
       "oneOf": [
         {
+          "additionalProperties": false,
           "description": "Follow `Link: <...>; rel=\"next\"` or `<a rel=\"next\">`.",
           "properties": {
             "max_pages": {
@@ -4384,8 +6807,18 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "A numeric page parameter, for example `?page=N`.",
           "properties": {
+            "end": {
+              "description": "Last page value, inclusive; omitted legacy plans use max_pages alone.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
             "max_pages": {
               "description": "Page limit.",
               "format": "uint32",
@@ -4423,6 +6856,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "`offset` and `limit` parameters.",
           "properties": {
             "limit": {
@@ -4445,6 +6879,13 @@
               "description": "Offset parameter name.",
               "type": "string"
             },
+            "start_offset": {
+              "default": 0,
+              "description": "Initial offset.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
             "strategy": {
               "const": "offset_limit",
               "type": "string"
@@ -4460,6 +6901,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "A cursor read from the JSON response and sent back as a parameter.",
           "properties": {
             "cursor_path": {
@@ -4490,6 +6932,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "A selector for the \"next\" link.",
           "properties": {
             "max_pages": {
@@ -4515,6 +6958,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "Infinite scroll, driven in the user's browser through the extension.",
           "properties": {
             "max_scrolls": {
@@ -4542,6 +6986,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "Chunk a date range into windows.",
           "properties": {
             "chunk_days": {
@@ -4550,6 +6995,11 @@
               "minimum": 0,
               "type": "integer"
             },
+            "date_format": {
+              "$ref": "#/$defs/DateFormat",
+              "default": "iso_date",
+              "description": "Date rendering."
+            },
             "from": {
               "description": "First day, `YYYY-MM-DD`.",
               "type": "string"
@@ -4557,6 +7007,15 @@
             "from_param": {
               "description": "Parameter for the window start.",
               "type": "string"
+            },
+            "inner": {
+              "$ref": "#/$defs/Pagination",
+              "description": "Pagination inside each date window."
+            },
+            "order": {
+              "$ref": "#/$defs/DateOrder",
+              "default": "ascending",
+              "description": "Window order."
             },
             "strategy": {
               "const": "date_range",
@@ -4577,7 +7036,8 @@
             "to_param",
             "from",
             "to",
-            "chunk_days"
+            "chunk_days",
+            "inner"
           ],
           "type": "object"
         }
@@ -4596,6 +7056,7 @@
         "approvals.decide",
         "files.read",
         "files.write",
+        "files.roots.register",
         "workflows.plan",
         "workflows.run",
         "audit.read",
@@ -4629,6 +7090,7 @@
       "type": "object"
     },
     "Plan": {
+      "additionalProperties": false,
       "description": "A complete workflow plan.",
       "properties": {
         "allowed_domains": {
@@ -4715,7 +7177,8 @@
         "stop": {
           "$ref": "#/$defs/StopRules",
           "default": {
-            "no_new_items_pages": 2,
+            "no_new_items_pages": 3,
+            "on_drift": "pause",
             "stop_on_duplicate_page": true
           },
           "description": "When to stop paginating."
@@ -4824,6 +7287,7 @@
       "type": "object"
     },
     "Post": {
+      "additionalProperties": false,
       "description": "Post-processing.",
       "properties": {
         "convert": {
@@ -4840,6 +7304,13 @@
             "null"
           ]
         },
+        "rules": {
+          "description": "First matching rule supplies item naming overrides.",
+          "items": {
+            "$ref": "#/$defs/RouteRule"
+          },
+          "type": "array"
+        },
         "subdir": {
           "description": "Template for a sub-directory under the destination.",
           "type": [
@@ -4848,6 +7319,35 @@
           ]
         }
       },
+      "type": "object"
+    },
+    "Pricing": {
+      "description": "User-configured conservative pricing. No model prices are guessed or downloaded implicitly.",
+      "properties": {
+        "input_micro_usd_per_million": {
+          "description": "Ceiling per million input tokens, in micro-USD.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "max_input_tokens": {
+          "description": "Provider/model input-context limit. The full limit is reserved before every paid request.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "output_micro_usd_per_million": {
+          "description": "Ceiling per million generated tokens (including reasoning), in micro-USD.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "input_micro_usd_per_million",
+        "output_micro_usd_per_million",
+        "max_input_tokens"
+      ],
       "type": "object"
     },
     "Priority": {
@@ -5138,7 +7638,161 @@
       ],
       "type": "object"
     },
+    "ProviderCapabilities": {
+      "description": "Advertised implementation capabilities, not inferred product marketing features.",
+      "properties": {
+        "provider": {
+          "$ref": "#/$defs/ProviderKind",
+          "description": "Provider implementation."
+        },
+        "remote_cancel": {
+          "description": "Remote import can be cancelled at the provider.",
+          "type": "boolean"
+        },
+        "remote_import": {
+          "description": "Provider can retrieve a source URL.",
+          "type": "boolean"
+        },
+        "remote_import_hard_byte_limit": {
+          "description": "The provider can enforce a hard imported-byte ceiling before downloading.\nFalse means the daemon can only check size after the provider finishes.",
+          "type": "boolean"
+        },
+        "remote_sha256": {
+          "description": "Remote SHA-256 may be reported; receipts state whether it actually was.",
+          "type": "boolean"
+        },
+        "resumable_upload": {
+          "description": "Durable staged upload may resume at confirmed provider offsets.",
+          "type": "boolean"
+        },
+        "staged_upload": {
+          "description": "Local verified upload supported.",
+          "type": "boolean"
+        },
+        "stream_upload": {
+          "description": "Bounded forward-only upload supported.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "provider",
+        "staged_upload",
+        "stream_upload",
+        "remote_import",
+        "resumable_upload",
+        "remote_cancel",
+        "remote_import_hard_byte_limit",
+        "remote_sha256"
+      ],
+      "type": "object"
+    },
+    "ProviderConfig": {
+      "description": "Human-configured, nonsecret provider settings. Tokens live in a separate credential store.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Existing Drive folder ID; `root` is allowed. OAuth bearer token supplied separately.",
+          "properties": {
+            "parent_id": {
+              "description": "Parent folder ID.",
+              "type": "string"
+            },
+            "provider": {
+              "const": "google_drive",
+              "type": "string"
+            }
+          },
+          "required": [
+            "provider",
+            "parent_id"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Existing Disk folder, e.g. `disk:/Zeus`. OAuth token supplied separately.",
+          "properties": {
+            "provider": {
+              "const": "yandex_disk",
+              "type": "string"
+            },
+            "root_path": {
+              "description": "Existing root folder.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "provider",
+            "root_path"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Explicit external executable, config file and remote. Never auto-discovered.",
+          "properties": {
+            "config": {
+              "$ref": "#/$defs/RcloneConfig",
+              "description": "Adapter settings."
+            },
+            "provider": {
+              "const": "rclone",
+              "type": "string"
+            }
+          },
+          "required": [
+            "provider",
+            "config"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Native multipart upload into the authorized application's directory.",
+          "properties": {
+            "provider": {
+              "const": "baidu_netdisk",
+              "type": "string"
+            },
+            "root_path": {
+              "description": "Existing root under `/apps/<appname>`.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "provider",
+            "root_path"
+          ],
+          "type": "object"
+        }
+      ]
+    },
     "ProviderKind": {
+      "description": "Implemented native providers and the explicitly configured external adapter.",
+      "oneOf": [
+        {
+          "const": "google_drive",
+          "description": "Native Drive v3 resumable upload.",
+          "type": "string"
+        },
+        {
+          "const": "yandex_disk",
+          "description": "Native Disk REST upload and URL import.",
+          "type": "string"
+        },
+        {
+          "const": "rclone",
+          "description": "Explicitly configured rclone remote.",
+          "type": "string"
+        },
+        {
+          "const": "baidu_netdisk",
+          "description": "Native Baidu Netdisk multipart upload with an approved chunk manifest.",
+          "type": "string"
+        }
+      ]
+    },
+    "ProviderKind2": {
       "description": "Every way Zeus can obtain model output, in ladder order (see [`ProviderKind::LADDER`]).\n\nThere is intentionally no variant for Claude or Gemini consumer subscription tokens.",
       "oneOf": [
         {
@@ -5273,6 +7927,49 @@
         }
       ]
     },
+    "RcloneConfig": {
+      "additionalProperties": false,
+      "description": "Explicit human-configured executable and remote. Credentials remain in the rclone config.",
+      "properties": {
+        "config_file": {
+          "description": "Absolute path to the explicitly configured credential file.",
+          "type": "string"
+        },
+        "config_sha256": {
+          "description": "SHA-256 of the configuration authorized by the human; checked before every launch.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "executable": {
+          "description": "Absolute path to the trusted rclone executable. No shell is involved.",
+          "type": "string"
+        },
+        "executable_sha256": {
+          "description": "SHA-256 of the executable authorized by the human; checked before every launch.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "remote": {
+          "description": "Named remote only; inline connection strings and drive-letter paths are rejected.",
+          "type": "string"
+        },
+        "root_path": {
+          "description": "Existing remote folder/bucket prefix. Cannot contain traversal or URL syntax.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "executable",
+        "config_file",
+        "remote",
+        "root_path"
+      ],
+      "type": "object"
+    },
     "RecoverySummary": {
       "description": "Startup recovery summary (`daemon.started.recovery`).",
       "properties": {
@@ -5361,6 +8058,60 @@
           "type": "string"
         }
       ]
+    },
+    "RemoteArtifact": {
+      "description": "Public remote artifact evidence. No URLs, credentials or upload sessions.",
+      "properties": {
+        "local_sha256": {
+          "description": "Locally observed stream SHA-256, absent for provider-only import.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "object_id": {
+          "description": "Opaque provider object ID, or unique reserved path for path-based providers.",
+          "type": "string"
+        },
+        "object_path": {
+          "description": "Unique destination path/name selected for this operation.",
+          "type": "string"
+        },
+        "operation_id": {
+          "description": "Durable operation identifier.",
+          "type": "string"
+        },
+        "provider": {
+          "$ref": "#/$defs/ProviderKind",
+          "description": "Provider implementation."
+        },
+        "remote_sha256": {
+          "description": "Actual provider-reported SHA-256, absent where unsupported/unavailable.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "size": {
+          "description": "Exact provider-reported bytes.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "verification": {
+          "$ref": "#/$defs/VerificationEvidence",
+          "description": "Strength of evidence actually obtained."
+        }
+      },
+      "required": [
+        "provider",
+        "operation_id",
+        "object_id",
+        "object_path",
+        "size",
+        "verification"
+      ],
+      "type": "object"
     },
     "ResolvedFilename": {
       "description": "A resolved file name and its provenance.",
@@ -5490,6 +8241,93 @@
       ],
       "type": "object"
     },
+    "RevocationReason": {
+      "description": "Recorded cause for a grant revocation.",
+      "oneOf": [
+        {
+          "const": "user_request",
+          "description": "Explicit human action.",
+          "type": "string"
+        },
+        {
+          "const": "kill_switch",
+          "description": "Daemon kill switch.",
+          "type": "string"
+        },
+        {
+          "const": "origin_blocked",
+          "description": "A never grant blocks the origin.",
+          "type": "string"
+        }
+      ]
+    },
+    "RouteCondition": {
+      "additionalProperties": false,
+      "description": "Routing conditions have no executable expressions.",
+      "properties": {
+        "ext": {
+          "description": "Extensions.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "field_regex": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FieldPattern"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Field pattern."
+        },
+        "media_type": {
+          "description": "Media type patterns.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "url_regex": {
+          "description": "URL pattern.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "RouteRule": {
+      "additionalProperties": false,
+      "description": "One conditional naming rule.",
+      "properties": {
+        "rename": {
+          "description": "Filename override.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "subdir": {
+          "description": "Subdirectory override.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "when": {
+          "$ref": "#/$defs/RouteCondition",
+          "description": "Conditions, combined with AND."
+        }
+      },
+      "required": [
+        "when"
+      ],
+      "type": "object"
+    },
     "RunControl": {
       "description": "Control actions on a run.",
       "oneOf": [
@@ -5510,21 +8348,186 @@
         }
       ]
     },
-    "RunReport": {
+    "RunCounts": {
       "description": "Progress and outcome of a run.",
       "properties": {
+        "bytes_done": {
+          "description": "Committed bytes across admitted jobs.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "files_canceled": {
+          "description": "Jobs currently canceled.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "files_completed": {
+          "description": "Jobs currently completed.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "files_convert_failed": {
+          "description": "Failed conversions; zero while conversion is unsupported.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "files_converted": {
+          "description": "Successful conversions; zero while conversion is unsupported.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "files_enqueued": {
+          "description": "Jobs admitted to the engine; pending intents are excluded in API projections.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "files_failed": {
+          "description": "Jobs currently failed.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "files_quarantined": {
+          "description": "Jobs currently marked quarantined.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "items_duplicate": {
+          "description": "Repeated URLs or dedupe keys.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "items_filtered": {
+          "description": "Items rejected by ordinary filters.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "items_invalid": {
+          "description": "Items with missing or invalid required fields.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "items_out_of_domain": {
+          "description": "Items outside the approved domains.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "items_seen": {
+          "description": "Extracted candidate items.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "items_skipped_existing": {
+          "description": "Durable intents skipped because their destination already exists.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "pages_failed": {
+          "description": "Failed document attempts committed before pausing.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "pages_fetched": {
+          "description": "Successful document fetches committed to the checkpoint.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "pages_skipped_robots": {
+          "description": "Document attempts refused by robots policy.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "pages_fetched",
+        "pages_failed",
+        "pages_skipped_robots",
+        "items_seen",
+        "items_duplicate",
+        "items_filtered",
+        "items_out_of_domain",
+        "items_invalid",
+        "items_skipped_existing",
+        "files_enqueued",
+        "files_completed",
+        "files_failed",
+        "files_canceled",
+        "files_quarantined",
+        "files_converted",
+        "files_convert_failed",
+        "bytes_done"
+      ],
+      "type": "object"
+    },
+    "RunReport": {
+      "description": "Progress and outcome of a run, including compatibility fields for pre-alpha clients.",
+      "properties": {
+        "approval_id": {
+          "default": null,
+          "description": "Approval that authorized this run.",
+          "pattern": "^ap_[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "bytes_done": {
           "description": "Bytes committed.",
           "format": "uint64",
           "minimum": 0,
           "type": "integer"
         },
+        "counts": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RunCounts"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Discovery and job counters; null means the old checkpoint did not retain complete counters."
+        },
+        "created_at": {
+          "default": null,
+          "description": "Reservation time; legacy checkpoints may not retain it separately.",
+          "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:([0-5][0-9]|60)\\.[0-9]{3}Z$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "drift": {
+          "default": [],
           "description": "Drift findings (a selector that stopped matching, a layout change).",
           "items": {
             "$ref": "#/$defs/Diagnostic"
           },
           "type": "array"
+        },
+        "elapsed_ms": {
+          "default": 0,
+          "description": "Active running time, excluding approval waits and pauses.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
         },
         "files_completed": {
           "description": "Files finished and verified.",
@@ -5545,6 +8548,7 @@
           "type": "integer"
         },
         "finished_at": {
+          "default": null,
           "description": "When the run ended.",
           "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:([0-5][0-9]|60)\\.[0-9]{3}Z$",
           "type": [
@@ -5552,15 +8556,69 @@
             "null"
           ]
         },
+        "grant_id": {
+          "default": null,
+          "description": "Effective workflow session grant; null for public-page runs.",
+          "pattern": "^gr_[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "last_error": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ErrorEnvelope"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Trusted error code/class/message only; never page content or a full URL."
+        },
         "pages_fetched": {
           "description": "Pages fetched so far.",
           "format": "uint32",
           "minimum": 0,
           "type": "integer"
         },
+        "pause_reason": {
+          "default": null,
+          "description": "Reason a run is paused, using the spec 08 vocabulary.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "plan_hash": {
           "description": "Hash of the approved plan.",
           "type": "string"
+        },
+        "plan_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PlanId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Stored plan identity when known."
+        },
+        "possibly_incomplete": {
+          "default": false,
+          "description": "True when budgets, cancellation, errors or drift may have left sources unexplored.",
+          "type": "boolean"
+        },
+        "report_version": {
+          "default": 0,
+          "description": "One for reports whose discovery counters were recorded from run creation; zero for legacy checkpoints.",
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": "integer"
         },
         "run_id": {
           "description": "The run.",
@@ -5568,16 +8626,30 @@
           "type": "string"
         },
         "started_at": {
+          "default": null,
           "description": "When the run started.",
           "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:([0-5][0-9]|60)\\.[0-9]{3}Z$",
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "status": {
           "$ref": "#/$defs/RunStatus",
           "description": "State."
         },
         "stop_reason": {
+          "default": null,
           "description": "Why pagination stopped, for example `no_new_items` or `budget_pages`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "updated_at": {
+          "default": null,
+          "description": "Most recent durable workflow update.",
+          "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:([0-5][0-9]|60)\\.[0-9]{3}Z$",
           "type": [
             "string",
             "null"
@@ -5592,8 +8664,7 @@
         "files_enqueued",
         "files_completed",
         "files_failed",
-        "bytes_done",
-        "started_at"
+        "bytes_done"
       ],
       "type": "object"
     },
@@ -5650,7 +8721,7 @@
           "type": "boolean"
         },
         "provider": {
-          "$ref": "#/$defs/ProviderKind",
+          "$ref": "#/$defs/ProviderKind2",
           "description": "The provider."
         },
         "reason": {
@@ -5684,6 +8755,7 @@
       "description": "How a selector locates content.",
       "oneOf": [
         {
+          "additionalProperties": false,
           "description": "CSS selector over HTML.",
           "properties": {
             "kind": {
@@ -5702,6 +8774,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "JSONPath (RFC 9535) over JSON.",
           "properties": {
             "kind": {
@@ -5720,6 +8793,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "Regular expression over text; capture group `group` is the result.",
           "properties": {
             "group": {
@@ -5745,6 +8819,7 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "XPath. Reserved: rejected by the v0 validator.",
           "properties": {
             "kind": {
@@ -5763,6 +8838,37 @@
           "type": "object"
         }
       ]
+    },
+    "ServiceRoot": {
+      "description": "A write root registered by a service client (05 section 7.6).",
+      "properties": {
+        "client_id": {
+          "description": "The owning service's credential id.",
+          "type": "string"
+        },
+        "created_at": {
+          "description": "Registration time.",
+          "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:([0-5][0-9]|60)\\.[0-9]{3}Z$",
+          "type": "string"
+        },
+        "label": {
+          "description": "Optional label, untrusted display text.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "path": {
+          "description": "Absolute, canonical path of the root.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "client_id",
+        "created_at"
+      ],
+      "type": "object"
     },
     "SessionGrant": {
       "description": "A recorded consent. Holds no cookies: cookies are fetched per use and wiped.",
@@ -5828,6 +8934,25 @@
           "minimum": 0,
           "type": "integer"
         },
+        "renewed_at": {
+          "description": "Latest human renewal time.",
+          "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:([0-5][0-9]|60)\\.[0-9]{3}Z$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "revocation_reason": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RevocationReason"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Reason for the revocation."
+        },
         "revoked_at": {
           "default": null,
           "description": "When it was revoked.",
@@ -5836,6 +8961,17 @@
             "string",
             "null"
           ]
+        },
+        "revoked_by": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Actor"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Actor who revoked this consent."
         },
         "run_id": {
           "description": "For `workflow`.",
@@ -5978,6 +9114,7 @@
       ]
     },
     "SessionRequirement": {
+      "additionalProperties": false,
       "description": "Session requirement of a plan.",
       "properties": {
         "origin": {
@@ -6000,10 +9137,26 @@
     "SessionsListParams": {
       "description": "`sessions.list` parameters.",
       "properties": {
+        "cursor": {
+          "description": "Opaque cursor from a previous result. Valid only for the same method and filters.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "include_inactive": {
           "default": false,
           "description": "Include expired, revoked and consumed grants.",
           "type": "boolean"
+        },
+        "limit": {
+          "description": "Page size. Absent: 50. Values above 100 are clamped to 100; 0 is invalid.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
         },
         "origin": {
           "description": "Only this origin.",
@@ -6013,11 +9166,6 @@
             "string",
             "null"
           ]
-        },
-        "page": {
-          "$ref": "#/$defs/PageRequest",
-          "default": {},
-          "description": "Paging."
         }
       },
       "type": "object"
@@ -6097,6 +9245,11 @@
             "null"
           ]
         },
+        "replayed": {
+          "default": false,
+          "description": "True when this response replays a durable mutation receipt.",
+          "type": "boolean"
+        },
         "status": {
           "$ref": "#/$defs/SessionRequestStatus",
           "description": "What happened."
@@ -6132,6 +9285,11 @@
         "grant": {
           "$ref": "#/$defs/SessionGrant",
           "description": "The grant after revocation (idempotent: revoking a revoked grant returns it unchanged)."
+        },
+        "replayed": {
+          "default": false,
+          "description": "True when this response replays a durable mutation receipt.",
+          "type": "boolean"
         }
       },
       "required": [
@@ -6180,19 +9338,43 @@
         "accepted": {
           "description": "The daemon accepted the request and is stopping.",
           "type": "boolean"
+        },
+        "grace_ms": {
+          "description": "Accepted grace period before connections close; default 10 000, at most 60 000.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "replayed": {
+          "default": false,
+          "description": "True when this response replays a durable mutation receipt.",
+          "type": "boolean"
         }
       },
       "required": [
-        "accepted"
+        "accepted",
+        "grace_ms"
       ],
       "type": "object"
     },
     "Sinks": {
+      "additionalProperties": false,
       "description": "Where results go.",
       "properties": {
         "dest_dir": {
           "description": "Destination directory. Must lie inside a configured write root.",
           "type": "string"
+        },
+        "items": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ItemsSink"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Optional item record output."
         },
         "manifest": {
           "anyOf": [
@@ -6204,6 +9386,11 @@
             }
           ],
           "description": "Manifest output, if wanted."
+        },
+        "on_existing": {
+          "$ref": "#/$defs/OnExisting",
+          "default": "skip",
+          "description": "Existing file policy."
         }
       },
       "required": [
@@ -6265,6 +9452,7 @@
       "description": "An entry point of the crawl.",
       "oneOf": [
         {
+          "additionalProperties": false,
           "description": "Explicit start pages.",
           "properties": {
             "type": {
@@ -6286,8 +9474,16 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "A sitemap (`sitemap.xml`) whose `<loc>` entries are the pages.",
           "properties": {
+            "loc_pattern": {
+              "description": "Optional restriction on sitemap entry URLs.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "type": {
               "const": "sitemap",
               "type": "string"
@@ -6304,8 +9500,16 @@
           "type": "object"
         },
         {
+          "additionalProperties": false,
           "description": "A JSON API endpoint that returns the items directly (use with `json_path` selectors).",
           "properties": {
+            "accept": {
+              "description": "Requested document media type; absent means application/json.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "type": {
               "const": "api_endpoint",
               "type": "string"
@@ -6547,6 +9751,11 @@
           "const": "crash_loop",
           "description": "Startup recovery gave up (crash loop).",
           "type": "string"
+        },
+        {
+          "const": "workflow_runner",
+          "description": "A workflow runner changed the job lifecycle.",
+          "type": "string"
         }
       ]
     },
@@ -6653,6 +9862,7 @@
       ]
     },
     "StopRules": {
+      "additionalProperties": false,
       "description": "When pagination stops early.",
       "properties": {
         "count_hint": {
@@ -6667,11 +9877,16 @@
           "description": "Selector for a \"total results\" hint used for estimates (never to extend budgets)."
         },
         "no_new_items_pages": {
-          "default": 2,
+          "default": 3,
           "description": "Stop after this many consecutive pages that add no new item. 0 disables the rule.",
           "format": "uint32",
           "minimum": 0,
           "type": "integer"
+        },
+        "on_drift": {
+          "$ref": "#/$defs/OnDrift",
+          "default": "pause",
+          "description": "Response to material drift."
         },
         "stop_on_duplicate_page": {
           "default": true,
@@ -6889,6 +10104,16 @@
           "type": "string"
         },
         {
+          "const": "gui",
+          "description": "The native desktop trust surface.",
+          "type": "string"
+        },
+        {
+          "const": "os_notification",
+          "description": "A trusted operating-system notification.",
+          "type": "string"
+        },
+        {
           "const": "mcp",
           "description": "The MCP server.",
           "type": "string"
@@ -6940,6 +10165,21 @@
         {
           "const": "browser_proxy",
           "description": "Force the in-browser fetch fallback (needs a connected extension and an effective grant).",
+          "type": "string"
+        }
+      ]
+    },
+    "UnknownMime": {
+      "description": "Unknown media type handling.",
+      "oneOf": [
+        {
+          "const": "keep",
+          "description": "Keep until probe.",
+          "type": "string"
+        },
+        {
+          "const": "drop",
+          "description": "Reject until known.",
           "type": "string"
         }
       ]
@@ -7008,6 +10248,31 @@
       },
       "type": "object"
     },
+    "VerificationEvidence": {
+      "description": "Actual evidence obtained; a local hash alone is never described as a remote hash match.",
+      "oneOf": [
+        {
+          "const": "local_and_remote_sha256",
+          "description": "Local bytes hashed and provider SHA-256 matched.",
+          "type": "string"
+        },
+        {
+          "const": "local_sha256_remote_size",
+          "description": "Local bytes hashed; only provider size was available.",
+          "type": "string"
+        },
+        {
+          "const": "expected_and_remote_sha256",
+          "description": "Expected hash matched the provider hash without reading source bytes locally.",
+          "type": "string"
+        },
+        {
+          "const": "remote_size_only",
+          "description": "Only provider-reported size was checked.",
+          "type": "string"
+        }
+      ]
+    },
     "WaitUntil": {
       "description": "What `jobs.wait` waits for.",
       "oneOf": [
@@ -7017,7 +10282,7 @@
           "type": "string"
         },
         {
-          "const": "all_terminal",
+          "const": "all_final",
           "description": "Every watched job reaches a terminal state or `failed`.",
           "type": "string"
         },
@@ -7028,12 +10293,75 @@
         }
       ]
     },
+    "WorkflowDraftInfo": {
+      "description": "Accounting of a model draft.",
+      "properties": {
+        "cost_micro_usd": {
+          "description": "Cost in micro-USD when known.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "input_tokens": {
+          "description": "Prompt tokens.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "model": {
+          "description": "Model identifier as reported.",
+          "type": "string"
+        },
+        "output_tokens": {
+          "description": "Generated tokens.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "provider": {
+          "$ref": "#/$defs/ProviderKind2",
+          "description": "The provider that answered."
+        }
+      },
+      "required": [
+        "provider",
+        "model",
+        "input_tokens",
+        "output_tokens"
+      ],
+      "type": "object"
+    },
+    "WorkflowDraftRequest": {
+      "description": "A model-drafting request. The model sees text-free page outlines (`metadata_only`, 09) and proposes only the\n`extract` member; domains, budgets, pace and destination are daemon defaults the person can edit.",
+      "properties": {
+        "max_cost_micro_usd": {
+          "description": "Most this one request may cost, in micro-USD; zero allows only free local models.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "max_cost_micro_usd"
+      ],
+      "type": "object"
+    },
     "WorkflowsControlParams": {
       "description": "`workflows.control` parameters.",
       "properties": {
         "action": {
           "$ref": "#/$defs/RunControl",
           "description": "The action."
+        },
+        "idempotency_key": {
+          "description": "Retry key scoped to this caller and method.",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "run_id": {
           "description": "The run.",
@@ -7050,6 +10378,11 @@
     "WorkflowsControlResult": {
       "description": "`workflows.control` result.",
       "properties": {
+        "replayed": {
+          "default": false,
+          "description": "True when this response replays a durable mutation receipt.",
+          "type": "boolean"
+        },
         "run": {
           "$ref": "#/$defs/RunReport",
           "description": "The run after the action."
@@ -7097,10 +10430,21 @@
     "WorkflowsListParams": {
       "description": "`workflows.list` parameters.",
       "properties": {
-        "page": {
-          "$ref": "#/$defs/PageRequest",
-          "default": {},
-          "description": "Paging."
+        "cursor": {
+          "description": "Opaque cursor from a previous result. Valid only for the same method and filters.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "limit": {
+          "description": "Page size. Absent: 50. Values above 100 are clamped to 100; 0 is invalid.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
         }
       },
       "type": "object"
@@ -7111,6 +10455,13 @@
         "format": {
           "$ref": "#/$defs/ManifestFormat",
           "description": "Output format."
+        },
+        "idempotency_key": {
+          "description": "Retry key for one immutable export snapshot.",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "run_id": {
           "description": "The run.",
@@ -7127,6 +10478,13 @@
     "WorkflowsManifestResult": {
       "description": "`workflows.manifest` result.",
       "properties": {
+        "content": {
+          "description": "Redacted export content when at most 512 KiB; larger exports remain on disk.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "path": {
           "description": "Path of the manifest inside a write root.",
           "type": "string"
@@ -7136,6 +10494,19 @@
           "format": "uint64",
           "minimum": 0,
           "type": "integer"
+        },
+        "replayed": {
+          "default": false,
+          "description": "True when this response replays a durable mutation receipt.",
+          "type": "boolean"
+        },
+        "sha256": {
+          "description": "Digest of the complete exported file, allowing safe inline resource verification.",
+          "pattern": "^[0-9a-f]{64}$",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [
@@ -7158,9 +10529,27 @@
           ],
           "description": "A candidate plan to validate against the samples. Absent on the first call."
         },
+        "draft": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkflowDraftRequest"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Ask the configured model to propose the selectors (human-only, verified terminal; ignored with `candidate`)."
+        },
         "goal": {
           "description": "The goal in words. Untrusted text; recorded, never interpreted.",
           "type": "string"
+        },
+        "idempotency_key": {
+          "description": "Retry key for sampling or candidate validation; model drafting does not yet support keyed retries.",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "plan_id": {
           "anyOf": [
@@ -7206,6 +10595,17 @@
           },
           "type": "array"
         },
+        "draft": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkflowDraftInfo"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Present when the candidate was drafted by the configured model: a proposal, never an approval."
+        },
         "plan": {
           "anyOf": [
             {
@@ -7230,6 +10630,11 @@
         },
         "plan_schema": {
           "description": "The JSON Schema of a plan."
+        },
+        "replayed": {
+          "default": false,
+          "description": "True when this response replays a durable mutation receipt.",
+          "type": "boolean"
         },
         "samples": {
           "description": "Page samples for the agent to write selectors against (bounded, untrusted content).",
@@ -7283,6 +10688,11 @@
             "null"
           ]
         },
+        "replayed": {
+          "default": false,
+          "description": "True when this response replays a durable mutation receipt.",
+          "type": "boolean"
+        },
         "run_id": {
           "description": "The run, created immediately (state `awaiting_approval` until a human approves).",
           "pattern": "^run_[0-7][0-9A-HJKMNP-TV-Z]{25}$",
@@ -7317,7 +10727,7 @@
         "$ref": "#/$defs/ApprovalsGetParams"
       },
       "result": {
-        "$ref": "#/$defs/ApprovalView"
+        "$ref": "#/$defs/ApprovalsGetResult"
       }
     },
     "approvals.list": {
@@ -7326,6 +10736,54 @@
       },
       "result": {
         "$ref": "#/$defs/Page3"
+      }
+    },
+    "artifacts.get": {
+      "params": {
+        "$ref": "#/$defs/ArtifactsGetParams"
+      },
+      "result": {
+        "$ref": "#/$defs/ArtifactsGetResult"
+      }
+    },
+    "artifacts.ingest": {
+      "params": {
+        "$ref": "#/$defs/ArtifactsIngestParams"
+      },
+      "result": {
+        "$ref": "#/$defs/ArtifactsIngestResult"
+      }
+    },
+    "artifacts.lifecycle.apply": {
+      "params": {
+        "$ref": "#/$defs/ArtifactsLifecycleApplyParams"
+      },
+      "result": {
+        "$ref": "#/$defs/ArtifactsLifecycleApplyResult"
+      }
+    },
+    "artifacts.lifecycle.preview": {
+      "params": {
+        "$ref": "#/$defs/ArtifactsLifecyclePreviewParams"
+      },
+      "result": {
+        "$ref": "#/$defs/ArtifactsLifecyclePreviewResult"
+      }
+    },
+    "artifacts.lineage": {
+      "params": {
+        "$ref": "#/$defs/ArtifactsLineageParams"
+      },
+      "result": {
+        "$ref": "#/$defs/ArtifactsLineageResult"
+      }
+    },
+    "artifacts.list": {
+      "params": {
+        "$ref": "#/$defs/ArtifactsListParams"
+      },
+      "result": {
+        "$ref": "#/$defs/Page6"
       }
     },
     "audit.tail": {
@@ -7344,6 +10802,14 @@
         "$ref": "#/$defs/AuditVerifyResult"
       }
     },
+    "clients.add": {
+      "params": {
+        "$ref": "#/$defs/ClientsAddParams"
+      },
+      "result": {
+        "$ref": "#/$defs/ClientsAddResult"
+      }
+    },
     "clients.list": {
       "params": {
         "$ref": "#/$defs/ClientsListParams"
@@ -7358,6 +10824,70 @@
       },
       "result": {
         "$ref": "#/$defs/ClientsRevokeResult"
+      }
+    },
+    "cloud.accounts.configure": {
+      "params": {
+        "$ref": "#/$defs/CloudAccountsConfigureParams"
+      },
+      "result": {
+        "$ref": "#/$defs/CloudAccountMutationResult"
+      }
+    },
+    "cloud.accounts.list": {
+      "params": {
+        "$ref": "#/$defs/CloudAccountsListParams"
+      },
+      "result": {
+        "$ref": "#/$defs/CloudAccountsListResult"
+      }
+    },
+    "cloud.accounts.revoke": {
+      "params": {
+        "$ref": "#/$defs/CloudAccountsRevokeParams"
+      },
+      "result": {
+        "$ref": "#/$defs/CloudAccountMutationResult"
+      }
+    },
+    "cloud.control": {
+      "params": {
+        "$ref": "#/$defs/CloudControlParams"
+      },
+      "result": {
+        "$ref": "#/$defs/CloudMutationResult"
+      }
+    },
+    "cloud.get": {
+      "params": {
+        "$ref": "#/$defs/CloudGetParams"
+      },
+      "result": {
+        "$ref": "#/$defs/CloudDeliveryView"
+      }
+    },
+    "cloud.list": {
+      "params": {
+        "$ref": "#/$defs/CloudListParams"
+      },
+      "result": {
+        "$ref": "#/$defs/CloudListResult"
+      }
+    },
+    "cloud.plan": {
+      "params": {
+        "$ref": "#/$defs/CloudPlanParams"
+      },
+      "result": {
+        "$ref": "#/$defs/CloudPlanResult"
+      }
+    },
+    "cloud.submit": {
+      "params": {
+        "$ref": "#/$defs/CloudSubmitParams"
+      },
+      "result": {
+        "$ref": "#/$defs/CloudMutationResult"
       }
     },
     "config.get": {
@@ -7472,6 +11002,14 @@
         "$ref": "#/$defs/FilesOrganizeResult"
       }
     },
+    "files.roots.register": {
+      "params": {
+        "$ref": "#/$defs/FilesRootsRegisterParams"
+      },
+      "result": {
+        "$ref": "#/$defs/FilesRootsRegisterResult"
+      }
+    },
     "files.undo": {
       "params": {
         "$ref": "#/$defs/FilesUndoParams"
@@ -7534,6 +11072,38 @@
       },
       "result": {
         "$ref": "#/$defs/JobsWaitResult"
+      }
+    },
+    "llm.auth.cancel": {
+      "params": {
+        "$ref": "#/$defs/LlmAuthCancelParams"
+      },
+      "result": {
+        "$ref": "#/$defs/LlmAuthFlow"
+      }
+    },
+    "llm.auth.sign_out": {
+      "params": {
+        "$ref": "#/$defs/LlmAuthSignOutParams"
+      },
+      "result": {
+        "$ref": "#/$defs/LlmAuthSignOutResult"
+      }
+    },
+    "llm.auth.start": {
+      "params": {
+        "$ref": "#/$defs/LlmAuthStartParams"
+      },
+      "result": {
+        "$ref": "#/$defs/LlmAuthStartResult"
+      }
+    },
+    "llm.auth.status": {
+      "params": {
+        "$ref": "#/$defs/LlmAuthStatusParams"
+      },
+      "result": {
+        "$ref": "#/$defs/LlmAuthStatusResult"
       }
     },
     "llm.configure": {

@@ -6,26 +6,41 @@
 
 use async_trait::async_trait;
 use zeus_api::methods::admin::{
-    AuditTailParams, AuditTailResult, AuditVerifyParams, AuditVerifyResult, ConfigGetParams,
-    ConfigGetResult, ConfigSetParams, ConfigSetResult, DoctorParams, DoctorResult,
+    AuditTailParams, AuditTailResult, AuditVerifyParams, AuditVerifyResult, ClientsAddParams,
+    ClientsAddResult, ClientsListParams, ClientsListResult, ClientsRevokeParams,
+    ClientsRevokeResult, ConfigGetParams, ConfigGetResult, ConfigSetParams, ConfigSetResult,
+    DoctorParams, DoctorResult, LlmAuthCancelParams, LlmAuthFlow, LlmAuthSignOutParams,
+    LlmAuthSignOutResult, LlmAuthStartParams, LlmAuthStartResult, LlmAuthStatusParams,
+    LlmAuthStatusResult, LlmConfigureParams, LlmConfigureResult, LlmStatusParams, LlmStatusResult,
 };
+use zeus_api::methods::artifacts::{
+    ArtifactsGetParams, ArtifactsGetResult, ArtifactsIngestParams, ArtifactsIngestResult,
+    ArtifactsLifecycleApplyParams, ArtifactsLifecycleApplyResult, ArtifactsLifecyclePreviewParams,
+    ArtifactsLifecyclePreviewResult, ArtifactsLineageParams, ArtifactsLineageResult,
+    ArtifactsListParams, ArtifactsListResult,
+};
+use zeus_api::methods::cloud::*;
 use zeus_api::methods::daemon::{
     KillSwitchParams, KillSwitchResult, ShutdownParams, ShutdownResult, StatusParams, StatusResult,
 };
 use zeus_api::methods::events::{
     SubscribeParams, SubscribeResult, UnsubscribeParams, UnsubscribeResult,
 };
-use zeus_api::methods::files::{FilesListParams, FilesListResult};
+use zeus_api::methods::files::{
+    FilesListParams, FilesListResult, FilesOrganizeParams, FilesOrganizeResult,
+    FilesRootsRegisterParams, FilesRootsRegisterResult, FilesUndoParams, FilesUndoResult,
+};
 use zeus_api::methods::jobs::{
     EnqueueParams, EnqueueResult, JobsControlParams, JobsControlResult, JobsGetParams,
     JobsGetResult, JobsListParams, JobsListResult, JobsVerifyParams, JobsVerifyResult,
     JobsWaitParams, JobsWaitResult, ProbeParams, ProbeResultView,
 };
 use zeus_api::methods::sessions::{
-    ApprovalView, ApprovalsDecideParams, ApprovalsDecideResult, ApprovalsGetParams,
+    ApprovalsDecideParams, ApprovalsDecideResult, ApprovalsGetParams, ApprovalsGetResult,
     ApprovalsListParams, ApprovalsListResult, SessionsListParams, SessionsListResult,
     SessionsRequestParams, SessionsRequestResult, SessionsRevokeParams, SessionsRevokeResult,
 };
+use zeus_api::methods::workflows::*;
 use zeus_api::{ApiError, ApiResult, CallContext};
 
 macro_rules! backend {
@@ -46,6 +61,22 @@ macro_rules! backend {
 }
 
 backend! {
+    /// `cloud.accounts.list`.
+    cloud_accounts_list(CloudAccountsListParams) -> CloudAccountsListResult;
+    /// `cloud.accounts.configure`.
+    cloud_accounts_configure(CloudAccountsConfigureParams) -> CloudAccountMutationResult;
+    /// `cloud.accounts.revoke`.
+    cloud_accounts_revoke(CloudAccountsRevokeParams) -> CloudAccountMutationResult;
+    /// `cloud.plan`.
+    cloud_plan(CloudPlanParams) -> CloudPlanResult;
+    /// `cloud.submit`.
+    cloud_submit(CloudSubmitParams) -> CloudMutationResult;
+    /// `cloud.list`.
+    cloud_list(CloudListParams) -> CloudListResult;
+    /// `cloud.get`.
+    cloud_get(CloudGetParams) -> CloudDeliveryView;
+    /// `cloud.control`.
+    cloud_control(CloudControlParams) -> CloudMutationResult;
     /// `daemon.status`.
     daemon_status(StatusParams) -> StatusResult;
     /// `daemon.shutdown` (admin).
@@ -79,11 +110,35 @@ backend! {
     /// `approvals.list`: agents see only the approvals they caused.
     approvals_list(ApprovalsListParams) -> ApprovalsListResult;
     /// `approvals.get`.
-    approvals_get(ApprovalsGetParams) -> ApprovalView;
+    approvals_get(ApprovalsGetParams) -> ApprovalsGetResult;
     /// `approvals.decide` (human): validate with [`crate::approvals::validate_decision`], then apply.
     approvals_decide(ApprovalsDecideParams) -> ApprovalsDecideResult;
     /// `files.list`.
     files_list(FilesListParams) -> FilesListResult;
+    /// `files.organize`: dry run by default; applying raises a `destructive_op` approval.
+    files_organize(FilesOrganizeParams) -> FilesOrganizeResult;
+    /// `files.undo`: plans the inverse of an applied operation behind a new approval.
+    files_undo(FilesUndoParams) -> FilesUndoResult;
+    /// `files.roots.register` (role `service` only).
+    files_roots_register(FilesRootsRegisterParams) -> FilesRootsRegisterResult;
+    /// `artifacts.get`.
+    artifacts_get(ArtifactsGetParams) -> ArtifactsGetResult;
+    /// `artifacts.list`.
+    artifacts_list(ArtifactsListParams) -> ArtifactsListResult;
+    /// `artifacts.lineage`.
+    artifacts_lineage(ArtifactsLineageParams) -> ArtifactsLineageResult;
+    /// `artifacts.ingest`.
+    artifacts_ingest(ArtifactsIngestParams) -> ArtifactsIngestResult;
+    /// `artifacts.lifecycle.preview`.
+    artifacts_lifecycle_preview(ArtifactsLifecyclePreviewParams) -> ArtifactsLifecyclePreviewResult;
+    /// `artifacts.lifecycle.apply`.
+    artifacts_lifecycle_apply(ArtifactsLifecycleApplyParams) -> ArtifactsLifecycleApplyResult;
+    /// `clients.list` (admin, human-only).
+    clients_list(ClientsListParams) -> ClientsListResult;
+    /// `clients.add` (admin, human-only, `cli_interactive` evidence).
+    clients_add(ClientsAddParams) -> ClientsAddResult;
+    /// `clients.revoke` (admin, human-only, `cli_interactive` evidence).
+    clients_revoke(ClientsRevokeParams) -> ClientsRevokeResult;
     /// `audit.tail`.
     audit_tail(AuditTailParams) -> AuditTailResult;
     /// `audit.verify`.
@@ -92,6 +147,32 @@ backend! {
     config_get(ConfigGetParams) -> ConfigGetResult;
     /// `config.set` (human).
     config_set(ConfigSetParams) -> ConfigSetResult;
+    /// `llm.auth.start` (verified human terminal).
+    llm_auth_start(LlmAuthStartParams) -> LlmAuthStartResult;
+    /// `llm.auth.status` (verified human terminal).
+    llm_auth_status(LlmAuthStatusParams) -> LlmAuthStatusResult;
+    /// `llm.auth.cancel` (verified human terminal).
+    llm_auth_cancel(LlmAuthCancelParams) -> LlmAuthFlow;
+    /// `llm.auth.sign_out` (verified human terminal).
+    llm_auth_sign_out(LlmAuthSignOutParams) -> LlmAuthSignOutResult;
+    /// `llm.status`.
+    llm_status(LlmStatusParams) -> LlmStatusResult;
+    /// `llm.configure` (verified human terminal).
+    llm_configure(LlmConfigureParams) -> LlmConfigureResult;
+    /// `workflows.plan`.
+    workflows_plan(WorkflowsPlanParams) -> WorkflowsPlanResult;
+    /// `workflows.dry_run`.
+    workflows_dry_run(WorkflowsDryRunParams) -> WorkflowsDryRunResult;
+    /// `workflows.run`.
+    workflows_run(WorkflowsRunParams) -> WorkflowsRunResult;
+    /// `workflows.get`.
+    workflows_get(WorkflowsGetParams) -> WorkflowsGetResult;
+    /// `workflows.list`.
+    workflows_list(WorkflowsListParams) -> WorkflowsListResult;
+    /// `workflows.control`.
+    workflows_control(WorkflowsControlParams) -> WorkflowsControlResult;
+    /// `workflows.manifest`.
+    workflows_manifest(WorkflowsManifestParams) -> WorkflowsManifestResult;
     /// `doctor.run`.
     doctor_run(DoctorParams) -> DoctorResult;
 }
