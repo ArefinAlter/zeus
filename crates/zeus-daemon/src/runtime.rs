@@ -119,11 +119,17 @@ impl RuntimeBackend {
             crate::provision::FileCredentialStore::load(&state_dir.join("credentials.json"))
                 .map_err(|_| internal())?,
         );
-        let consent = Arc::new(crate::consent::ConsentManager::new(
-            journal.clone(),
-            audit.clone(),
-            credentials,
-        ));
+        let consent = Arc::new(
+            crate::consent::ConsentManager::new(
+                journal.clone(),
+                audit.clone(),
+                credentials.clone(),
+            )
+            .with_limits(crate::approvals::ConsentLimits::new(
+                config.approvals.max_pending,
+                config.approvals.decisions_per_minute,
+            )),
+        );
         let browser = Arc::new(crate::browser::BrowserBroker::new(
             journal.clone(),
             clock.clone(),

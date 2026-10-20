@@ -31,6 +31,9 @@ pub struct PeerProcess {
 /// Inspect an already authenticated same-user transport peer; unavailable evidence fails closed.
 pub fn peer_process(stream: &IpcStream) -> PeerProcess {
     let pid = stream.peer_creds().ok().and_then(|p| p.pid());
+    // The OS reports a `pid_t` on Unix and a `u32` on Windows.
+    #[cfg(unix)]
+    let pid = pid.and_then(|pid| u32::try_from(pid).ok());
     let details = pid.and_then(|pid| platform::process_details(pid).ok());
     PeerProcess {
         pid,
