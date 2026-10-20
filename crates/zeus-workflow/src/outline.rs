@@ -13,14 +13,29 @@ const LINK_ATTRIBUTES: &[&str] = &["href", "src"];
 /// Elements whose content is never structure for a selector.
 const SKIPPED: &[&str] = &["script", "style", "noscript", "template", "svg", "head"];
 
-/// A link's shape: no query or fragment, and the last path segment replaced by `*` (its extension kept), so
-/// item lists collapse and file names stay out of the prompt.
+/// A link's shape: no query, fragment or credentials, and the last path segment replaced by `*` (its extension
+/// kept), so item lists collapse and file names stay out of the prompt. A link without an authority (`mailto:`,
+/// `javascript:`, `data:`) keeps only its scheme: what follows is an address or a payload, never structure.
 fn redact_link(value: &str) -> String {
     let cut = value.find(['?', '#']).unwrap_or(value.len());
-    let link = &value[..cut];
-    // The path starts after `scheme://host`; a bare origin has no file name to hide.
-    let path_start = match link.find("://") {
-        Some(i) => link[i + 3..].find('/').map_or(link.len(), |p| i + 3 + p),
+    let mut link = value[..cut].to_owned();
+    if let Some(scheme) = opaque_scheme(&link) {
+        return format!("{scheme}:*").chars().take(120).collect();
+    }
+    // The authority follows `//` (`scheme://host` or a protocol-relative `//host`); credentials before an `@` are
+    // dropped, and the path starts at the next `/`. A bare origin has no file name to hide.
+    let authority = link
+        .find("//")
+        .filter(|&i| i == 0 || link[..i].ends_with(':'))
+        .map(|i| i + 2);
+    let path_start = match authority {
+        Some(start) => {
+            let end = link[start..].find('/').map_or(link.len(), |p| start + p);
+            if let Some(at) = link[start..end].rfind('@') {
+                link.replace_range(start..=start + at, "");
+            }
+            link[start..].find('/').map_or(link.len(), |p| start + p)
+        }
         None => 0,
     };
     let shape = match link.rfind('/') {
@@ -31,9 +46,18 @@ fn redact_link(value: &str) -> String {
                 _ => format!("{}*", &link[..=slash]),
             }
         }
-        _ => link.to_owned(),
+        _ => link,
     };
     shape.chars().take(120).collect()
+}
+
+/// The scheme of a link without an authority (`mailto:x`, `data:...`), if it has one.
+fn opaque_scheme(link: &str) -> Option<&str> {
+    let (scheme, rest) = link.split_once(':')?;
+    let mut chars = scheme.chars();
+    let valid = chars.next().is_some_and(|c| c.is_ascii_alphabetic())
+        && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'));
+    (valid && !rest.starts_with("//")).then_some(scheme)
 }
 
 fn signature(element: &scraper::node::Element) -> String {
@@ -218,6 +242,26 @@ mod tests {
         assert_eq!(redact_link("https://a.example"), "https://a.example");
         assert_eq!(redact_link("/list/"), "/list/");
         assert_eq!(redact_link("/item/42#top"), "/item/*");
+    }
+
+    #[test]
+    fn link_shapes_drop_credentials_addresses_and_payloads() {
+        assert_eq!(
+            redact_link("https://user:s3cret@files.example.org/dl/report.pdf"),
+            "https://files.example.org/dl/*.pdf"
+        );
+        assert_eq!(
+            redact_link("//user@cdn.example.org/lib.js"),
+            "//cdn.example.org/*.js"
+        );
+        assert_eq!(redact_link("mailto:alice@example.com"), "mailto:*");
+        assert_eq!(redact_link("javascript:alert(1)"), "javascript:*");
+        assert_eq!(redact_link("data:text/plain;base64,QUJD"), "data:*");
+        assert_eq!(redact_link("/files/a:b.pdf"), "/files/*.pdf");
+        let html = r#"<a href="https://u:ZEUS-CANARY-pw@h.example.org/a.pdf">x</a>
+            <a href="mailto:ZEUS-CANARY-mail@example.org">y</a>"#;
+        let outline = outline(&sample(html, "text/html"), 4096);
+        assert!(!outline.contains("ZEUS-CANARY"), "{outline}");
     }
 
     #[test]

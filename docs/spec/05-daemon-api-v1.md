@@ -96,7 +96,7 @@ Rules:
 | Access control | Every instance carries an explicit security descriptor whose DACL grants read and write access to the user's SID only. It MUST NOT grant access to Everyone, Anonymous Logon, Authenticated Users, Network or the Users group (the default descriptor grants read access to Everyone and Anonymous). The default mandatory integrity label is kept; the daemon MUST NOT lower it, so low-integrity processes cannot write to the pipe. |
 | Continuous ownership | The daemon keeps at least one unconnected instance listening at all times: it creates the next instance before it serves a newly connected one, so the name is never free while the daemon runs. |
 
-**Unix (Linux, macOS, other BSDs).** The endpoint is the stream socket `<runtime>/zeus/zeusd.sock`:
+**Unix (Linux, macOS, other BSDs).** The endpoint is the stream socket `<runtime>/zeus/zeusd.sock` (`zeusd-<profile>.sock` when a profile is selected, 11):
 
 | `runtime` | When |
 |---|---|

@@ -157,6 +157,11 @@ fn apply_setting(
     let previous = std::mem::replace(target, new);
     let config: DaemonConfig = serde_json::from_value(value)
         .map_err(|_| ApiError::invalid_params("configuration value has the wrong type"))?;
+    if crate::config::changes_ineffective(old, &config) {
+        return Err(ApiError::not_implemented(
+            "this setting is accepted in the file for compatibility but the engine does not use it yet",
+        ));
+    }
     config.validate().map_err(|_| {
         ApiError::invalid_params("configuration value is outside its permitted bounds")
     })?;
