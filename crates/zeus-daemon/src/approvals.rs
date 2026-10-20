@@ -103,13 +103,61 @@ pub fn validate_decision(
     })
 }
 
-/// Refuse new approvals when too many are pending, so a hostile page cannot flood the user (01 section 5.3 rule 4).
-pub fn check_pending_cap(pending: usize) -> ApiResult<()> {
-    if pending >= MAX_PENDING_APPROVALS {
+/// Pending approvals one requester may hold at once (07 section 9.1).
+pub const MAX_PENDING_PER_REQUESTER: usize = 10;
+
+/// Approval limits in force, from the daemon configuration (07 section 9).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ConsentLimits {
+    /// Pending approvals daemon-wide (`approvals.max_pending`), never above 50.
+    pub max_pending: usize,
+    /// Pending approvals per requester, never above the daemon-wide cap.
+    pub per_requester: usize,
+    /// Approve decisions per minute, daemon-wide (`approvals.decisions_per_minute`).
+    pub decisions_per_minute: usize,
+}
+
+impl Default for ConsentLimits {
+    fn default() -> Self {
+        Self {
+            max_pending: MAX_PENDING_APPROVALS,
+            per_requester: MAX_PENDING_PER_REQUESTER,
+            decisions_per_minute: 10,
+        }
+    }
+}
+
+impl ConsentLimits {
+    /// Limits from validated configuration values, clamped to the spec ceilings.
+    pub fn new(max_pending: u32, decisions_per_minute: u32) -> Self {
+        let max_pending = (max_pending as usize).clamp(1, MAX_PENDING_APPROVALS);
+        Self {
+            max_pending,
+            per_requester: MAX_PENDING_PER_REQUESTER.min(max_pending),
+            decisions_per_minute: (decisions_per_minute as usize).clamp(1, 60),
+        }
+    }
+}
+
+/// Refuse new approvals when too many are pending, so a hostile page cannot flood the user (01 section 5.3 rule 4,
+/// 07 section 9.1). `for_requester` is `None` where the requester cap does not apply.
+pub fn check_pending_cap(
+    pending: usize,
+    for_requester: Option<usize>,
+    limits: &ConsentLimits,
+) -> ApiResult<()> {
+    if pending >= limits.max_pending {
         Err(ApiError::new(
             zeus_types::codes::POLICY_TOO_MANY_PENDING,
             "too many approvals are waiting for a person",
-        ))
+        )
+        .with_detail("scope", "global"))
+    } else if for_requester.is_some_and(|n| n >= limits.per_requester) {
+        Err(ApiError::new(
+            zeus_types::codes::POLICY_TOO_MANY_PENDING,
+            "this requester already has too many approvals waiting for a person",
+        )
+        .with_detail("scope", "requester"))
     } else {
         Ok(())
     }
@@ -390,8 +438,25 @@ mod tests {
 
     #[test]
     fn pending_cap_and_rate_limit() {
-        assert!(check_pending_cap(MAX_PENDING_APPROVALS - 1).is_ok());
-        assert!(check_pending_cap(MAX_PENDING_APPROVALS).is_err());
+        let limits = ConsentLimits::default();
+        assert!(check_pending_cap(MAX_PENDING_APPROVALS - 1, None, &limits).is_ok());
+        assert!(check_pending_cap(MAX_PENDING_APPROVALS, None, &limits).is_err());
+        let requester = check_pending_cap(3, Some(10), &limits).unwrap_err();
+        assert_eq!(
+            requester.envelope().details.as_ref().unwrap()["scope"],
+            "requester"
+        );
+        assert!(check_pending_cap(3, Some(9), &limits).is_ok());
+        // A lower configured cap applies daemon-wide and bounds the requester cap.
+        let configured = ConsentLimits::new(4, 2);
+        assert_eq!(configured.per_requester, 4);
+        assert_eq!(configured.decisions_per_minute, 2);
+        let global = check_pending_cap(4, Some(0), &configured).unwrap_err();
+        assert_eq!(
+            global.envelope().details.as_ref().unwrap()["scope"],
+            "global"
+        );
+        assert_eq!(ConsentLimits::new(500, 500), ConsentLimits::new(50, 60));
 
         let mut limiter = DecisionLimiter::new(2, 1000);
         limiter.try_acquire(0).unwrap();

@@ -2,11 +2,9 @@
 use async_trait::async_trait;
 use std::sync::Arc;
 use tokio::sync::Mutex;
-#[cfg(test)]
-use zeus_api::ClientKind;
 use zeus_api::auth::{CredentialId, CredentialStore};
 use zeus_api::methods::sessions::*;
-use zeus_api::{ApiError, ApiResult, ClientIdentity};
+use zeus_api::{ApiError, ApiResult, ClientIdentity, ClientKind};
 use zeus_engine::ports::{ApprovalPort, ApprovalRequest};
 use zeus_journal::Journal;
 use zeus_types::*;
@@ -50,6 +48,7 @@ pub struct ConsentManager {
     credentials: Arc<dyn CredentialStore>,
     gate: Mutex<()>,
     decisions: Mutex<crate::approvals::DecisionLimiter>,
+    limits: crate::approvals::ConsentLimits,
     started: std::time::Instant,
 }
 impl ConsentManager {
@@ -65,8 +64,88 @@ impl ConsentManager {
             credentials,
             gate: Mutex::new(()),
             decisions: Mutex::new(crate::approvals::DecisionLimiter::per_minute()),
+            limits: Default::default(),
             started: std::time::Instant::now(),
         }
+    }
+    /// Apply configured caps and the approve-decision rate (07 section 9).
+    pub fn with_limits(mut self, limits: crate::approvals::ConsentLimits) -> Self {
+        self.decisions = Mutex::new(crate::approvals::DecisionLimiter::new(
+            limits.decisions_per_minute,
+            60_000,
+        ));
+        self.limits = limits;
+        self
+    }
+    /// Denial back-off (07 section 9.4). Derived from durable decisions, so it survives a restart: after a human
+    /// denies an unattended requester a session for an origin, new session requests by that requester for that
+    /// origin are refused for 10 minutes, or 24 hours after three denials within a day. A later approval for the
+    /// same pair clears it. Human-capable requesters and handoffs are never backed off.
+    pub(crate) fn check_denial_backoff(
+        &self,
+        requester: &str,
+        origin: &Origin,
+        now: Timestamp,
+    ) -> ApiResult<()> {
+        const SHORT_MS: u64 = 10 * 60_000;
+        const DAY_MS: u64 = 86_400_000;
+        let Ok(credential) = self.credential(requester) else {
+            return Ok(());
+        };
+        if matches!(credential.kind, ClientKind::Human | ClientKind::Admin) {
+            return Ok(());
+        }
+        let decided = self
+            .journal
+            .read(|tx| tx.approvals(Some(&[ApprovalState::Approved, ApprovalState::Denied])))
+            .map_err(error)?;
+        let mut last_approved = None;
+        let mut denials = Vec::new();
+        for a in decided.iter().filter(|a| {
+            a.kind == ApprovalKind::SessionGrant
+                && a.requested_by.as_deref() == Some(requester)
+                && a.origin.as_ref() == Some(origin)
+        }) {
+            let (Some(at), Some(decision)) = (a.decided_at, a.decision.as_ref()) else {
+                continue;
+            };
+            match a.state {
+                ApprovalState::Approved => last_approved = last_approved.max(Some(at)),
+                ApprovalState::Denied if decision.actor.kind == ActorKind::Human => {
+                    denials.push(at)
+                }
+                _ => {}
+            }
+        }
+        let recent: Vec<_> = denials
+            .into_iter()
+            .filter(|at| last_approved.is_none_or(|approved| *at > approved))
+            .filter(|at| {
+                now.duration_since(*at)
+                    .is_none_or(|d| d.as_millis() < u128::from(DAY_MS))
+            })
+            .collect();
+        let Some(last) = recent.iter().max().copied() else {
+            return Ok(());
+        };
+        let until = last.saturating_add_ms(if recent.len() >= 3 { DAY_MS } else { SHORT_MS });
+        if now < until {
+            return Err(ApiError::new(
+                codes::POLICY_RECENTLY_DENIED,
+                "a person recently denied this requester access to the site; ask them directly",
+            )
+            .with_detail("until", until.to_rfc3339()));
+        }
+        Ok(())
+    }
+    fn check_caps(&self, pending: &[Approval], requester: Option<&str>) -> ApiResult<()> {
+        let mine = requester.map(|id| {
+            pending
+                .iter()
+                .filter(|a| a.requested_by.as_deref() == Some(id))
+                .count()
+        });
+        crate::approvals::check_pending_cap(pending.len(), mine, &self.limits)
     }
     fn credential(&self, id: &str) -> ApiResult<zeus_api::auth::Credential> {
         self.credentials
@@ -278,7 +357,8 @@ impl ConsentManager {
                 expires_at: Some(a.expires_at),
             });
         }
-        crate::approvals::check_pending_cap(pending.len())?;
+        self.check_denial_backoff(identity.credential_id.as_str(), &p.origin, Timestamp::now())?;
+        self.check_caps(&pending, Some(identity.credential_id.as_str()))?;
         let a = self.prepare(ApprovalPreparation {
             requester: identity.credential_id.as_str(),
             origin: p.origin,
@@ -341,7 +421,7 @@ impl ConsentManager {
             }
             return a.clone().try_into();
         }
-        crate::approvals::check_pending_cap(pending.len())?;
+        self.check_caps(&pending, Some(requester.credential_id.as_str()))?;
         let id = IdGenerator::new().approval_id();
         let now = Timestamp::now();
         let expires = now.saturating_add_ms(7 * 86_400_000);
@@ -417,7 +497,7 @@ impl ConsentManager {
             .journal
             .read(|tx| tx.approvals(Some(&[ApprovalState::Pending])))
             .map_err(error)?;
-        crate::approvals::check_pending_cap(pending.len())?;
+        self.check_caps(&pending, Some(requester))?;
         let now = Timestamp::now();
         let id = IdGenerator::new().approval_id();
         let facts = serde_json::json!({"t":"zeus.approval.facts.v1","approval_id":id,"revision":1,"kind":"cloud_delivery",
@@ -441,10 +521,6 @@ impl ConsentManager {
         evidence: serde_json::Value,
     ) -> ApiResult<(Approval, Option<SessionGrant>)> {
         let _gate = self.gate.lock().await;
-        self.decisions
-            .lock()
-            .await
-            .try_acquire(self.started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64)?;
         if evidence["client_id"] != identity.credential_id.as_str()
             || evidence["surface"] != serde_json::json!(p.channel)
             || evidence["exe_verified"] != true
@@ -502,6 +578,13 @@ impl ConsentManager {
                 | ApprovalKind::CloudDelivery
         ) {
             return Err(ApiError::not_implemented("this approval kind"));
+        }
+        // Only valid approve decisions count against the daemon-wide rate; a flood can always be denied (07 section 9.2).
+        if validated.outcome == DecisionOutcome::Approve {
+            self.decisions
+                .lock()
+                .await
+                .try_acquire(self.started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64)?;
         }
         let now = Timestamp::now();
         let grant = validated.scope.map(|scope| SessionGrant {
@@ -642,14 +725,21 @@ impl ApprovalPort for ConsentManager {
                 .journal
                 .read(|tx| tx.approvals(Some(&[ApprovalState::Pending])))
                 .map_err(error)?;
-            if !request.reason_codes.iter().any(|r| r == "kill_switch") {
-                crate::approvals::check_pending_cap(pending.len())?;
-            }
             let requester = request
                 .summary
                 .requested_by
                 .as_deref()
                 .ok_or_else(missing)?;
+            if request.kind == ApprovalKind::SessionGrant
+                && let Some(origin) = request.origin.as_ref()
+            {
+                // Refuses the enqueue, or fails an admitted job (S14) instead of raising another prompt.
+                self.check_denial_backoff(requester, origin, Timestamp::now())?;
+            }
+            if !request.reason_codes.iter().any(|r| r == "kill_switch") {
+                // Engine-raised approvals belong to jobs already admitted; only the daemon-wide cap applies here.
+                self.check_caps(&pending, None)?;
+            }
             let a = self.prepare(ApprovalPreparation {
                 requester,
                 origin: request.origin.ok_or_else(missing)?,
@@ -862,5 +952,107 @@ mod tests {
                 .is_err()
         );
         assert_eq!(manager.journal.read(|tx| tx.grants()).unwrap().len(), 1);
+    }
+    #[tokio::test]
+    async fn configured_caps_bound_pending_requests_and_only_approvals_are_rate_limited() {
+        let temp = tempfile::tempdir().unwrap();
+        let (manager, agent, human) = setup(temp.path());
+        let manager = manager.with_limits(crate::approvals::ConsentLimits::new(3, 1));
+        let mut ids = Vec::new();
+        for host in ["a", "b", "c"] {
+            let mut p = request();
+            p.origin = Origin::parse(&format!("https://{host}.example.org")).unwrap();
+            ids.push(
+                manager
+                    .request_session(&agent, p)
+                    .await
+                    .unwrap()
+                    .approval_id
+                    .unwrap(),
+            );
+        }
+        let mut p = request();
+        p.origin = Origin::parse("https://d.example.org").unwrap();
+        let refused = manager.request_session(&agent, p).await.unwrap_err();
+        assert_eq!(refused.envelope().code.as_str(), "policy.too_many_pending");
+        let decide = |id, outcome| {
+            let a = manager.get(&human, id).unwrap();
+            ApprovalsDecideParams {
+                approval_id: id,
+                request_hash: a.request_hash.unwrap(),
+                outcome,
+                scope: (outcome == DecideOutcome::Approve).then_some(GrantScope::Site),
+                channel: Surface::CliInteractive,
+                confirmation: ConfirmationLevel::Gesture,
+                idempotency_key: None,
+            }
+        };
+        let approve = decide(ids[0], DecideOutcome::Approve);
+        manager
+            .decide(&human, &approve, evidence(&human, &approve))
+            .await
+            .unwrap();
+        let second = decide(ids[1], DecideOutcome::Approve);
+        let limited = manager
+            .decide(&human, &second, evidence(&human, &second))
+            .await
+            .unwrap_err();
+        assert_eq!(limited.envelope().code.as_str(), "api.rate_limited");
+        // Denials are never rate limited, so a person can always clear a flood.
+        for id in &ids[1..] {
+            let deny = decide(*id, DecideOutcome::Deny);
+            manager
+                .decide(&human, &deny, evidence(&human, &deny))
+                .await
+                .unwrap();
+        }
+    }
+    #[tokio::test]
+    async fn a_denial_backs_off_the_requester_for_that_origin_only() {
+        let temp = tempfile::tempdir().unwrap();
+        let (manager, agent, human) = setup(temp.path());
+        let id = manager
+            .request_session(&agent, request())
+            .await
+            .unwrap()
+            .approval_id
+            .unwrap();
+        let a = manager.get(&human, id).unwrap();
+        let deny = ApprovalsDecideParams {
+            approval_id: id,
+            request_hash: a.request_hash.unwrap(),
+            outcome: DecideOutcome::Deny,
+            scope: None,
+            channel: Surface::CliInteractive,
+            confirmation: ConfirmationLevel::Gesture,
+            idempotency_key: None,
+        };
+        manager
+            .decide(&human, &deny, evidence(&human, &deny))
+            .await
+            .unwrap();
+        let refused = manager
+            .request_session(&agent, request())
+            .await
+            .unwrap_err();
+        assert_eq!(refused.envelope().code.as_str(), "policy.recently_denied");
+        let until = refused.envelope().details.as_ref().unwrap()["until"]
+            .as_str()
+            .map(|s| Timestamp::parse(s).unwrap())
+            .unwrap();
+        let now = Timestamp::now();
+        assert!(until > now && until <= now.saturating_add_ms(10 * 60_000));
+        // The back-off lapses after its window and never spreads to other origins or to people.
+        let origin = Origin::parse("https://example.org").unwrap();
+        let requester = agent.credential_id.as_str();
+        assert!(
+            manager
+                .check_denial_backoff(requester, &origin, until.saturating_add_ms(1))
+                .is_ok()
+        );
+        let mut other = request();
+        other.origin = Origin::parse("https://other.example.org").unwrap();
+        assert!(manager.request_session(&agent, other).await.is_ok());
+        assert!(manager.request_session(&human, request()).await.is_ok());
     }
 }
