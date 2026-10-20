@@ -135,6 +135,7 @@ pub struct Router {
     authenticated: Option<Box<AuthenticationHook>>,
     shutdown: Option<ShutdownController>,
     revocations: Option<tokio::sync::watch::Receiver<u64>>,
+    rates: Option<Arc<crate::rate::RateLimiter>>,
 }
 
 impl Router {
@@ -220,6 +221,13 @@ impl Router {
         self
     }
 
+    /// Apply the per-credential token buckets of 05 section 13.2 (authorisation step 8).
+    #[must_use]
+    pub fn with_rate_limits(mut self, limits: crate::rate::RateLimits) -> Self {
+        self.rates = Some(Arc::new(crate::rate::RateLimiter::new(limits)));
+        self
+    }
+
     /// Apply one shared admission and connection-drain deadline to this server.
     #[must_use]
     pub fn with_shutdown(mut self, controller: ShutdownController) -> Self {
@@ -267,6 +275,9 @@ impl Router {
             return Err(ApiError::invalid_params("params must be an object"));
         }
         policy::authorize(Some(&ctx.identity), spec, &params)?;
+        if let Some(rates) = &self.rates {
+            rates.check(ctx.identity.credential_id.as_str(), spec, &params)?;
+        }
         let handler = self.routes.get(spec.name).ok_or_else(|| {
             ApiError::not_implemented("this method is declared but not available in this build")
         })?;

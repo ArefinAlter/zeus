@@ -45,6 +45,7 @@ pub async fn run(paths: ZeusPaths) -> Result<()> {
     let router = crate::build_router(backend.clone())
         .with_shutdown(backend.shutdown.clone())
         .with_revocations(credentials.revocations())
+        .with_rate_limits(zeus_api::rate::RateLimits::default())
         .on_authenticate(move |ctx| classify.classify_client(ctx))
         .on_disconnect(move |ctx| {
             let cleanup = cleanup.clone();
