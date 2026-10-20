@@ -667,6 +667,58 @@ async fn one_decision_reaches_every_job_of_a_batched_approval() {
 }
 
 #[tokio::test]
+async fn only_jobs_that_raise_a_prompt_spend_session_request_tokens() {
+    let dir = tempfile::tempdir().unwrap();
+    let backend = setup(dir.path()).await;
+    // A burst of two prompts.
+    backend.share_rate_limiter(Arc::new(zeus_api::rate::RateLimiter::new(
+        zeus_api::rate::RateLimits {
+            session_request: zeus_api::rate::Rate {
+                tokens: 1,
+                per: std::time::Duration::from_secs(60),
+            },
+            ..Default::default()
+        },
+    )));
+    let (agent, _rx) = context(dir.path(), "agent");
+    let enqueue = |jobs: serde_json::Value| {
+        let backend = backend.clone();
+        let agent = agent.clone();
+        async move {
+            let params: EnqueueParams =
+                serde_json::from_value(serde_json::json!({ "jobs": jobs })).unwrap();
+            backend.jobs_enqueue(&agent, params).await.unwrap().jobs
+        }
+    };
+    // Three files of one site join one prompt and spend one token.
+    let batch = enqueue(serde_json::json!([
+        {"url":"https://one.example.org/a.pdf","session_origin":"https://one.example.org"},
+        {"url":"https://one.example.org/b.pdf","session_origin":"https://one.example.org"},
+        {"url":"https://one.example.org/c.pdf","session_origin":"https://one.example.org"}
+    ]))
+    .await;
+    assert!(
+        batch
+            .iter()
+            .all(|j| j.error.is_none() && j.approval_id.is_some())
+    );
+    let second = enqueue(serde_json::json!([
+        {"url":"https://two.example.org/a.pdf","session_origin":"https://two.example.org"}
+    ]))
+    .await;
+    assert!(second[0].error.is_none());
+    let third = enqueue(serde_json::json!([
+        {"url":"https://three.example.org/a.pdf","session_origin":"https://three.example.org"}
+    ]))
+    .await;
+    assert_eq!(
+        third[0].error.as_ref().unwrap().code.as_str(),
+        "api.rate_limited"
+    );
+    backend.engine.shutdown().await.unwrap();
+}
+
+#[tokio::test]
 async fn canceling_one_batched_job_leaves_the_approval_to_the_others() {
     use zeus_api::methods::jobs::{ControlAction, JobsControlParams};
     use zeus_api::methods::sessions::{ApprovalView, ConfirmationLevel, DecideOutcome};

@@ -42,10 +42,14 @@ pub async fn run(paths: ZeusPaths) -> Result<()> {
     let native = backend.clone();
     let classify = backend.clone();
     let credentials = backend.credentials();
+    let rates = Arc::new(zeus_api::rate::RateLimiter::new(
+        zeus_api::rate::RateLimits::default(),
+    ));
+    backend.share_rate_limiter(rates.clone());
     let router = crate::build_router(backend.clone())
         .with_shutdown(backend.shutdown.clone())
         .with_revocations(credentials.revocations())
-        .with_rate_limits(zeus_api::rate::RateLimits::default())
+        .with_rate_limiter(rates)
         .on_authenticate(move |ctx| classify.classify_client(ctx))
         .on_disconnect(move |ctx| {
             let cleanup = cleanup.clone();
