@@ -1135,11 +1135,16 @@
       "type": "object"
     },
     "ClientKind": {
-      "description": "Authority class of a client.",
+      "description": "Authority class of a client. The derived order exists for collections only; authority checks use\n[`ClientKind::is_human_capable`], never a comparison.",
       "oneOf": [
         {
           "const": "agent",
           "description": "MCP server, A2A bridge, scripts holding the agent credential. Never decides approvals.",
+          "type": "string"
+        },
+        {
+          "const": "service",
+          "description": "A first-party program using the daemon unattended (Ogun, ADR 0011): the agent ceiling plus root\nregistration, its own jobs, approvals, roots and audit records only. Never human-capable.",
           "type": "string"
         },
         {
@@ -1227,6 +1232,11 @@
         {
           "const": "a2a",
           "description": "The A2A bridge (phase 2).",
+          "type": "string"
+        },
+        {
+          "const": "service",
+          "description": "A first-party unattended program holding a `service` credential.",
           "type": "string"
         },
         {
@@ -6219,6 +6229,7 @@
         "approvals.decide",
         "files.read",
         "files.write",
+        "files.roots.register",
         "workflows.plan",
         "workflows.run",
         "audit.read",

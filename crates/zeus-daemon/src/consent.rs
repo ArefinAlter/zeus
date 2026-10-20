@@ -2,9 +2,11 @@
 use async_trait::async_trait;
 use std::sync::Arc;
 use tokio::sync::Mutex;
+#[cfg(test)]
+use zeus_api::ClientKind;
 use zeus_api::auth::{CredentialId, CredentialStore};
 use zeus_api::methods::sessions::*;
-use zeus_api::{ApiError, ApiResult, ClientIdentity, ClientKind};
+use zeus_api::{ApiError, ApiResult, ClientIdentity};
 use zeus_engine::ports::{ApprovalPort, ApprovalRequest};
 use zeus_journal::Journal;
 use zeus_types::*;
@@ -79,7 +81,7 @@ impl ConsentManager {
             .read(|tx| tx.approval(id))
             .map_err(error)?
             .ok_or_else(missing)?;
-        if identity.kind == ClientKind::Agent
+        if !identity.kind.is_human_capable()
             && approval.requested_by.as_deref() != Some(identity.credential_id.as_str())
         {
             return Err(missing());
@@ -99,7 +101,7 @@ impl ConsentManager {
             .into_iter()
             .filter(|a| {
                 kind.is_none_or(|k| a.kind == k)
-                    && (identity.kind != ClientKind::Agent
+                    && (identity.kind.is_human_capable()
                         || a.requested_by.as_deref() == Some(identity.credential_id.as_str()))
             })
             .map(ApprovalView::try_from)

@@ -287,7 +287,7 @@ impl Credential {
         auth_key: AuthKey,
         now: Timestamp,
     ) -> Result<Self, ApiError> {
-        if kind > role.max_kind() {
+        if !role.allows(kind) {
             return Err(ApiError::new(
                 codes::PERMISSION_DENIED,
                 "the role cannot hold that kind",
