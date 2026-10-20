@@ -230,6 +230,13 @@ impl Router {
         self
     }
 
+    /// Apply the token buckets with rates chosen per caller (`api.rate_limits.*`, 05 section 13.2).
+    #[must_use]
+    pub fn with_rate_limits_per_caller(mut self, limits_for: Arc<crate::rate::LimitsFor>) -> Self {
+        self.rates = Some(Arc::new(crate::rate::RateLimiter::per_caller(limits_for)));
+        self
+    }
+
     /// Apply one shared admission and connection-drain deadline to this server.
     #[must_use]
     pub fn with_shutdown(mut self, controller: ShutdownController) -> Self {
@@ -283,7 +290,7 @@ impl Router {
         policy::require_capabilities(spec, &params, &ctx.capabilities)?;
         policy::authorize(Some(&ctx.identity), spec, &params)?;
         if let Some(rates) = &self.rates {
-            rates.check(ctx.identity.credential_id.as_str(), spec, &params)?;
+            rates.check_identity(&ctx.identity, spec, &params)?;
         }
         handler(ctx.clone(), params).await
     }

@@ -369,6 +369,23 @@ async fn service_clients_are_confined_to_their_roots_jobs_and_records() {
     // The service registers a root inside the user's write root, never the root itself or outside it.
     let (service, _rx2) = context(dir.path(), "ogun");
     assert_eq!(service.identity.kind, ClientKind::Service);
+    // Its router rates come from its own `api.rate_limits.service.ogun` entry; others keep theirs.
+    let mut limits = crate::config::RateLimitConfig::default();
+    limits.service.insert(
+        "ogun".into(),
+        crate::config::RateConfig {
+            read_per_s: 7,
+            ..Default::default()
+        },
+    );
+    limits.agent.read_per_s = 9;
+    let choose = limits.per_caller(backend.credentials());
+    assert_eq!(choose(&service.identity).read.tokens, 7);
+    assert_eq!(choose(&admin.identity).read.tokens, 200);
+    assert_eq!(
+        choose(&context(dir.path(), "agent").0.identity).read.tokens,
+        9
+    );
     let root_path = dir.path().join("downloads").join("ogun");
     let register = |path: &Path| FilesRootsRegisterParams {
         path: path.display().to_string(),
