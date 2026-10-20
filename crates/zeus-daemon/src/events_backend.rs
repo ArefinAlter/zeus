@@ -118,6 +118,8 @@ impl RuntimeBackend {
             .map(|s| s.get())
             .unwrap_or(head_seq.saturating_add(1));
         let replay_truncated = start.saturating_add(1) < earliest;
+        // Native subscriptions come from the human extension; API subscriptions follow 05 section 7.5.
+        let scope = Self::scope(ctx);
         let mut counted = start;
         let mut replay_count = 0;
         while counted < head_seq {
@@ -134,7 +136,7 @@ impl RuntimeBackend {
                     break;
                 }
                 counted = seq;
-                if matches(&event, &p) {
+                if matches(&event, &p) && scope.event(&event, &self.journal) {
                     replay_count += 1;
                 }
             }
@@ -166,14 +168,14 @@ impl RuntimeBackend {
                                 if let Some((connection,_,_))=&native {let _=connection.send(None,nm::ByeBody{reason:nm::ByeReason::ProtocolError,message:Some("Event history changed; reconnect and refresh the job list".into())});}
                                 else{let _=notifier.notify_wait("events.lagged",serde_json::json!({"subscription_id":id,"dropped":seq-cursor-1,"resume_from_seq":cursor})).await;}return;
                             }
-                            if matches(&event,&p) && !deliver(&notifier,&native,&id,&journal,event).await{return;}
+                            if matches(&event,&p) && scope.event(&event,&journal) && !deliver(&notifier,&native,&id,&journal,event).await{return;}
                             cursor=seq;
                         }
                         if notifier.is_closed(){break;}
                     },
                     event=progress.next(),if p.include_progress=>{
                         let Some(zeus_engine::events::EngineEvent::Event(event))=event else{continue;};
-                        if event.seq.is_some()||!matches(&event,&p){continue;}
+                        if event.seq.is_some()||!matches(&event,&p)||!scope.event(&event,&journal){continue;}
                         let Some(job)=event.job_id else{continue;};let now=Instant::now();
                         if progress_at.get(&job).is_some_and(|last:&Instant|now.duration_since(*last)<Duration::from_millis(p.progress_interval_ms.unwrap_or(1000))){continue;}
                         if progress_at.len()>=4096 {progress_at.retain(|_,last:&mut Instant|now.duration_since(*last)<Duration::from_secs(60)); if progress_at.len()>=4096 {progress_at.clear();}}

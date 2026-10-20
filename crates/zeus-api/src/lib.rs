@@ -38,6 +38,7 @@ pub mod kind;
 pub mod methods;
 pub mod paging;
 pub mod policy;
+pub mod rate;
 pub mod schema;
 pub mod server;
 pub mod transport;
@@ -66,6 +67,14 @@ pub mod capabilities {
     pub const IDEMPOTENCY: &str = "idempotency";
     /// The `nm.frame` relay for the native-messaging host.
     pub const NM_RELAY: &str = "nm.relay";
+    /// `clients.list`, `clients.add`, `clients.revoke`.
+    pub const CLIENTS: &str = "clients";
+    /// `files.roots.register`.
+    pub const FILES_ROOTS: &str = "files.roots";
+    /// `files.organize` and `files.undo`.
+    pub const FILES_ORGANIZE: &str = "files.organize";
+    /// `artifacts.get`, `artifacts.list`, `artifacts.lineage` and `artifacts.ingest`.
+    pub const ARTIFACTS: &str = "artifacts";
     /// Workflow methods (later phase).
     pub const WORKFLOWS: &str = "workflows";
     /// LLM provider methods (later phase).
@@ -78,7 +87,16 @@ pub mod capabilities {
         JOBS_WAIT,
         IDEMPOTENCY,
         NM_RELAY,
+        CLIENTS,
+        FILES_ROOTS,
+        FILES_ORGANIZE,
+        ARTIFACTS,
         WORKFLOWS,
         LLM,
     ];
+
+    /// Every capability, for callers inside the daemon process that do not negotiate (tests, embedded transports).
+    pub fn all() -> std::sync::Arc<std::collections::BTreeSet<String>> {
+        std::sync::Arc::new(ALL.iter().map(|c| (*c).to_string()).collect())
+    }
 }

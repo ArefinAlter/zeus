@@ -1,5 +1,27 @@
 # Zeus MCP server
 
+The thirteen tools include `zeus_workflow`, `zeus_files` and `zeus_artifacts`. These use the same agent connection and require a top-level `idempotency_key` plus a strict `request` object:
+
+```json
+{"idempotency_key":"workflow-sample-1","request":{"action":"plan","goal":"Collect public reports","start_urls":["https://example.org/reports"]}}
+```
+
+Call this with `zeus_workflow`. Read `zeus://workflow/plan-schema` to construct a candidate, then call `plan` again with `plan_id` and `candidate`. Use a new key for changed input. Follow with `dry_run`, then `run` naming the returned plan ID and hash. Run requests wait for human approval. Other actions are `get`, `list`, `control` and `manifest`; model drafting is not exposed. Samples are bounded to 2,048 UTF-8 bytes each and explicitly flagged if shortened.
+
+`zeus_files` supports `organize` and `undo`. Example request:
+
+```json
+{"idempotency_key":"sort-preview-1","request":{"action":"organize","dir":"/user/downloads","rules":{"rules":[{"when":{"ext":["pdf"]},"subdir":"papers"}]}}}
+```
+
+`dry_run` defaults to true. Setting it false requests review; it cannot approve the operation. The directory must be inside a root the caller may use. Conversion and model classification are unavailable.
+
+`zeus_artifacts` supports `list`, `get`, bounded `lineage` and `ingest`. Lists preserve daemon cursors. Ingest requires an absolute regular-file path inside a permitted root and does not move it. Retention/deletion/materialization are unavailable.
+
+These tools return `{operation, untrusted_data, truncated, next}` capped at 32 KiB. Manifest export returns a complete file receipt without inline content. An oversized mutation response does not imply rollback: inspect its state or retry the identical request with the same key. The generated catalogue is embedded from spec 06; regenerate it with `node docs/spec/tools/mcp-catalogue.mjs --write`, then run `--check`.
+
+## Cloud delivery
+
 The nine download/session tools and `zeus_cloud` use an agent credential on the daemon's existing IPC connection. `zeus_cloud` accepts one strict request and a durable `idempotency_key`:
 
 ```json

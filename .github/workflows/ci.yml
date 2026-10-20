@@ -1,0 +1,213 @@
+# Required checks for the zeus app workspace. The workspace builds against the sibling zeus-core checkout
+# (path dependencies), so every Rust job checks it out next to this repository: the branch with the same
+# name when it exists, otherwise main, or an explicit ref for a manual run.
+#
+# zeus-core is private: the repository secret ZEUS_CORE_TOKEN must hold a fine-grained token with read-only
+# "Contents" access to ArefinAlter/zeus-core. Pull requests from forks do not receive it and cannot build.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      core_ref:
+        description: zeus-core branch, tag or commit (default the same branch name, else main)
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  core-ref:
+    name: Resolve zeus-core ref
+    runs-on: ubuntu-latest
+    outputs:
+      ref: ${{ steps.resolve.outputs.ref }}
+    steps:
+      - id: resolve
+        shell: bash
+        env:
+          REQUESTED: ${{ inputs.core_ref }}
+          BRANCH: ${{ github.head_ref || github.ref_name }}
+          TOKEN: ${{ secrets.ZEUS_CORE_TOKEN }}
+        run: |
+          set -euo pipefail
+          ref="${REQUESTED:-}"
+          if [ -z "$ref" ]; then
+            if git ls-remote --exit-code --heads \
+                "https://x-access-token:${TOKEN}@github.com/ArefinAlter/zeus-core.git" "$BRANCH" >/dev/null 2>&1; then
+              ref="$BRANCH"
+            else
+              ref="main"
+            fi
+          fi
+          echo "zeus-core ref: $ref"
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+
+  rust:
+    name: Rust (${{ matrix.os }})
+    needs: core-ref
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          path: zeus
+      - uses: actions/checkout@v5
+        with:
+          repository: ArefinAlter/zeus-core
+          ref: ${{ needs.core-ref.outputs.ref }}
+          token: ${{ secrets.ZEUS_CORE_TOKEN }}
+          path: zeus-core
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: zeus
+      - name: Format
+        if: runner.os == 'Linux'
+        working-directory: zeus
+        run: cargo fmt --all --check
+      - name: Clippy
+        working-directory: zeus
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+      - name: Test
+        working-directory: zeus
+        run: cargo test --workspace --all-features --locked
+      - name: Generated API schema is current
+        working-directory: zeus
+        run: cargo test -p zeus-api --all-features --locked schema
+
+  msrv:
+    name: MSRV 1.90
+    needs: core-ref
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          path: zeus
+      - uses: actions/checkout@v5
+        with:
+          repository: ArefinAlter/zeus-core
+          ref: ${{ needs.core-ref.outputs.ref }}
+          token: ${{ secrets.ZEUS_CORE_TOKEN }}
+          path: zeus-core
+      - uses: dtolnay/rust-toolchain@1.90.0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: zeus
+          key: msrv
+      - name: Check with the declared minimum toolchain
+        working-directory: zeus
+        # The checked-in rust-toolchain.toml selects stable; the override pins the MSRV for this job.
+        run: cargo +1.90.0 check --workspace --all-features --locked
+
+  contracts:
+    name: Specs and contracts
+    needs: core-ref
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          path: zeus
+      - uses: actions/checkout@v5
+        with:
+          repository: ArefinAlter/zeus-core
+          ref: ${{ needs.core-ref.outputs.ref }}
+          token: ${{ secrets.ZEUS_CORE_TOKEN }}
+          path: zeus-core
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: zeus/docs/spec/tools/package-lock.json
+      - name: Validate every normative example
+        working-directory: zeus/docs/spec/tools
+        run: |
+          npm ci
+          npm run validate
+      - name: Cloud schema and MCP catalogue are current
+        working-directory: zeus
+        run: |
+          node docs/spec/tools/sync-cloud-schema.mjs --check
+          node docs/spec/tools/mcp-catalogue.mjs --check
+      - name: zeus-core fixtures match these specs
+        working-directory: zeus-core
+        run: node scripts/sync-spec-fixtures.mjs --check ../zeus
+
+  deny:
+    name: Dependencies, licenses and advisories
+    needs: core-ref
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          path: zeus
+      - uses: actions/checkout@v5
+        with:
+          repository: ArefinAlter/zeus-core
+          ref: ${{ needs.core-ref.outputs.ref }}
+          token: ${{ secrets.ZEUS_CORE_TOKEN }}
+          path: zeus-core
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          manifest-path: zeus/Cargo.toml
+          command: check
+
+  # Build/test evidence is separate from installed-platform, browser, keyring and GUI acceptance.
+  # Keep new CPU/OS combinations informational until their failures and missing capabilities are resolved.
+  compatibility:
+    name: Rust (${{ matrix.target }}, informational)
+    needs: core-ref
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+          - os: windows-11-arm
+            target: aarch64-pc-windows-msvc
+          - os: macos-15
+            target: aarch64-apple-darwin
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+    runs-on: ${{ matrix.os }}
+    continue-on-error: true
+    env:
+      CARGO_BUILD_JOBS: "3"
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          path: zeus
+      - uses: actions/checkout@v5
+        with:
+          repository: ArefinAlter/zeus-core
+          ref: ${{ needs.core-ref.outputs.ref }}
+          token: ${{ secrets.ZEUS_CORE_TOKEN }}
+          path: zeus-core
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: zeus
+      - name: Record compiler host
+        run: rustc -vV
+      - name: Test on the requested CPU architecture
+        working-directory: zeus
+        run: cargo test --workspace --all-features --locked --target ${{ matrix.target }}

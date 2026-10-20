@@ -2,6 +2,8 @@
 
 2026-10-16 · design proposal and interactive local prototype. Open [console/index.html](console/index.html) directly in a browser. All records and actions are simulated; this is not a running desktop app, daemon connection or approval authority.
 
+The [2026-10-20 workflow research and platform design](client-workflows-and-platforms.md) extends this proposal with peer-to-peer clients, metadata search, disk analysis, native/terminal file managers, synchronization, processor targets, mobile execution and concrete designs for the remaining blockers. The live TUI now has search, stable selection and selected-row scrolling; the HTML prototype remains simulated.
+
 ## Product decision
 
 Make the download queue the home screen. Keep the dense, sortable information people need: file, website, requester, state, saved bytes, total, speed, remaining time and queue. Put the agent's plan beside those files, with an explicit permission review between planning and execution. Chat is an optional way to propose work; it is not the primary monitor and cannot approve its own requests.

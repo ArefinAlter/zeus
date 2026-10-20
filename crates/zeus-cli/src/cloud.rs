@@ -384,7 +384,7 @@ fn canceled() -> CmdOutput {
     )
 }
 async fn configure<C: Client + ?Sized>(client: &C) -> ApiResult<CmdOutput> {
-    if client.session().kind < zeus_api::kind::ClientKind::Human || client.session().downgraded {
+    if !client.session().kind.is_human_capable() || client.session().downgraded {
         return Err(human_error("untrusted connection"));
     }
     let mut terminal = open_terminal().map_err(human_error)?;
@@ -481,7 +481,7 @@ async fn configure<C: Client + ?Sized>(client: &C) -> ApiResult<CmdOutput> {
     ))
 }
 async fn revoke<C: Client + ?Sized>(client: &C, account: &str) -> ApiResult<CmdOutput> {
-    if client.session().kind < zeus_api::kind::ClientKind::Human || client.session().downgraded {
+    if !client.session().kind.is_human_capable() || client.session().downgraded {
         return Err(human_error("untrusted connection"));
     }
     let mut terminal = open_terminal().map_err(human_error)?;

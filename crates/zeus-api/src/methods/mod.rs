@@ -9,6 +9,7 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 
 pub mod admin;
+pub mod artifacts;
 pub mod cloud;
 pub mod daemon;
 pub mod events;
@@ -54,6 +55,7 @@ macro_rules! rpc_methods {
 }
 
 use self::admin::*;
+use self::artifacts::*;
 use self::cloud::*;
 use self::daemon::*;
 use self::events::*;
@@ -172,10 +174,22 @@ rpc_methods! {
     LlmAuthCancel = "llm.auth.cancel" (LlmAuthCancelParams) -> LlmAuthFlow;
     /// Clear provider credentials and request remote revocation.
     LlmAuthSignOut = "llm.auth.sign_out" (LlmAuthSignOutParams) -> LlmAuthSignOutResult;
-    /// List client credentials (admin, later).
+    /// List client credentials (admin).
     ClientsList = "clients.list" (ClientsListParams) -> ClientsListResult;
-    /// Revoke a client credential (admin, later).
+    /// Create an agent or service credential (admin).
+    ClientsAdd = "clients.add" (ClientsAddParams) -> ClientsAddResult;
+    /// Revoke a client credential (admin).
     ClientsRevoke = "clients.revoke" (ClientsRevokeParams) -> ClientsRevokeResult;
+    /// Register a write root owned by a service client.
+    FilesRootsRegister = "files.roots.register" (FilesRootsRegisterParams) -> FilesRootsRegisterResult;
+    /// One artifact's export form.
+    ArtifactsGet = "artifacts.get" (ArtifactsGetParams) -> ArtifactsGetResult;
+    /// A page of artifact export forms.
+    ArtifactsList = "artifacts.list" (ArtifactsListParams) -> ArtifactsListResult;
+    /// Ancestors or descendants of an artifact.
+    ArtifactsLineage = "artifacts.lineage" (ArtifactsLineageParams) -> ArtifactsLineageResult;
+    /// Register a local file in the artifact store.
+    ArtifactsIngest = "artifacts.ingest" (ArtifactsIngestParams) -> ArtifactsIngestResult;
 }
 
 /// Names of notifications sent by the daemon to clients (they have no response).

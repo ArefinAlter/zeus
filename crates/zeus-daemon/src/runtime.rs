@@ -11,7 +11,8 @@ use std::{
 };
 use tokio::sync::Mutex;
 use zeus_api::methods::{
-    admin::*, cloud::*, daemon::*, events::*, files::*, jobs::*, sessions::*, workflows::*,
+    admin::*, artifacts::*, cloud::*, daemon::*, events::*, files::*, jobs::*, sessions::*,
+    workflows::*,
 };
 use zeus_api::{ApiError, ApiResult, CallContext, Page};
 use zeus_engine::{Engine, EngineBuilder, EngineConfig};
@@ -69,6 +70,17 @@ pub struct RuntimeBackend {
     pub(crate) workflows: Arc<crate::workflows::WorkflowService>,
     pub(crate) cloud: Arc<crate::cloud::CloudService>,
     subscriptions: Mutex<HashMap<String, (zeus_types::ConnectionId, tokio::task::AbortHandle)>>,
+    deferred_audit: crate::deferred_audit::DeferredAudit,
+    state_dir: PathBuf,
+    credentials: Arc<crate::provision::FileCredentialStore>,
+    /// Authenticated connections and their credential, for `clients.revoke`.
+    connections: std::sync::Mutex<HashMap<zeus_types::ConnectionId, zeus_api::auth::CredentialId>>,
+    admin_limits: std::sync::Mutex<HashMap<String, crate::approvals::DecisionLimiter>>,
+    organizer: Arc<crate::organizer::Organizer>,
+    artifacts: Arc<zeus_artifact::ArtifactStore>,
+    ingest_owners: artifact_ingest::IngestOwners,
+    #[cfg(test)]
+    fail_kill_switch_audit: std::sync::atomic::AtomicBool,
 }
 
 impl RuntimeBackend {
@@ -77,6 +89,13 @@ impl RuntimeBackend {
         config
             .validate()
             .map_err(|_| ApiError::invalid_params("invalid daemon configuration"))?;
+        if config.scheduler.segment_size_mib
+            != crate::config::SchedulerConfig::default().segment_size_mib
+        {
+            tracing::warn!(
+                "scheduler.segment_size_mib is not used by the engine yet; ranged requests use the commit unit"
+            );
+        }
         let roots = config.effective_write_roots();
         let default = roots
             .first()
@@ -115,15 +134,27 @@ impl RuntimeBackend {
         )
         .map_err(error)?;
         let audit = Arc::new(audit);
+        let deferred_audit =
+            crate::deferred_audit::DeferredAudit::open(&state_dir).map_err(|_| internal())?;
+        if deferred_audit.is_pending() {
+            let recorded = crate::deferred_audit::DeferredAudit::recorded_ids(&audit);
+            deferred_audit.replay(audit.as_ref(), &recorded);
+        }
         let credentials = Arc::new(
             crate::provision::FileCredentialStore::load(&state_dir.join("credentials.json"))
                 .map_err(|_| internal())?,
         );
-        let consent = Arc::new(crate::consent::ConsentManager::new(
-            journal.clone(),
-            audit.clone(),
-            credentials,
-        ));
+        let consent = Arc::new(
+            crate::consent::ConsentManager::new(
+                journal.clone(),
+                audit.clone(),
+                credentials.clone(),
+            )
+            .with_limits(crate::approvals::ConsentLimits::new(
+                config.approvals.max_pending,
+                config.approvals.decisions_per_minute,
+            )),
+        );
         let browser = Arc::new(crate::browser::BrowserBroker::new(
             journal.clone(),
             clock.clone(),
@@ -149,6 +180,12 @@ impl RuntimeBackend {
             config.effective_write_roots(),
         )?;
         workflows.recover_audit_receipts(audit.as_ref())?;
+        let roots_of = credentials.clone();
+        workflows.attach_service_roots(Arc::new(move |id| {
+            zeus_api::auth::CredentialId::parse(id)
+                .map(|id| roots_of.roots(&id))
+                .unwrap_or_default()
+        }));
         let engine = EngineBuilder::new(engine_config)
             .clock(clock)
             .session_provider(browser.clone())
@@ -178,12 +215,19 @@ impl RuntimeBackend {
                 service: "dev.zeus".into(),
             }),
         )?;
+        let organizer = Arc::new(crate::organizer::Organizer::open(
+            &state_dir,
+            journal.clone(),
+            consent.clone(),
+            audit.clone(),
+        )?);
+        let ingest_owners = artifact_ingest::IngestOwners::open(&state_dir)?;
         let outbox = Arc::new(std::sync::Mutex::new(crate::outbox::Outbox::open(
             &state_dir,
             &config.effective_write_roots(),
             journal.clone(),
             audit.clone(),
-            artifacts,
+            artifacts.clone(),
         )?));
         Ok(Arc::new(Self {
             engine,
@@ -208,12 +252,32 @@ impl RuntimeBackend {
             shutdown: zeus_api::server::ShutdownController::default(),
             mutations: Mutex::new(()),
             subscriptions: Mutex::new(HashMap::new()),
+            deferred_audit,
+            state_dir,
+            credentials,
+            connections: Default::default(),
+            admin_limits: Default::default(),
+            organizer,
+            artifacts,
+            ingest_owners,
+            #[cfg(test)]
+            fail_kill_switch_audit: Default::default(),
         }))
+    }
+
+    /// The configuration this daemon started with.
+    pub fn config(&self) -> &DaemonConfig {
+        &self.config
     }
 
     /// Identity reported during the mutual handshake.
     pub fn info(&self) -> DaemonInfo {
         self.info.clone()
+    }
+
+    /// The credential store shared with the IPC handshake, so credential changes reach live connections.
+    pub fn credentials(&self) -> Arc<crate::provision::FileCredentialStore> {
+        self.credentials.clone()
     }
     /// Bind the configuration file selected by startup flags/environment.
     pub fn set_config_path(&self, path: PathBuf) -> ApiResult<()> {
@@ -283,12 +347,24 @@ impl RuntimeBackend {
         entry
             .data
             .insert("peer_pid".into(), serde_json::json!(ctx.peer.pid));
+        entry
+            .data
+            .insert("role".into(), serde_json::json!(ctx.identity.role));
         self.audit.append(entry).map_err(error)?;
+        self.credentials
+            .touch(&ctx.identity.credential_id, Timestamp::now());
+        self.connections
+            .lock()
+            .map_err(|_| internal())?
+            .insert(ctx.connection_id, ctx.identity.credential_id.clone());
         Ok(())
     }
 
     /// Remove connection-owned work on disconnect without canceling independent downloads.
     pub async fn disconnect(&self, ctx: &CallContext) {
+        if let Ok(mut connections) = self.connections.lock() {
+            connections.remove(&ctx.connection_id);
+        }
         self.browser.disconnect(ctx.connection_id);
         self.subscriptions.lock().await.retain(|_, (owner, task)| {
             if owner == &ctx.connection_id {
@@ -364,10 +440,25 @@ impl Backend for RuntimeBackend {
     async fn workflows_plan(
         &self,
         ctx: &CallContext,
-        p: WorkflowsPlanParams,
+        mut p: WorkflowsPlanParams,
     ) -> ApiResult<WorkflowsPlanResult> {
         self.admit()?;
-        self.workflows.plan(&ctx.identity, p).await
+        if p.draft.is_some() && p.idempotency_key.is_some() {
+            return Err(ApiError::not_implemented(
+                "keyed model drafting is not available; use a candidate plan",
+            ));
+        }
+        let Some(draft) = p.draft.take() else {
+            return self.workflows.plan(&ctx.identity, p).await;
+        };
+        if p.candidate.is_some() {
+            return Err(ApiError::invalid_params(
+                "draft and candidate are exclusive",
+            ));
+        }
+        // Spending the person's model budget is their decision: drafting needs a verified terminal.
+        let actor = self.model_human(ctx)?;
+        self.draft_workflow(ctx, actor, p, draft).await
     }
     async fn workflows_dry_run(
         &self,
@@ -533,6 +624,21 @@ impl Backend for RuntimeBackend {
             return Ok(result);
         }
         self.admit()?;
+        // A service writes only inside its registered roots; resolve every entry before any job exists.
+        let service_dirs = match Self::scope(ctx).service() {
+            Some(_) => Some(
+                p.jobs
+                    .iter()
+                    .map(|job| {
+                        self.service_destination(
+                            &ctx.identity.credential_id,
+                            job.dest_dir.as_deref(),
+                        )
+                    })
+                    .collect::<ApiResult<Vec<_>>>()?,
+            ),
+            None => None,
+        };
         let mut entries: Vec<EnqueuedJob> = receipt
             .as_ref()
             .map(|r| {
@@ -556,6 +662,9 @@ impl Backend for RuntimeBackend {
                     .job_source(ctx.identity.credential_id.as_str()),
             )
             .map_err(|_| internal())?;
+            if let Some(dirs) = &service_dirs {
+                value["dest_dir"] = serde_json::json!(dirs[index]);
+            }
             if let Some(key) = &p.idempotency_key {
                 if key.is_empty() || key.len() > 128 {
                     return Err(ApiError::invalid_params(
@@ -641,8 +750,9 @@ impl Backend for RuntimeBackend {
         }
         Ok(result)
     }
-    async fn jobs_list(&self, _ctx: &CallContext, p: JobsListParams) -> ApiResult<JobsListResult> {
+    async fn jobs_list(&self, ctx: &CallContext, p: JobsListParams) -> ApiResult<JobsListResult> {
         p.page.validate()?;
+        let scope = Self::scope(ctx);
         let rows = self
             .journal
             .read(|tx| tx.jobs(&zeus_journal::store::JobFilter::default()))
@@ -651,7 +761,8 @@ impl Backend for RuntimeBackend {
             .into_iter()
             .map(|r| r.job)
             .filter(|j| {
-                (p.states.is_empty() || p.states.contains(&j.state))
+                scope.job(j)
+                    && (p.states.is_empty() || p.states.contains(&j.state))
                     && p.run_id.is_none_or(|r| j.spec.source.run_id == Some(r))
                     && p.source_kind.is_none_or(|s| j.spec.source.kind == s)
                     && p.origin.as_ref().is_none_or(|o| &j.spec.origin() == o)
@@ -668,6 +779,7 @@ impl Backend for RuntimeBackend {
     }
     async fn jobs_get(&self, ctx: &CallContext, p: JobsGetParams) -> ApiResult<JobsGetResult> {
         let job = self.engine.get(p.job_id).await.map_err(error)?;
+        Self::scope(ctx).require_job(&job)?;
         let revealed = if p.reveal_urls {
             let surface = if ctx.identity.role == zeus_api::ClientRole::Tui {
                 Surface::Tui
@@ -698,13 +810,14 @@ impl Backend for RuntimeBackend {
             revealed,
         })
     }
-    async fn jobs_wait(&self, _ctx: &CallContext, p: JobsWaitParams) -> ApiResult<JobsWaitResult> {
+    async fn jobs_wait(&self, ctx: &CallContext, p: JobsWaitParams) -> ApiResult<JobsWaitResult> {
         if p.job_ids.is_empty()
             || p.job_ids.len() > 100
             || !(1..=MAX_WAIT_MS).contains(&p.timeout_ms)
         {
             return Err(ApiError::invalid_params("invalid jobs.wait bounds"));
         }
+        self.require_jobs_visible(ctx, &p.job_ids)?;
         let deadline = tokio::time::Instant::now() + Duration::from_millis(p.timeout_ms);
         let cursor = p
             .since_seq
@@ -783,6 +896,7 @@ impl Backend for RuntimeBackend {
         ctx: &CallContext,
         p: JobsControlParams,
     ) -> ApiResult<JobsControlResult> {
+        self.require_jobs_visible(ctx, &[p.job_id])?;
         let _gate = self.mutations.lock().await;
         let action = match p.action {
             ControlAction::Pause => zeus_engine::api::ControlAction::Pause,
@@ -836,10 +950,11 @@ impl Backend for RuntimeBackend {
     }
     async fn jobs_verify(
         &self,
-        _ctx: &CallContext,
+        ctx: &CallContext,
         p: JobsVerifyParams,
     ) -> ApiResult<JobsVerifyResult> {
         let job = self.engine.get(p.job_id).await.map_err(error)?;
+        Self::scope(ctx).require_job(&job)?;
         let original = job
             .result
             .ok_or_else(|| ApiError::new("api.invalid_transition", "job is not complete"))?;
@@ -935,15 +1050,7 @@ impl Backend for RuntimeBackend {
             self.admit()?;
         }
         let (approval, grant) = self.consent.decide(&ctx.identity, &p, evidence).await?;
-        if approval.job_id.is_some() {
-            self.engine
-                .apply_approval(zeus_engine::api::ApprovalResolution {
-                    approval: approval.clone(),
-                    grant: grant.clone(),
-                })
-                .await
-                .map_err(error)?;
-        }
+        self.apply_decision(&approval, &grant).await?;
         Ok(ApprovalsDecideResult {
             replayed: false,
             approval: approval.try_into()?,
@@ -952,16 +1059,18 @@ impl Backend for RuntimeBackend {
     }
     async fn sessions_list(
         &self,
-        _ctx: &CallContext,
+        ctx: &CallContext,
         p: SessionsListParams,
     ) -> ApiResult<SessionsListResult> {
+        let scope = Self::scope(ctx);
         let grants = self
             .journal
             .read(|tx| tx.grants())
             .map_err(error)?
             .into_iter()
             .filter(|g| {
-                p.origin.as_ref().is_none_or(|o| o == &g.origin)
+                scope.grant(g, &self.journal)
+                    && p.origin.as_ref().is_none_or(|o| o == &g.origin)
                     && (p.include_inactive || g.is_effective_at(Timestamp::now()))
             })
             .collect();
@@ -994,9 +1103,10 @@ impl Backend for RuntimeBackend {
     }
     async fn audit_tail(
         &self,
-        _ctx: &CallContext,
+        ctx: &CallContext,
         p: AuditTailParams,
     ) -> ApiResult<AuditTailResult> {
+        let scope = Self::scope(ctx);
         let limit = p.limit.unwrap_or(20);
         if !(1..=100).contains(&limit) {
             return Err(ApiError::invalid_params("audit limit must be 1 to 100"));
@@ -1009,8 +1119,10 @@ impl Backend for RuntimeBackend {
         .map_err(|_| internal())?
         .map_err(error)?;
         Ok(AuditTailResult {
+            // A service sees the records its own credential caused (05 section 7.5).
             records: records
                 .into_iter()
+                .filter(|r| scope.audit(r.actor.client_id.as_deref()))
                 .map(serde_json::to_value)
                 .collect::<Result<_, _>>()
                 .map_err(|_| internal())?,
@@ -1130,18 +1242,51 @@ impl Backend for RuntimeBackend {
     }
     async fn files_list(
         &self,
-        _ctx: &CallContext,
+        ctx: &CallContext,
         p: FilesListParams,
     ) -> ApiResult<FilesListResult> {
-        let roots =
-            zeus_fs::WriteRoots::open(&self.config.effective_write_roots()).map_err(error)?;
-        let dir = p
-            .dir
-            .as_deref()
-            .map(PathBuf::from)
-            .unwrap_or_else(|| self.config.effective_write_roots()[0].clone());
+        // A service lists only its registered roots (05 section 7.5); everyone else the user's write roots.
+        let visible = match Self::scope(ctx).service() {
+            Some(_) => self.credentials.roots(&ctx.identity.credential_id),
+            None => self.config.effective_write_roots(),
+        };
+        let first = visible.first().cloned().ok_or_else(|| {
+            ApiError::new(
+                zeus_types::codes::POLICY_PATH_OUTSIDE_ROOTS,
+                "no write root is visible to this client",
+            )
+        })?;
+        let roots = zeus_fs::WriteRoots::open(&visible).map_err(error)?;
+        let dir = p.dir.as_deref().map(PathBuf::from).unwrap_or(first);
         let dir = roots.resolve_dest_dir(&dir).map_err(error)?;
         let root = roots.root_for(&dir).map_err(error)?;
+        // Files Zeus produced carry their job, digest, redacted source and quarantine flag (05 section 9.6).
+        let produced: HashMap<
+            PathBuf,
+            (
+                zeus_types::JobId,
+                zeus_types::Hex256,
+                zeus_types::RedactedUrl,
+                bool,
+            ),
+        > = self
+            .journal
+            .read(|tx| tx.jobs(&zeus_journal::store::JobFilter::default()))
+            .map_err(error)?
+            .into_iter()
+            .filter_map(|r| {
+                let result = r.job.result.as_ref()?;
+                Some((
+                    PathBuf::from(&result.path),
+                    (
+                        r.job.id,
+                        result.sha256,
+                        r.job.spec.url.redact(zeus_types::RedactMode::Log),
+                        r.job.quarantined,
+                    ),
+                ))
+            })
+            .collect();
         let mut pending = vec![dir];
         let mut entries = Vec::new();
         let mut scanned = 0usize;
@@ -1181,7 +1326,9 @@ impl Backend for RuntimeBackend {
                     .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                     .map(|d| d.as_millis() as i64)
                     .unwrap_or(0);
+                let produced = produced.get(&checked);
                 entries.push(FileEntry {
+                    root: root.path().display().to_string(),
                     path: checked
                         .strip_prefix(root.path())
                         .map_err(|_| internal())?
@@ -1190,10 +1337,11 @@ impl Backend for RuntimeBackend {
                     size_bytes: metadata.len(),
                     modified_at: Timestamp::from_unix_millis(modified_ms)
                         .map_err(|_| internal())?,
-                    sha256: None,
-                    quarantined: false,
-                    job_id: None,
-                    source_url_redacted: None,
+                    sha256: produced.map(|j| j.1),
+                    quarantined: produced.is_some_and(|j| j.3),
+                    job_id: produced.map(|j| j.0),
+                    source_url_redacted: produced.map(|j| j.2.clone()),
+                    partial: checked.extension().is_some_and(|e| e == "zpart"),
                 });
                 if entries.len() > 100_000 {
                     return Err(ApiError::new(
@@ -1206,15 +1354,93 @@ impl Backend for RuntimeBackend {
         entries.sort_by(|a, b| a.path.cmp(&b.path));
         page(entries, &p.page)
     }
+    async fn files_roots_register(
+        &self,
+        ctx: &CallContext,
+        p: FilesRootsRegisterParams,
+    ) -> ApiResult<FilesRootsRegisterResult> {
+        self.register_root(ctx, p).await
+    }
+    async fn files_organize(
+        &self,
+        ctx: &CallContext,
+        p: FilesOrganizeParams,
+    ) -> ApiResult<FilesOrganizeResult> {
+        self.organize(ctx, p).await
+    }
+    async fn files_undo(
+        &self,
+        ctx: &CallContext,
+        p: FilesUndoParams,
+    ) -> ApiResult<FilesUndoResult> {
+        self.undo(ctx, p).await
+    }
+    async fn artifacts_get(
+        &self,
+        ctx: &CallContext,
+        p: ArtifactsGetParams,
+    ) -> ApiResult<ArtifactsGetResult> {
+        self.artifact_get(ctx, p)
+    }
+    async fn artifacts_list(
+        &self,
+        ctx: &CallContext,
+        p: ArtifactsListParams,
+    ) -> ApiResult<ArtifactsListResult> {
+        self.artifact_list(ctx, p)
+    }
+    async fn artifacts_lineage(
+        &self,
+        ctx: &CallContext,
+        p: ArtifactsLineageParams,
+    ) -> ApiResult<ArtifactsLineageResult> {
+        self.artifact_lineage(ctx, p)
+    }
+    async fn artifacts_ingest(
+        &self,
+        ctx: &CallContext,
+        p: ArtifactsIngestParams,
+    ) -> ApiResult<ArtifactsIngestResult> {
+        self.artifact_ingest(ctx, p).await
+    }
+    async fn clients_list(
+        &self,
+        _ctx: &CallContext,
+        p: ClientsListParams,
+    ) -> ApiResult<ClientsListResult> {
+        self.list_clients(p)
+    }
+    async fn clients_add(
+        &self,
+        ctx: &CallContext,
+        p: ClientsAddParams,
+    ) -> ApiResult<ClientsAddResult> {
+        self.add_client(ctx, p).await
+    }
+    async fn clients_revoke(
+        &self,
+        ctx: &CallContext,
+        p: ClientsRevokeParams,
+    ) -> ApiResult<ClientsRevokeResult> {
+        self.revoke_client(ctx, p).await
+    }
 }
 
 #[path = "native.rs"]
 mod native;
 
+#[path = "artifact_api.rs"]
+mod artifact_api;
+#[path = "artifact_ingest.rs"]
+mod artifact_ingest;
+#[path = "clients.rs"]
+mod clients;
 #[path = "configuration.rs"]
 mod configuration;
 #[path = "events_backend.rs"]
 mod events_backend;
+#[path = "file_operations.rs"]
+mod file_operations;
 #[path = "lifecycle.rs"]
 mod lifecycle;
 #[cfg(test)]

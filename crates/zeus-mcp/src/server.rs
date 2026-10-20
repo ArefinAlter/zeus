@@ -87,9 +87,9 @@ impl ToolOutcome {
         }
     }
 
-    fn from_api(error: &ApiError) -> Self {
+    pub(crate) fn from_api(error: &ApiError) -> Self {
         let envelope = error.envelope().clone();
-        let next = next_step_for(envelope.class);
+        let next = next_step_for_error(envelope.code.as_str(), envelope.class);
         Self::Error { envelope, next }
     }
 
@@ -114,6 +114,24 @@ impl<C: Client> ZeusTools<C> {
     /// Run the tool `name` with JSON `arguments`.
     pub async fn call(&self, name: &str, arguments: Value) -> Result<ToolOutcome, UnknownTool> {
         let outcome = match name {
+            "zeus_workflow" => {
+                self.run(arguments, |a: crate::workspace::WorkflowArgs| {
+                    crate::workspace::workflow(self.client.as_ref(), a)
+                })
+                .await
+            }
+            "zeus_files" => {
+                self.run(arguments, |a: crate::workspace::FilesArgs| {
+                    crate::workspace::files(self.client.as_ref(), a)
+                })
+                .await
+            }
+            "zeus_artifacts" => {
+                self.run(arguments, |a: crate::workspace::ArtifactsArgs| {
+                    crate::workspace::artifacts(self.client.as_ref(), a)
+                })
+                .await
+            }
             "zeus_cloud" => {
                 self.run(arguments, |a: crate::cloud::CloudArgs| {
                     crate::cloud::dispatch(self.client.as_ref(), a)
@@ -642,6 +660,211 @@ mod tests {
     const KEY: &str = "intent-1";
 
     #[tokio::test]
+    async fn workspace_requests_reject_authority_fields_and_invalid_limits_before_rpc() {
+        let fake = Fake::new();
+        let tools = ZeusTools::new(Arc::clone(&fake));
+        for (name, request) in [
+            ("zeus_workflow", json!({"action":"decide","approved":true})),
+            (
+                "zeus_workflow",
+                json!({"action":"plan","goal":"x","start_urls":["https://example.org"],"draft":{}}),
+            ),
+            ("zeus_workflow", json!({"action":"list","limit":0})),
+            (
+                "zeus_files",
+                json!({"action":"organize","dir":"x","rules":{},"approval_id":"ap_x"}),
+            ),
+            ("zeus_files", json!({"action":"convert","inputs":["x"]})),
+            (
+                "zeus_artifacts",
+                json!({"action":"delete","artifact_id":"art_x"}),
+            ),
+            ("zeus_artifacts", json!({"action":"list","limit":101})),
+            (
+                "zeus_artifacts",
+                json!({"action":"get","artifact_id":"ZEUS-CANARY-invalid"}),
+            ),
+        ] {
+            let result = tools
+                .call(name, json!({"idempotency_key":KEY,"request":request}))
+                .await
+                .unwrap();
+            assert!(result.is_error(), "{name}: {}", result.text());
+            assert!(!result.text().contains("ZEUS-CANARY-"));
+        }
+        assert!(fake.calls.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn workspace_mutations_forward_retry_keys_and_never_decide() {
+        let fake = Fake::new();
+        let tools = ZeusTools::new(Arc::clone(&fake));
+        fake.answer(
+            "workflows.run",
+            Ok(json!({
+                "run_id":"run_01M45NHJ2AHWMXT8JVJ7BEEJX7","status":"awaiting_approval",
+                "approval_id":"ap_01M45NHJ2AHWMXT8JVJ7BEEJX7"
+            })),
+        );
+        let hash = "a".repeat(64);
+        let result = tools
+            .call(
+                "zeus_workflow",
+                json!({
+                    "idempotency_key":KEY,"request":{"action":"run",
+                        "plan_id":"plan_01M45NHJ2AHWMXT8JVJ7BEEJX7","plan_hash":hash}
+                }),
+            )
+            .await
+            .unwrap();
+        assert!(!result.is_error(), "{}", result.text());
+        assert_eq!(result.structured()["next"]["action"], "ask_user");
+        assert_eq!(fake.last().0, "workflows.run");
+        assert_eq!(fake.last().1["idempotency_key"], KEY);
+        assert_eq!(fake.last().1["plan_hash"], hash);
+        fake.answer("files.organize", Ok(json!({"steps":[],"applied":false})));
+        let result = tools.call("zeus_files", json!({
+            "idempotency_key":KEY,"request":{"action":"organize","dir":"x","rules":{"rules":[]}}
+        })).await.unwrap();
+        assert!(!result.is_error(), "{}", result.text());
+        assert_eq!(fake.last().1["dry_run"], true);
+        assert_eq!(fake.last().1["idempotency_key"], KEY);
+        assert_eq!(result.structured()["next"]["action"], "review_plan");
+        assert_eq!(fake.calls.lock().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn plan_control_and_manifest_keys_survive_typed_daemon_parameters() {
+        let fake = Fake::new();
+        let tools = ZeusTools::new(Arc::clone(&fake));
+        for (method, request) in [
+            (
+                "workflows.plan",
+                json!({"action":"plan","goal":"Files","start_urls":["https://example.org/"]}),
+            ),
+            (
+                "workflows.control",
+                json!({"action":"control","run_id":"run_01M45NHJ2AHWMXT8JVJ7BEEJX7","operation":"pause"}),
+            ),
+            (
+                "workflows.manifest",
+                json!({"action":"manifest","run_id":"run_01M45NHJ2AHWMXT8JVJ7BEEJX7","format":"jsonl"}),
+            ),
+        ] {
+            fake.answer(method, Err(ApiError::not_implemented("fixture")));
+            tools
+                .call(
+                    "zeus_workflow",
+                    json!({"idempotency_key":KEY,"request":request}),
+                )
+                .await
+                .unwrap();
+            let (called, params) = fake.last();
+            assert_eq!(called, method);
+            let key =
+                match method {
+                    "workflows.plan" => {
+                        serde_json::from_value::<zeus_api::methods::workflows::WorkflowsPlanParams>(
+                            params,
+                        )
+                        .unwrap()
+                        .idempotency_key
+                    }
+                    "workflows.control" => serde_json::from_value::<
+                        zeus_api::methods::workflows::WorkflowsControlParams,
+                    >(params)
+                    .unwrap()
+                    .idempotency_key,
+                    _ => {
+                        serde_json::from_value::<
+                            zeus_api::methods::workflows::WorkflowsManifestParams,
+                        >(params)
+                        .unwrap()
+                        .idempotency_key
+                    }
+                };
+            assert_eq!(key.as_deref(), Some(KEY));
+        }
+    }
+
+    #[tokio::test]
+    async fn workflow_samples_are_bounded_and_schema_is_available_on_demand() {
+        let fake = Fake::new();
+        fake.answer(
+            "workflows.plan",
+            Ok(json!({
+                "plan_id":"plan_01M45NHJ2AHWMXT8JVJ7BEEJX7",
+                "samples":[{"url_redacted":"https://example.org/","body":"文".repeat(100_000)}],
+                "plan_schema":schemars::schema_for!(zeus_workflow::Plan),
+                "diagnostics":[]
+            })),
+        );
+        let result = ZeusTools::new(Arc::clone(&fake)).call("zeus_workflow", json!({
+            "idempotency_key":KEY,"request":{"action":"plan","goal":"get files","start_urls":["https://example.org"]}
+        })).await.unwrap();
+        assert!(!result.is_error(), "{}", result.text());
+        let value = result.structured();
+        assert_eq!(value["truncated"], true);
+        assert!(value["untrusted_data"].get("plan_schema").is_none());
+        assert_eq!(
+            value["untrusted_data"]["plan_schema_resource"],
+            "zeus://workflow/plan-schema"
+        );
+        assert!(
+            value["untrusted_data"]["samples"][0]["body"]
+                .as_str()
+                .unwrap()
+                .len()
+                <= 2048
+        );
+        assert_eq!(fake.last().1["idempotency_key"], KEY);
+        let schema =
+            crate::resources::read_resource(&fake, &crate::resources::ResourceUri::PlanSchema)
+                .await
+                .unwrap();
+        assert!(
+            jsonschema::validator_for(&serde_json::from_str::<Value>(&schema).unwrap()).is_ok()
+        );
+    }
+
+    #[tokio::test]
+    async fn artifact_pagination_and_ingestion_preserve_public_receipts() {
+        let fake = Fake::new();
+        fake.answer(
+            "artifacts.list",
+            Ok(json!({"items":[{"name":"ZEUS-CANARY-untrusted"}],"next_cursor":"page2"})),
+        );
+        fake.answer(
+            "artifacts.ingest",
+            Ok(json!({"artifact":{"name":"data"},"created":true,"replayed":false})),
+        );
+        let tools = ZeusTools::new(Arc::clone(&fake));
+        let result = tools
+            .call(
+                "zeus_artifacts",
+                json!({
+                    "idempotency_key":KEY,"request":{"action":"list","limit":7,"cursor":"page1"}
+                }),
+            )
+            .await
+            .unwrap();
+        assert!(!result.is_error(), "{}", result.text());
+        assert_eq!(fake.last().1["cursor"], "page1");
+        assert!(fake.last().1.get("idempotency_key").is_none());
+        assert_eq!(
+            result.structured()["untrusted_data"]["next_cursor"],
+            "page2"
+        );
+        assert_eq!(result.structured()["next"]["action"], "none");
+        let result = tools.call("zeus_artifacts", json!({
+            "idempotency_key":KEY,"request":{"action":"ingest","path":"/root/data","name":"data"}
+        })).await.unwrap();
+        assert!(!result.is_error(), "{}", result.text());
+        assert_eq!(fake.last().0, "artifacts.ingest");
+        assert_eq!(fake.last().1["idempotency_key"], KEY);
+    }
+
+    #[tokio::test]
     async fn cloud_dispatch_is_bounded_and_never_maps_to_human_methods() {
         let fake = Fake::new();
         fake.answer("cloud.accounts.list", Ok(json!({"accounts":[]})));
@@ -860,12 +1083,12 @@ mod tests {
         tools.call("zeus_status", json!({})).await.unwrap();
         let (method, params) = fake.last();
         assert_eq!(method, "jobs.list");
-        assert_eq!(params["page"]["limit"], 10);
+        assert_eq!(params["limit"], 10);
         tools
             .call("zeus_status", json!({ "limit": 500 }))
             .await
             .unwrap();
-        assert_eq!(fake.last().1["page"]["limit"], 50);
+        assert_eq!(fake.last().1["limit"], 50);
     }
 
     #[tokio::test]

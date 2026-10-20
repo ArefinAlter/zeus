@@ -1,6 +1,6 @@
 # Zeus end to end product roadmap
 
-Reviewed **2026-10-18**. Implementation baseline: the coordinated draft PRs in the [project handoff](docs/PROJECT_HANDOFF.md#repository-and-review-snapshot). Zeus is **pre-alpha**: working downloads, a persistent daemon, agent interfaces, public-page workflows and cloud adapters exist, but no phase has a recorded release sign-off. API v1 is not frozen.
+Reviewed **2026-10-18**. Implementation baseline: the coordinated draft PRs in the [project handoff](docs/PROJECT_HANDOFF.md#repository-and-review-snapshot), plus the uncommitted continuation work of 2026-10-18 recorded in the [implementation ledger](docs/IMPLEMENTATION_STATUS.md#2026-10-18-continuation). Zeus is **pre-alpha**: working downloads, a persistent daemon, agent interfaces, public-page workflows and cloud adapters exist, but no phase has a recorded release sign-off. API v1 is not frozen.
 
 This roadmap covers `zeus-core`, `zeus`, `zeus-extension` and `zeus-site`, from finding a link to obtaining a verified local or cloud artifact. The [implementation ledger](docs/IMPLEMENTATION_STATUS.md) holds detailed results; the [handoff](docs/PROJECT_HANDOFF.md) records revisions, setup, operational caveats and validation commands.
 
@@ -51,9 +51,9 @@ Later-phase implementation does not close earlier release gates.
 | ID | Remaining work | Completion evidence |
 | --- | --- | --- |
 | C01 | Reconcile normative prose, schemas, handlers and frontend behavior, especially specs 05/07/08; review drafts 09–12/14. | Resolved discrepancy register, positive/negative contract tests and explicit unsupported-capability errors. |
-| C02 | Complete service credentials/root registration, visibility, idempotency semantics, approval batching/amendment/renewal/cooldowns and workflow reports. | Cross-client isolation, changed-payload retry, restart and stale-approval tests against agreed wire forms. |
-| C03 | Correct stale architecture/open-issue text, including executable A2A, app-owned redb stores, model integration and scheduler behavior. | Design and implementation agree; intentional boundary changes receive ADRs. |
-| C04 | Establish required CI, actual MSRV testing and reproducible cross-repository schema/fixture checks. | Clean generation on fresh companion checkouts and required checks visible on PRs. Current app/core checkouts have no tracked CI workflows. |
+| C02 | Complete service credentials/root registration, visibility, idempotency semantics, approval batching/amendment/renewal/cooldowns and workflow reports. **Done 2026-10-18:** service kind, `clients.*`, `files.roots.register`, 05 section 7.5 visibility, 13.2 rate buckets, pending caps, denial back-off (cooldown), `session_grant` batching, capability gating (`api.capability_missing`) and configurable `api.rate_limits.*`. **Open:** handoff batching, leaving/amendment, grant renewal, workflow report fields. | Cross-client isolation, changed-payload retry, restart and stale-approval tests against agreed wire forms. |
+| C03 | Correct stale architecture/open-issue text, including executable A2A, app-owned redb stores, model integration and scheduler behavior. **Done 2026-10-18:** ARCHITECTURE crate map and rules, spec 10, ADR 0012 (Proposed) for app-owned stores. | Design and implementation agree; intentional boundary changes receive ADRs. |
+| C04 | Establish required CI, actual MSRV testing and reproducible cross-repository schema/fixture checks. **Done 2026-10-18:** workflows for app, core and extension; MSRV 1.90 check passed locally. **Open:** the `ZEUS_CORE_TOKEN` secret, a first green run and marking the checks required. | Clean generation on fresh companion checkouts and required checks visible on PRs. |
 | C05 | Verify the remaining research corpus and resolve release-relevant spec open issues. | Dated primary evidence or explicit unresolved research; no inference that draft research is verified. |
 
 Every specification's open-issue list remains part of the backlog. Some entries describe work that now exists and need reconciliation, not another implementation. See the [handoff discrepancy register](docs/PROJECT_HANDOFF.md#known-gaps-and-documentation-discrepancies).
@@ -65,31 +65,31 @@ Every specification's open-issue list remains part of the backlog. Some entries 
 | Area | Implemented and tested | Remaining product work |
 | --- | --- | --- |
 | HTTP engine | Working builder and enqueue/probe/control/wait/verify/events; bounded ranges, validator checks, retries, pause/resume/cancel and recovery. | URL/authentication refresh integration, authenticated standalone probing, broader origin behavior and failure acceptance. |
-| Scheduling | Bounded concurrency, segment planning and reusable rate/fairness/AIMD helpers. | Real per-host scheduling, adaptive concurrency, rate ceilings and fairness in execution; advanced estimators, mirrors and hedging. |
+| Scheduling | Bounded concurrency, segment planning and reusable rate/fairness/AIMD helpers. 2026-10-18: the estimator, mirror-selection, hedging, reliability and CUSUM algorithms are implemented and tested in `zeus-control`. | Real per-host scheduling, adaptive concurrency, rate ceilings and fairness in execution; wiring estimators, mirrors and hedging into the engine; honouring `segment_size_mib`. |
 | Filesystem | Positional writes, allowed-root checks, safe names, finalization, trash and OS provenance writes. | Handle-relative containment under directory/symlink/reparse replacement; platform/filesystem and weak-durability behavior. |
 | Journal and integrity | redb transactions, commit records/CRC, recovery, SHA-256/BLAKE3 verification, audit and provenance. | Every fault point, corruption/migration handling, disk-full behavior, audit retention/repair and keyed/external anchoring policy. |
 | Artifact library | Content/record-only ingest, metadata, deduplication, materialization, import/export, retention/GC and scrub/repair. | Full application lifecycle, lineage/events, migration and platform acceptance. The daemon records completed files without duplicating all bytes into the store. |
 | Daemon and IPC | Local listener, authentication/owner checks, durable state/events/idempotency, bounded connections and shutdown. | Contract gaps, installation/upgrade acceptance, service provisioning and retention operations. |
-| Approvals and global stop | Durable hash/revision binding, grants, terminal/browser evidence and persisted stop latch; stop revokes grants and pauses work. | Remaining spec 07 lifecycle, real trust-channel validation, OS attestation and durable recovery of a failed emergency-stop audit append. |
+| Approvals and global stop | Durable hash/revision binding, grants, terminal/browser evidence and persisted stop latch; stop revokes grants and pauses work. 2026-10-18: retained and replayed emergency-stop audit, configured caps, approve-only rate, denial back-off, `session_grant` batching. | Remaining spec 07 lifecycle (handoff batching, leaving, amendment, renewal), real trust-channel validation and OS attestation. |
 | Browser path | Native relay, handoff, scoped session release, refresh messages and bounded browser-fetch streams. | Installed Chrome/Edge acceptance, suspension/reconnect/expiry/revocation/backpressure, refresh integration and approved proxy-redirect behavior. |
 | Agent and terminal interfaces | MCP stdio, CLI download/lifecycle/approval flows and live TUI. | Host interoperability, long verification behavior, client credentials and remaining frontend contracts. MCP HTTP is unavailable. |
 
-The current MCP catalogue has **ten tools**: the nine original probe, enqueue, status, wait, control, verify, session list, session request and files list tools, plus `zeus_cloud`. Workflow creation/execution is currently an API path; the dedicated workflow MCP tools remain reserved for later implementation.
+The current MCP catalogue has **thirteen tools**: the nine original download/session/file-list tools, `zeus_cloud`, `zeus_workflow`, `zeus_files` and `zeus_artifacts`. The generated normative catalogue is embedded by the server: 31,473 of 40,960 bytes, with each tool below 4,096 bytes ([ADR 0013](docs/adr/0013-bounded-workspace-mcp-tools.md)). Agent tools cannot decide approvals.
 
 **Alpha acceptance gates:**
 
 - Real browser → host → daemon → engine flows on Chrome and Edge, including denial, stale approval, expired grant, disconnect and suspension.
 - At least **85% handoff success on a documented 200-URL failure corpus**, with failures and environment recorded.
 - Correct bytes/SHA-256 after abrupt stop and restart, plus the broader journal/finalization fault matrix. The Windows 8 MiB smoke test is one passing case.
-- Published idle memory, memory with **ten jobs**, and throughput at **1, 4 and 16 segments**, with hardware, network conditions and baselines. Numerical budgets/speed claims require measurement and review.
-- Path/IPC/approval threat-model review and dependency/license/advisory checks; unsupported platforms remain explicit.
+- Published idle memory, memory with **ten jobs**, and throughput at **1, 4 and 16 segments**, with hardware, network conditions and baselines. Numerical budgets/speed claims require measurement and review. Windows loopback figures (NVMe and HDD) were recorded on 2026-10-18 with `tools/bench-daemon.mjs`; other platforms and real networks remain.
+- Path/IPC/approval threat-model review and dependency/license/advisory checks; unsupported platforms remain explicit. The dependency/license/advisory check passed on 2026-10-18.
 - Installable alpha package, exact extension identities/allowlists, provenance/quarantine acceptance, release notes and recovery instructions. Signing/distribution follows the release process.
 
 Advanced performance features may be explicitly deferred if measured alpha requirements pass. Helper code alone is not an integrated scheduler.
 
 ## Phase 2 Workflows and file operations
 
-**Present:** bounded public HTTP pages; CSS/JSON/regex extraction; numeric/cursor/next/date pagination; filtering, naming/routing and deduplication; dry-run plans, approval, budgets, checkpoints/job intents and audit receipts. The runtime executes a caller-supplied plan. Built-in autonomous model drafting is not connected.
+**Present:** bounded public HTTP pages; CSS/JSON/regex extraction; numeric/cursor/next/date pagination; filtering, naming/routing and deduplication; dry-run plans, approval, budgets, checkpoints/job intents and audit receipts. The runtime executes a caller-supplied plan. Terminal-requested selector drafting is connected; model output is a proposal and never authority.
 
 | ID | Remaining work | Dependencies and acceptance |
 | --- | --- | --- |
@@ -97,18 +97,18 @@ Advanced performance features may be explicitly deferred if measured alpha requi
 | W02 | Remaining pagination/extraction, sitemap/scroll, item sinks, complete reports, drift and estimator calibration. | Advertise capabilities only when validation, execution and restart behavior work. |
 | W03 | Revised-plan continuation, incremental deduplication, multi-origin sessions and explicit site-policy exceptions. | New effects require new review; no silent reuse of old authority; robots/site constraints remain enforceable. |
 | W04 | Sandboxed conversion and derived-artifact lineage. | Fixed tools/arguments, confined I/O, resource bounds, cancellation and platform sandbox tests. |
-| W05 | Organizer/rules, before/after preview, collisions, destructive approval, trash/undo and model-assisted classification. | Protect concurrent file changes and completed files; durable operation/recovery receipts. |
-| W06 | Full artifact lifecycle through daemon/CLI/MCP and dedicated workflow frontends. | Retention, quotas, GC, repair, import/export and lineage integrated with authority/events; real workflow plan/run commands or tools. |
+| W05 | Organizer/rules, before/after preview, collisions, destructive approval, trash/undo and model-assisted classification. **Done 2026-10-18** except model-assisted classification and manifest records for moved files. | Protect concurrent file changes and completed files; durable operation/recovery receipts. |
+| W06 | Full artifact lifecycle through daemon/CLI/MCP and dedicated workflow frontends. **Done 2026-10-18:** `zeus workflow` and `zeus files` commands; daemon methods `artifacts.get`, `.list`, `.lineage` and `.ingest` (capability `artifacts`). **Open:** artifact retention, deletion, materialization and import/export/events through the API. **Done 2026-10-21:** CLI artifact list/get/lineage/ingest and grouped MCP workflow/file/artifact tools; catalogue budget resolved by ADR 0013. | Retention, quotas, GC, repair, import/export and lineage integrated with authority/events; real workflow plan/run commands or tools. |
 
-Authenticated rendering, conversion, destructive replacement and item-sink operations currently fail before execution. CLI workflow/organize/convert commands and dedicated MCP workflow tools are not implemented.
+Authenticated rendering, conversion, destructive replacement and item-sink operations currently fail before execution. CLI workflow, organize and artifact commands and their grouped MCP tools exist. Conversion remains unavailable.
 
 ## Phase 2 Models and authentication
 
-**Present:** explicitly configured OpenAI Responses/compatible, Anthropic and local adapters; model OAuth flows including OpenRouter and ChatGPT sign-in; OS keyring integration; signed-policy verification/antirollback; durable spend reservations; human auth UI. Download-only is the default. Sign-in alone does not select a model or enable inference. The daemon model completion wrapper has no production workflow/classification caller yet.
+**Present:** explicitly configured OpenAI Responses/compatible, Anthropic and local adapters; model OAuth flows including OpenRouter and ChatGPT sign-in; OS keyring integration; signed-policy verification/antirollback; durable spend reservations; human auth UI. Download-only is the default. Sign-in alone does not select a model or enable inference. The daemon model wrapper has a workflow-selector caller; file classification remains open.
 
 | ID | Remaining work | Completion evidence |
 | --- | --- | --- |
-| M01 | Connect model runtime to bounded drafting/classification; complete account/model selection UX. | Structured model output becomes a validated proposal, with content consent and spend accounting; human authority remains separate. |
+| M01 | Connect model runtime to bounded drafting/classification; complete account/model selection UX. **Done 2026-10-18:** workflow selector drafting (structure-only prompt, extract-only schema, terminal-only, per-request ceiling). **Open:** classification and account/model selection UX. | Structured model output becomes a validated proposal, with content consent and spend accounting; human authority remains separate. |
 | M02 | Live sign-in/refresh/sign-out, OS keyring and browser acceptance. | Explicit test accounts/spend; expiry, rotation, revocation and failure behavior on supported platforms. |
 | M03 | Host/sampling integration and constrained CLI delegation. | Negotiation, bounded execution, output validation and privacy/spend enforcement. Ordinary host-agent use through MCP already works. |
 | M04 | Production policy distribution and signing-key provisioning/custody/rotation. | Verified keys plus offline expiry/rollback/rollover drills; missing trust material cannot enable policy-dependent rungs. |
@@ -135,7 +135,7 @@ Implemented: immutable plans, account revisions, terminal-only cloud approvals, 
 | D02 | Live provider/mode/tier acceptance and rclone installation/config lifecycle. | Upload/import, interruption, quota/size limits, credential changes, restart and duplicate prevention recorded separately. |
 | D03 | Broader safe resume, remote cancellation, checksums/readback and cleanup where official APIs permit. | Accurate capabilities; ambiguous dispatch never produces automatic duplicate imports; uncertainty stays visible. |
 | D04 | Ranged recovery of partial URL staging and richer progress/recovery controls. | Source/upload/verification are accurate; verified staging survives expired URLs. Completed-job sources already benefit from engine recovery. |
-| D05 | Cloud history/checkpoint/idempotency archival and retention management. | Bounded growth without losing active receipts or enabling duplicate writes. |
+| D05 | Cloud history/checkpoint/idempotency archival and retention management. **Done 2026-10-18:** automatic, audited retention that never removes uncertain operations or their receipts. | Bounded growth without losing active receipts or enabling duplicate writes. |
 | D06 | Production cloud account/plan/status UI. | Show URL disclosure, traffic path, verification level, provider limits and changed revisions before review. |
 
 Local forwarding must never be called provider fetch. Native **cloud** OAuth is separate from implemented **model** authentication. Object byte caps are not total traffic/billing caps. Stopping Zeus cannot guarantee cancellation of an accepted remote fetch.
@@ -154,13 +154,19 @@ The [workspace design](docs/design/download-workspace.md) and [prototype](docs/d
 | Agent runs | Plan/revision, planned versus actual usage, stage progress, exceptions and recovery actions. | Bind to workflow runtime; revision-aware continuation; distinguish completed, verified and quarantined. |
 | Approvals | Neutral daemon-derived facts, separate untrusted text, fresh review after changes. | GUI attestation and restricted commands; focus/input and hostile-content tests. Cloud stays terminal-only until its contract changes. |
 | Files and destinations | Local/cloud outcomes, hashes, lineage, quarantine, retention and cleanup uncertainty. | Wire artifact, conversion, organizer and cloud operations with truthful receipts/progress. |
-| CLI automation | Wget-like explicit URL intake, lists, include/exclude rules and bounded traversal with dry run. | Remaining intake/traversal ergonomics and parity tests; full wget compatibility is not promised. |
+| CLI automation | Wget-like explicit URL intake, lists, include/exclude rules and bounded traversal with dry run. | `get -i/--input-file` now accepts bounded UTF-8 URL lists with exact deduplication and whole-batch validation. Remaining: stdin, persistent inbox, larger batch recovery and traversal parity; full wget compatibility is not promised. |
 
 Use **Tauri 2 and a small TypeScript frontend**, per [ADR 0009](docs/adr/0009-tauri-gui-later.md). The GUI is a daemon client, with no engine execution or session material. Packages group files, queues schedule them, and runs carry execution/provenance; keep those concepts separate. Preserve keyboard access, focus, 200% zoom, reduced motion, responsive layouts and readable failure states. Global stop remains distinct from pause/scheduling.
 
 The **A2A bridge already runs** as an opt-in local authenticated file-download profile with owner isolation and durable task recovery. Remaining: external SDK conformance, additional skills after their underlying operations exist, and separately designed authenticated artifact delivery. Remote deployment, streaming/push and broad protocol compatibility are not current capabilities. **MCP App views** remain planned and read-only. Optional MCP HTTP needs a separate transport/security implementation.
 
 **Exit:** the installed GUI performs real queue/run/cloud work and authorized decisions; accessibility/reconnect/lag checks pass; advertised A2A/MCP host profiles pass interoperability acceptance. The marketing preview remains explicitly a simulation.
+
+### Expanded file-workspace and platform scope (2026-10-21)
+
+The [primary-source workflow research and implementation map](docs/design/client-workflows-and-platforms.md) covers IDM, JDownloader, Wget, aria2, ed2k/torrent clients, Everything, WizTree, native/dual-pane/terminal file managers and remote synchronization. It specifies the scoped metadata index, disk-allocation accounting, desktop frontend boundaries and Android/iPhone execution models. It also gives concrete designs and acceptance cases for every previously design-blocked item. Those designs are proposals; implementations remain open where stated.
+
+The live TUI now filters loaded jobs with `/`, preserves selected job/approval identity across refresh, and scrolls the queue to its selected row. This is not disk indexing or the Tauri GUI. Informational CI now names native Windows/Linux ARM64 and both Intel/Apple Silicon macOS targets; no run or compatibility result is implied by configuring them. Android and iOS applications, native background/storage adapters and device acceptance are explicit workstreams. No mobile build exists yet.
 
 ## Phase 4 Version 1.0 and maintenance
 

@@ -643,6 +643,13 @@
     "ApprovalsListParams": {
       "description": "`approvals.list` parameters.",
       "properties": {
+        "cursor": {
+          "description": "Opaque cursor from a previous result. Valid only for the same method and filters.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "kind": {
           "anyOf": [
             {
@@ -654,10 +661,14 @@
           ],
           "description": "Only this kind."
         },
-        "page": {
-          "$ref": "#/$defs/PageRequest",
-          "default": {},
-          "description": "Paging."
+        "limit": {
+          "description": "Page size. Absent: 50. Values above 100 are clamped to 100; 0 is invalid.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
         },
         "state": {
           "anyOf": [
@@ -669,6 +680,242 @@
             }
           ],
           "description": "Only this state. Absent: `pending`."
+        }
+      },
+      "type": "object"
+    },
+    "ArtifactStateFilter": {
+      "description": "Record state filter of `artifacts.list`.",
+      "oneOf": [
+        {
+          "const": "active",
+          "description": "Active records.",
+          "type": "string"
+        },
+        {
+          "const": "deleted",
+          "description": "Tombstones of deleted artifacts.",
+          "type": "string"
+        }
+      ]
+    },
+    "ArtifactsGetParams": {
+      "description": "`artifacts.get` parameters.",
+      "properties": {
+        "artifact_id": {
+          "description": "The artifact (`art_...`).",
+          "pattern": "^art_[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "artifact_id"
+      ],
+      "type": "object"
+    },
+    "ArtifactsGetResult": {
+      "description": "`artifacts.get` result.",
+      "properties": {
+        "artifact": {
+          "description": "The export form (artifact.v1 `Artifact`, 13 section 10.1)."
+        }
+      },
+      "required": [
+        "artifact"
+      ],
+      "type": "object"
+    },
+    "ArtifactsIngestParams": {
+      "description": "`artifacts.ingest` parameters: register a local file the caller produced (13 section 7).",
+      "properties": {
+        "idempotency_key": {
+          "description": "Retry key (00 section 5.4); the ingest key is derived from it (05 section 9.13).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "media_type": {
+          "description": "Claimed media type, 1 to 255 characters, recorded as `declared_media_type`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "metadata": {
+          "additionalProperties": true,
+          "description": "Caller metadata (artifact.v1 `Metadata`): at most 32 members. Untrusted data.",
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "name": {
+          "description": "Name hint, 1 to 255 characters; the file name when absent.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "operation": {
+          "description": "The producing operation (artifact.v1 `Operation`); `zeus.ingest` when absent."
+        },
+        "parents": {
+          "description": "Inputs (artifact.v1 `ParentRef`), at most 1024. With parents the record is `derived`.",
+          "items": true,
+          "type": "array"
+        },
+        "path": {
+          "description": "Absolute path of a regular file inside a write root the caller may use (a service: its roots).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "type": "object"
+    },
+    "ArtifactsIngestResult": {
+      "description": "`artifacts.ingest` result.",
+      "properties": {
+        "artifact": {
+          "description": "Export form of the new or existing record."
+        },
+        "created": {
+          "description": "This call committed the record.",
+          "type": "boolean"
+        },
+        "replayed": {
+          "description": "The result came from the idempotency store (05 section 12).",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "artifact",
+        "created",
+        "replayed"
+      ],
+      "type": "object"
+    },
+    "ArtifactsLineageParams": {
+      "description": "`artifacts.lineage` parameters.",
+      "properties": {
+        "artifact_id": {
+          "description": "The start record.",
+          "pattern": "^art_[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+          "type": "string"
+        },
+        "direction": {
+          "$ref": "#/$defs/LineageDirection",
+          "description": "Direction of the walk."
+        },
+        "max_depth": {
+          "description": "Levels to follow, 1 to 64 (default 8).",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "max_nodes": {
+          "description": "Nodes to return, 1 to 500 (default 100).",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "artifact_id",
+        "direction"
+      ],
+      "type": "object"
+    },
+    "ArtifactsLineageResult": {
+      "description": "`artifacts.lineage` result. Full records are read with `artifacts.get`.",
+      "properties": {
+        "nodes": {
+          "description": "Node 0 is the start record; records outside the caller's view are omitted.",
+          "items": {
+            "$ref": "#/$defs/LineageNode"
+          },
+          "type": "array"
+        },
+        "truncated": {
+          "description": "A depth or node bound stopped the walk, or records were omitted.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "nodes",
+        "truncated"
+      ],
+      "type": "object"
+    },
+    "ArtifactsListParams": {
+      "description": "`artifacts.list` parameters. Without `state`, active records and tombstones are both listed.",
+      "properties": {
+        "blake3": {
+          "description": "Only artifacts with this BLAKE3 content identity.",
+          "pattern": "^[0-9a-f]{64}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "cursor": {
+          "description": "Opaque cursor from a previous result. Valid only for the same method and filters.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "job_id": {
+          "description": "Only the artifact a job produced.",
+          "pattern": "^job_[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "limit": {
+          "description": "Page size. Absent: 50. Values above 100 are clamped to 100; 0 is invalid.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "run_id": {
+          "description": "Only artifacts of a workflow run.",
+          "pattern": "^run_[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sha256": {
+          "description": "Only artifacts with this SHA-256 digest.",
+          "pattern": "^[0-9a-f]{64}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "state": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactStateFilter"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Only records in this state."
         }
       },
       "type": "object"
@@ -1135,11 +1382,16 @@
       "type": "object"
     },
     "ClientKind": {
-      "description": "Authority class of a client.",
+      "description": "Authority class of a client. The derived order exists for collections only; authority checks use\n[`ClientKind::is_human_capable`], never a comparison.",
       "oneOf": [
         {
           "const": "agent",
           "description": "MCP server, A2A bridge, scripts holding the agent credential. Never decides approvals.",
+          "type": "string"
+        },
+        {
+          "const": "service",
+          "description": "A first-party program using the daemon unattended (Ogun, ADR 0011): the agent ceiling plus root\nregistration, its own jobs, approvals, roots and audit records only. Never human-capable.",
           "type": "string"
         },
         {
@@ -1155,7 +1407,7 @@
       ]
     },
     "ClientRecord": {
-      "description": "A client credential record (never the token).",
+      "description": "A client credential as the daemon describes it. Never contains the token or its verifier.",
       "properties": {
         "created_at": {
           "description": "Creation.",
@@ -1171,26 +1423,57 @@
           "description": "Authority class."
         },
         "last_used_at": {
-          "description": "Last successful authentication.",
+          "default": null,
+          "description": "Last successful authentication since the daemon started; `null` when unknown.",
           "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:([0-5][0-9]|60)\\.[0-9]{3}Z$",
           "type": [
             "string",
             "null"
           ]
         },
+        "name": {
+          "description": "File name stem under `<state>/credentials/`.",
+          "type": "string"
+        },
+        "permissions": {
+          "description": "Effective permissions, a subset of the kind's ceiling.",
+          "items": {
+            "$ref": "#/$defs/Permission"
+          },
+          "type": "array",
+          "uniqueItems": true
+        },
         "revoked": {
           "description": "Revoked credentials stay listed.",
           "type": "boolean"
         },
+        "revoked_at": {
+          "default": null,
+          "description": "When it was revoked.",
+          "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:([0-5][0-9]|60)\\.[0-9]{3}Z$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "role": {
           "$ref": "#/$defs/ClientRole",
           "description": "Role."
+        },
+        "roots": {
+          "description": "Service clients only: their registered roots (inactive once revoked).",
+          "items": {
+            "$ref": "#/$defs/ServiceRoot"
+          },
+          "type": "array"
         }
       },
       "required": [
         "credential_id",
+        "name",
         "kind",
         "role",
+        "permissions",
         "created_at",
         "revoked"
       ],
@@ -1230,6 +1513,11 @@
           "type": "string"
         },
         {
+          "const": "service",
+          "description": "A first-party unattended program holding a `service` credential.",
+          "type": "string"
+        },
+        {
           "const": "embedded",
           "description": "An application embedding Zeus.",
           "type": "string"
@@ -1241,15 +1529,92 @@
         }
       ]
     },
+    "ClientsAddParams": {
+      "description": "`clients.add` parameters (human-only; 05 section 9.11).",
+      "properties": {
+        "idempotency_key": {
+          "description": "Idempotency key.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "kind": {
+          "$ref": "#/$defs/ClientKind",
+          "description": "`agent` or `service`. Human and admin credentials come only from provisioning."
+        },
+        "name": {
+          "description": "`[a-z][a-z0-9_-]{0,31}`, unique, not `cli`, `agent`, `a2a` or `host`.",
+          "type": "string"
+        },
+        "permissions": {
+          "description": "Narrowing within the kind's ceiling. Default: the ceiling.",
+          "items": {
+            "$ref": "#/$defs/Permission"
+          },
+          "type": [
+            "array",
+            "null"
+          ],
+          "uniqueItems": true
+        },
+        "role": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ClientRole"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Default `service` for kind `service`, `mcp` for kind `agent`; must be allowed for the kind."
+        }
+      },
+      "required": [
+        "name",
+        "kind"
+      ],
+      "type": "object"
+    },
+    "ClientsAddResult": {
+      "description": "`clients.add` result. The token is written to `credential_file` and never returned.",
+      "properties": {
+        "client": {
+          "$ref": "#/$defs/ClientRecord",
+          "description": "The new credential."
+        },
+        "credential_file": {
+          "description": "Absolute path of the owner-only token file.",
+          "type": "string"
+        },
+        "replayed": {
+          "default": false,
+          "description": "True when this response replays a durable mutation receipt.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "client",
+        "credential_file"
+      ],
+      "type": "object"
+    },
     "ClientsListParams": {
       "description": "`clients.list` parameters.",
+      "properties": {
+        "include_revoked": {
+          "default": false,
+          "description": "Also list revoked credentials. Default false.",
+          "type": "boolean"
+        }
+      },
       "type": "object"
     },
     "ClientsListResult": {
       "description": "`clients.list` result.",
       "properties": {
         "clients": {
-          "description": "All credentials.",
+          "description": "Credentials, oldest first.",
           "items": {
             "$ref": "#/$defs/ClientRecord"
           },
@@ -1267,6 +1632,13 @@
         "credential_id": {
           "description": "Credential id.",
           "type": "string"
+        },
+        "idempotency_key": {
+          "description": "Idempotency key.",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [
@@ -1279,7 +1651,13 @@
       "properties": {
         "client": {
           "$ref": "#/$defs/ClientRecord",
-          "description": "The credential after revocation; existing connections using it are closed."
+          "description": "The credential after revocation."
+        },
+        "connections_closed": {
+          "description": "Live connections of this credential that were closed.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
         },
         "replayed": {
           "default": false,
@@ -1288,7 +1666,8 @@
         }
       },
       "required": [
-        "client"
+        "client",
+        "connections_closed"
       ],
       "type": "object"
     },
@@ -3078,6 +3457,10 @@
           "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:([0-5][0-9]|60)\\.[0-9]{3}Z$",
           "type": "string"
         },
+        "partial": {
+          "description": "True for the `.zpart` file of an unfinished job.",
+          "type": "boolean"
+        },
         "path": {
           "description": "Path relative to the write root.",
           "type": "string"
@@ -3085,6 +3468,10 @@
         "quarantined": {
           "description": "Zeus's quarantine flag.",
           "type": "boolean"
+        },
+        "root": {
+          "description": "The write root containing the file (absolute, canonical).",
+          "type": "string"
         },
         "sha256": {
           "description": "SHA-256 recorded when the file was completed by Zeus, if it was.",
@@ -3112,6 +3499,7 @@
         }
       },
       "required": [
+        "root",
         "path",
         "size_bytes",
         "modified_at",
@@ -3248,6 +3636,13 @@
     "FilesListParams": {
       "description": "`files.list` parameters.",
       "properties": {
+        "cursor": {
+          "description": "Opaque cursor from a previous result. Valid only for the same method and filters.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "dir": {
           "description": "A directory inside a write root. Absent: the default root.",
           "type": [
@@ -3260,10 +3655,14 @@
           "description": "Include `.zpart` files of unfinished jobs.",
           "type": "boolean"
         },
-        "page": {
-          "$ref": "#/$defs/PageRequest",
-          "default": {},
-          "description": "Paging."
+        "limit": {
+          "description": "Page size. Absent: 50. Values above 100 are clamped to 100; 0 is invalid.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
         },
         "recursive": {
           "default": false,
@@ -3310,8 +3709,15 @@
           "type": "boolean"
         },
         "approval_id": {
-          "description": "The approval needed to apply destructive steps.",
+          "description": "The `destructive_op` approval a person must give before anything moves.",
           "pattern": "^ap_[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "operation_id": {
+          "description": "The stored operation; `files.undo` reverts it once it ran.",
           "type": [
             "string",
             "null"
@@ -3336,9 +3742,66 @@
       ],
       "type": "object"
     },
+    "FilesRootsRegisterParams": {
+      "description": "`files.roots.register` parameters (role `service` only; 05 section 9.6).",
+      "properties": {
+        "idempotency_key": {
+          "description": "Idempotency key.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "label": {
+          "description": "Optional label, 1 to 64 characters. Untrusted display text.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "path": {
+          "description": "Absolute directory inside one of the user's write roots.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "type": "object"
+    },
+    "FilesRootsRegisterResult": {
+      "description": "`files.roots.register` result.",
+      "properties": {
+        "created": {
+          "description": "False when the same canonical path was already registered by this service.",
+          "type": "boolean"
+        },
+        "replayed": {
+          "default": false,
+          "description": "True when this response replays a durable mutation receipt.",
+          "type": "boolean"
+        },
+        "root": {
+          "$ref": "#/$defs/ServiceRoot",
+          "description": "The registered root."
+        }
+      },
+      "required": [
+        "root",
+        "created"
+      ],
+      "type": "object"
+    },
     "FilesUndoParams": {
       "description": "`files.undo` parameters.",
       "properties": {
+        "idempotency_key": {
+          "description": "Idempotency key.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "operation_id": {
           "description": "Identifier of the operation in the undo journal.",
           "type": "string"
@@ -3352,13 +3815,28 @@
     "FilesUndoResult": {
       "description": "`files.undo` result.",
       "properties": {
+        "approval_id": {
+          "description": "The `destructive_op` approval for the undo (absent when there is nothing to revert).",
+          "pattern": "^ap_[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "operation_id": {
+          "description": "The undo's own operation.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "replayed": {
           "default": false,
           "description": "True when this response replays a durable mutation receipt.",
           "type": "boolean"
         },
         "steps": {
-          "description": "Steps reverted.",
+          "description": "The inverse steps, planned now and run after a person approves them.",
           "items": {
             "$ref": "#/$defs/FileStep"
           },
@@ -4807,6 +5285,22 @@
     "JobsListParams": {
       "description": "`jobs.list` parameters.",
       "properties": {
+        "cursor": {
+          "description": "Opaque cursor from a previous result. Valid only for the same method and filters.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "limit": {
+          "description": "Page size. Absent: 50. Values above 100 are clamped to 100; 0 is invalid.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "origin": {
           "description": "Only jobs for this origin.",
           "maxLength": 300,
@@ -4815,11 +5309,6 @@
             "string",
             "null"
           ]
-        },
-        "page": {
-          "$ref": "#/$defs/PageRequest",
-          "default": {},
-          "description": "Paging."
         },
         "run_id": {
           "description": "Only this workflow run.",
@@ -5141,6 +5630,85 @@
           "type": "string"
         }
       ]
+    },
+    "LineageDirection": {
+      "description": "Which way `artifacts.lineage` walks.",
+      "oneOf": [
+        {
+          "const": "ancestors",
+          "description": "Parents, grandparents, ...",
+          "type": "string"
+        },
+        {
+          "const": "descendants",
+          "description": "Artifacts derived from this one.",
+          "type": "string"
+        }
+      ]
+    },
+    "LineageLink": {
+      "description": "An edge of a lineage node: the index of a parent (ancestors) or child (descendants) in `nodes`.",
+      "properties": {
+        "node": {
+          "description": "Index into `nodes`.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "role": {
+          "description": "The parent role (`input`, `config`, `manifest` or a producer role).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "node",
+        "role"
+      ],
+      "type": "object"
+    },
+    "LineageNode": {
+      "description": "One node of a lineage walk (13 section 4.3).",
+      "properties": {
+        "artifact_id": {
+          "description": "The record; null for a content-only node (a parent known only by its digests).",
+          "pattern": "^art_[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "blake3": {
+          "description": "BLAKE3 content identity.",
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "depth": {
+          "description": "Levels from the start record (0).",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "links": {
+          "description": "Parents (ancestors) or children (descendants) of this node.",
+          "items": {
+            "$ref": "#/$defs/LineageLink"
+          },
+          "type": "array"
+        },
+        "size_bytes": {
+          "description": "Length.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "blake3",
+        "size_bytes",
+        "depth",
+        "links"
+      ],
+      "type": "object"
     },
     "LlmAccount": {
       "description": "Account identity visible only on the human auth surface.",
@@ -5898,26 +6466,25 @@
       ],
       "type": "object"
     },
-    "PageRequest": {
-      "description": "Paging parameters shared by every list method (00 section 10).",
+    "Page6": {
+      "description": "One page of results.",
       "properties": {
-        "cursor": {
-          "description": "Opaque cursor from a previous result. Valid only for the same method and filters.",
+        "items": {
+          "description": "The items.",
+          "items": true,
+          "type": "array"
+        },
+        "next_cursor": {
+          "description": "Cursor for the next page, `null` at the end.",
           "type": [
             "string",
             "null"
           ]
-        },
-        "limit": {
-          "description": "Page size. Absent: 50. Values above 100 are clamped to 100; 0 is invalid.",
-          "format": "uint32",
-          "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
         }
       },
+      "required": [
+        "items"
+      ],
       "type": "object"
     },
     "PageSample": {
@@ -6219,6 +6786,7 @@
         "approvals.decide",
         "files.read",
         "files.write",
+        "files.roots.register",
         "workflows.plan",
         "workflows.run",
         "audit.read",
@@ -7768,6 +8336,37 @@
         }
       ]
     },
+    "ServiceRoot": {
+      "description": "A write root registered by a service client (05 section 7.6).",
+      "properties": {
+        "client_id": {
+          "description": "The owning service's credential id.",
+          "type": "string"
+        },
+        "created_at": {
+          "description": "Registration time.",
+          "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:([0-5][0-9]|60)\\.[0-9]{3}Z$",
+          "type": "string"
+        },
+        "label": {
+          "description": "Optional label, untrusted display text.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "path": {
+          "description": "Absolute, canonical path of the root.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "client_id",
+        "created_at"
+      ],
+      "type": "object"
+    },
     "SessionGrant": {
       "description": "A recorded consent. Holds no cookies: cookies are fetched per use and wiped.",
       "properties": {
@@ -8035,10 +8634,26 @@
     "SessionsListParams": {
       "description": "`sessions.list` parameters.",
       "properties": {
+        "cursor": {
+          "description": "Opaque cursor from a previous result. Valid only for the same method and filters.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "include_inactive": {
           "default": false,
           "description": "Include expired, revoked and consumed grants.",
           "type": "boolean"
+        },
+        "limit": {
+          "description": "Page size. Absent: 50. Values above 100 are clamped to 100; 0 is invalid.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
         },
         "origin": {
           "description": "Only this origin.",
@@ -8048,11 +8663,6 @@
             "string",
             "null"
           ]
-        },
-        "page": {
-          "$ref": "#/$defs/PageRequest",
-          "default": {},
-          "description": "Paging."
         }
       },
       "type": "object"
@@ -9180,12 +9790,75 @@
         }
       ]
     },
+    "WorkflowDraftInfo": {
+      "description": "Accounting of a model draft.",
+      "properties": {
+        "cost_micro_usd": {
+          "description": "Cost in micro-USD when known.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "input_tokens": {
+          "description": "Prompt tokens.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "model": {
+          "description": "Model identifier as reported.",
+          "type": "string"
+        },
+        "output_tokens": {
+          "description": "Generated tokens.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "provider": {
+          "$ref": "#/$defs/ProviderKind2",
+          "description": "The provider that answered."
+        }
+      },
+      "required": [
+        "provider",
+        "model",
+        "input_tokens",
+        "output_tokens"
+      ],
+      "type": "object"
+    },
+    "WorkflowDraftRequest": {
+      "description": "A model-drafting request. The model sees text-free page outlines (`metadata_only`, 09) and proposes only the\n`extract` member; domains, budgets, pace and destination are daemon defaults the person can edit.",
+      "properties": {
+        "max_cost_micro_usd": {
+          "description": "Most this one request may cost, in micro-USD; zero allows only free local models.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "max_cost_micro_usd"
+      ],
+      "type": "object"
+    },
     "WorkflowsControlParams": {
       "description": "`workflows.control` parameters.",
       "properties": {
         "action": {
           "$ref": "#/$defs/RunControl",
           "description": "The action."
+        },
+        "idempotency_key": {
+          "description": "Retry key scoped to this caller and method.",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "run_id": {
           "description": "The run.",
@@ -9254,10 +9927,21 @@
     "WorkflowsListParams": {
       "description": "`workflows.list` parameters.",
       "properties": {
-        "page": {
-          "$ref": "#/$defs/PageRequest",
-          "default": {},
-          "description": "Paging."
+        "cursor": {
+          "description": "Opaque cursor from a previous result. Valid only for the same method and filters.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "limit": {
+          "description": "Page size. Absent: 50. Values above 100 are clamped to 100; 0 is invalid.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
         }
       },
       "type": "object"
@@ -9268,6 +9952,13 @@
         "format": {
           "$ref": "#/$defs/ManifestFormat",
           "description": "Output format."
+        },
+        "idempotency_key": {
+          "description": "Retry key for one immutable export snapshot.",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "run_id": {
           "description": "The run.",
@@ -9335,9 +10026,27 @@
           ],
           "description": "A candidate plan to validate against the samples. Absent on the first call."
         },
+        "draft": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkflowDraftRequest"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Ask the configured model to propose the selectors (human-only, verified terminal; ignored with `candidate`)."
+        },
         "goal": {
           "description": "The goal in words. Untrusted text; recorded, never interpreted.",
           "type": "string"
+        },
+        "idempotency_key": {
+          "description": "Retry key for sampling or candidate validation; model drafting does not yet support keyed retries.",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "plan_id": {
           "anyOf": [
@@ -9382,6 +10091,17 @@
             "$ref": "#/$defs/Diagnostic"
           },
           "type": "array"
+        },
+        "draft": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkflowDraftInfo"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Present when the candidate was drafted by the configured model: a proposal, never an approval."
         },
         "plan": {
           "anyOf": [
@@ -9515,6 +10235,38 @@
         "$ref": "#/$defs/Page3"
       }
     },
+    "artifacts.get": {
+      "params": {
+        "$ref": "#/$defs/ArtifactsGetParams"
+      },
+      "result": {
+        "$ref": "#/$defs/ArtifactsGetResult"
+      }
+    },
+    "artifacts.ingest": {
+      "params": {
+        "$ref": "#/$defs/ArtifactsIngestParams"
+      },
+      "result": {
+        "$ref": "#/$defs/ArtifactsIngestResult"
+      }
+    },
+    "artifacts.lineage": {
+      "params": {
+        "$ref": "#/$defs/ArtifactsLineageParams"
+      },
+      "result": {
+        "$ref": "#/$defs/ArtifactsLineageResult"
+      }
+    },
+    "artifacts.list": {
+      "params": {
+        "$ref": "#/$defs/ArtifactsListParams"
+      },
+      "result": {
+        "$ref": "#/$defs/Page6"
+      }
+    },
     "audit.tail": {
       "params": {
         "$ref": "#/$defs/AuditTailParams"
@@ -9529,6 +10281,14 @@
       },
       "result": {
         "$ref": "#/$defs/AuditVerifyResult"
+      }
+    },
+    "clients.add": {
+      "params": {
+        "$ref": "#/$defs/ClientsAddParams"
+      },
+      "result": {
+        "$ref": "#/$defs/ClientsAddResult"
       }
     },
     "clients.list": {
@@ -9721,6 +10481,14 @@
       },
       "result": {
         "$ref": "#/$defs/FilesOrganizeResult"
+      }
+    },
+    "files.roots.register": {
+      "params": {
+        "$ref": "#/$defs/FilesRootsRegisterParams"
+      },
+      "result": {
+        "$ref": "#/$defs/FilesRootsRegisterResult"
       }
     },
     "files.undo": {

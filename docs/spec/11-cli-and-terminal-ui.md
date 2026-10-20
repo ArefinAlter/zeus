@@ -1,6 +1,6 @@
 # 11 — CLI and terminal UI
 
-Draft 1 · 2026-10-16. Defines the `zeus` command surface and human terminal interface. The executable command tree in `crates/zeus-cli/src/cli.rs` and the contracts in 00, 01, 05, 06 and 07 are the source of vocabulary. This document does not make an unimplemented daemon method available.
+Draft 2 · 2026-10-21. Defines the `zeus` command surface and human terminal interface. The executable command tree in `crates/zeus-cli/src/cli.rs` and the contracts in 00, 01, 05, 06 and 07 are the source of vocabulary. This document does not make an unimplemented daemon method available.
 
 ## 1. Process and output contract
 
@@ -8,13 +8,14 @@ Draft 1 · 2026-10-16. Defines the `zeus` command surface and human terminal int
 
 Data goes to stdout; diagnostics and progress go to stderr. `--json` produces one JSON document and conflicts with `--ndjson`; the latter emits one object per list entry. Errors include their stable 00/05 code and map to section 4. Output MUST redact URLs and secrets using 00. File names, requester text and server errors MUST pass the display sanitizer before terminal rendering. Success is reported only after a successful daemon response, never because a message was merely written.
 
-Global flags: `--json`, `--ndjson`, `--quiet`/`-q`, `--no-color`, `--dry-run`, `--yes`, `--profile`. `NO_COLOR` disables color. The current parser accepts `--profile`, but profile-specific configuration loading is unfinished and MUST NOT be presented as working isolation.
+Global flags: `--json`, `--ndjson`, `--quiet`/`-q`, `--no-color`, `--dry-run`, `--yes`, `--profile`. `NO_COLOR` disables color. `--profile NAME` (or `ZEUS_PROFILE`; `default` selects the default) is a separate namespace: each default state, configuration and runtime directory gains `profiles/NAME`, and the daemon endpoint derives from the user and the profile, so profiles never share credentials, state or a daemon. Explicit `ZEUS_STATE_DIR`, `ZEUS_CONFIG_DIR` and `ZEUS_RUNTIME_DIR` are used exactly as given. A `zeusd` that the CLI starts inherits the CLI's profile. Browsers launch the native host without a profile, so browser integration uses the default profile.
 
 ## 2. Command catalogue
 
 | Command | Purpose and binding |
 |---|---|
 | `get <URL>...` | `jobs.enqueue`; `-o/--output` is a destination directory, `-H/--header` is a restricted request header, `--cookie-from-extension` requests human-approved website access, `-w/--wait` waits for results, `--sha256` checks one URL, `--priority` and `--idempotency-key` are explicit controls. |
+| `get -i/--input-file <FILE> [URL...]` | Combine positional URLs with a UTF-8 regular file of at most 1 MiB. Ignore blank lines and leading `#` comments; accept an initial BOM and CRLF. Remove exact duplicates in first-seen order; validate all 1–50 unique URLs before enqueue. No shell parsing, headers or credentials in the list format. Signed query strings retain exact identity. |
 | `probe <URL>` | `jobs.probe`; returns size, representation, resumability and session requirements. |
 | `ls [--state <STATE>] [--limit <N>]` | `jobs.list`, with a bounded page of at most 100 jobs. |
 | `status [<JOB>]` | `jobs.get` when an ID is given, otherwise daemon status. |
@@ -25,6 +26,10 @@ Global flags: `--json`, `--ndjson`, `--quiet`/`-q`, `--no-color`, `--dry-run`, `
 | `approvals approve <ID> [--scope <SCOPE>]` | Fetch the full request, verify its binding, review it at the controlling terminal, then decide. The flag constrains the user's selection; it does not make the decision. |
 | `approvals deny <ID> [--never]` | Review and deny; an explicit block is scoped to the exact origin. |
 | `sessions list / revoke <ID>` | Inspect permissions without exposing cookies, or revoke through a human surface. |
+| `clients list [--include-revoked] / add --name NAME [--kind agent\|service] [--role ROLE] [--permission P]... / revoke <ID>` | Admin credential management from a verified physical terminal (05 section 9.11). `add` prints the path of the owner-only token file, never the token. `revoke` closes the credential's connections and withdraws its pending requests. |
+| `workflow plan --goal G --url U... [--candidate FILE] / dry-run <PLAN> / run <PLAN> --plan-hash H / get <RUN> / ls / pause / resume / cancel <RUN> / manifest <RUN>` | The workflow API of 05 section 9.7 and 08. `plan` samples pages or validates a plan file against them and prints the plan hash; `run` binds that hash and leaves the run waiting for `approvals approve`. Nothing is drafted or approved by the CLI. |
+| `files list [DIR] / organize <DIR> --rules FILE [--apply] / undo <OPERATION>` | `files.list`, and the organiser of 05 section 9.6: a dry run unless `--apply`, which raises a `destructive_op` approval; files move only after `approvals approve`. `undo` plans the reversal behind its own approval. |
+| `artifacts ls [--limit N] [--cursor C] [--blake3 H] [--sha256 H] [--job-id J] [--run-id R] [--state active\|deleted] / get <ARTIFACT> / lineage <ARTIFACT> [--direction ancestors\|descendants] [--max-depth N] [--max-nodes N] / ingest <PATH> --idempotency-key K [--name N] [--media-type T]` | Caller-visible artifact records and lineage; confined ingestion hashes but does not move a file. List limits 1–100, lineage 1–64 levels/1–500 nodes. JSON keeps the complete receipt; NDJSON emits list entries. Ingest refuses global dry run before RPC. |
 | `audit tail [--limit <N>] / verify` | Read redacted records or verify their chain. |
 | `daemon install` | Create first-run state and credentials via `zeusd init`. OS autostart registration is still a separate release task. |
 | `daemon start / stop / status` | Spawn `zeusd run` and wait for authenticated readiness; request shutdown; inspect status. Starting does not silently create new credentials. |
@@ -40,7 +45,7 @@ Global flags: `--json`, `--ndjson`, `--quiet`/`-q`, `--no-color`, `--dry-run`, `
 
 `mcp --http` is a reserved opt-in bridge. Until Host/Origin validation and bearer-token authentication exist, the CLI MUST refuse that option; it MUST NOT quietly run stdio instead.
 
-Cookie and Authorization header injection, cookie-file import, automatic approval, and bypassing site access controls are outside this command contract. Batch stdin input, recursive retrieval, queue schedule editing, conversion and organization commands are proposals until added to the command tree and backed by implemented daemon methods. Wget-style behavior is described in the product design document, not implied by accepting a URL.
+Cookie and Authorization header injection, cookie-file import, automatic approval, and bypassing site access controls are outside this command contract. Batch stdin input, recursive retrieval, queue schedule editing and conversion commands are proposals until added to the command tree and backed by implemented daemon methods. Wget-style behavior is described in the product design document, not implied by accepting a URL.
 
 ## 3. Human terminal decisions
 
@@ -73,7 +78,7 @@ A multi-job wait reports the strongest relevant failure under the implementation
 
 The table shows name, state, requester source, saved bytes/percentage and size. A detail pane shows source, job ID and the next recovery step. The approval inbox is visually neutral. Throughput samples are inferred from durable-byte snapshots; they are not a raw network-speed measurement and should be labelled accordingly.
 
-Keys: `j`/down and `k`/up select; Tab changes pane; `p` pauses; `r` resumes/retries; `x` retries a scheduled retry now; `c` cancels; Enter in approvals opens review; `q`, Escape and Ctrl-C exit. Key-release and auto-repeat events do not trigger repeated actions. Use no more than 10 frames per second; `ZEUS_NO_ANIMATION` enables change-driven rendering. Entering and leaving raw/alternate-screen modes MUST restore the terminal on every exit path.
+Keys: `j`/down and `k`/up select; Tab changes pane; `p` pauses; `r` resumes/retries; `x` retries a scheduled retry now; `c` cancels; Enter in approvals opens review; `q`, Escape and Ctrl-C exit when no search is active. `/` opens case-insensitive job search over name, redacted URL and state; Enter finishes typing, Backspace edits, Escape clears the filter without quitting, and Ctrl-C always exits. Job command characters typed in search are text only. Selection follows stable job/approval IDs through refreshed row order, and the selected job stays in the visible viewport. Key-release and auto-repeat events do not trigger repeated actions. Use no more than 10 frames per second; `ZEUS_NO_ANIMATION` enables change-driven rendering. Entering and leaving raw/alternate-screen modes MUST restore the terminal on every exit path.
 
 Snapshots are paginated and refreshed after notifications and periodically. A lagged stream invalidates the snapshot; no approval or state transition may be inferred from a missing event. The current TUI repairs display state by fetching authoritative snapshots, rather than claiming durable history replay. Connection loss exits with an actionable diagnostic.
 
@@ -81,7 +86,7 @@ Snapshots are paginated and refreshed after notifications and periodically. A la
 
 Required checks: parser and stable exits, JSON/NDJSON behavior, pipe input cannot approve, stale/altered/unknown facts cannot approve, typed-code mismatch cannot approve, canceled wait leaves the job active, terminal restoration on EOF/error/Ctrl-C, TUI action legality, event lag repair, Windows key-event handling and `NO_COLOR`.
 
-Current implementation limitations requiring follow-up: real browser/terminal platform acceptance, daemon autostart registration, profile-specific loading, streaming progress independent of snapshot RPC latency, and exact spec06 MCP resource/pagination parity. These are not implied complete by this draft.
+Current implementation limitations requiring follow-up: real browser/terminal platform acceptance, daemon autostart registration, streaming progress independent of snapshot RPC latency, and exact spec06 MCP resource/pagination parity. These are not implied complete by this draft.
 
 Executable registration is explicit: install `zeusd`, `zeus` and `zeus-native-host` together, then run `zeusd init` (also used by `zeus daemon install`). Startup only reads registrations; missing or changed pins disable human authority. After an upgrade, stop the daemon and run `zeusd trust-clients` at the controlling terminal. It holds the daemon lock, shows old/new canonical paths and BLAKE3 digests, requires fresh typed confirmation after the input delay, rehashes the installed files, atomically replaces private pins with a backup, and records intent/completion in the anchored audit chain. There is no noninteractive override. Deleting pins or automatically replacing a mismatched digest is not an approved recovery procedure. Real-terminal and installer upgrade acceptance remain release gates.
 

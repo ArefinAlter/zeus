@@ -75,6 +75,11 @@ impl<C: Client + 'static> ServerHandler for McpServer<C> {
     ) -> Result<ListResourcesResult, ErrorData> {
         no_cursor(request)?;
         Ok(ListResourcesResult::with_all_items(vec![
+            Resource::new("zeus://workflow/plan-schema", "workflow-plan-schema")
+                .with_description(
+                    "Candidate plan schema for zeus_workflow; read before writing selectors.",
+                )
+                .with_mime_type("application/schema+json"),
             Resource::new("zeus://audit/today", "audit-today")
                 .with_description("Recent redacted audit records visible to this client.")
                 .with_mime_type("application/json"),
@@ -110,8 +115,13 @@ impl<C: Client + 'static> ServerHandler for McpServer<C> {
                     Some(serde_json::json!({"code":e.envelope().code})),
                 )
             })?;
+        let mime = if uri == ResourceUri::PlanSchema {
+            "application/schema+json"
+        } else {
+            "application/json"
+        };
         Ok(ReadResourceResult::new(vec![
-            ResourceContents::text(contents, request.uri).with_mime_type("application/json"),
+            ResourceContents::text(contents, request.uri).with_mime_type(mime),
         ])
         .into())
     }
@@ -280,7 +290,7 @@ mod tests {
         )
         .await;
         let tools = catalogue["result"]["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 10);
+        assert_eq!(tools.len(), 13);
         assert!(
             !tools
                 .iter()

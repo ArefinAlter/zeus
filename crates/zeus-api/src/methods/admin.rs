@@ -1,13 +1,13 @@
 //! `audit.*`, `config.*`, `doctor.*`, `llm.*`, `clients.*`.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use zeus_llm::{PrivacyTier, ProviderKind, ProviderStatus, SpendCaps};
 use zeus_types::{AuditHead, SecretString, Timestamp};
 
-use crate::kind::{ClientKind, ClientRole};
+use crate::kind::{ClientKind, ClientRole, Permission};
 
 /// `audit.tail` parameters.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -252,31 +252,89 @@ pub struct LlmConfigureResult {
 
 /// `clients.list` parameters.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct ClientsListParams {}
+pub struct ClientsListParams {
+    /// Also list revoked credentials. Default false.
+    #[serde(default)]
+    pub include_revoked: bool,
+}
 
-/// A client credential record (never the token).
+/// A client credential as the daemon describes it. Never contains the token or its verifier.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ClientRecord {
     /// Credential id.
     pub credential_id: String,
+    /// File name stem under `<state>/credentials/`.
+    pub name: String,
     /// Authority class.
     pub kind: ClientKind,
     /// Role.
     pub role: ClientRole,
+    /// Effective permissions, a subset of the kind's ceiling.
+    pub permissions: BTreeSet<Permission>,
     /// Creation.
     pub created_at: Timestamp,
-    /// Last successful authentication.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Last successful authentication since the daemon started; `null` when unknown.
+    #[serde(default)]
     pub last_used_at: Option<Timestamp>,
     /// Revoked credentials stay listed.
     pub revoked: bool,
+    /// When it was revoked.
+    #[serde(default)]
+    pub revoked_at: Option<Timestamp>,
+    /// Service clients only: their registered roots (inactive once revoked).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub roots: Vec<ServiceRoot>,
+}
+
+/// A write root registered by a service client (05 section 7.6).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ServiceRoot {
+    /// Absolute, canonical path of the root.
+    pub path: String,
+    /// Optional label, untrusted display text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// The owning service's credential id.
+    pub client_id: String,
+    /// Registration time.
+    pub created_at: Timestamp,
 }
 
 /// `clients.list` result.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ClientsListResult {
-    /// All credentials.
+    /// Credentials, oldest first.
     pub clients: Vec<ClientRecord>,
+}
+
+/// `clients.add` parameters (human-only; 05 section 9.11).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ClientsAddParams {
+    /// `[a-z][a-z0-9_-]{0,31}`, unique, not `cli`, `agent`, `a2a` or `host`.
+    pub name: String,
+    /// `agent` or `service`. Human and admin credentials come only from provisioning.
+    pub kind: ClientKind,
+    /// Default `service` for kind `service`, `mcp` for kind `agent`; must be allowed for the kind.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<ClientRole>,
+    /// Narrowing within the kind's ceiling. Default: the ceiling.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permissions: Option<BTreeSet<Permission>>,
+    /// Idempotency key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idempotency_key: Option<String>,
+}
+
+/// `clients.add` result. The token is written to `credential_file` and never returned.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ClientsAddResult {
+    /// True when this response replays a durable mutation receipt.
+    #[serde(default)]
+    pub replayed: bool,
+    /// The new credential.
+    pub client: ClientRecord,
+    /// Absolute path of the owner-only token file.
+    pub credential_file: String,
 }
 
 /// `clients.revoke` parameters.
@@ -284,6 +342,9 @@ pub struct ClientsListResult {
 pub struct ClientsRevokeParams {
     /// Credential id.
     pub credential_id: String,
+    /// Idempotency key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idempotency_key: Option<String>,
 }
 
 /// `clients.revoke` result.
@@ -292,8 +353,10 @@ pub struct ClientsRevokeResult {
     /// True when this response replays a durable mutation receipt.
     #[serde(default)]
     pub replayed: bool,
-    /// The credential after revocation; existing connections using it are closed.
+    /// The credential after revocation.
     pub client: ClientRecord,
+    /// Live connections of this credential that were closed.
+    pub connections_closed: u32,
 }
 
 #[cfg(test)]

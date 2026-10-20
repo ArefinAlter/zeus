@@ -176,7 +176,13 @@ pub struct CloudService {
     gate: Mutex<()>,
     workers: std::sync::Mutex<BTreeMap<String, Worker>>,
     stopping: AtomicBool,
+    /// When retention last ran; it runs at startup and then at most hourly.
+    retained_at: std::sync::Mutex<Option<std::time::Instant>>,
 }
+/// Finished deliveries (and the plans they used) are kept this long after their last change.
+const TERMINAL_RETENTION_MS: u64 = 30 * 86_400_000;
+/// Idempotency receipts outlive the 24 h minimum of 05 section 12 by a week.
+const RECEIPT_RETENTION_MS: u64 = 7 * 86_400_000;
 impl CloudService {
     /// Open durable state without connecting to configured providers or reading their credentials.
     pub fn open(
@@ -234,7 +240,48 @@ impl CloudService {
             gate: Mutex::new(()),
             workers: Default::default(),
             stopping: AtomicBool::new(false),
+            retained_at: Default::default(),
         }))
+    }
+    /// Apply bounded retention at `now` (roadmap D05); audited when it removed anything.
+    pub(crate) fn retain_at(&self, now: Timestamp) -> ApiResult<()> {
+        let pruned = self.store.prune(
+            now,
+            TERMINAL_RETENTION_MS,
+            RECEIPT_RETENTION_MS,
+            &self.staging,
+        )?;
+        if pruned.deliveries + pruned.plans + pruned.receipts > 0 {
+            let mut entry = AuditEntry::new(
+                Timestamp::now(),
+                Actor::system(),
+                "cloud.retention",
+                AuditOutcome::Ok,
+            );
+            entry
+                .data
+                .insert("deliveries".into(), serde_json::json!(pruned.deliveries));
+            entry
+                .data
+                .insert("plans".into(), serde_json::json!(pruned.plans));
+            entry
+                .data
+                .insert("receipts".into(), serde_json::json!(pruned.receipts));
+            self.audit.append(entry).map_err(|_| fail())?;
+        }
+        Ok(())
+    }
+    fn retain_hourly(&self) -> ApiResult<()> {
+        let due = self
+            .retained_at
+            .lock()
+            .map_err(|_| fail())?
+            .is_none_or(|at| at.elapsed() >= std::time::Duration::from_secs(3600));
+        if due {
+            self.retain_at(Timestamp::now())?;
+            *self.retained_at.lock().map_err(|_| fail())? = Some(std::time::Instant::now());
+        }
+        Ok(())
     }
     fn admit(&self) -> ApiResult<()> {
         if self.stopping.load(Ordering::Acquire) {
@@ -456,6 +503,7 @@ impl CloudService {
             encoded(
                 key,
                 &Receipt {
+                    created_at: Some(Timestamp::now()),
                     hash,
                     result: serde_json::to_value(&result).map_err(|_| fail())?,
                 },
@@ -513,6 +561,7 @@ impl CloudService {
             encoded(
                 key,
                 &Receipt {
+                    created_at: Some(Timestamp::now()),
                     hash,
                     result: serde_json::to_value(&result).map_err(|_| fail())?,
                 },
@@ -719,6 +768,7 @@ impl CloudService {
             encoded(
                 key,
                 &Receipt {
+                    created_at: Some(Timestamp::now()),
                     hash: request_hash,
                     result: serde_json::to_value(&result).map_err(|_| fail())?,
                 },
@@ -818,6 +868,7 @@ impl CloudService {
         let receipt = encoded(
             key.clone(),
             &Receipt {
+                created_at: Some(Timestamp::now()),
                 hash: hash.clone(),
                 result: serde_json::to_value(&reserved).map_err(|_| fail())?,
             },
@@ -838,6 +889,7 @@ impl CloudService {
         self.store.save(
             &key,
             &Receipt {
+                created_at: Some(Timestamp::now()),
                 hash,
                 result: serde_json::to_value(&result).map_err(|_| fail())?,
             },

@@ -3,7 +3,9 @@
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout};
 use ratatui::style::{Modifier, Style};
-use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph, Row, Sparkline, Table};
+use ratatui::widgets::{
+    Block, Borders, List, ListItem, Paragraph, Row, Sparkline, Table, TableState,
+};
 
 use super::app::{App, Pane};
 use crate::output::{format_bytes, percent, progress_bar, sanitize};
@@ -28,7 +30,7 @@ pub fn render(frame: &mut Frame, app: &App) {
     };
 
     let rows: Vec<Row> = app
-        .jobs
+        .visible_jobs()
         .iter()
         .enumerate()
         .map(|(i, job)| {
@@ -72,10 +74,24 @@ pub fn render(frame: &mut Frame, app: &App) {
     .block(
         Block::default()
             .borders(Borders::ALL)
-            .title(format!(" Downloads ({}) ", app.jobs.len()))
+            .title(format!(
+                " Downloads ({}/{}) /{}{} ",
+                app.visible_jobs().len(),
+                app.jobs.len(),
+                sanitize(&app.query),
+                if app.searching {
+                    " · Enter to finish, Esc to clear"
+                } else {
+                    ""
+                }
+            ))
             .style(focus(Pane::Jobs)),
     );
-    frame.render_widget(table, top);
+    let mut selection = TableState::default();
+    if app.pane == Pane::Jobs {
+        selection.select(Some(app.selected));
+    }
+    frame.render_stateful_widget(table, top, &mut selection);
 
     let detail = app
         .selected_job()
@@ -162,7 +178,7 @@ pub fn render(frame: &mut Frame, app: &App) {
     frame.render_widget(approvals, bottom);
 
     let hint = if app.message.is_empty() {
-        "q quit  Tab pane  j/k move  p pause  r resume/retry  c cancel  Enter review"
+        "q quit  / search  Tab pane  j/k move  p pause  r resume/retry  c cancel  Enter review"
     } else {
         app.message.as_str()
     };
@@ -221,5 +237,17 @@ mod tests {
         let text = screen(&app);
         assert!(!text.contains('\u{1b}') && !text.contains('\u{202e}'));
         assert!(text.contains("evil"));
+    }
+
+    #[test]
+    fn selection_below_the_first_screen_is_visible() {
+        let mut app = App::new(false);
+        app.update(Action::JobsUpdated(
+            (0..100).map(|i| job(&format!("file-{i:03}.zip"))).collect(),
+        ));
+        app.selected = 99;
+        let text = screen(&app);
+        assert!(text.contains("file-099.zip"));
+        assert!(!text.contains("file-000.zip"));
     }
 }

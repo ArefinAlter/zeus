@@ -15,16 +15,19 @@
 
 #![deny(unsafe_code)]
 
+pub mod artifacts;
 pub mod auth;
 pub mod cli;
 pub mod cloud;
 pub mod commands;
 pub mod connect;
 pub mod exit;
+pub mod files;
 pub mod output;
 mod terminal_os;
 pub mod trust;
 pub mod tui;
+pub mod workflow;
 
 pub use cli::{Cli, Command, GlobalArgs};
 pub use exit::Exit;

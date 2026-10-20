@@ -42,7 +42,7 @@ fn print(output: &CmdOutput, settings: Output) {
 
 async fn run(cli: &Cli, paths: &ZeusPaths, settings: Output) -> ApiResult<CmdOutput> {
     match &cli.command {
-        Command::Tui => zeus_cli::tui::run().await.map(|()| CmdOutput::empty()),
+        Command::Tui => zeus_cli::tui::run(paths).await.map(|()| CmdOutput::empty()),
         Command::Mcp { http: true, .. } => Err(ApiError::not_implemented(
             "MCP HTTP requires an authenticated Origin-checked bridge; use zeus mcp for stdio",
         )),
@@ -110,7 +110,7 @@ async fn main() -> ExitCode {
         std::io::stdout().is_terminal(),
         std::io::stderr().is_terminal(),
     );
-    let paths = match ZeusPaths::discover() {
+    let paths = match ZeusPaths::discover_profile(cli.global.profile.as_deref()) {
         Ok(paths) => paths,
         Err(error) => {
             eprintln!("{}", commands::failure(&error).0);

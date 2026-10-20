@@ -21,6 +21,10 @@ pub enum Pane {
 /// A key, already decoded from the terminal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Key {
+    /// Unconditional quit (Ctrl-C), including during search.
+    Quit,
+    /// Delete the previous search character.
+    Backspace,
     /// Up arrow or `k`.
     Up,
     /// Down arrow or `j`.
@@ -65,6 +69,10 @@ pub enum Effect {
 /// The state of the interface.
 #[derive(Debug, Clone)]
 pub struct App {
+    /// Case-insensitive filter over job names, redacted sources and states.
+    pub query: String,
+    /// Characters go to the search box instead of triggering job commands.
+    pub searching: bool,
     /// Jobs shown.
     pub jobs: Vec<JobSummary>,
     /// Approvals waiting for a person.
@@ -85,6 +93,8 @@ impl App {
     /// A new, empty interface.
     pub fn new(no_animation: bool) -> Self {
         Self {
+            query: String::new(),
+            searching: false,
             jobs: Vec::new(),
             approvals: Vec::new(),
             pane: Pane::Jobs,
@@ -97,7 +107,7 @@ impl App {
 
     fn rows(&self) -> usize {
         match self.pane {
-            Pane::Jobs => self.jobs.len(),
+            Pane::Jobs => self.visible_jobs().len(),
             Pane::Approvals => self.approvals.len(),
         }
     }
@@ -105,8 +115,30 @@ impl App {
     /// The selected job, when the jobs pane has the focus.
     pub fn selected_job(&self) -> Option<&JobSummary> {
         (self.pane == Pane::Jobs)
-            .then(|| self.jobs.get(self.selected))
+            .then(|| self.visible_jobs().get(self.selected).copied())
             .flatten()
+    }
+
+    /// Jobs matching the current filter, in daemon order. This filters a bounded snapshot; it is not a disk index.
+    pub fn visible_jobs(&self) -> Vec<&JobSummary> {
+        let query = self.query.to_lowercase();
+        self.jobs
+            .iter()
+            .filter(|job| {
+                query.is_empty()
+                    || job
+                        .filename
+                        .as_deref()
+                        .unwrap_or("")
+                        .to_lowercase()
+                        .contains(&query)
+                    || job.url_redacted.to_string().to_lowercase().contains(&query)
+                    || serde_json::to_value(job.state)
+                        .ok()
+                        .and_then(|v| v.as_str().map(|s| s.contains(&query)))
+                        .unwrap_or(false)
+            })
+            .collect()
     }
 
     /// Apply an action and return the side effect to perform, if any.
@@ -120,12 +152,28 @@ impl App {
                 None
             }
             Action::JobsUpdated(jobs) => {
+                let selected_id = self.selected_job().map(|job| job.id);
                 self.jobs = jobs;
+                if self.pane == Pane::Jobs {
+                    // Rows may reorder on every snapshot. Never retarget a hotkey to the row that took
+                    // the old index while the selected job still exists.
+                    self.selected = selected_id
+                        .and_then(|id| self.visible_jobs().iter().position(|job| job.id == id))
+                        .unwrap_or(0);
+                }
                 self.clamp();
                 None
             }
             Action::ApprovalsUpdated(approvals) => {
+                let selected_id = (self.pane == Pane::Approvals)
+                    .then(|| self.approvals.get(self.selected).map(|a| a.approval.id))
+                    .flatten();
                 self.approvals = approvals;
+                if self.pane == Pane::Approvals {
+                    self.selected = selected_id
+                        .and_then(|id| self.approvals.iter().position(|a| a.approval.id == id))
+                        .unwrap_or(0);
+                }
                 self.clamp();
                 None
             }
@@ -138,7 +186,42 @@ impl App {
     }
 
     fn key(&mut self, key: Key) -> Option<Effect> {
+        if key == Key::Quit {
+            return Some(Effect::Quit);
+        }
+        if self.searching {
+            match key {
+                Key::Enter => self.searching = false,
+                Key::Esc => {
+                    self.searching = false;
+                    self.query.clear();
+                    self.selected = 0;
+                }
+                Key::Backspace => {
+                    self.query.pop();
+                    self.selected = 0;
+                }
+                Key::Char(c) if !c.is_control() && self.query.len() < 256 => {
+                    self.query.push(c);
+                    self.selected = 0;
+                }
+                _ => {}
+            }
+            self.clamp();
+            return None;
+        }
         match key {
+            Key::Char('/') => {
+                self.pane = Pane::Jobs;
+                self.searching = true;
+                self.selected = 0;
+                None
+            }
+            Key::Esc if !self.query.is_empty() => {
+                self.query.clear();
+                self.selected = 0;
+                None
+            }
             Key::Char('q') | Key::Esc => Some(Effect::Quit),
             Key::Tab => {
                 self.pane = if self.pane == Pane::Jobs {
@@ -260,5 +343,43 @@ mod tests {
         }
         assert_eq!(app.throughput.len(), SPARKLINE_SAMPLES);
         assert_eq!(app.throughput.front().copied(), Some(10));
+    }
+
+    #[test]
+    fn refreshing_preserves_the_selected_identity_after_reordering() {
+        let mut app = App::new(false);
+        let a = job("downloading");
+        let b = job("paused");
+        app.update(Action::JobsUpdated(vec![a.clone(), b.clone()]));
+        app.update(Action::Key(Key::Down));
+        app.update(Action::JobsUpdated(vec![b.clone(), a]));
+        assert_eq!(app.selected_job().unwrap().id, b.id);
+        assert_eq!(
+            app.update(Action::Key(Key::Char('r'))),
+            Some(Effect::Control(b.id, ControlAction::Resume))
+        );
+    }
+
+    #[test]
+    fn search_typing_never_executes_job_shortcuts_and_controls_use_filtered_identity() {
+        let mut app = App::new(false);
+        let a = job("downloading");
+        let mut b = job("paused");
+        b.filename = Some("PQR.csv".into());
+        app.update(Action::JobsUpdated(vec![a, b.clone()]));
+        app.update(Action::Key(Key::Char('/')));
+        for c in "pqr".chars() {
+            assert_eq!(app.update(Action::Key(Key::Char(c))), None);
+        }
+        assert_eq!(app.visible_jobs().len(), 1);
+        app.update(Action::Key(Key::Enter));
+        assert_eq!(
+            app.update(Action::Key(Key::Char('r'))),
+            Some(Effect::Control(b.id, ControlAction::Resume))
+        );
+        assert_eq!(app.update(Action::Key(Key::Esc)), None);
+        assert!(app.query.is_empty());
+        app.update(Action::Key(Key::Char('/')));
+        assert_eq!(app.update(Action::Key(Key::Quit)), Some(Effect::Quit));
     }
 }

@@ -17,6 +17,9 @@ use zeus_api::{ApiError, ApiResult, ClientIdentity, ClientKind};
 use zeus_types::{ApprovalId, ApprovalState, JobId, JobState, RunId, Timestamp, ToEnvelope};
 use zeus_verify::AuditSink;
 use zeus_workflow::*;
+#[path = "workflow_receipts.rs"]
+mod receipts;
+use receipts::{Binding, ControlPort};
 const RECORDS: TableDefinition<&str, &[u8]> = TableDefinition::new("workflow_records_v1");
 fn fail() -> ApiError {
     ApiError::internal("durable workflow state unavailable")
@@ -236,11 +239,28 @@ impl WorkflowStore {
         next: &RunSnapshot,
         intents: &[JobIntent],
     ) -> RuntimeResult<()> {
+        self.commit_with_receipt(expected, next, intents, None)
+    }
+    fn commit_with_receipt(
+        &self,
+        expected: u64,
+        next: &RunSnapshot,
+        intents: &[JobIntent],
+        binding: Option<&Binding>,
+    ) -> RuntimeResult<()> {
         let mut tx = self.db.begin_write().map_err(|_| runtime_fail())?;
         tx.set_durability(redb::Durability::Immediate)
             .map_err(|_| runtime_fail())?;
         {
             let mut table = tx.open_table(RECORDS).map_err(|_| runtime_fail())?;
+            if let Some(binding) = binding
+                && table
+                    .get(binding.key.as_str())
+                    .map_err(|_| runtime_fail())?
+                    .is_some()
+            {
+                return Err(RuntimeError::CheckpointConflict);
+            }
             let key = format!("run:{}", next.report.run_id);
             let mut row: StoredRun = {
                 let value = table
@@ -270,6 +290,17 @@ impl WorkflowStore {
             table
                 .insert(key.as_str(), data.as_slice())
                 .map_err(|_| runtime_fail())?;
+            if let Some(binding) = binding {
+                let bytes = binding
+                    .bytes(&WorkflowsControlResult {
+                        replayed: false,
+                        run: next.report.clone(),
+                    })
+                    .map_err(|_| runtime_fail())?;
+                table
+                    .insert(binding.key.as_str(), bytes.as_slice())
+                    .map_err(|_| runtime_fail())?;
+            }
         }
         tx.commit().map_err(|_| runtime_fail())
     }
@@ -283,10 +314,16 @@ pub struct WorkflowService {
     audit: Arc<dyn AuditSink>,
     engine: OnceLock<zeus_engine::Engine>,
     roots: Vec<PathBuf>,
+    /// The registered roots of a service caller; services plan only inside them (05 section 7.6).
+    service_roots: OnceLock<ServiceRoots>,
     gate: Mutex<()>,
+    manifest_gate: std::sync::Mutex<()>,
+    export_gate: std::sync::Mutex<()>,
     stopping: AtomicBool,
     audit_receipts: std::sync::Mutex<std::collections::BTreeSet<String>>,
 }
+/// Looks up the active roots of a service credential id.
+pub(crate) type ServiceRoots = Arc<dyn Fn(&str) -> Vec<PathBuf> + Send + Sync>;
 impl WorkflowService {
     /// Open private durable state. This performs no HTTP requests.
     pub fn open(
@@ -309,7 +346,10 @@ impl WorkflowService {
             audit,
             engine: OnceLock::new(),
             roots,
+            service_roots: OnceLock::new(),
             gate: Mutex::new(()),
+            manifest_gate: std::sync::Mutex::new(()),
+            export_gate: std::sync::Mutex::new(()),
             stopping: AtomicBool::new(false),
             audit_receipts: std::sync::Mutex::new(Default::default()),
         }))
@@ -456,14 +496,39 @@ impl WorkflowService {
         }
         Ok(run)
     }
-    fn resolved_plan(&self, mut plan: Plan) -> ApiResult<Plan> {
+    /// Bind the service-root lookup once at startup.
+    pub(crate) fn attach_service_roots(&self, lookup: ServiceRoots) {
+        let _ = self.service_roots.set(lookup);
+    }
+    /// Resolve the plan destination inside the caller's roots: a service's registered roots, else the user's.
+    fn resolved_plan_for(&self, identity: &ClientIdentity, plan: Plan) -> ApiResult<Plan> {
+        if identity.kind != ClientKind::Service {
+            return self.resolved_plan(plan);
+        }
+        let roots = self
+            .service_roots
+            .get()
+            .map(|lookup| lookup(identity.credential_id.as_str()))
+            .unwrap_or_default();
+        if roots.is_empty() {
+            return Err(ApiError::new(
+                "policy.path_outside_roots",
+                "a service plans downloads only inside its registered roots",
+            ));
+        }
+        self.resolved_plan_in(plan, &roots)
+    }
+    fn resolved_plan(&self, plan: Plan) -> ApiResult<Plan> {
+        self.resolved_plan_in(plan, &self.roots)
+    }
+    fn resolved_plan_in(&self, mut plan: Plan, allowed: &[PathBuf]) -> ApiResult<Plan> {
         let roots =
-            zeus_fs::WriteRoots::open(&self.roots).map_err(|e| ApiError::from(e.to_envelope()))?;
+            zeus_fs::WriteRoots::open(allowed).map_err(|e| ApiError::from(e.to_envelope()))?;
         let requested = Path::new(&plan.sinks.dest_dir);
         let destination = if requested.is_absolute() {
             requested.to_owned()
         } else {
-            self.roots.first().ok_or_else(fail)?.join(requested)
+            allowed.first().ok_or_else(fail)?.join(requested)
         };
         let safe = roots
             .resolve_dest_dir(&destination)
@@ -478,6 +543,11 @@ impl WorkflowService {
         p: WorkflowsPlanParams,
     ) -> ApiResult<WorkflowsPlanResult> {
         let _gate = self.gate.lock().await;
+        let binding = Binding::new(identity, "workflows.plan", p.idempotency_key.as_deref(), &p)?;
+        if let Some(mut result) = self.store.replay::<WorkflowsPlanResult>(binding.as_ref())? {
+            result.replayed = true;
+            return Ok(result);
+        }
         if p.goal.len() > 2000 || p.start_urls.is_empty() || p.start_urls.len() > 3 {
             return Err(ApiError::invalid_params(
                 "sampling needs 1 to 3 start URLs and a bounded goal",
@@ -534,7 +604,7 @@ impl WorkflowService {
             diagnostics = validate_plan(&candidate);
             diagnostics.extend(validate_samples(&candidate, &samples));
             if !has_errors(&diagnostics) {
-                let candidate = self.resolved_plan(candidate)?;
+                let candidate = self.resolved_plan_for(identity, candidate)?;
                 self.validate_environment(&candidate)
                     .await
                     .map_err(runtime_error)?;
@@ -557,16 +627,19 @@ impl WorkflowService {
             updated_at: Timestamp::now(),
             dry: None,
         };
-        self.store.put(&format!("draft:{id}"), &draft)?;
-        Ok(WorkflowsPlanResult {
+        let result = WorkflowsPlanResult {
             replayed: false,
-            plan_id: id,
+            plan_id: id.clone(),
             samples,
             plan_schema: serde_json::to_value(schemars::schema_for!(Plan)).map_err(|_| fail())?,
             diagnostics,
             plan: accepted,
             plan_hash,
-        })
+            draft: None,
+        };
+        self.store
+            .put_with_receipt(&format!("draft:{id}"), &draft, binding.as_ref(), &result)?;
+        Ok(result)
     }
     /// Dry-run pages and selectors with the same network restrictions as execution.
     pub async fn dry_run(
@@ -838,6 +911,19 @@ impl WorkflowService {
         identity: &ClientIdentity,
         p: WorkflowsControlParams,
     ) -> ApiResult<WorkflowsControlResult> {
+        let binding = Binding::new(
+            identity,
+            "workflows.control",
+            p.idempotency_key.as_deref(),
+            &p,
+        )?;
+        if let Some(mut result) = self
+            .store
+            .replay::<WorkflowsControlResult>(binding.as_ref())?
+        {
+            result.replayed = true;
+            return Ok(result);
+        }
         // Narrowing authority must not queue behind document I/O or crawl-delay.
         // The checkpoint compare-and-swap rejects any concurrent state mutation.
         let _gate = if p.action == RunControl::Resume {
@@ -845,12 +931,22 @@ impl WorkflowService {
         } else {
             None
         };
+        if let Some(mut result) = self
+            .store
+            .replay::<WorkflowsControlResult>(binding.as_ref())?
+        {
+            result.replayed = true;
+            return Ok(result);
+        }
         let row = self.owned_run(identity, p.run_id)?;
         let mut runtime =
             WorkflowRuntime::restore(row.plan, row.snapshot).map_err(runtime_error)?;
         runtime
             .control(
-                self,
+                &ControlPort {
+                    service: self,
+                    binding: binding.as_ref(),
+                },
                 match p.action {
                     RunControl::Pause => RunAction::Pause,
                     RunControl::Resume => RunAction::Resume,
@@ -870,8 +966,22 @@ impl WorkflowService {
         identity: &ClientIdentity,
         p: WorkflowsManifestParams,
     ) -> ApiResult<WorkflowsManifestResult> {
+        let _gate = self.manifest_gate.lock().map_err(|_| fail())?;
         self.owned_run(identity, p.run_id)?;
-        let (path, records) = self.export(p.run_id, p.format)?;
+        let binding = Binding::new(
+            identity,
+            "workflows.manifest",
+            p.idempotency_key.as_deref(),
+            &p,
+        )?;
+        if let Some(mut result) = self
+            .store
+            .replay::<WorkflowsManifestResult>(binding.as_ref())?
+        {
+            result.replayed = true;
+            return Ok(result);
+        }
+        let (path, records) = self.export_bound(p.run_id, p.format, binding.as_ref())?;
         let file = Path::new(&path);
         let digests = zeus_verify::hash::verify_file(file, &Default::default(), &mut |_| true)
             .map_err(|_| fail())?
@@ -896,15 +1006,28 @@ impl WorkflowService {
         if content.as_ref().is_some_and(|s| s.len() > 512 * 1024) {
             return Err(fail());
         }
-        Ok(WorkflowsManifestResult {
+        let result = WorkflowsManifestResult {
             replayed: false,
             path,
             records,
             content,
             sha256: Some(digests.sha256),
-        })
+        };
+        if let Some(binding) = &binding {
+            self.store.finish_export(binding, &result)?;
+        }
+        Ok(result)
     }
     fn export(&self, run: RunId, format: ManifestFormat) -> ApiResult<(String, u64)> {
+        self.export_bound(run, format, None)
+    }
+    fn export_bound(
+        &self,
+        run: RunId,
+        format: ManifestFormat,
+        binding: Option<&Binding>,
+    ) -> ApiResult<(String, u64)> {
+        let _gate = self.export_gate.lock().map_err(|_| fail())?;
         let row = self.store.run(run)?.ok_or_else(missing)?;
         let roots = zeus_fs::WriteRoots::open(&self.roots).map_err(|_| fail())?;
         let dest = roots
@@ -953,7 +1076,6 @@ impl WorkflowService {
             }
             return Ok((receipt.path.clone(), receipt.records));
         }
-        std::fs::create_dir_all(&dest).map_err(|_| fail())?;
         let name = format!("zeus-run-{run}-{seq}");
         let mut output = dest.join(format!("{name}.manifest.{ext}"));
         for n in 0..100u32 {
@@ -968,6 +1090,10 @@ impl WorkflowService {
         }
         let source = root.path().join(".zeus/manifest.jsonl");
         root.check_existing(&source).map_err(|_| fail())?;
+        if let Some(binding) = binding {
+            self.store.reserve_export(binding)?;
+        }
+        std::fs::create_dir_all(&dest).map_err(|_| fail())?;
         let records = zeus_verify::provenance::export_manifest(
             &source,
             &output,
@@ -1006,9 +1132,19 @@ impl WorkflowService {
         }
         let _gate = self.gate.lock().await;
         for (_, row) in self.store.list::<StoredRun>("run:")? {
-            if row.snapshot.report.status == RunStatus::BudgetExhausted {
+            if matches!(
+                row.snapshot.report.status,
+                RunStatus::BudgetExhausted | RunStatus::Canceled | RunStatus::Paused
+            ) {
                 let _ = self
-                    .control_jobs(row.snapshot.report.run_id, RunAction::Cancel)
+                    .control_jobs(
+                        row.snapshot.report.run_id,
+                        if row.snapshot.report.status == RunStatus::Paused {
+                            RunAction::Pause
+                        } else {
+                            RunAction::Cancel
+                        },
+                    )
                     .await;
                 continue;
             }
@@ -1371,6 +1507,246 @@ fn sampling_plan(urls: &[String]) -> ApiResult<Plan> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn receipt_service(path: &Path) -> Arc<WorkflowService> {
+        let journal = zeus_journal::Journal::open(
+            &path.join("journal.redb"),
+            &Default::default(),
+            Arc::new(zeus_control::SystemClock::new()),
+        )
+        .unwrap();
+        let audit = Arc::new(zeus_verify::MemoryAuditLog::new(
+            zeus_types::IdGenerator::new().chain_id(),
+            zeus_types::IdGenerator::new().store_id(),
+            "test",
+            Timestamp::now(),
+            None,
+        ));
+        let consent = Arc::new(crate::consent::ConsentManager::new(
+            journal.clone(),
+            audit.clone(),
+            Arc::new(zeus_api::auth::MemoryCredentialStore::default()),
+        ));
+        WorkflowService::open(
+            &path.join("workflow.redb"),
+            journal,
+            consent,
+            audit,
+            vec![path.to_owned()],
+        )
+        .unwrap()
+    }
+    fn receipt_identity() -> ClientIdentity {
+        ClientIdentity {
+            credential_id: zeus_api::auth::CredentialId::generate(),
+            kind: ClientKind::Human,
+            role: zeus_api::ClientRole::Cli,
+            permissions: Default::default(),
+            client_name: "test".into(),
+        }
+    }
+    #[tokio::test]
+    async fn keyed_plan_replays_after_restart_without_overwriting_a_later_draft() {
+        let dir = tempfile::tempdir().unwrap();
+        let service = receipt_service(dir.path());
+        let identity = receipt_identity();
+        let row = row();
+        let key = format!("draft:{}", row.plan_id);
+        let mut draft = Draft {
+            owner: identity.credential_id.to_string(),
+            plan: Some(row.plan),
+            samples: vec![PageSample {
+                url_redacted: "https://example.org/list".into(),
+                content_type: Some("text/html".into()),
+                body: "<a href='/file'>File</a>".into(),
+            }],
+            updated_at: Timestamp::now(),
+            dry: None,
+        };
+        service.store.put(&key, &draft).unwrap();
+        let params = WorkflowsPlanParams {
+            idempotency_key: Some("plan-retry".into()),
+            goal: "Download linked files".into(),
+            start_urls: vec!["https://example.org/list".into()],
+            session_origin: None,
+            candidate: None,
+            plan_id: Some(row.plan_id),
+            draft: None,
+        };
+        let first = service.plan(&identity, params.clone()).await.unwrap();
+        draft.samples[0].body = "later draft".into();
+        service.store.put(&key, &draft).unwrap();
+        drop(service);
+        let service = receipt_service(dir.path());
+        let mut replay = service.plan(&identity, params.clone()).await.unwrap();
+        assert!(replay.replayed);
+        replay.replayed = false;
+        assert_eq!(first, replay);
+        assert_eq!(
+            service.store.get::<Draft>(&key).unwrap().unwrap().samples[0].body,
+            "later draft"
+        );
+        let mut changed = params;
+        changed.goal = "A different goal".into();
+        assert_eq!(
+            service
+                .plan(&identity, changed)
+                .await
+                .unwrap_err()
+                .envelope()
+                .code
+                .as_str(),
+            "api.idempotency_conflict"
+        );
+    }
+
+    #[tokio::test]
+    async fn keyed_control_replays_after_restart_without_repeating_an_old_pause() {
+        let dir = tempfile::tempdir().unwrap();
+        let service = receipt_service(dir.path());
+        let identity = receipt_identity();
+        let mut row = row();
+        row.owner = identity.credential_id.to_string();
+        row.snapshot.report.status = RunStatus::Running;
+        let run = row.snapshot.report.run_id;
+        service.store.reserve(&row, None).unwrap();
+        let params = WorkflowsControlParams {
+            idempotency_key: Some("control-retry".into()),
+            run_id: run,
+            action: RunControl::Pause,
+        };
+        let first = service.control(&identity, params.clone()).await.unwrap();
+        assert_eq!(first.run.status, RunStatus::Paused);
+        // A later independent action has already resumed this run.
+        service
+            .store
+            .mutate_run(run, |row| {
+                row.snapshot.report.status = RunStatus::Running;
+                row.snapshot.checkpoint_seq += 1;
+                Ok(())
+            })
+            .unwrap();
+        drop(service);
+        let service = receipt_service(dir.path());
+        let mut replay = service.control(&identity, params.clone()).await.unwrap();
+        assert!(replay.replayed);
+        replay.replayed = false;
+        assert_eq!(first, replay);
+        let current = service.store.run(run).unwrap().unwrap();
+        assert_eq!(current.snapshot.report.status, RunStatus::Running);
+        assert_eq!(current.snapshot.checkpoint_seq, 2);
+        let mut changed = params.clone();
+        changed.action = RunControl::Cancel;
+        assert_eq!(
+            service
+                .control(&identity, changed)
+                .await
+                .unwrap_err()
+                .envelope()
+                .code
+                .as_str(),
+            "api.idempotency_conflict"
+        );
+        // Keys are scoped to the credential; another human's independent intent can pause.
+        assert!(
+            !service
+                .control(&receipt_identity(), params)
+                .await
+                .unwrap()
+                .replayed
+        );
+        assert_eq!(
+            service
+                .store
+                .run(run)
+                .unwrap()
+                .unwrap()
+                .snapshot
+                .checkpoint_seq,
+            3
+        );
+    }
+
+    #[test]
+    fn keyed_manifest_replays_a_snapshot_and_uncertain_publication_never_exports_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let service = receipt_service(dir.path());
+        let identity = receipt_identity();
+        let mut row = row();
+        row.plan.sinks.dest_dir = dir.path().display().to_string();
+        let run = row.snapshot.report.run_id;
+        service.store.reserve(&row, None).unwrap();
+        std::fs::create_dir_all(dir.path().join(".zeus")).unwrap();
+        let header = serde_json::json!({
+            "record_type":"header", "manifest_version":0, "created_at":Timestamp::now(),
+            "generator":{"name":"zeus","version":"test"},
+            "privacy":{"url_query":"dropped","session_origin_included":false,"os_metadata":"off"},
+            "hash_algorithms":["sha256","blake3"]
+        });
+        std::fs::write(
+            dir.path().join(".zeus/manifest.jsonl"),
+            format!("{header}\n"),
+        )
+        .unwrap();
+        let params = WorkflowsManifestParams {
+            idempotency_key: Some("export-retry".into()),
+            run_id: run,
+            format: ManifestFormat::Jsonl,
+        };
+        let first = service.manifest(&identity, params.clone()).unwrap();
+        // The current run export index can change without changing this intent's receipt.
+        service
+            .store
+            .mutate_run(run, |row| {
+                row.exports.clear();
+                Ok(())
+            })
+            .unwrap();
+        drop(service);
+        let service = receipt_service(dir.path());
+        let mut replay = service.manifest(&identity, params.clone()).unwrap();
+        assert!(replay.replayed);
+        replay.replayed = false;
+        assert_eq!(first, replay);
+        let mut changed = params.clone();
+        changed.format = ManifestFormat::Csv;
+        assert_eq!(
+            service
+                .manifest(&identity, changed)
+                .unwrap_err()
+                .envelope()
+                .code
+                .as_str(),
+            "api.idempotency_conflict"
+        );
+        let mut interrupted = params;
+        interrupted.idempotency_key = Some("export-interrupted".into());
+        let binding = Binding::new(
+            &identity,
+            "workflows.manifest",
+            interrupted.idempotency_key.as_deref(),
+            &interrupted,
+        )
+        .unwrap()
+        .unwrap();
+        service.store.reserve_export(&binding).unwrap();
+        drop(service);
+        let service = receipt_service(dir.path());
+        assert_eq!(
+            service
+                .manifest(&identity, interrupted)
+                .unwrap_err()
+                .envelope()
+                .code
+                .as_str(),
+            "api.conflict"
+        );
+        let exports = std::fs::read_dir(dir.path())
+            .unwrap()
+            .flatten()
+            .filter(|entry| entry.file_name().to_string_lossy().contains(".manifest."))
+            .count();
+        assert_eq!(exports, 1);
+    }
     fn row() -> StoredRun {
         let plan = sampling_plan(&["https://example.org/list".into()]).unwrap();
         let run = zeus_types::IdGenerator::new().run_id();
@@ -1548,6 +1924,7 @@ mod tests {
                         service.control(
                             &identity,
                             WorkflowsControlParams {
+                                idempotency_key: Some(format!("test-control-{action}")),
                                 run_id: run,
                                 action: control,
                             },

@@ -120,6 +120,8 @@ pub struct CallContext {
     pub notifier: Notifier,
     /// Limits in force.
     pub limits: ConnectionLimits,
+    /// Capabilities negotiated in `daemon.hello` (05 section 8.2); embedded callers pass [`crate::capabilities::all`].
+    pub capabilities: Arc<std::collections::BTreeSet<String>>,
 }
 
 type AuthenticationHook = dyn Fn(&mut CallContext) -> Result<(), ApiError> + Send + Sync;
@@ -134,6 +136,8 @@ pub struct Router {
     disconnected: Option<BoxedHandler>,
     authenticated: Option<Box<AuthenticationHook>>,
     shutdown: Option<ShutdownController>,
+    revocations: Option<tokio::sync::watch::Receiver<u64>>,
+    rates: Option<Arc<crate::rate::RateLimiter>>,
 }
 
 impl Router {
@@ -211,6 +215,28 @@ impl Router {
         self
     }
 
+    /// Close live connections whose credential was revoked: the store bumps `revocations` after each revocation,
+    /// and every connection then re-checks its own credential. Requests also re-check before dispatch.
+    #[must_use]
+    pub fn with_revocations(mut self, revocations: tokio::sync::watch::Receiver<u64>) -> Self {
+        self.revocations = Some(revocations);
+        self
+    }
+
+    /// Apply the per-credential token buckets of 05 section 13.2 (authorisation step 8).
+    #[must_use]
+    pub fn with_rate_limits(mut self, limits: crate::rate::RateLimits) -> Self {
+        self.rates = Some(Arc::new(crate::rate::RateLimiter::new(limits)));
+        self
+    }
+
+    /// Apply the token buckets with rates chosen per caller (`api.rate_limits.*`, 05 section 13.2).
+    #[must_use]
+    pub fn with_rate_limits_per_caller(mut self, limits_for: Arc<crate::rate::LimitsFor>) -> Self {
+        self.rates = Some(Arc::new(crate::rate::RateLimiter::per_caller(limits_for)));
+        self
+    }
+
     /// Apply one shared admission and connection-drain deadline to this server.
     #[must_use]
     pub fn with_shutdown(mut self, controller: ShutdownController) -> Self {
@@ -253,14 +279,19 @@ impl Router {
                 format!("unknown method `{}`", short(&request.method)),
             )
         })?;
+        // 05 section 7.4, steps 3 to 8, in order.
+        let handler = self.routes.get(spec.name).ok_or_else(|| {
+            ApiError::not_implemented("this method is declared but not available in this build")
+        })?;
         let params = request.params_or_empty();
         if !params.is_object() {
             return Err(ApiError::invalid_params("params must be an object"));
         }
+        policy::require_capabilities(spec, &params, &ctx.capabilities)?;
         policy::authorize(Some(&ctx.identity), spec, &params)?;
-        let handler = self.routes.get(spec.name).ok_or_else(|| {
-            ApiError::not_implemented("this method is declared but not available in this build")
-        })?;
+        if let Some(rates) = &self.rates {
+            rates.check_identity(&ctx.identity, spec, &params)?;
+        }
         handler(ctx.clone(), params).await
     }
 }
@@ -378,6 +409,14 @@ where
     let shutdown = ctx.router.shutdown.clone().unwrap_or_default();
     let mut stopping = shutdown.subscribe();
     let mut stopping_notified = false;
+    let mut revocations = ctx.router.revocations.clone();
+    let revoked = |call: &Option<CallContext>| {
+        call.as_ref().is_some_and(|call| {
+            ctx.credentials
+                .get(&call.identity.credential_id)
+                .is_none_or(|c| c.revoked)
+        })
+    };
 
     loop {
         while tasks.try_join_next().is_some() {}
@@ -416,6 +455,20 @@ where
                 tokio::select! {
                     biased;
                     _ = stopping.changed() => continue,
+                    _ = async {
+                        let changed = match revocations.as_mut() {
+                            Some(rx) => rx.changed().await.is_ok(),
+                            None => false,
+                        };
+                        if !changed {
+                            std::future::pending::<()>().await;
+                        }
+                    } => {
+                        if revoked(call_ctx) {
+                            return Ok(());
+                        }
+                        continue;
+                    },
                     _ = async { match notice { Some(notice) => tokio::time::sleep_until(notice.deadline).await, None => std::future::pending().await } } => return Ok(()),
                     result = &mut read => break result,
                 }
@@ -449,6 +502,7 @@ where
                 if note.method != "nm.frame"
                     || call.identity.role != crate::ClientRole::NativeHost
                     || !call.identity.has(crate::Permission::NmRelay)
+                    || !call.capabilities.contains(crate::capabilities::NM_RELAY)
                 {
                     return Err(ApiError::new(
                         codes::PERMISSION_DENIED,
@@ -500,6 +554,7 @@ where
                         connection_id: connection_id_from(&response),
                         notifier: notifier.clone(),
                         limits: connection_limits,
+                        capabilities: Arc::new(handshake.capabilities().clone()),
                     };
                     if let Some(classify) = &ctx.router.authenticated
                         && let Err(error) = classify(&mut call)
@@ -539,6 +594,15 @@ where
                     // A peer that sends work before authenticating is not a client we want to keep.
                     return Err(error);
                 };
+                if revoked(call_ctx) {
+                    let error =
+                        ApiError::new(codes::NOT_AUTHENTICATED, "the credential was revoked");
+                    let _ = notifier_send(
+                        notifier,
+                        Message::Response(Response::failure(Some(request.id), &error)),
+                    );
+                    return Err(error);
+                }
                 if shutdown.notice().is_some() {
                     let error = ApiError::new(codes::UNAVAILABLE, "daemon is stopping")
                         .with_detail("reason", "stopping");

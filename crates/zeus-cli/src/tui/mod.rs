@@ -76,13 +76,13 @@ async fn refresh(client: &impl Client, app: &mut App) -> ApiResult<()> {
 }
 
 /// Run using the authenticated CLI connection. Approve always opens the controlling-terminal review.
-pub async fn run() -> ApiResult<()> {
+pub async fn run(paths: &ZeusPaths) -> ApiResult<()> {
     if !std::io::stdin().is_terminal() || !std::io::stderr().is_terminal() {
         return Err(ApiError::invalid_params(
             "zeus tui needs an interactive terminal; use zeus ls --json for scripts",
         ));
     }
-    let client = connect(&ZeusPaths::discover()?, Identity::Cli).await?;
+    let client = connect(paths, Identity::Cli).await?;
     let mut notifications = client.notifications();
     let subscription = call::<EventsSubscribe, _>(
         &client,
@@ -117,7 +117,8 @@ pub async fn run() -> ApiResult<()> {
                         let decoded = match key.code {
                             KeyCode::Up => Some(Key::Up), KeyCode::Down => Some(Key::Down),
                             KeyCode::Tab => Some(Key::Tab), KeyCode::Enter => Some(Key::Enter),
-                            KeyCode::Esc => Some(Key::Esc), KeyCode::Char('c') if key.modifiers.contains(event::KeyModifiers::CONTROL) => Some(Key::Char('q')),
+                            KeyCode::Esc => Some(Key::Esc), KeyCode::Backspace => Some(Key::Backspace),
+                            KeyCode::Char('c') if key.modifiers.contains(event::KeyModifiers::CONTROL) => Some(Key::Quit),
                             KeyCode::Char(c) => Some(Key::Char(c)), _ => None,
                         };
                         if let Some(key) = decoded {

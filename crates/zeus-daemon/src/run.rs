@@ -41,8 +41,17 @@ pub async fn run(paths: ZeusPaths) -> Result<()> {
     let cleanup = backend.clone();
     let native = backend.clone();
     let classify = backend.clone();
+    let credentials = backend.credentials();
     let router = crate::build_router(backend.clone())
         .with_shutdown(backend.shutdown.clone())
+        .with_revocations(credentials.revocations())
+        .with_rate_limits_per_caller(
+            backend
+                .config()
+                .api
+                .rate_limits
+                .per_caller(credentials.clone()),
+        )
         .on_authenticate(move |ctx| classify.classify_client(ctx))
         .on_disconnect(move |ctx| {
             let cleanup = cleanup.clone();
@@ -56,9 +65,8 @@ pub async fn run(paths: ZeusPaths) -> Result<()> {
         });
     let context = Arc::new(ServerContext {
         secret: Arc::new(crate::provision::load_ipc_secret(&paths)?),
-        credentials: Arc::new(crate::provision::FileCredentialStore::load(
-            &paths.state_dir.join("credentials.json"),
-        )?),
+        // One store for handshakes and handlers, so credential changes reach live connections.
+        credentials,
         daemon: backend.info(),
         router: Arc::new(router),
     });

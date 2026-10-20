@@ -37,6 +37,8 @@ pub const RESOURCE_TEMPLATES: &[(&str, &str, &str)] = &[
 /// A parsed resource URI.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ResourceUri {
+    /// `zeus://workflow/plan-schema`: the full candidate plan schema.
+    PlanSchema,
     /// `zeus://jobs/{id}`.
     Job(JobId),
     /// `zeus://runs/{id}/manifest`.
@@ -51,6 +53,7 @@ impl ResourceUri {
         let rest = uri.strip_prefix("zeus://")?;
         let parts: Vec<&str> = rest.split('/').collect();
         match parts.as_slice() {
+            ["workflow", "plan-schema"] => Some(Self::PlanSchema),
             ["jobs", id] => id.parse().ok().map(Self::Job),
             ["runs", id, "manifest"] => id.parse().ok().map(Self::RunManifest),
             ["audit", "today"] => Some(Self::AuditToday),
@@ -62,6 +65,10 @@ impl ResourceUri {
 /// Read a resource as JSON text.
 pub async fn read_resource<C: Client>(client: &Arc<C>, uri: &ResourceUri) -> ApiResult<String> {
     match uri {
+        ResourceUri::PlanSchema => {
+            serde_json::to_string(&schemars::schema_for!(zeus_workflow::Plan))
+                .map_err(|_| ApiError::internal("serialize plan schema"))
+        }
         ResourceUri::Job(job_id) => {
             let result = call::<JobsGet, C>(
                 client,
@@ -90,6 +97,7 @@ pub async fn read_resource<C: Client>(client: &Arc<C>, uri: &ResourceUri) -> Api
             let result = call::<WorkflowsManifest, C>(
                 client,
                 WorkflowsManifestParams {
+                    idempotency_key: None,
                     run_id: *run_id,
                     format: serde_json::from_value(serde_json::json!("jsonl"))
                         .map_err(|_| ApiError::internal("manifest format unavailable"))?,
@@ -118,12 +126,26 @@ fn manifest_json(
             "Manifest content exceeds its bound or does not match its digest",
         ));
     }
-    let records = text
+    let mut records = text
         .lines()
         .filter(|line| !line.trim().is_empty())
         .map(serde_json::from_str::<serde_json::Value>)
         .collect::<Result<Vec<_>, _>>()
         .map_err(|_| ApiError::internal("Manifest contains invalid JSON records"))?;
+    // JSONL exports include a ledger header; `records` counts only file records.
+    if records
+        .first()
+        .and_then(|r| r.get("record_type"))
+        .and_then(|v| v.as_str())
+        == Some("header")
+    {
+        let header: zeus_verify::provenance::ManifestHeader =
+            serde_json::from_value(records.remove(0))
+                .map_err(|_| ApiError::internal("Manifest contains an invalid header"))?;
+        if header.manifest_version != 0 {
+            return Err(ApiError::internal("Unsupported manifest version"));
+        }
+    }
     if records.len() as u64 != count {
         return Err(ApiError::new(
             "api.integrity",
@@ -217,5 +239,32 @@ mod tests {
         assert!(text.contains("Do not try to approve it yourself"));
         assert!(text.contains("Do not try to work around the block"));
         assert!(text.contains("untrusted_"));
+    }
+
+    #[test]
+    fn exported_manifest_headers_do_not_count_as_file_records() {
+        let header = serde_json::json!({
+            "record_type":"header", "manifest_version":0,
+            "created_at":"2026-10-21T00:00:00.000Z",
+            "generator":{"name":"zeus","version":"test"},
+            "privacy":{"url_query":"dropped","session_origin_included":false,"os_metadata":"off"},
+            "hash_algorithms":["sha256","blake3"]
+        });
+        for records in [
+            vec![],
+            vec![serde_json::json!({"record_type":"file","path":"report.pdf"})],
+        ] {
+            let content = format!(
+                "{header}\n{}",
+                records.iter().map(|r| format!("{r}\n")).collect::<String>()
+            );
+            let digest = zeus_verify::hash_bytes(content.as_bytes()).sha256;
+            let result = manifest_json(Some(&content), Some(digest), records.len() as u64).unwrap();
+            assert_eq!(
+                serde_json::from_str::<Vec<serde_json::Value>>(&result).unwrap(),
+                records
+            );
+            assert!(manifest_json(Some(&content), Some(digest), records.len() as u64 + 1).is_err());
+        }
     }
 }

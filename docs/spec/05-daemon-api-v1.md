@@ -905,7 +905,7 @@ Paged listing of files under the write roots visible to the caller (section 7.5)
 Role `service` only (section 7.6). Registers a directory the service owns as one of its write roots.
 
 1. `path` is absolute. After canonicalisation (symbolic links resolved) it MUST lie inside one of the user's write roots (configuration `files.write_roots`, set by a human) and MUST NOT be a user write root itself, the state directory or inside it. Otherwise: `policy.path_outside_roots`.
-2. The daemon creates the directory if it does not exist (mode `0700` on Unix), records the root in the journal with the service's credential id, and returns it. Registering the same canonical path again returns the existing record with `created: false`. A path inside another service's root is `api.invalid_params`.
+2. The daemon creates the directory if it does not exist (mode `0700` on Unix), records the root durably with the service's credential id (in the daemon's credential index, beside the credential it belongs to), and returns it. Registering the same canonical path again returns the existing record with `created: false`. A path inside, or containing, another service's root is `api.invalid_params`, so roots never overlap.
 3. At most 16 roots per service (`api.rate_limited` with `details.limit = "service_roots"`).
 4. Roots never widen anything for other kinds: agents and humans keep writing inside the user's write roots, which already contain the service roots.
 
@@ -921,19 +921,25 @@ Role `service` only (section 7.6). Registers a directory the service owns as one
 
 `files.organize` plans moves and renames inside one directory from a rule set (08); `files.convert` plans conversions of up to 100 inputs to a target format. Both default to `dry_run: true` and return `steps` (`move`, `rename`, `convert`, `trash`, each flagged `destructive` when it deletes or overwrites). Applying destructive steps needs an approval of kind `destructive_op` (01 section 5.3), whose id is returned; deletions go to the application trash (01 section 12.3) and every applied operation gets an `operation_id` that `files.undo` reverts. A quarantined file is never converted or moved out of its directory without an approval (01 section 11.3). The exact rule language and converter set belong to 08.
 
+**Implemented organiser (2026-10-18).** The rule set is `{"recursive"?, "rules": [...]}` with 1 to 16 rules. A rule is `{when?, subdir?, rename?, trash?}` and either moves or renames (`subdir`, a relative template below the organised directory of at most 8 levels; `rename`, a file-name template) or sends to the application trash. `when` holds when all present members hold: `ext` (case-insensitive list), `name_regex` (size-bounded), `min_bytes`, `max_bytes`, `older_than_days`. Templates use only `{name}`, `{stem}`, `{ext}`, `{year}`, `{month}` and `{day}` (modification date, UTC); separators produced by a value become `_` and every component is sanitised (01 section 12.3). Unknown members, natural-language rules and escaping paths are `api.invalid_params`. The first matching rule decides a file; other files stay. Collisions take ` (n)` suffixes, so nothing is overwritten. Files of unfinished jobs, `.zpart` files, `.zeus` and links are never touched. At most 10,000 files are examined and 1,000 steps planned. A service organises only inside its registered roots.
+
+Applying (`dry_run: false`) stores the operation list, raises a `destructive_op` approval whose facts (07 section 4.4, `plan_id` null) bind its `operation_set_blake3`, and returns `approval_id` and `operation_id` with `applied: false`; an empty plan returns `applied: true` and raises nothing. Every applied list needs the approval, moves included (07 section 4.1). Until browser surfaces render these facts the approval is decided only at a verified physical terminal (`cli_interactive`, `tui`). After approval the daemon recomputes the hash (07 section 4.4 rule 5) and runs each step write-ahead: it re-checks the planned size and modification time (a changed file is skipped as `source_changed`), stays inside the write root, renames without replacing, moves to the trash instead of deleting, and appends `file.moved`, `file.renamed` or `file.deleted` (04 section 4.4) before the effect. A restart confirms or resumes a started step from the files. The kill switch stops an executing list; its finished steps stay undoable. `files.undo` plans the inverse of the steps that ran (trashed files come back from the application trash), raises its own `destructive_op` approval and returns `steps`, `approval_id` and `operation_id`. An operation is undone at most once, an undo is not itself undoable, and agents and services undo only operations they started. `files.convert` is not implemented (`api.not_implemented`): conversion waits for the sandboxed converter design of 12.
+
 ### 9.7 `workflows.*` (later)
 
 The workflow lifecycle is designed in [ARCHITECTURE](../ARCHITECTURE.md) §8 and specified in 08, which is normative for the contents of plans, samples, diagnostics and reports; the schema of this document types them as objects.
 
 | Method | Parameters | Result | Notes |
 |---|---|---|---|
-| `workflows.plan` | `goal`, `start_urls` (1 to 20), `session_origin?`, `candidate?`, `plan_id?` | `plan_id`, `samples`, `plan_schema`, `diagnostics`, `plan?`, `plan_hash?` | Without `candidate`: fetches samples and returns the plan schema. With `candidate`: validates it against the samples (this replaces a separate validate method). `goal` and samples are untrusted. |
+| `workflows.plan` | `goal`, `start_urls` (1 to 20), `session_origin?`, `candidate?`, `plan_id?`, `draft?` | `plan_id`, `samples`, `plan_schema`, `diagnostics`, `plan?`, `plan_hash?`, `draft?` | Without `candidate`: fetches samples and returns the plan schema. With `candidate`: validates it against the samples (this replaces a separate validate method). `goal` and samples are untrusted. With `draft` (`{max_cost_micro_usd}`, human-only from a verified terminal, exclusive with `candidate`): the configured model proposes only the `extract` member from text-free outlines of the samples (09); the daemon fixes allowed domains (the start URLs' hosts), budgets, pace and destination, validates the plan like a candidate and reports `draft` (provider, model, tokens, cost). A drafted plan is a proposal; running it still needs the `workflow_plan` approval. |
 | `workflows.dry_run` | `plan_id`, `sample_items` (1 to 100) | DryRunReport | Estimates, collisions, warnings. |
 | `workflows.run` | `plan_id`, `plan_hash` | `run_id`, `status`, `approval_id?` | Creates the run in `awaiting_approval` with an approval of kind `workflow_plan` bound to `plan_hash`; a different current hash is `workflow.plan_hash_mismatch` (08). |
 | `workflows.get` | `run_id` | RunReport | |
 | `workflows.list` | `limit`, `cursor` | page of RunReport | |
 | `workflows.control` | `run_id`, `action` (`pause`, `resume`, `cancel`) | `run` | Agent and service clients control only the runs they started (08). |
 | `workflows.manifest` | `run_id`, `format` (`jsonl`, `csv`, `croissant`) | `path`, `records` | Writes the run's manifest (04) inside a write root. |
+
+Keyed sampling/candidate validation and workflow control publish their success receipts atomically with the draft or run checkpoint. Retrying an old control returns its original report and does not repeat the action against newer state. Keyed model drafting is currently unavailable and returns `api.not_implemented` before invoking a provider. A keyed manifest binds an immutable export snapshot; if filesystem publication was interrupted before its final receipt, retries return non-retryable `api.conflict` with `details.reason: "export_receipt_incomplete"`. Inspect existing exports before issuing a new intent key.
 
 ### 9.8 `audit.*`
 
@@ -989,7 +995,7 @@ Admin, human-only; the CLI runs these commands only from an interactive terminal
 |---|---|
 | `name` | `[a-z][a-z0-9_-]{0,31}`, unique, not `cli`, `agent` or `host`. Becomes the file `<state>/credentials/<name>.token`. |
 | `kind` | `agent` or `service`. Human and admin credentials are created only by provisioning (section 6.5). |
-| `role` | Default `service` for kind `service` and `mcp` for kind `agent`; must be allowed for the kind (section 7.2). |
+| `role` | Default `service` for kind `service` and `mcp` for kind `agent`; must be allowed for the kind (section 7.2). Through the API an `agent` credential takes `mcp`, `a2a` or `embedded` only: a role whose job source or approval requester label would read as the person's own CLI (`cli`, `tui`, `gui`, `test`) is refused with `api.invalid_params`. |
 | `permissions` | Optional narrowing within the kind's ceiling (section 7.3). Default: the ceiling. |
 
 The daemon mints the credential id and a token, stores the verifier, writes the token file owner-only, and returns `{client, credential_file, replayed}`. The token is never part of a result. The audit record (`tool.call` with the new credential id, kind and role) is written ahead.
@@ -1058,6 +1064,8 @@ Zeus registers every completed download in its artifact store (13 section 7.5). 
 | `artifacts.ingest` | `files.write` | `path` (a file inside a write root the caller may use), `name?`, `media_type?`, `parents?`, `operation?`, `metadata?`, `idempotency_key?` | `{artifact, created, replayed}` | Mutating. Ingests a local file the caller produced (13 section 7). With `idempotency_key` the ingest key (13 section 7.3) is `api:` followed by the first 32 hex digits of `BLAKE3(UTF-8(client_id || ":" || idempotency_key))`, so a retry returns the same record. A quarantined file can be ingested only as it is, and stays quarantined. |
 
 Visibility follows section 7.5: agents and human-capable clients see every record; a service sees the records of its own jobs and those it ingested.
+
+**Implemented (2026-10-18).** Every caller receives the agent-kind export (13 section 14 item 3): `url_query` `dropped`, `session_origin_included` false. `artifacts.list` without `state` lists active records and tombstones; it orders by identifier, newest first, over the first 10,000 records that match the store filters (`blake3`, `job_id`, `run_id`, `state` `active`); `sha256`, `state` `deleted` and visibility are applied after that bound. In `artifacts.lineage`, records outside the caller's view, and records reachable only through them, are omitted and `truncated` is set; a parent with no visible record is a content-only node, so a service learns nothing it could not read from its own record. `artifacts.ingest` takes a regular file (no link, no `.zpart`, nothing under `.zeus` or the state directory) inside a write root the caller may use, a service only its registered roots, else `policy.path_outside_roots`. The daemon hashes the file and passes the digests to the store as expected values, so bytes changed before the store reads them back fail with `artifact.digest_mismatch`. Parents named by an id outside the caller's view fail like unknown ones (`artifact.lineage_invalid`); roles are lowercase `snake_case`. With parents the record is `derived`, without them `local`; `media_type` is recorded as `declared_media_type`; `operation` defaults to `zeus.ingest`. The record is quarantined, with the union of the reasons, when a record with equal content, the download that wrote the path or those bytes, or any parent is quarantined. A service's ingests are listed in an owner table beside the store, because records hold no client ids (13 section 4.5 rule 2). `created` is false, and `replayed` true, when the ingest key returned an earlier record.
 
 ## 10. Event streams
 
@@ -1255,6 +1263,8 @@ Token buckets per credential (all connections of one credential share them), wit
 
 Exceeding a bucket yields `api.rate_limited` with `details.limit` (the bucket name) and `details.retry_after_ms`. Independent of rates, at most 50 approvals are pending at once (01 section 5.3 rule 4).
 
+**Configuration (implemented 2026-10-18).** The router buckets are set by `api.rate_limits.agent.<rate>` and `api.rate_limits.service.<name>.<rate>`, where `<name>` is the service credential's name and `<rate>` is `mutating_per_s` (1 to 1,000), `read_per_s` (1 to 10,000), `probe_per_s` (1 to 1,000) or `session_request_per_min` (1 to 600). Setting one rate of an unlisted service creates its entry from the defaults; at most 64 services are listed, under credential names that are not reserved. A service without an entry, and every human-capable credential, uses the defaults. `decide` is `approvals.decisions_per_minute`; `admin` is fixed. Changes apply at the next daemon start (`restart_required`).
+
 ## 14. Audit
 
 The daemon writes these audit records (04 section 4.4) for API activity. Clients never write audit records.
@@ -1349,7 +1359,7 @@ sequenceDiagram
 
 ## 18. Differences from the draft code and other documents
 
-Decided while writing this document; the code and the named documents are to follow.
+Decided while writing this document; the code and the named documents are to follow. Implemented since (2026-10-18): the `service` kind, role and `files.roots.register` permission with human-capable checks instead of kind ordering; `clients.list`, `clients.add`, `clients.revoke` (revocation closes live connections and withdraws pending approvals); `files.roots.register`; the section 7.5 visibility rules for agents and services; the four `artifacts.*` methods of section 9.13 with capability `artifacts`; list parameters with `limit` and `cursor` at the top level (00 section 10). The rate buckets of section 13.2 are enforced with their defaults (the router applies `mutating`, `read`, `probe` and `session_request`; the daemon applies `decide` and `admin`). Capability gating at authorisation step 4 (with `idempotency_key` and `since_seq` as gated parameters) and the configurable `api.rate_limits.*` values followed later the same day. Still to follow from this table: the narrowed host credential.
 
 | Item | Decision | Follow-up |
 |---|---|---|

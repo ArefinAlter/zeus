@@ -76,10 +76,31 @@ pub struct ZeusPaths {
     pub runtime_dir: PathBuf,
     /// Identity used for endpoint naming.
     pub user_identity: String,
+    /// The selected profile, `None` for the default one. Its daemon has its own endpoint.
+    pub profile: Option<String>,
+}
+
+/// Check a profile name: `[a-z][a-z0-9_-]{0,31}`. `default` (and an empty value) select the default directories.
+pub fn profile_name(name: &str) -> Result<Option<&str>, ApiError> {
+    if name.is_empty() || name == "default" {
+        return Ok(None);
+    }
+    let mut chars = name.chars();
+    let valid = name.len() <= 32
+        && chars.next().is_some_and(|c| c.is_ascii_lowercase())
+        && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_');
+    if valid {
+        Ok(Some(name))
+    } else {
+        Err(ApiError::invalid_params(
+            "profile names use lowercase letters, digits, - and _, start with a letter and have at most 32 characters",
+        ))
+    }
 }
 
 impl ZeusPaths {
-    /// Resolve from the process environment (`ZEUS_STATE_DIR`, `ZEUS_CONFIG_DIR`, `ZEUS_RUNTIME_DIR` override).
+    /// Resolve from the process environment (`ZEUS_STATE_DIR`, `ZEUS_CONFIG_DIR`, `ZEUS_RUNTIME_DIR` override;
+    /// `ZEUS_PROFILE` selects a profile).
     pub fn discover() -> Result<Self, ApiError> {
         Self::resolve(
             |key| std::env::var(key).ok(),
@@ -88,12 +109,36 @@ impl ZeusPaths {
         )
     }
 
+    /// Resolve from the process environment with an explicit profile (the CLI `--profile` flag), which wins over
+    /// `ZEUS_PROFILE`.
+    pub fn discover_profile(profile: Option<&str>) -> Result<Self, ApiError> {
+        let profile = profile.map(str::to_owned);
+        Self::resolve(
+            |key| match (key, &profile) {
+                ("ZEUS_PROFILE", Some(p)) => Some(p.clone()),
+                _ => std::env::var(key).ok(),
+            },
+            BaseDirs::new(),
+            current_user_identity()?,
+        )
+    }
+
     /// Resolution with an injectable environment and base directories, for tests.
+    ///
+    /// A profile (`ZEUS_PROFILE`) is a separate namespace: each default directory gains `profiles/<name>`, and the
+    /// endpoint identity gains the profile, so two profiles never share state, credentials or a daemon. Explicit
+    /// directory overrides are used exactly as given.
     pub fn resolve(
         env: impl Fn(&str) -> Option<String>,
         base: Option<BaseDirs>,
         user_identity: String,
     ) -> Result<Self, ApiError> {
+        let profile =
+            profile_name(env("ZEUS_PROFILE").as_deref().unwrap_or_default())?.map(str::to_owned);
+        let scoped = |dir: PathBuf| match &profile {
+            Some(name) => dir.join("profiles").join(name),
+            None => dir,
+        };
         let from_env = |key: &str| env(key).filter(|v| !v.is_empty()).map(PathBuf::from);
         let no_home = || {
             ApiError::new(
@@ -105,7 +150,7 @@ impl ZeusPaths {
             Some(path) => path,
             None => {
                 let base = base.as_ref().ok_or_else(no_home)?;
-                if cfg!(windows) {
+                scoped(if cfg!(windows) {
                     base.data_local_dir().join("Zeus")
                 } else if cfg!(target_os = "macos") {
                     base.data_dir().join("Zeus")
@@ -113,27 +158,27 @@ impl ZeusPaths {
                     base.state_dir()
                         .unwrap_or_else(|| base.data_local_dir())
                         .join("zeus")
-                }
+                })
             }
         };
         let config_dir = match from_env("ZEUS_CONFIG_DIR") {
             Some(path) => path,
             None => {
                 let base = base.as_ref().ok_or_else(no_home)?;
-                if cfg!(windows) {
+                scoped(if cfg!(windows) {
                     base.config_dir().join("Zeus")
                 } else if cfg!(target_os = "macos") {
                     base.data_dir().join("Zeus")
                 } else {
                     base.config_dir().join("zeus")
-                }
+                })
             }
         };
         let runtime_dir = match from_env("ZEUS_RUNTIME_DIR") {
             Some(path) => path,
             None => base
                 .as_ref()
-                .and_then(|b| b.runtime_dir().map(Path::to_path_buf))
+                .and_then(|b| b.runtime_dir().map(|dir| scoped(dir.to_path_buf())))
                 .unwrap_or_else(|| state_dir.join("run")),
         };
         Ok(Self {
@@ -141,15 +186,27 @@ impl ZeusPaths {
             config_dir,
             runtime_dir,
             user_identity,
+            profile,
         })
     }
 
-    /// The endpoint the daemon of this user listens on.
+    /// The identity endpoint names derive from: the user, plus the profile when one is selected.
+    fn endpoint_identity(&self) -> String {
+        match &self.profile {
+            Some(name) => format!("{}#profile={name}", self.user_identity),
+            None => self.user_identity.clone(),
+        }
+    }
+
+    /// The endpoint the daemon of this user and profile listens on.
     pub fn endpoint(&self) -> Endpoint {
         if cfg!(windows) {
-            Endpoint::NamedPipe(pipe_name_for(&self.user_identity))
+            Endpoint::NamedPipe(pipe_name_for(&self.endpoint_identity()))
         } else {
-            Endpoint::UnixSocket(unix_socket_path(&self.runtime_dir, &self.user_identity))
+            Endpoint::UnixSocket(unix_socket_path(
+                &self.runtime_dir,
+                &self.endpoint_identity(),
+            ))
         }
     }
 
@@ -292,6 +349,49 @@ mod tests {
             Path::new("/s/credentials/agent.token")
         );
         assert_eq!(paths.config_file(), Path::new("/c/config.toml"));
+    }
+
+    #[test]
+    fn a_profile_is_a_separate_namespace_with_its_own_endpoint() {
+        let resolve = |profile: Option<&str>| {
+            let mut env: HashMap<&str, String> = HashMap::new();
+            if let Some(p) = profile {
+                env.insert("ZEUS_PROFILE", p.into());
+            }
+            ZeusPaths::resolve(|k| env.get(k).cloned(), BaseDirs::new(), "ada".into())
+        };
+        let default = resolve(None).unwrap();
+        assert_eq!(resolve(Some("default")).unwrap(), default);
+        assert_eq!(resolve(Some("")).unwrap(), default);
+        let work = resolve(Some("work")).unwrap();
+        assert_eq!(
+            work.state_dir,
+            default.state_dir.join("profiles").join("work")
+        );
+        assert_eq!(
+            work.config_dir,
+            default.config_dir.join("profiles").join("work")
+        );
+        assert_ne!(work.endpoint(), default.endpoint());
+        assert_ne!(work.endpoint(), resolve(Some("home")).unwrap().endpoint());
+        for bad in ["Work", "1st", "a b", "../x", &"x".repeat(33)] {
+            assert!(resolve(Some(bad)).is_err(), "{bad}");
+        }
+        // Explicit directories are exact, but the endpoint still belongs to the profile.
+        let env: HashMap<&str, &str> = [("ZEUS_STATE_DIR", "/s"), ("ZEUS_PROFILE", "work")].into();
+        let explicit =
+            ZeusPaths::resolve(|k| env.get(k).map(|v| (*v).to_string()), None, "ada".into())
+                .unwrap_err();
+        // Without a home directory the config directory cannot be derived; with it the state stays exact.
+        assert_eq!(explicit.envelope().code.as_str(), codes::UNAVAILABLE);
+        let explicit = ZeusPaths::resolve(
+            |k| env.get(k).map(|v| (*v).to_string()),
+            BaseDirs::new(),
+            "ada".into(),
+        )
+        .unwrap();
+        assert_eq!(explicit.state_dir, Path::new("/s"));
+        assert_eq!(explicit.endpoint(), work.endpoint());
     }
 
     #[test]

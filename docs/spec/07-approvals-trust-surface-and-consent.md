@@ -223,6 +223,8 @@ When several needs of the same kind arise for the same origin from the same requ
 6. **Stale decisions.** A decision naming the hash of an older revision fails with `policy.request_hash_mismatch`, `details.current_revision`. The error deliberately does not carry the new hash: the surface MUST fetch the approval again (`approvals.get`, `approval.list`) and re-render it, restarting its input delay (section 10.1).
 7. Surfaces SHOULD show what changed between revisions ("1 more download joined").
 
+Implemented (2026-10-18): `session_grant` batching when a new job is enqueued, rules 1 to 3 and 5, including one `once` grant per covered job and a daemon-wide decision applied to every covered job. Not yet: `handoff` batching by browser profile, and rule 4 (leaving): a canceled covered job stays listed in the facts, and the decision skips it when applied.
+
 ### 4.8 Who sees what
 
 | Recipient | What it receives |

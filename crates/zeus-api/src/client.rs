@@ -60,15 +60,21 @@ pub struct ClientConfig {
     pub call_timeout: Duration,
     /// Set only by `zeus-native-host`.
     pub attach: Option<AttachInfo>,
+    /// Capabilities offered in `daemon.hello`; every capability this build understands by default.
+    pub capabilities: Vec<String>,
 }
 
 impl ClientConfig {
-    /// Defaults for `info`: 90 s per call, no attach.
+    /// Defaults for `info`: 90 s per call, no attach, every capability.
     pub fn new(info: ClientInfo) -> Self {
         Self {
             info,
             call_timeout: Duration::from_secs(90),
             attach: None,
+            capabilities: crate::capabilities::ALL
+                .iter()
+                .map(|c| (*c).to_string())
+                .collect(),
         }
     }
 }
@@ -181,7 +187,8 @@ impl IpcClient {
             writer_task,
         };
 
-        let handshake = ClientHandshake::new(credential, config.info);
+        let handshake =
+            ClientHandshake::new(credential, config.info).with_capabilities(config.capabilities);
         let hello: HelloResult =
             call_typed::<DaemonHello>(&client, handshake.hello_params()).await?;
         let auth = handshake.authenticate_params(ipc_secret, &hello, config.attach)?;

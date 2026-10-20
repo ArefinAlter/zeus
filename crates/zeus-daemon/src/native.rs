@@ -191,15 +191,7 @@ impl RuntimeBackend {
                         grant: grant.clone(),
                     },
                 )?;
-                if approval.job_id.is_some() {
-                    self.engine
-                        .apply_approval(zeus_engine::api::ApprovalResolution {
-                            approval: approval.clone(),
-                            grant: grant.clone(),
-                        })
-                        .await
-                        .map_err(error)?;
-                }
+                self.apply_decision(&approval, &grant).await?;
                 return Ok(None);
             }
             nm::ExtensionBody::HandoffOffer(p) => {

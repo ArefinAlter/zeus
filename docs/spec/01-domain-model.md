@@ -692,6 +692,8 @@ Codes of this document. Class is fixed per code. "Retry" is the `retryable` valu
 | `policy.robots_disallowed` | `policy_denied` | no | `robots.txt` forbids it (workflow crawls, 08). |
 | `policy.quarantine_blocked` | `policy_denied` | no | An operation refused because the file is quarantined (07). |
 | `policy.too_many_pending` | `unavailable` | yes | Section 5.3 rule 4. |
+| `policy.recently_denied` | `policy_denied` | no | Denial back-off of 07 section 9.4; `details.until`. |
+| `policy.confirmation_required` | `unauthenticated` | no | A decision's confirmation is below what its facts require (07 section 12). |
 | `engine.crash_loop` | `internal` | no | S96. |
 | `engine.shutdown` | `unavailable` | yes | The daemon is stopping. |
 

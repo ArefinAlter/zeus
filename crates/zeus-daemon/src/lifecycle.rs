@@ -30,10 +30,14 @@ impl RuntimeBackend {
             "reason_blake3".into(),
             serde_json::json!(reason.map(|s| blake3::hash(s.as_bytes()).to_hex().to_string())),
         );
-        let audit = self.audit.append(entry).map_err(error);
-        // The emergency stop remains available even when the audit volume is full.
+        let retained = entry.clone();
+        let audit = self.append_kill_switch_audit(entry);
+        // The emergency stop remains available even when the audit volume is full; its record is retained
+        // and appended once the log recovers (04 section 4.6 item 8). Release fails closed.
         if !engaged {
             audit?;
+        } else if audit.is_err() {
+            self.deferred_audit.retain(&retained);
         }
         let outcome = self
             .engine
@@ -102,8 +106,73 @@ impl RuntimeBackend {
             .map_err(error)?;
         Ok(grant)
     }
+    /// Apply a durable decision to every job it covers (07 section 4.7 rule 5). A covered job that already left
+    /// the approval, for example by being canceled, is skipped; the maintenance tick rechecks the rest.
+    pub(super) async fn apply_decision(
+        &self,
+        approval: &Approval,
+        grant: &Option<SessionGrant>,
+    ) -> ApiResult<()> {
+        let mut jobs: Vec<JobId> = approval
+            .facts
+            .as_ref()
+            .and_then(|f| f.get("transfer"))
+            .and_then(|t| t["job_ids"].as_array())
+            .map(|ids| {
+                ids.iter()
+                    .filter_map(|v| v.as_str()?.parse().ok())
+                    .collect()
+            })
+            .unwrap_or_default();
+        if jobs.is_empty() {
+            jobs.extend(approval.job_id);
+        }
+        let single = jobs.len() == 1;
+        for job_id in jobs {
+            let applied = self
+                .engine
+                .apply_approval(zeus_engine::api::ApprovalResolution {
+                    approval: approval.clone(),
+                    grant: grant.clone(),
+                    job_id: Some(job_id),
+                })
+                .await;
+            match applied {
+                Ok(()) => {}
+                Err(e) if single => return Err(error(e)),
+                Err(e) => tracing::debug!(
+                    code = %e.to_envelope().code,
+                    "a batched job no longer waits for this approval"
+                ),
+            }
+        }
+        Ok(())
+    }
+    fn append_kill_switch_audit(
+        &self,
+        entry: AuditEntry,
+    ) -> ApiResult<zeus_verify::audit::AuditRecord> {
+        #[cfg(test)]
+        if self
+            .fail_kill_switch_audit
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            return Err(ApiError::new("audit.unavailable", "audit log unavailable"));
+        }
+        self.audit.append(entry).map_err(error)
+    }
+    /// Append retained kill-switch records once the audit log accepts writes again.
+    pub(super) fn replay_deferred_audit(&self) {
+        if self.deferred_audit.is_pending() {
+            let audit = self.audit.clone();
+            self.deferred_audit
+                .replay(audit.as_ref(), &Default::default());
+        }
+    }
     /// Run one bounded maintenance tick. Replaying terminal approvals repairs interrupted decisions.
     pub async fn maintain(&self) -> ApiResult<()> {
+        self.replay_deferred_audit();
+        self.run_file_operations().await;
         let now = Timestamp::now();
         let origins = self.journal.transact(|tx| {
             let mut origins = std::collections::BTreeSet::new();
@@ -153,6 +222,7 @@ impl RuntimeBackend {
                     .apply_approval(zeus_engine::api::ApprovalResolution {
                         approval,
                         grant: None,
+                        job_id: Some(record.job.id),
                     })
                     .await;
             }

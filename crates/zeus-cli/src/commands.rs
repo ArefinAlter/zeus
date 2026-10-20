@@ -15,7 +15,8 @@ use serde_json::{Value, json};
 use zeus_api::endpoint::{DiscoveryRecord, ZeusPaths};
 use zeus_api::error::codes;
 use zeus_api::methods::admin::{
-    AuditTailParams, AuditVerifyParams, ConfigGetParams, ConfigSetParams, DoctorParams,
+    AuditTailParams, AuditVerifyParams, ClientsAddParams, ClientsListParams, ClientsRevokeParams,
+    ConfigGetParams, ConfigSetParams, DoctorParams,
 };
 use zeus_api::methods::daemon::{ShutdownParams, StatusParams};
 use zeus_api::methods::jobs::{
@@ -26,9 +27,9 @@ use zeus_api::methods::sessions::{
     ApprovalsListParams, DecideOutcome, SessionsListParams, SessionsRevokeParams,
 };
 use zeus_api::methods::{
-    ApprovalsList, AuditTail, AuditVerify, ConfigGet, ConfigSet, DaemonShutdown, DaemonStatus,
-    DoctorRun, JobsControl, JobsEnqueue, JobsGet, JobsList, JobsProbe, JobsVerify, JobsWait,
-    SessionsList, SessionsRevoke,
+    ApprovalsList, AuditTail, AuditVerify, ClientsAdd, ClientsList, ClientsRevoke, ConfigGet,
+    ConfigSet, DaemonShutdown, DaemonStatus, DoctorRun, JobsControl, JobsEnqueue, JobsGet,
+    JobsList, JobsProbe, JobsVerify, JobsWait, SessionsList, SessionsRevoke,
 };
 use zeus_api::{ApiError, ApiResult, Client, PageRequest, call};
 use zeus_native_host::install::{self, Browser, InstallRequest, Os, SystemRegistrar};
@@ -37,8 +38,9 @@ use zeus_types::{
 };
 
 use crate::cli::{
-    ApprovalsCommand, AuditCommand, BrowserOpt, Command, ConfigCommand, DaemonCommand, GetArgs,
-    GlobalArgs, NativeHostCommand, PriorityOpt, SessionsCommand, StateOpt,
+    ApprovalsCommand, AuditCommand, BrowserOpt, ClientKindOpt, ClientRoleOpt, ClientsCommand,
+    Command, ConfigCommand, DaemonCommand, GetArgs, GlobalArgs, NativeHostCommand, PriorityOpt,
+    SessionsCommand, StateOpt,
 };
 use crate::exit::Exit;
 use crate::output::{error_line, format_bytes, job_line, sanitize};
@@ -77,12 +79,12 @@ impl CmdOutput {
         }
     }
 
-    fn with_items(mut self, items: Vec<Value>) -> Self {
+    pub(crate) fn with_items(mut self, items: Vec<Value>) -> Self {
         self.items = items;
         self
     }
 
-    fn with_exit(mut self, exit: Exit) -> Self {
+    pub(crate) fn with_exit(mut self, exit: Exit) -> Self {
         self.exit = exit;
         self
     }
@@ -208,6 +210,9 @@ pub async fn run_remote<C: Client + ?Sized>(
 ) -> ApiResult<CmdOutput> {
     match command {
         Command::Cloud(command) => crate::cloud::run(command, client, global.dry_run).await,
+        Command::Workflow(command) => crate::workflow::run(command, client, global.dry_run).await,
+        Command::Files(command) => crate::files::run(command, client, global.dry_run).await,
+        Command::Artifacts(command) => crate::artifacts::run(command, client, global.dry_run).await,
         Command::Get(args) => get(args, global, client, color).await,
         Command::Probe { url } => probe(url, client).await,
         Command::Ls {
@@ -329,6 +334,101 @@ pub async fn run_remote<C: Client + ?Sized>(
             .await?;
             Ok(CmdOutput::new(
                 format!("revoked {}", result.grant.id),
+                &result,
+            ))
+        }
+        Command::Clients(ClientsCommand::List { include_revoked }) => {
+            let result = call::<ClientsList, C>(
+                client,
+                ClientsListParams {
+                    include_revoked: *include_revoked,
+                },
+            )
+            .await?;
+            let text = result
+                .clients
+                .iter()
+                .map(|c| {
+                    format!(
+                        "{}  {}  {}  {}  {}{}",
+                        c.credential_id,
+                        c.name,
+                        wire(&c.kind),
+                        wire(&c.role),
+                        if c.revoked { "revoked" } else { "active" },
+                        if c.roots.is_empty() {
+                            String::new()
+                        } else {
+                            format!("  roots {}", c.roots.len())
+                        }
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            let items = result.clients.iter().map(to_value).collect();
+            Ok(CmdOutput::new(text, &result).with_items(items))
+        }
+        Command::Clients(ClientsCommand::Add {
+            name,
+            kind,
+            role,
+            permissions,
+            idempotency_key,
+        }) => {
+            let permissions = if permissions.is_empty() {
+                None
+            } else {
+                Some(
+                    permissions
+                        .iter()
+                        .map(|p| p.parse::<zeus_api::Permission>())
+                        .collect::<ApiResult<std::collections::BTreeSet<_>>>()?,
+                )
+            };
+            let result = call::<ClientsAdd, C>(
+                client,
+                ClientsAddParams {
+                    name: name.clone(),
+                    kind: match kind {
+                        ClientKindOpt::Agent => zeus_api::ClientKind::Agent,
+                        ClientKindOpt::Service => zeus_api::ClientKind::Service,
+                    },
+                    role: role.map(|r| match r {
+                        ClientRoleOpt::Mcp => zeus_api::ClientRole::Mcp,
+                        ClientRoleOpt::A2a => zeus_api::ClientRole::A2a,
+                        ClientRoleOpt::Embedded => zeus_api::ClientRole::Embedded,
+                        ClientRoleOpt::Service => zeus_api::ClientRole::Service,
+                    }),
+                    permissions,
+                    idempotency_key: idempotency_key.clone(),
+                },
+            )
+            .await?;
+            Ok(CmdOutput::new(
+                format!(
+                    "created {} ({} {})\ntoken file: {}\nPoint the program at this file; the token is never printed.",
+                    result.client.name,
+                    wire(&result.client.kind),
+                    result.client.credential_id,
+                    result.credential_file
+                ),
+                &result,
+            ))
+        }
+        Command::Clients(ClientsCommand::Revoke { credential_id }) => {
+            let result = call::<ClientsRevoke, C>(
+                client,
+                ClientsRevokeParams {
+                    credential_id: credential_id.clone(),
+                    idempotency_key: None,
+                },
+            )
+            .await?;
+            Ok(CmdOutput::new(
+                format!(
+                    "revoked {} ({}); closed {} connection(s)",
+                    result.client.name, result.client.credential_id, result.connections_closed
+                ),
                 &result,
             ))
         }
@@ -574,18 +674,60 @@ fn default_key(urls: &[String]) -> String {
     format!("cli-{}", &hasher.finalize().to_hex().as_str()[..16])
 }
 
+fn get_inputs(args: &GetArgs) -> ApiResult<Vec<String>> {
+    use std::io::Read;
+    const MAX_BYTES: u64 = 1024 * 1024;
+    let mut urls = args.urls.clone();
+    if let Some(path) = &args.input_file {
+        let error = || {
+            ApiError::invalid_params(
+                "URL input must be a readable UTF-8 regular file of at most 1 MiB",
+            )
+        };
+        let file = std::fs::File::open(path).map_err(|_| error())?;
+        let metadata = file.metadata().map_err(|_| error())?;
+        if !metadata.is_file() || metadata.len() > MAX_BYTES {
+            return Err(error());
+        }
+        // Bound the read even if another process grows the file after metadata().
+        let mut text = String::new();
+        file.take(MAX_BYTES + 1)
+            .read_to_string(&mut text)
+            .map_err(|_| error())?;
+        if text.len() as u64 > MAX_BYTES {
+            return Err(error());
+        }
+        urls.extend(
+            text.trim_start_matches('\u{feff}')
+                .lines()
+                .map(str::trim)
+                .filter(|line| !line.is_empty() && !line.starts_with('#'))
+                .map(str::to_owned),
+        );
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    urls.retain(|url| seen.insert(url.clone()));
+    if urls.is_empty() || urls.len() > 50 {
+        return Err(ApiError::invalid_params(
+            "get accepts 1–50 unique URLs per request",
+        ));
+    }
+    Ok(urls)
+}
+
 async fn get<C: Client + ?Sized>(
     args: &GetArgs,
     global: &GlobalArgs,
     client: &C,
     color: bool,
 ) -> ApiResult<CmdOutput> {
+    let inputs = get_inputs(args)?;
     let mut extra_headers = BTreeMap::new();
     for header in &args.headers {
         let (name, value) = parse_header(header)?;
         extra_headers.insert(name, value);
     }
-    if args.urls.len() > 1 && args.sha256.is_some() {
+    if inputs.len() > 1 && args.sha256.is_some() {
         return Err(ApiError::invalid_params("--sha256 needs exactly one URL"));
     }
     let expected = args
@@ -596,8 +738,7 @@ async fn get<C: Client + ?Sized>(
                 .map_err(|_| ApiError::invalid_params("--sha256 must be 64 hex digits"))
         })
         .transpose()?;
-    let urls = args
-        .urls
+    let urls = inputs
         .iter()
         .map(|u| {
             HttpUrl::parse(u)
@@ -640,7 +781,7 @@ async fn get<C: Client + ?Sized>(
     let key = args
         .idempotency_key
         .clone()
-        .unwrap_or_else(|| default_key(&args.urls));
+        .unwrap_or_else(|| default_key(&inputs));
     let result = call::<JobsEnqueue, C>(
         client,
         EnqueueParams {
@@ -920,7 +1061,7 @@ pub async fn run_local(
             ))
         }
         Command::Daemon(DaemonCommand::Status) => daemon_status_local(paths),
-        Command::Daemon(DaemonCommand::Install) => daemon_run(&["init"]),
+        Command::Daemon(DaemonCommand::Install) => daemon_run(paths, &["init"]),
         Command::Daemon(DaemonCommand::Start) => daemon_start(paths).await,
         Command::NativeHost(sub) => native_host(sub, global, paths),
         _ => Err(ApiError::internal("not a local command")),
@@ -990,7 +1131,7 @@ async fn daemon_start(paths: &ZeusPaths) -> ApiResult<CmdOutput> {
     // Installation is explicit: never silently create a new identity during a failed connection.
     crate::connect::load_secret(paths)?;
     crate::connect::load_credential(paths, Identity::Cli)?;
-    let mut command = std::process::Command::new(zeusd_path()?);
+    let mut command = zeusd_command(paths)?;
     command
         .arg("run")
         .stdin(std::process::Stdio::null())
@@ -1033,17 +1174,24 @@ async fn daemon_start(paths: &ZeusPaths) -> ApiResult<CmdOutput> {
     ))
 }
 
-fn daemon_run(args: &[&str]) -> ApiResult<CmdOutput> {
+/// A `zeusd` command bound to the same profile as this CLI, whatever `ZEUS_PROFILE` the shell holds.
+fn zeusd_command(paths: &ZeusPaths) -> ApiResult<std::process::Command> {
+    let mut command = std::process::Command::new(zeusd_path()?);
+    command.env(
+        "ZEUS_PROFILE",
+        paths.profile.as_deref().unwrap_or("default"),
+    );
+    Ok(command)
+}
+
+fn daemon_run(paths: &ZeusPaths, args: &[&str]) -> ApiResult<CmdOutput> {
     let exe = zeusd_path()?;
-    let output = std::process::Command::new(&exe)
-        .args(args)
-        .output()
-        .map_err(|e| {
-            ApiError::new(
-                codes::UNAVAILABLE,
-                format!("cannot run {}: {e}", exe.display()),
-            )
-        })?;
+    let output = zeusd_command(paths)?.args(args).output().map_err(|e| {
+        ApiError::new(
+            codes::UNAVAILABLE,
+            format!("cannot run {}: {e}", exe.display()),
+        )
+    })?;
     let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
     let exit = if output.status.success() {
         Exit::Success
@@ -1319,6 +1467,96 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn artifact_commands_preserve_paging_and_retry_keys_and_dry_run_does_not_ingest() {
+        let fake = Fake::new();
+        fake.answer(
+            "artifacts.list",
+            Ok(json!({"items":[],"next_cursor":"next-page"})),
+        );
+        let cli = parse(&[
+            "artifacts",
+            "ls",
+            "--limit",
+            "7",
+            "--cursor",
+            "old-page",
+            "--state",
+            "active",
+        ]);
+        let output = run_remote(&cli.command, &cli.global, &fake, false, None)
+            .await
+            .unwrap();
+        assert!(output.text.contains("next-page"));
+        assert_eq!(fake.calls_to("artifacts.list")[0]["cursor"], "old-page");
+        assert_eq!(fake.calls_to("artifacts.list")[0]["state"], "active");
+        fake.answer(
+            "artifacts.ingest",
+            Ok(json!({
+                "artifact":{"name":"data"},"created":true,"replayed":false
+            })),
+        );
+        let cli = parse(&[
+            "artifacts",
+            "ingest",
+            "/root/data",
+            "--idempotency-key",
+            "ingest-one",
+        ]);
+        let mut global = cli.global.clone();
+        global.dry_run = true;
+        assert!(
+            run_remote(&cli.command, &global, &fake, false, None)
+                .await
+                .is_err()
+        );
+        assert!(fake.calls_to("artifacts.ingest").is_empty());
+        run_remote(&cli.command, &cli.global, &fake, false, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            fake.calls_to("artifacts.ingest")[0]["idempotency_key"],
+            "ingest-one"
+        );
+        assert!(fake.calls_to("approvals.decide").is_empty());
+    }
+
+    #[tokio::test]
+    async fn input_files_preserve_exact_signed_urls_and_validate_the_whole_batch_before_rpc() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("urls.txt");
+        let signed = "https://example.org/data?signature=ZEUS-CANARY-query";
+        std::fs::write(
+            &path,
+            format!("\u{feff}# comment\r\n{signed}\r\n\n{signed}\nhttps://example.org/other\n"),
+        )
+        .unwrap();
+        let cli = parse(&["get", "--input-file", path.to_str().unwrap()]);
+        let Command::Get(args) = &cli.command else {
+            panic!("expected get");
+        };
+        let urls = get_inputs(args).unwrap();
+        assert_eq!(urls, vec![signed, "https://example.org/other"]);
+        let fake = Fake::new();
+        // A later invalid URL refuses the entire request, including earlier valid lines.
+        std::fs::write(&path, format!("{signed}\nnot-a-url-ZEUS-CANARY-invalid")).unwrap();
+        let error = run_remote(&cli.command, &cli.global, &fake, false, None)
+            .await
+            .unwrap_err();
+        assert!(!error.envelope().message.contains("ZEUS-CANARY-"));
+        assert!(fake.calls_to("jobs.enqueue").is_empty());
+        std::fs::write(&path, "x".repeat(1024 * 1024 + 1)).unwrap();
+        assert!(get_inputs(args).is_err());
+        std::fs::write(
+            &path,
+            (0..51)
+                .map(|i| format!("https://example.org/{i}\n"))
+                .collect::<String>(),
+        )
+        .unwrap();
+        assert!(get_inputs(args).is_err());
+    }
+
+    #[tokio::test]
     async fn cloud_submit_dispatch_preserves_plan_hash_and_dry_run_never_mutates() {
         let client = Fake::new();
         let hash = "a".repeat(64);
@@ -1349,6 +1587,90 @@ mod tests {
                 .is_err()
         );
         assert_eq!(client.calls_to("cloud.submit").len(), 1);
+    }
+
+    #[tokio::test]
+    async fn workflow_commands_send_the_plan_file_and_hash_and_never_decide() {
+        let client = Fake::new();
+        let dir = std::env::temp_dir().join(format!("zeus-cli-plan-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("plan.json");
+        std::fs::write(
+            &file,
+            serde_json::json!({"plan_version":0,"name":"papers","allowed_domains":["a.example"],
+                "sources":[{"type":"start_urls","urls":["https://a.example/list"]}],
+                "extract":{"items":{"kind":"css","query":"a[href]"},"fields":{"url":{"extract":{"kind":"attr","name":"href"}}}},
+                "fetch":{"min_interval_ms":1000,"max_concurrency_per_host":1},
+                "budgets":{"max_pages":2,"max_files":5,"max_bytes":1000000,"max_duration_ms":60000,"max_depth":1},
+                "sinks":{"dest_dir":"papers"}})
+            .to_string(),
+        )
+        .unwrap();
+        let plan_id = "plan_01M45NHJ2AHWMXT8JVJ7BEEJX7";
+        let hash = "b".repeat(64);
+        client.answer(
+            "workflows.plan",
+            Ok(serde_json::json!({"plan_id":plan_id,"samples":[],"plan_schema":{},"diagnostics":[],"plan_hash":hash})),
+        );
+        let cli = parse(&[
+            "workflow",
+            "plan",
+            "--goal",
+            "papers",
+            "--url",
+            "https://a.example/list",
+            "--candidate",
+            file.to_str().unwrap(),
+        ]);
+        let output = run_remote(&cli.command, &cli.global, &client, false, None)
+            .await
+            .unwrap();
+        assert!(output.text.contains(&hash));
+        let sent = client.calls_to("workflows.plan");
+        assert_eq!(sent[0]["candidate"]["name"], "papers");
+        assert_eq!(sent[0]["start_urls"][0], "https://a.example/list");
+        client.answer(
+            "workflows.run",
+            Ok(serde_json::json!({"run_id":"run_01M45NHJ2AHWMXT8JVJ7BEEJX7","status":"awaiting_approval",
+                "approval_id":"ap_01M45NHJ2AHWMXT8JVJ7BEEJX7"})),
+        );
+        let run = parse(&["workflow", "run", plan_id, "--plan-hash", &hash]);
+        let output = run_remote(&run.command, &run.global, &client, false, None)
+            .await
+            .unwrap();
+        assert!(output.text.contains("zeus approvals approve ap_"));
+        assert_eq!(client.calls_to("workflows.run")[0]["plan_hash"], hash);
+        assert!(client.calls_to("approvals.decide").is_empty());
+        let mut global = run.global;
+        global.dry_run = true;
+        assert!(
+            run_remote(&run.command, &global, &client, false, None)
+                .await
+                .is_err()
+        );
+        assert_eq!(client.calls_to("workflows.run").len(), 1);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn clients_add_names_the_token_file_and_never_prints_a_token() {
+        let client = Fake::new();
+        client.answer(
+            "clients.add",
+            Ok(serde_json::json!({"client":{"credential_id":"cli_01M45NHJ2AHWMXT8JVJ7BEEJX7","name":"ogun",
+                "kind":"service","role":"service","permissions":["jobs.read"],"created_at":"2026-10-18T00:00:00.000Z",
+                "last_used_at":null,"revoked":false,"revoked_at":null},
+                "credential_file":"/state/credentials/ogun.token","replayed":false})),
+        );
+        let cli = parse(&["clients", "add", "--name", "ogun", "--kind", "service"]);
+        let output = run_remote(&cli.command, &cli.global, &client, false, None)
+            .await
+            .unwrap();
+        assert!(output.text.contains("/state/credentials/ogun.token"));
+        assert!(!output.text.contains("zt1_"));
+        let sent = client.calls_to("clients.add");
+        assert_eq!(sent[0]["kind"], "service");
+        assert_eq!(sent[0]["name"], "ogun");
     }
 
     #[tokio::test]
@@ -1586,6 +1908,7 @@ mod tests {
             config_dir: dir.path().join("c"),
             runtime_dir: dir.path().join("r"),
             user_identity: "t".into(),
+            profile: None,
         };
         let cli = parse(&["completions", "bash"]);
         assert!(!needs_daemon(&cli.command));
@@ -1613,6 +1936,7 @@ mod tests {
             config_dir: dir.path().join("c"),
             runtime_dir: dir.path().join("r"),
             user_identity: "t".into(),
+            profile: None,
         };
         let host = dir.path().join("zeus-native-host");
         let cli = parse(&[

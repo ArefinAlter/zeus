@@ -43,12 +43,16 @@ pub mod consent;
 /// Native messaging session broker.
 pub mod browser;
 mod browser_proxy;
+mod deferred_audit;
 mod mutations;
+mod organizer;
 mod outbox;
+mod visibility;
 
 /// Explicit model configuration and budgeted execution.
 pub mod models;
 
+mod workflow_draft;
 mod workflow_network;
 /// Durable bounded workflow orchestration.
 pub mod workflows;

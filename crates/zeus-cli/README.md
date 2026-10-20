@@ -1,4 +1,23 @@
-# Zeus CLI cloud delivery
+# Zeus CLI
+
+URL-list intake validates the complete batch before enqueueing:
+
+```text
+zeus get --input-file urls.txt --dry-run
+zeus get -i urls.txt --idempotency-key reports-1 --wait
+zeus artifacts ls --limit 20 --state active --json
+zeus artifacts get art_REPLACE_WITH_ID --json
+zeus artifacts lineage art_REPLACE_WITH_ID --direction ancestors --max-depth 8
+zeus artifacts ingest /absolute/permitted/root/report.pdf --idempotency-key report-1
+```
+
+`urls.txt` is a UTF-8 regular file of at most 1 MiB: one HTTP(S) URL per line, blank lines and `#` comments ignored. Positional URLs come first; exact duplicates are removed without rewriting signed queries. Each request accepts 1–50 unique URLs. Stdin input and recursive mirroring are not implemented.
+
+Artifact queries preserve public records and pagination. `ls` accepts SHA-256/BLAKE3, producing job/run and state filters; pass the returned `next_cursor` as `--cursor` with the same filters. `--ndjson` prints list records. Ingest uses daemon containment and hashing, never moves the source and refuses `--dry-run`; repeat its key only with identical input.
+
+In `zeus tui`, `/` searches loaded jobs by name, redacted URL or state. Enter finishes typing; Escape clears search; Ctrl-C exits. Search text cannot trigger pause/resume/cancel shortcuts. Selection follows job identity when snapshots reorder, and the table scrolls to keep the selected job visible. This is a live queue filter, not a filesystem index.
+
+## Cloud delivery
 
 `zeus cloud accounts configure` opens the controlling terminal to register a destination. The daemon independently verifies the human terminal and pinned CLI executable. Native provider credentials are entered with echo disabled and stored in the OS keyring; there are no secret command-line flags or stdin credential inputs. The setup command does not perform OAuth sign-in or refresh native access credentials. Obtain the appropriate access credential separately, or use an explicitly configured rclone executable, dedicated config file and remote. No account is auto-discovered.
 

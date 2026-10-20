@@ -41,6 +41,20 @@ struct ApprovalPreparation<'a> {
     reason_codes: &'a [String],
 }
 
+/// Daemon-computed facts of one file operation list (07 `FactsDestructiveOp`).
+pub(crate) struct DestructiveFacts {
+    pub operation_set_blake3: Hex256,
+    pub counts: serde_json::Value,
+    pub total_bytes: u64,
+    pub quarantined_count: u64,
+    pub sample: Vec<serde_json::Value>,
+    pub sample_omitted: u64,
+    /// Summary title built from the canonical directory (a measured path, not requester text).
+    pub title: String,
+    /// The list sends files to the trash.
+    pub deletes: bool,
+}
+
 /// Owns serialized approval mutations and the write-ahead audit boundary.
 pub struct ConsentManager {
     journal: Journal,
@@ -48,6 +62,7 @@ pub struct ConsentManager {
     credentials: Arc<dyn CredentialStore>,
     gate: Mutex<()>,
     decisions: Mutex<crate::approvals::DecisionLimiter>,
+    limits: crate::approvals::ConsentLimits,
     started: std::time::Instant,
 }
 impl ConsentManager {
@@ -63,8 +78,88 @@ impl ConsentManager {
             credentials,
             gate: Mutex::new(()),
             decisions: Mutex::new(crate::approvals::DecisionLimiter::per_minute()),
+            limits: Default::default(),
             started: std::time::Instant::now(),
         }
+    }
+    /// Apply configured caps and the approve-decision rate (07 section 9).
+    pub fn with_limits(mut self, limits: crate::approvals::ConsentLimits) -> Self {
+        self.decisions = Mutex::new(crate::approvals::DecisionLimiter::new(
+            limits.decisions_per_minute,
+            60_000,
+        ));
+        self.limits = limits;
+        self
+    }
+    /// Denial back-off (07 section 9.4). Derived from durable decisions, so it survives a restart: after a human
+    /// denies an unattended requester a session for an origin, new session requests by that requester for that
+    /// origin are refused for 10 minutes, or 24 hours after three denials within a day. A later approval for the
+    /// same pair clears it. Human-capable requesters and handoffs are never backed off.
+    pub(crate) fn check_denial_backoff(
+        &self,
+        requester: &str,
+        origin: &Origin,
+        now: Timestamp,
+    ) -> ApiResult<()> {
+        const SHORT_MS: u64 = 10 * 60_000;
+        const DAY_MS: u64 = 86_400_000;
+        let Ok(credential) = self.credential(requester) else {
+            return Ok(());
+        };
+        if matches!(credential.kind, ClientKind::Human | ClientKind::Admin) {
+            return Ok(());
+        }
+        let decided = self
+            .journal
+            .read(|tx| tx.approvals(Some(&[ApprovalState::Approved, ApprovalState::Denied])))
+            .map_err(error)?;
+        let mut last_approved = None;
+        let mut denials = Vec::new();
+        for a in decided.iter().filter(|a| {
+            a.kind == ApprovalKind::SessionGrant
+                && a.requested_by.as_deref() == Some(requester)
+                && a.origin.as_ref() == Some(origin)
+        }) {
+            let (Some(at), Some(decision)) = (a.decided_at, a.decision.as_ref()) else {
+                continue;
+            };
+            match a.state {
+                ApprovalState::Approved => last_approved = last_approved.max(Some(at)),
+                ApprovalState::Denied if decision.actor.kind == ActorKind::Human => {
+                    denials.push(at)
+                }
+                _ => {}
+            }
+        }
+        let recent: Vec<_> = denials
+            .into_iter()
+            .filter(|at| last_approved.is_none_or(|approved| *at > approved))
+            .filter(|at| {
+                now.duration_since(*at)
+                    .is_none_or(|d| d.as_millis() < u128::from(DAY_MS))
+            })
+            .collect();
+        let Some(last) = recent.iter().max().copied() else {
+            return Ok(());
+        };
+        let until = last.saturating_add_ms(if recent.len() >= 3 { DAY_MS } else { SHORT_MS });
+        if now < until {
+            return Err(ApiError::new(
+                codes::POLICY_RECENTLY_DENIED,
+                "a person recently denied this requester access to the site; ask them directly",
+            )
+            .with_detail("until", until.to_rfc3339()));
+        }
+        Ok(())
+    }
+    fn check_caps(&self, pending: &[Approval], requester: Option<&str>) -> ApiResult<()> {
+        let mine = requester.map(|id| {
+            pending
+                .iter()
+                .filter(|a| a.requested_by.as_deref() == Some(id))
+                .count()
+        });
+        crate::approvals::check_pending_cap(pending.len(), mine, &self.limits)
     }
     fn credential(&self, id: &str) -> ApiResult<zeus_api::auth::Credential> {
         self.credentials
@@ -79,7 +174,7 @@ impl ConsentManager {
             .read(|tx| tx.approval(id))
             .map_err(error)?
             .ok_or_else(missing)?;
-        if identity.kind == ClientKind::Agent
+        if !identity.kind.is_human_capable()
             && approval.requested_by.as_deref() != Some(identity.credential_id.as_str())
         {
             return Err(missing());
@@ -99,11 +194,106 @@ impl ConsentManager {
             .into_iter()
             .filter(|a| {
                 kind.is_none_or(|k| a.kind == k)
-                    && (identity.kind != ClientKind::Agent
+                    && (identity.kind.is_human_capable()
                         || a.requested_by.as_deref() == Some(identity.credential_id.as_str()))
             })
             .map(ApprovalView::try_from)
             .collect()
+    }
+    /// Join a new job to the pending `session_grant` approval with the same batch key (origin, requester, run),
+    /// as a new revision with recomputed facts (07 section 4.7). Returns `None` when there is none or it is full.
+    /// Callers hold the engine's admission gate, so two joins never race on one revision.
+    fn join_batch(
+        &self,
+        pending: &[Approval],
+        requester: &str,
+        origin: &Origin,
+        job: &Job,
+        dest_path: Option<&str>,
+        reason_codes: &[String],
+    ) -> ApiResult<Option<Approval>> {
+        const MAX_JOBS: usize = 50;
+        const MAX_ITEMS: usize = 20;
+        const MAX_DEST_DIRS: usize = 8;
+        let now = Timestamp::now();
+        let Some(mut approval) = pending
+            .iter()
+            .find(|a| {
+                a.kind == ApprovalKind::SessionGrant
+                    && a.requested_by.as_deref() == Some(requester)
+                    && a.origin.as_ref() == Some(origin)
+                    && a.run_id == job.spec.source.run_id
+                    && a.is_open_at(now)
+                    && a.facts
+                        .as_ref()
+                        .and_then(|f| f.get("transfer"))
+                        .is_some_and(serde_json::Value::is_object)
+            })
+            .cloned()
+        else {
+            return Ok(None);
+        };
+        let mut facts = serde_json::Value::Object(approval.facts.clone().ok_or_else(missing)?);
+        let revision = approval.revision.unwrap_or(1).saturating_add(1);
+        let ids = facts["transfer"]["job_ids"]
+            .as_array()
+            .map(Vec::len)
+            .unwrap_or(0);
+        if ids >= MAX_JOBS || revision > 1000 {
+            return Ok(None);
+        }
+        let transfer = &mut facts["transfer"];
+        transfer["job_ids"]
+            .as_array_mut()
+            .ok_or_else(missing)?
+            .push(serde_json::json!(job.id));
+        match job.spec.expected_size {
+            Some(size) => {
+                let known = transfer["total_bytes"].as_u64().unwrap_or(0);
+                transfer["total_bytes"] = serde_json::json!(known.saturating_add(size));
+            }
+            None => {
+                let unknown = transfer["unknown_size_count"].as_u64().unwrap_or(0);
+                transfer["unknown_size_count"] = serde_json::json!(unknown + 1);
+            }
+        }
+        if let Some(dir) = dest_path
+            .and_then(|p| std::path::Path::new(p).parent())
+            .map(|p| p.to_string_lossy().into_owned())
+        {
+            let dirs = transfer["dest_dirs"].as_array_mut().ok_or_else(missing)?;
+            if !dirs.iter().any(|d| d.as_str() == Some(dir.as_str())) {
+                if dirs.len() < MAX_DEST_DIRS {
+                    dirs.push(serde_json::json!(dir));
+                } else {
+                    let omitted = transfer["dest_dirs_omitted"].as_u64().unwrap_or(0);
+                    transfer["dest_dirs_omitted"] = serde_json::json!(omitted + 1);
+                }
+            }
+        }
+        let items = facts["items"].as_array_mut().ok_or_else(missing)?;
+        if items.len() < MAX_ITEMS {
+            items.push(serde_json::json!({"job_id":job.id,
+                "untrusted_name":clean(job.spec.filename.as_deref().unwrap_or("download")),
+                "untrusted_url":job.spec.url.redact(RedactMode::Log),"total_bytes":job.spec.expected_size}));
+        } else {
+            let omitted = facts["items_omitted"].as_u64().unwrap_or(0);
+            facts["items_omitted"] = serde_json::json!(omitted + 1);
+        }
+        for code in reason_codes {
+            if approval.reason_codes.len() < 8 && !approval.reason_codes.contains(code) {
+                approval.reason_codes.push(code.clone());
+            }
+        }
+        facts["reason_codes"] = serde_json::json!(approval.reason_codes);
+        facts["revision"] = serde_json::json!(revision);
+        facts["issued_at"] = serde_json::json!(now);
+        approval.summary.total_bytes = facts["transfer"]["total_bytes"].as_u64();
+        approval.revision = Some(revision);
+        approval.request_hash = Some(crate::approvals::facts_hash(&facts)?);
+        approval.facts = facts.as_object().cloned();
+        // `expires_at` never changes: joining cannot extend a deadline.
+        Ok(Some(approval))
     }
     fn prepare(&self, preparation: ApprovalPreparation<'_>) -> ApiResult<Approval> {
         let ApprovalPreparation {
@@ -276,7 +466,8 @@ impl ConsentManager {
                 expires_at: Some(a.expires_at),
             });
         }
-        crate::approvals::check_pending_cap(pending.len())?;
+        self.check_denial_backoff(identity.credential_id.as_str(), &p.origin, Timestamp::now())?;
+        self.check_caps(&pending, Some(identity.credential_id.as_str()))?;
         let a = self.prepare(ApprovalPreparation {
             requester: identity.credential_id.as_str(),
             origin: p.origin,
@@ -339,7 +530,7 @@ impl ConsentManager {
             }
             return a.clone().try_into();
         }
-        crate::approvals::check_pending_cap(pending.len())?;
+        self.check_caps(&pending, Some(requester.credential_id.as_str()))?;
         let id = IdGenerator::new().approval_id();
         let now = Timestamp::now();
         let expires = now.saturating_add_ms(7 * 86_400_000);
@@ -376,6 +567,47 @@ impl ConsentManager {
     /// Verify that the requesting credential has not been revoked between planning and execution.
     pub(crate) fn requester_active(&self, id: &str) -> bool {
         self.credential(id).is_ok()
+    }
+
+    /// Raise a `destructive_op` approval for one stored operation list (07 section 4.4). The approval creates no
+    /// grant; approving runs exactly the list whose hash is `operation_set_blake3`.
+    pub(crate) async fn request_destructive(
+        &self,
+        requester: &ClientIdentity,
+        facts: DestructiveFacts,
+    ) -> ApiResult<ApprovalId> {
+        let _gate = self.gate.lock().await;
+        let credential = self.credential(requester.credential_id.as_str())?;
+        let pending = self
+            .journal
+            .read(|tx| tx.approvals(Some(&[ApprovalState::Pending])))
+            .map_err(error)?;
+        self.check_caps(&pending, Some(requester.credential_id.as_str()))?;
+        let now = Timestamp::now();
+        let expires = now.saturating_add_ms(86_400_000);
+        let id = IdGenerator::new().approval_id();
+        let label = match credential.role {
+            zeus_api::ClientRole::Cli | zeus_api::ClientRole::Tui => "cli",
+            _ => "agent",
+        };
+        let mut reasons = Vec::new();
+        if facts.deletes {
+            reasons.push("files.delete");
+        }
+        reasons.push("files.move");
+        let value = serde_json::json!({"t":"zeus.approval.facts.v1","approval_id":id,"revision":1,"kind":"destructive_op",
+            "requester":{"kind":credential.kind,"role":credential.role,"client_id":requester.credential_id.as_str(),"label":label,"registered_at":credential.created_at},
+            "issued_at":now,"expires_at":expires,"allowed_scopes":[],"confirmation":{"approve":"typed_code"},
+            "reason_codes":reasons,"agent_says_blake3":null,"operation_set_blake3":facts.operation_set_blake3,"plan_id":null,
+            "counts":facts.counts,"total_bytes":facts.total_bytes,"to_trash":true,"quarantined_count":facts.quarantined_count,
+            "sample":facts.sample,"sample_omitted":facts.sample_omitted});
+        let approval: Approval = serde_json::from_value(serde_json::json!({"id":id,"kind":"destructive_op","state":"pending",
+            "allowed_scopes":[],"reason_codes":reasons,"summary":{"title":clean(&facts.title),"total_bytes":facts.total_bytes},
+            "created_at":now,"expires_at":expires,"request_hash":crate::approvals::facts_hash(&value)?,
+            "requested_by":requester.credential_id.as_str(),"revision":1,"facts":value}))
+            .map_err(|_| ApiError::internal("cannot bind file operation approval"))?;
+        self.store(&approval)?;
+        Ok(id)
     }
 
     /// Bind one immutable cloud plan; this approval never creates a website-session grant.
@@ -415,7 +647,7 @@ impl ConsentManager {
             .journal
             .read(|tx| tx.approvals(Some(&[ApprovalState::Pending])))
             .map_err(error)?;
-        crate::approvals::check_pending_cap(pending.len())?;
+        self.check_caps(&pending, Some(requester))?;
         let now = Timestamp::now();
         let id = IdGenerator::new().approval_id();
         let facts = serde_json::json!({"t":"zeus.approval.facts.v1","approval_id":id,"revision":1,"kind":"cloud_delivery",
@@ -439,10 +671,6 @@ impl ConsentManager {
         evidence: serde_json::Value,
     ) -> ApiResult<(Approval, Option<SessionGrant>)> {
         let _gate = self.gate.lock().await;
-        self.decisions
-            .lock()
-            .await
-            .try_acquire(self.started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64)?;
         if evidence["client_id"] != identity.credential_id.as_str()
             || evidence["surface"] != serde_json::json!(p.channel)
             || evidence["exe_verified"] != true
@@ -455,11 +683,14 @@ impl ConsentManager {
             ));
         }
         let mut a = self.get(identity, p.approval_id)?;
-        if a.kind == ApprovalKind::CloudDelivery
-            && !matches!(p.channel, Surface::CliInteractive | Surface::Tui)
+        // Browser surfaces do not render these facts yet, so they fail closed (07 section 4.4).
+        if matches!(
+            a.kind,
+            ApprovalKind::CloudDelivery | ApprovalKind::DestructiveOp
+        ) && !matches!(p.channel, Surface::CliInteractive | Surface::Tui)
         {
             return Err(ApiError::human_required(
-                "cloud delivery requires a verified physical terminal",
+                "this approval requires a verified physical terminal",
             ));
         }
         let view = ApprovalView::try_from(a.clone())?;
@@ -498,8 +729,16 @@ impl ConsentManager {
                 | ApprovalKind::Handoff
                 | ApprovalKind::WorkflowPlan
                 | ApprovalKind::CloudDelivery
+                | ApprovalKind::DestructiveOp
         ) {
             return Err(ApiError::not_implemented("this approval kind"));
+        }
+        // Only valid approve decisions count against the daemon-wide rate; a flood can always be denied (07 section 9.2).
+        if validated.outcome == DecisionOutcome::Approve {
+            self.decisions
+                .lock()
+                .await
+                .try_acquire(self.started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64)?;
         }
         let now = Timestamp::now();
         let grant = validated.scope.map(|scope| SessionGrant {
@@ -530,6 +769,21 @@ impl ConsentManager {
             revoked_by: None,
             revocation_reason: None,
         });
+        // A batched `once` approval creates one grant per covered job (07 section 4.7 rule 5).
+        let extra: Vec<SessionGrant> = match (&grant, view.facts["transfer"]["job_ids"].as_array())
+        {
+            (Some(first), Some(ids)) if first.scope == GrantScope::Once => ids
+                .iter()
+                .filter_map(|v| v.as_str()?.parse::<JobId>().ok())
+                .filter(|id| Some(*id) != a.job_id)
+                .map(|id| SessionGrant {
+                    id: IdGenerator::new().grant_id(),
+                    job_id: Some(id),
+                    ..first.clone()
+                })
+                .collect(),
+            _ => Vec::new(),
+        };
         let mut entry = AuditEntry::new(
             now,
             validated.actor.clone(),
@@ -549,7 +803,7 @@ impl ConsentManager {
             .insert("confirmation".into(), serde_json::json!(p.confirmation));
         entry.write_ahead = true;
         self.audit.append(entry).map_err(error)?;
-        if let Some(grant) = &grant {
+        for grant in grant.iter().chain(&extra) {
             let mut entry = AuditEntry::new(
                 now,
                 validated.actor.clone(),
@@ -577,7 +831,7 @@ impl ConsentManager {
             grant_id: grant.as_ref().map(|g| g.id),
         });
         let mut record = serde_json::json!({"approval_id":a.id,"revision":a.revision,"request_hash":a.request_hash,"outcome":validated.outcome,
-            "scope":validated.scope,"actor":validated.actor,"decided_at":now,"grant_ids":grant.iter().map(|g|g.id).collect::<Vec<_>>(),"evidence":evidence});
+            "scope":validated.scope,"actor":validated.actor,"decided_at":now,"grant_ids":grant.iter().chain(&extra).map(|g|g.id).collect::<Vec<_>>(),"evidence":evidence});
         if validated.scope.is_none() {
             record
                 .as_object_mut()
@@ -598,7 +852,7 @@ impl ConsentManager {
                 }
                 tx.put_approval(&a)?;
                 tx.put_approval_decision(a.id, &record)?;
-                if let Some(grant) = &grant {
+                for grant in grant.iter().chain(&extra) {
                     tx.put_grant(grant)?;
                     tx.append_event(
                         now,
@@ -640,14 +894,36 @@ impl ApprovalPort for ConsentManager {
                 .journal
                 .read(|tx| tx.approvals(Some(&[ApprovalState::Pending])))
                 .map_err(error)?;
-            if !request.reason_codes.iter().any(|r| r == "kill_switch") {
-                crate::approvals::check_pending_cap(pending.len())?;
-            }
             let requester = request
                 .summary
                 .requested_by
                 .as_deref()
                 .ok_or_else(missing)?;
+            if request.kind == ApprovalKind::SessionGrant
+                && let Some(origin) = request.origin.as_ref()
+            {
+                // Refuses the enqueue, or fails an admitted job (S14) instead of raising another prompt.
+                self.check_denial_backoff(requester, origin, Timestamp::now())?;
+                // A new job joins its requester's pending approval for the origin: one prompt, not one per file.
+                // Only enqueue (a job still `queued`) joins, because the engine serialises enqueues.
+                if let Some(job) = request.job.as_ref()
+                    && job.state == JobState::Queued
+                    && let Some(joined) = self.join_batch(
+                        &pending,
+                        requester,
+                        origin,
+                        job,
+                        request.dest_path.as_deref(),
+                        &request.reason_codes,
+                    )?
+                {
+                    return Ok(joined);
+                }
+            }
+            if !request.reason_codes.iter().any(|r| r == "kill_switch") {
+                // Engine-raised approvals belong to jobs already admitted; only the daemon-wide cap applies here.
+                self.check_caps(&pending, None)?;
+            }
             let a = self.prepare(ApprovalPreparation {
                 requester,
                 origin: request.origin.ok_or_else(missing)?,
@@ -860,5 +1136,211 @@ mod tests {
                 .is_err()
         );
         assert_eq!(manager.journal.read(|tx| tx.grants()).unwrap().len(), 1);
+    }
+    #[tokio::test]
+    async fn configured_caps_bound_pending_requests_and_only_approvals_are_rate_limited() {
+        let temp = tempfile::tempdir().unwrap();
+        let (manager, agent, human) = setup(temp.path());
+        let manager = manager.with_limits(crate::approvals::ConsentLimits::new(3, 1));
+        let mut ids = Vec::new();
+        for host in ["a", "b", "c"] {
+            let mut p = request();
+            p.origin = Origin::parse(&format!("https://{host}.example.org")).unwrap();
+            ids.push(
+                manager
+                    .request_session(&agent, p)
+                    .await
+                    .unwrap()
+                    .approval_id
+                    .unwrap(),
+            );
+        }
+        let mut p = request();
+        p.origin = Origin::parse("https://d.example.org").unwrap();
+        let refused = manager.request_session(&agent, p).await.unwrap_err();
+        assert_eq!(refused.envelope().code.as_str(), "policy.too_many_pending");
+        let decide = |id, outcome| {
+            let a = manager.get(&human, id).unwrap();
+            ApprovalsDecideParams {
+                approval_id: id,
+                request_hash: a.request_hash.unwrap(),
+                outcome,
+                scope: (outcome == DecideOutcome::Approve).then_some(GrantScope::Site),
+                channel: Surface::CliInteractive,
+                confirmation: ConfirmationLevel::Gesture,
+                idempotency_key: None,
+            }
+        };
+        let approve = decide(ids[0], DecideOutcome::Approve);
+        manager
+            .decide(&human, &approve, evidence(&human, &approve))
+            .await
+            .unwrap();
+        let second = decide(ids[1], DecideOutcome::Approve);
+        let limited = manager
+            .decide(&human, &second, evidence(&human, &second))
+            .await
+            .unwrap_err();
+        assert_eq!(limited.envelope().code.as_str(), "api.rate_limited");
+        // Denials are never rate limited, so a person can always clear a flood.
+        for id in &ids[1..] {
+            let deny = decide(*id, DecideOutcome::Deny);
+            manager
+                .decide(&human, &deny, evidence(&human, &deny))
+                .await
+                .unwrap();
+        }
+    }
+    #[tokio::test]
+    async fn new_jobs_of_one_requester_and_origin_share_one_revisioned_approval() {
+        let temp = tempfile::tempdir().unwrap();
+        let (manager, agent, human) = setup(temp.path());
+        let ids = IdGenerator::new();
+        let request = |origin: &str, n: u64| {
+            let job_id = ids.job_id();
+            let mut spec: JobSpec = serde_json::from_value(serde_json::json!({
+                "url": format!("{origin}/files/{n}.pdf"), "session_origin": origin,
+                "filename": format!("paper-{n}.pdf"), "expected_size": 1000 + n,
+                "source": {"kind":"agent","via":"mcp","client_id": agent.credential_id.as_str()}
+            }))
+            .unwrap();
+            spec.source.client_id = Some(agent.credential_id.to_string());
+            ApprovalRequest {
+                job: Some(Job::new(job_id, spec, JobState::Queued, Timestamp::now())),
+                dest_path: Some(
+                    temp.path()
+                        .join(format!("paper-{n}.pdf"))
+                        .display()
+                        .to_string(),
+                ),
+                kind: ApprovalKind::SessionGrant,
+                job_id: Some(job_id),
+                run_id: None,
+                origin: Some(Origin::parse(origin).unwrap()),
+                allowed_scopes: vec![GrantScope::Once, GrantScope::Site, GrantScope::Never],
+                reason_codes: vec!["session.first_use".into()],
+                summary: ApprovalSummary {
+                    title: "paper".into(),
+                    url_redacted: None,
+                    total_bytes: None,
+                    source_kind: Some(SourceKind::Agent),
+                    requested_by: Some(agent.credential_id.to_string()),
+                },
+            }
+        };
+        let mut approval = None;
+        let mut jobs = Vec::new();
+        for n in 0..3 {
+            let r = request("https://portal.example.org", n);
+            jobs.push(r.job_id.unwrap());
+            // The engine persists what the port returns, with its job; do the same here.
+            let a = manager.request(r).await.unwrap();
+            manager.store(&a).unwrap();
+            approval = Some(a);
+        }
+        let approval = approval.unwrap();
+        assert_eq!(approval.revision, Some(3));
+        let pending = manager
+            .journal
+            .read(|tx| tx.approvals(Some(&[ApprovalState::Pending])))
+            .unwrap();
+        assert_eq!(pending.len(), 1, "one prompt for three files");
+        let view = ApprovalView::try_from(approval.clone()).unwrap();
+        assert_eq!(
+            view.request_hash,
+            crate::approvals::facts_hash(&view.facts).unwrap()
+        );
+        zeus_types::spec_testing::SpecSchemas::load()
+            .check(
+                true,
+                "approvals.v1",
+                "ApprovalRequest",
+                &serde_json::to_value(&view).unwrap(),
+            )
+            .unwrap();
+        assert_eq!(
+            view.facts["transfer"]["job_ids"].as_array().unwrap().len(),
+            3
+        );
+        assert_eq!(view.facts["transfer"]["total_bytes"], 3003);
+        assert_eq!(view.facts["items"].as_array().unwrap().len(), 3);
+        // Another origin, or another requester, never joins.
+        let other = manager
+            .request(request("https://other.example.org", 9))
+            .await
+            .unwrap();
+        assert_ne!(other.id, approval.id);
+        // Approving once creates one grant per covered job.
+        let p = ApprovalsDecideParams {
+            approval_id: approval.id,
+            request_hash: view.request_hash,
+            outcome: DecideOutcome::Approve,
+            scope: Some(GrantScope::Once),
+            channel: Surface::CliInteractive,
+            confirmation: ConfirmationLevel::Gesture,
+            idempotency_key: None,
+        };
+        manager
+            .decide(&human, &p, evidence(&human, &p))
+            .await
+            .unwrap();
+        let grants = manager.journal.read(|tx| tx.grants()).unwrap();
+        let mut bound: Vec<_> = grants.iter().filter_map(|g| g.job_id).collect();
+        bound.sort();
+        jobs.sort();
+        assert_eq!(bound, jobs);
+        assert!(
+            grants
+                .iter()
+                .all(|g| g.scope == GrantScope::Once && g.approval_id == approval.id)
+        );
+    }
+    #[tokio::test]
+    async fn a_denial_backs_off_the_requester_for_that_origin_only() {
+        let temp = tempfile::tempdir().unwrap();
+        let (manager, agent, human) = setup(temp.path());
+        let id = manager
+            .request_session(&agent, request())
+            .await
+            .unwrap()
+            .approval_id
+            .unwrap();
+        let a = manager.get(&human, id).unwrap();
+        let deny = ApprovalsDecideParams {
+            approval_id: id,
+            request_hash: a.request_hash.unwrap(),
+            outcome: DecideOutcome::Deny,
+            scope: None,
+            channel: Surface::CliInteractive,
+            confirmation: ConfirmationLevel::Gesture,
+            idempotency_key: None,
+        };
+        manager
+            .decide(&human, &deny, evidence(&human, &deny))
+            .await
+            .unwrap();
+        let refused = manager
+            .request_session(&agent, request())
+            .await
+            .unwrap_err();
+        assert_eq!(refused.envelope().code.as_str(), "policy.recently_denied");
+        let until = refused.envelope().details.as_ref().unwrap()["until"]
+            .as_str()
+            .map(|s| Timestamp::parse(s).unwrap())
+            .unwrap();
+        let now = Timestamp::now();
+        assert!(until > now && until <= now.saturating_add_ms(10 * 60_000));
+        // The back-off lapses after its window and never spreads to other origins or to people.
+        let origin = Origin::parse("https://example.org").unwrap();
+        let requester = agent.credential_id.as_str();
+        assert!(
+            manager
+                .check_denial_backoff(requester, &origin, until.saturating_add_ms(1))
+                .is_ok()
+        );
+        let mut other = request();
+        other.origin = Origin::parse("https://other.example.org").unwrap();
+        assert!(manager.request_session(&agent, other).await.is_ok());
+        assert!(manager.request_session(&human, request()).await.is_ok());
     }
 }

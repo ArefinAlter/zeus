@@ -112,6 +112,23 @@ struct StoredCredential {
     auth_key: String,
     created_at: Timestamp,
     revoked: bool,
+    /// File name stem under `credentials/`. Older stores omit it; it is inferred for the default credentials.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    revoked_at: Option<Timestamp>,
+    /// Service clients only (05 section 7.6). Inactive once the credential is revoked.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    roots: Vec<StoredRoot>,
+}
+
+/// A service-owned write root.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct StoredRoot {
+    path: std::path::PathBuf,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    label: Option<String>,
+    created_at: Timestamp,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -129,6 +146,9 @@ fn stored_from(credential: &Credential) -> StoredCredential {
         auth_key: hex::encode(credential.auth_key.to_bytes().as_slice()),
         created_at: credential.created_at,
         revoked: credential.revoked,
+        name: None,
+        revoked_at: None,
+        roots: Vec::new(),
     }
 }
 
@@ -152,15 +172,64 @@ fn credential_from(stored: &StoredCredential) -> Result<Credential, ProvisionErr
     })
 }
 
+/// What `clients.add` asks the store to create.
+#[derive(Debug, Clone)]
+pub struct NewCredential<'a> {
+    /// The id the caller minted (and already wrote into the audit record).
+    pub id: CredentialId,
+    /// Token file name stem.
+    pub name: &'a str,
+    /// `agent` or `service`.
+    pub kind: ClientKind,
+    /// Requested role, if any.
+    pub role: Option<ClientRole>,
+    /// Narrowing within the kind's ceiling.
+    pub permissions: Option<BTreeSet<Permission>>,
+}
+
+/// Names of the provisioned credentials; `clients.add` cannot reuse them.
+pub const RESERVED_NAMES: &[&str] = &["cli", "agent", "a2a", "host"];
+/// Roots one service credential may register (05 section 13.1).
+pub const MAX_SERVICE_ROOTS: usize = 16;
+/// Credentials one store holds, revoked ones included, so the index stays small.
+pub const MAX_CREDENTIALS: usize = 256;
+
+#[derive(Default)]
+struct Records {
+    stored: Vec<StoredCredential>,
+    credentials: Vec<Credential>,
+}
+
 /// Credential store backed by `<state>/credentials.json`.
+///
+/// The daemon's handshake and its handlers share one store, so `clients.add`, `clients.revoke` and
+/// `files.roots.register` take effect for new and existing connections at once. Writes are atomic (temporary file,
+/// fsync, rename) and serialised; memory changes only after the file is durable.
 pub struct FileCredentialStore {
-    credentials: RwLock<Vec<Credential>>,
+    path: std::path::PathBuf,
+    records: RwLock<Records>,
+    writer: std::sync::Mutex<()>,
+    last_used: std::sync::Mutex<std::collections::BTreeMap<CredentialId, Timestamp>>,
+    revocations: tokio::sync::watch::Sender<u64>,
+}
+
+fn invalid(message: &str) -> ApiError {
+    ApiError::invalid_params(message.to_owned())
+}
+
+/// A credential name: lowercase letter first, then lowercase letters, digits, `-` or `_`, at most 32 bytes.
+pub(crate) fn valid_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    name.len() <= 32
+        && chars.next().is_some_and(|c| c.is_ascii_lowercase())
+        && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
 }
 
 impl FileCredentialStore {
-    /// Load the store. A missing file is an empty store.
+    /// Load the store. A missing file is an empty store. Records written before names were stored get the name of
+    /// the provisioned token file that holds their id.
     pub fn load(path: &Path) -> Result<Self, ProvisionError> {
-        let credentials = match std::fs::read(path) {
+        let mut stored = match std::fs::read(path) {
             Ok(bytes) => {
                 let file: StoreFile = serde_json::from_slice(&bytes)
                     .map_err(|e| ProvisionError::Corrupt(format!("credentials.json: {e}")))?;
@@ -171,9 +240,6 @@ impl FileCredentialStore {
                     )));
                 }
                 file.credentials
-                    .iter()
-                    .map(credential_from)
-                    .collect::<Result<Vec<_>, _>>()?
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
             Err(source) => {
@@ -183,17 +249,351 @@ impl FileCredentialStore {
                 });
             }
         };
+        let dir = path
+            .parent()
+            .map(|p| p.join("credentials"))
+            .unwrap_or_default();
+        for name in RESERVED_NAMES {
+            let Some(id) = std::fs::read_to_string(dir.join(format!("{name}.token")))
+                .ok()
+                .and_then(|text| ClientCredential::from_file_text(&text).ok())
+                .map(|c| c.id.to_string())
+            else {
+                continue;
+            };
+            if let Some(record) = stored.iter_mut().find(|r| r.id == id && r.name.is_none()) {
+                record.name = Some((*name).to_string());
+            }
+        }
+        let credentials = stored
+            .iter()
+            .map(credential_from)
+            .collect::<Result<Vec<_>, _>>()?;
         Ok(Self {
-            credentials: RwLock::new(credentials),
+            path: path.to_path_buf(),
+            records: RwLock::new(Records {
+                stored,
+                credentials,
+            }),
+            writer: Default::default(),
+            last_used: Default::default(),
+            revocations: tokio::sync::watch::Sender::new(0),
         })
+    }
+
+    /// A receiver that changes whenever a credential is revoked, so live connections can close.
+    pub fn revocations(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.revocations.subscribe()
+    }
+
+    /// Record a successful authentication (kept in memory; reported as `last_used_at`).
+    pub fn touch(&self, id: &CredentialId, now: Timestamp) {
+        if let Ok(mut used) = self.last_used.lock() {
+            used.insert(id.clone(), now);
+        }
+    }
+
+    fn view(&self, stored: &StoredCredential) -> zeus_api::methods::admin::ClientRecord {
+        let id = CredentialId::parse(&stored.id).ok();
+        zeus_api::methods::admin::ClientRecord {
+            credential_id: stored.id.clone(),
+            name: stored.name.clone().unwrap_or_else(|| {
+                format!(
+                    "unnamed-{}",
+                    stored.id[stored.id.len() - 6..].to_lowercase()
+                )
+            }),
+            kind: stored.kind,
+            role: stored.role,
+            permissions: stored.permissions.clone(),
+            created_at: stored.created_at,
+            last_used_at: id.and_then(|id| self.last_used.lock().ok()?.get(&id).copied()),
+            revoked: stored.revoked,
+            revoked_at: stored.revoked_at,
+            roots: stored
+                .roots
+                .iter()
+                .map(|r| zeus_api::methods::admin::ServiceRoot {
+                    path: r.path.display().to_string(),
+                    label: r.label.clone(),
+                    client_id: stored.id.clone(),
+                    created_at: r.created_at,
+                })
+                .collect(),
+        }
+    }
+
+    /// Every credential, oldest first; revoked ones only when asked. Never a token or verifier.
+    pub fn records(&self, include_revoked: bool) -> Vec<zeus_api::methods::admin::ClientRecord> {
+        let Ok(records) = self.records.read() else {
+            return Vec::new();
+        };
+        let mut list: Vec<_> = records
+            .stored
+            .iter()
+            .filter(|r| include_revoked || !r.revoked)
+            .map(|r| self.view(r))
+            .collect();
+        list.sort_by(|a, b| {
+            (a.created_at, &a.credential_id).cmp(&(b.created_at, &b.credential_id))
+        });
+        list
+    }
+
+    /// One credential's record.
+    pub fn record(&self, id: &CredentialId) -> Option<zeus_api::methods::admin::ClientRecord> {
+        let records = self.records.read().ok()?;
+        records
+            .stored
+            .iter()
+            .find(|r| r.id == id.as_str())
+            .map(|r| self.view(r))
+    }
+
+    /// Apply `change` to a copy of the records, persist it, then publish it. Nothing changes on failure.
+    fn mutate<T>(
+        &self,
+        change: impl FnOnce(&mut Vec<StoredCredential>) -> Result<T, ApiError>,
+    ) -> Result<T, ApiError> {
+        let _writer = self
+            .writer
+            .lock()
+            .map_err(|_| ApiError::internal("credential store unavailable"))?;
+        let mut stored = self
+            .records
+            .read()
+            .map_err(|_| ApiError::internal("credential store unavailable"))?
+            .stored
+            .clone();
+        let value = change(&mut stored)?;
+        let credentials = stored
+            .iter()
+            .map(credential_from)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|_| ApiError::internal("credential record invalid"))?;
+        let body = serde_json::to_vec_pretty(&StoreFile {
+            version: 1,
+            credentials: stored.clone(),
+        })
+        .map_err(|_| ApiError::internal("credential index serialization"))?;
+        write_private(&self.path, &body).map_err(|_| {
+            ApiError::new(
+                zeus_api::error::codes::UNAVAILABLE,
+                "credential index could not be written",
+            )
+        })?;
+        *self
+            .records
+            .write()
+            .map_err(|_| ApiError::internal("credential store unavailable"))? = Records {
+            stored,
+            credentials,
+        };
+        Ok(value)
+    }
+
+    /// Create an `agent` or `service` credential (05 section 9.11) with the id the caller minted, so the
+    /// write-ahead audit record can name it: mint the token, write the token file owner-only, then persist
+    /// the verifier. Returns the record and the token file path; the token itself never leaves the file.
+    /// API-created agents use the `mcp`, `a2a` or `embedded` role, so a requester label can never read as
+    /// the human's CLI.
+    pub fn add(
+        &self,
+        credentials_dir: &Path,
+        request: NewCredential<'_>,
+        now: Timestamp,
+    ) -> Result<(zeus_api::methods::admin::ClientRecord, std::path::PathBuf), ApiError> {
+        let NewCredential {
+            id,
+            name,
+            kind,
+            role,
+            permissions,
+        } = request;
+        if !valid_name(name) || RESERVED_NAMES.contains(&name) {
+            return Err(invalid(
+                "name must match [a-z][a-z0-9_-]{0,31} and must not be cli, agent, a2a or host",
+            ));
+        }
+        let role = match (kind, role) {
+            (ClientKind::Service, None | Some(ClientRole::Service)) => ClientRole::Service,
+            (ClientKind::Agent, None) => ClientRole::Mcp,
+            (
+                ClientKind::Agent,
+                Some(role @ (ClientRole::Mcp | ClientRole::A2a | ClientRole::Embedded)),
+            ) => role,
+            (ClientKind::Agent | ClientKind::Service, Some(_)) => {
+                return Err(invalid("that role is not allowed for this kind"));
+            }
+            _ => {
+                return Err(invalid(
+                    "only agent and service credentials are created through the API",
+                ));
+            }
+        };
+        let ceiling = kind.default_permissions();
+        let permissions = permissions.unwrap_or_else(|| ceiling.clone());
+        if !permissions.is_subset(&ceiling) {
+            return Err(invalid("permissions may only narrow the kind's ceiling"));
+        }
+        let token = Token::generate();
+        let mut credential = Credential::new(id.clone(), kind, role, token.auth_key(), now)?;
+        credential.permissions = permissions;
+        let file = credentials_dir.join(format!("{name}.token"));
+        let mut record = stored_from(&credential);
+        record.name = Some(name.to_owned());
+        let view = self.mutate(|stored| {
+            if stored
+                .iter()
+                .any(|r| !r.revoked && r.name.as_deref() == Some(name))
+            {
+                return Err(ApiError::new(
+                    "api.conflict",
+                    "a credential with that name exists",
+                ));
+            }
+            if stored.len() >= MAX_CREDENTIALS {
+                return Err(ApiError::new(
+                    zeus_api::error::codes::RATE_LIMITED,
+                    "credential limit reached",
+                )
+                .with_detail("limit", "credentials"));
+            }
+            // The token file goes first: an index without its file cannot authenticate anyone.
+            write_private(
+                &file,
+                ClientCredential {
+                    id: id.clone(),
+                    token,
+                }
+                .to_file_text()
+                .as_bytes(),
+            )
+            .map_err(|_| {
+                ApiError::new(
+                    zeus_api::error::codes::UNAVAILABLE,
+                    "credential file could not be written",
+                )
+            })?;
+            stored.push(record.clone());
+            Ok(())
+        });
+        if let Err(error) = view {
+            if !self.records.read().is_ok_and(|r| {
+                r.stored
+                    .iter()
+                    .any(|s| !s.revoked && s.name.as_deref() == Some(name))
+            }) {
+                let _ = std::fs::remove_file(&file);
+            }
+            return Err(error);
+        }
+        Ok((self.view(&record), file))
+    }
+
+    /// Revoke a credential (idempotent), deactivate its roots and remove its token file. Live connections are told
+    /// through [`Self::revocations`].
+    pub fn revoke(
+        &self,
+        credentials_dir: &Path,
+        id: &CredentialId,
+        now: Timestamp,
+    ) -> Result<zeus_api::methods::admin::ClientRecord, ApiError> {
+        let (record, changed) = self.mutate(|stored| {
+            let record = stored
+                .iter_mut()
+                .find(|r| r.id == id.as_str())
+                .ok_or_else(|| ApiError::new("api.not_found", "credential not found"))?;
+            let changed = !record.revoked;
+            if changed {
+                record.revoked = true;
+                record.revoked_at = Some(now);
+            }
+            Ok((record.clone(), changed))
+        })?;
+        if changed {
+            if let Some(name) = &record.name {
+                let _ = std::fs::remove_file(credentials_dir.join(format!("{name}.token")));
+            }
+            self.revocations.send_modify(|n| *n = n.wrapping_add(1));
+        }
+        Ok(self.view(&record))
+    }
+
+    /// Register a canonical root for an active service credential. The same path again returns the existing root
+    /// with `false`. Overlap with another service's root is refused, so roots never widen visibility.
+    pub fn register_root(
+        &self,
+        id: &CredentialId,
+        path: std::path::PathBuf,
+        label: Option<String>,
+        now: Timestamp,
+    ) -> Result<(zeus_api::methods::admin::ServiceRoot, bool), ApiError> {
+        let (root, created) = self.mutate(|stored| {
+            if stored.iter().any(|r| {
+                r.id != id.as_str()
+                    && r.kind == ClientKind::Service
+                    && !r.revoked
+                    && r.roots
+                        .iter()
+                        .any(|o| path.starts_with(&o.path) || o.path.starts_with(&path))
+            }) {
+                return Err(invalid("the path overlaps another service's root"));
+            }
+            let record = stored
+                .iter_mut()
+                .find(|r| r.id == id.as_str() && !r.revoked && r.kind == ClientKind::Service)
+                .ok_or_else(|| ApiError::new("api.not_found", "service credential not found"))?;
+            if let Some(existing) = record.roots.iter().find(|r| r.path == path) {
+                return Ok((existing.clone(), false));
+            }
+            if record.roots.len() >= MAX_SERVICE_ROOTS {
+                return Err(ApiError::new(
+                    zeus_api::error::codes::RATE_LIMITED,
+                    "service root limit reached",
+                )
+                .with_detail("limit", "service_roots"));
+            }
+            let root = StoredRoot {
+                path: path.clone(),
+                label,
+                created_at: now,
+            };
+            record.roots.push(root.clone());
+            Ok((root, true))
+        })?;
+        Ok((
+            zeus_api::methods::admin::ServiceRoot {
+                path: root.path.display().to_string(),
+                label: root.label,
+                client_id: id.to_string(),
+                created_at: root.created_at,
+            },
+            created,
+        ))
+    }
+
+    /// The active roots of a service credential, oldest first; empty when revoked or unregistered.
+    pub fn roots(&self, id: &CredentialId) -> Vec<std::path::PathBuf> {
+        self.records
+            .read()
+            .ok()
+            .and_then(|r| {
+                r.stored
+                    .iter()
+                    .find(|s| s.id == id.as_str() && !s.revoked)
+                    .map(|s| s.roots.iter().map(|r| r.path.clone()).collect())
+            })
+            .unwrap_or_default()
     }
 }
 
 impl CredentialStore for FileCredentialStore {
     fn get(&self, id: &CredentialId) -> Option<Credential> {
-        self.credentials
+        self.records
             .read()
             .ok()?
+            .credentials
             .iter()
             .find(|c| &c.id == id)
             .cloned()
@@ -250,7 +650,9 @@ pub fn provision(paths: &ZeusPaths, now: Timestamp) -> Result<ProvisionReport, P
         let id = CredentialId::generate();
         let credential = Credential::new(id.clone(), *kind, *role, token.auth_key(), now)
             .map_err(|e| ProvisionError::Corrupt(e.to_string()))?;
-        records.push(stored_from(&credential));
+        let mut record = stored_from(&credential);
+        record.name = Some((*name).to_string());
+        records.push(record);
         let client = ClientCredential { id, token };
         write_private(&file, client.to_file_text().as_bytes())?;
         report.created_credentials.push((*name).to_string());
@@ -298,6 +700,7 @@ mod tests {
             config_dir: dir.join("config"),
             runtime_dir: dir.join("run"),
             user_identity: "test".into(),
+            profile: None,
         }
     }
 
@@ -428,5 +831,93 @@ mod tests {
             assert_eq!(client.session().kind, *kind, "{name}");
             let _ = call::<DaemonPing, _>(&client, PingParams::default()).await;
         }
+    }
+
+    #[tokio::test]
+    async fn a_revoked_service_credential_loses_its_live_connection_and_cannot_return() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths(dir.path());
+        provision(&paths, Timestamp::now()).unwrap();
+        let secret = Arc::new(load_ipc_secret(&paths).unwrap());
+        let store =
+            Arc::new(FileCredentialStore::load(&paths.state_dir.join("credentials.json")).unwrap());
+        let id = CredentialId::generate();
+        let (record, file) = store
+            .add(
+                &paths.credentials_dir(),
+                NewCredential {
+                    id: id.clone(),
+                    name: "ogun",
+                    kind: ClientKind::Service,
+                    role: None,
+                    permissions: None,
+                },
+                Timestamp::now(),
+            )
+            .unwrap();
+        assert_eq!(file, paths.credential_file("ogun"));
+        assert!(record.permissions.contains(&Permission::FilesRootsRegister));
+        // The index survives a reload with the name, and still never holds the token.
+        let reloaded =
+            FileCredentialStore::load(&paths.state_dir.join("credentials.json")).unwrap();
+        assert_eq!(reloaded.record(&id).unwrap().name, "ogun");
+        let token = load_client_credential(&paths, "ogun").unwrap();
+        let index = std::fs::read_to_string(paths.state_dir.join("credentials.json")).unwrap();
+        assert!(!index.contains(&token.token.to_text()[4..]));
+        let router = Arc::new(
+            crate::build_router(Arc::new(crate::NotImplementedBackend))
+                .with_revocations(store.revocations()),
+        );
+        let ctx = Arc::new(ServerContext {
+            secret: Arc::clone(&secret),
+            credentials: store.clone(),
+            daemon: DaemonInfo {
+                version: "0.1.0".into(),
+                instance_id: "i".into(),
+            },
+            router,
+        });
+        let connect = |ctx: Arc<ServerContext>| {
+            let secret = secret.clone();
+            let credential = load_client_credential(&paths, "ogun");
+            async move {
+                let (client_end, server_end) = tokio::io::duplex(64 * 1024);
+                let serving = tokio::spawn(serve_connection(server_end, ctx));
+                let client = IpcClient::from_stream(
+                    client_end,
+                    credential?,
+                    &secret,
+                    ClientConfig::new(ClientInfo {
+                        name: "ogund".into(),
+                        version: "0".into(),
+                        role: ClientRole::Service,
+                    }),
+                )
+                .await
+                .map_err(|e| ProvisionError::Corrupt(e.to_string()))?;
+                Ok::<_, ProvisionError>((client, serving))
+            }
+        };
+        let (client, serving) = connect(ctx.clone()).await.unwrap();
+        assert_eq!(client.session().kind, ClientKind::Service);
+        call::<DaemonPing, _>(&client, PingParams::default())
+            .await
+            .unwrap();
+        store
+            .revoke(&paths.credentials_dir(), &id, Timestamp::now())
+            .unwrap();
+        // The idle connection is closed by the revocation signal, without another request.
+        tokio::time::timeout(std::time::Duration::from_secs(5), serving)
+            .await
+            .expect("the revoked connection closes")
+            .unwrap()
+            .unwrap();
+        assert!(
+            call::<DaemonPing, _>(&client, PingParams::default())
+                .await
+                .is_err()
+        );
+        assert!(!paths.credential_file("ogun").exists());
+        assert!(store.get(&id).unwrap().revoked);
     }
 }
