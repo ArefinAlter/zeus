@@ -75,34 +75,34 @@ impl RuntimeBackend {
         })
     }
 
-    /// Newest first over the first [`LIST_BOUND`] matching records of the store.
+    /// The newest [`LIST_BOUND`] records the caller may see and the filters match, newest first.
     pub(super) fn artifact_list(
         &self,
         ctx: &CallContext,
         p: ArtifactsListParams,
     ) -> ApiResult<ArtifactsListResult> {
         p.page.validate()?;
-        let records = self
+        let ids: Vec<_> = self
             .artifacts
-            .list(&ArtifactFilter {
-                blake3: p.blake3,
-                job_id: p.job_id,
-                run_id: p.run_id,
-                include_deleted: p.state != Some(ArtifactStateFilter::Active),
-                limit: LIST_BOUND,
-            })
-            .map_err(error)?;
-        let mut ids: Vec<_> = records
+            .list_newest_where(
+                &ArtifactFilter {
+                    blake3: p.blake3,
+                    job_id: p.job_id,
+                    run_id: p.run_id,
+                    include_deleted: p.state != Some(ArtifactStateFilter::Active),
+                    limit: LIST_BOUND,
+                },
+                |r| {
+                    p.sha256.is_none_or(|d| r.sha256 == d)
+                        && (p.state != Some(ArtifactStateFilter::Deleted)
+                            || r.state == ArtifactState::Deleted)
+                        && self.artifact_visible(ctx, r)
+                },
+            )
+            .map_err(error)?
             .into_iter()
-            .filter(|r| {
-                p.sha256.is_none_or(|d| r.sha256 == d)
-                    && (p.state != Some(ArtifactStateFilter::Deleted)
-                        || r.state == ArtifactState::Deleted)
-                    && self.artifact_visible(ctx, r)
-            })
             .map(|r| r.id)
             .collect();
-        ids.reverse();
         let ids = page(ids, &p.page)?;
         Ok(Page {
             items: ids

@@ -1,7 +1,7 @@
 //! `artifacts.*`: the content-addressed artifact store of spec 13, read through its export form (05 section 9.13).
 //!
 //! Every record is the store's portable export (artifact.v1 `Artifact`), privacy-reduced for the API: URL
-//! queries dropped and session origins withheld. Confined ingestion registers a caller-produced local file.
+//! queries dropped and session origins withheld. Ingestion (`artifacts.ingest`) is not offered yet.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
