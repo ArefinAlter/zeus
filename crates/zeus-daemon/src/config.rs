@@ -118,6 +118,90 @@ impl Default for ApprovalConfig {
     }
 }
 
+/// Router token-bucket rates of one credential class (05 section 13.2). Burst is twice the rate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct RateConfig {
+    /// Mutating calls per second (`jobs.enqueue` costs one per job), 1 to 1,000.
+    pub mutating_per_s: u32,
+    /// Other calls per second, except `jobs.wait` and the handshake, 1 to 10,000.
+    pub read_per_s: u32,
+    /// `jobs.probe`, `jobs.verify` and `audit.verify` per second, 1 to 1,000.
+    pub probe_per_s: u32,
+    /// `sessions.request` and session-bearing jobs per minute, 1 to 600.
+    pub session_request_per_min: u32,
+}
+
+impl Default for RateConfig {
+    fn default() -> Self {
+        Self {
+            mutating_per_s: 50,
+            read_per_s: 200,
+            probe_per_s: 10,
+            session_request_per_min: 10,
+        }
+    }
+}
+
+impl RateConfig {
+    /// The router rates.
+    pub fn limits(&self) -> zeus_api::rate::RateLimits {
+        use zeus_api::rate::Rate;
+        zeus_api::rate::RateLimits {
+            mutating: Rate::per_second(self.mutating_per_s),
+            read: Rate::per_second(self.read_per_s),
+            probe: Rate::per_second(self.probe_per_s),
+            session_request: Rate::per_minute(self.session_request_per_min),
+        }
+    }
+}
+
+/// `api.rate_limits`: agent credentials share one setting; each service credential, by name, has its own.
+/// Human-capable credentials keep the defaults.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields, default)]
+pub struct RateLimitConfig {
+    /// Every agent credential.
+    pub agent: RateConfig,
+    /// Service credentials by name (at most 64 entries).
+    pub service: std::collections::BTreeMap<String, RateConfig>,
+}
+
+impl RateLimitConfig {
+    /// The router's per-caller rates: agents share `agent`, a service uses its entry (by credential name) or the
+    /// defaults, human-capable callers use the defaults.
+    pub fn per_caller(
+        &self,
+        credentials: std::sync::Arc<crate::provision::FileCredentialStore>,
+    ) -> std::sync::Arc<zeus_api::rate::LimitsFor> {
+        use zeus_api::{ClientKind, rate::RateLimits};
+        let agent = self.agent.limits();
+        let services: std::collections::BTreeMap<String, RateLimits> = self
+            .service
+            .iter()
+            .map(|(name, rates)| (name.clone(), rates.limits()))
+            .collect();
+        std::sync::Arc::new(
+            move |identity: &zeus_api::ClientIdentity| match identity.kind {
+                ClientKind::Agent => agent,
+                ClientKind::Service if !services.is_empty() => credentials
+                    .record(&identity.credential_id)
+                    .and_then(|record| services.get(&record.name).copied())
+                    .unwrap_or_default(),
+                _ => RateLimits::default(),
+            },
+        )
+    }
+}
+
+/// API settings.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields, default)]
+pub struct ApiConfig {
+    /// Router rate limits.
+    pub rate_limits: RateLimitConfig,
+}
+
 /// The daemon configuration.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields, default)]
@@ -134,6 +218,8 @@ pub struct DaemonConfig {
     pub tombstone_days: Option<u32>,
     /// Log filter in `tracing` syntax, for example `info`. `ZEUS_LOG` overrides it; read at startup.
     pub log_filter: Option<String>,
+    /// API settings (rate limits).
+    pub api: ApiConfig,
 }
 
 impl DaemonConfig {
@@ -251,6 +337,56 @@ impl DaemonConfig {
         if let Some(days) = self.tombstone_days {
             check("tombstone_days", days.into(), 1, 365, &mut errors);
         }
+        let limits = &self.api.rate_limits;
+        if limits.service.len() > 64 {
+            errors.push("api.rate_limits.service has more than 64 entries".into());
+        }
+        for (prefix, rates) in std::iter::once(("api.rate_limits.agent".to_owned(), &limits.agent))
+            .chain(
+                limits
+                    .service
+                    .iter()
+                    .map(|(name, rates)| (format!("api.rate_limits.service.{name}"), rates)),
+            )
+        {
+            check(
+                &format!("{prefix}.mutating_per_s"),
+                rates.mutating_per_s.into(),
+                1,
+                1_000,
+                &mut errors,
+            );
+            check(
+                &format!("{prefix}.read_per_s"),
+                rates.read_per_s.into(),
+                1,
+                10_000,
+                &mut errors,
+            );
+            check(
+                &format!("{prefix}.probe_per_s"),
+                rates.probe_per_s.into(),
+                1,
+                1_000,
+                &mut errors,
+            );
+            check(
+                &format!("{prefix}.session_request_per_min"),
+                rates.session_request_per_min.into(),
+                1,
+                600,
+                &mut errors,
+            );
+        }
+        for name in limits.service.keys() {
+            if !crate::provision::valid_name(name)
+                || crate::provision::RESERVED_NAMES.contains(&name.as_str())
+            {
+                errors.push(format!(
+                    "api.rate_limits.service keys are service credential names, not {name:?}"
+                ));
+            }
+        }
         if let Some(filter) = &self.log_filter
             && (filter.len() > 512 || tracing_subscriber::EnvFilter::try_new(filter).is_err())
         {
@@ -354,6 +490,39 @@ mod tests {
         );
         assert_eq!(DaemonConfig::default().effective_log_filter(None), "info");
         assert!(DaemonConfig::parse("log_filter = \"[unclosed\"\n").is_err());
+    }
+
+    #[test]
+    fn rate_limits_are_configured_per_credential_class() {
+        let config = DaemonConfig::parse(
+            "[api.rate_limits.agent]
+mutating_per_s = 5
+[api.rate_limits.service.ogun]
+read_per_s = 7
+",
+        )
+        .unwrap();
+        assert_eq!(config.api.rate_limits.agent.limits().mutating.tokens, 5);
+        assert_eq!(config.api.rate_limits.agent.read_per_s, 200);
+        let ogun = config.api.rate_limits.service["ogun"].limits();
+        assert_eq!((ogun.read.tokens, ogun.mutating.tokens), (7, 50));
+        assert_eq!(ogun.session_request.per, std::time::Duration::from_secs(60));
+        for bad in [
+            "[api.rate_limits.agent]
+probe_per_s = 0
+",
+            "[api.rate_limits.service.Ogun]
+read_per_s = 7
+",
+            "[api.rate_limits.service.cli]
+read_per_s = 7
+",
+            "[api.rate_limits.agent]
+burst = 7
+",
+        ] {
+            assert!(DaemonConfig::parse(bad).is_err(), "{bad}");
+        }
     }
 
     #[test]

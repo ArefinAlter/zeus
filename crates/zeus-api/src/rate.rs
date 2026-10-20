@@ -14,6 +14,7 @@ use std::time::{Duration, Instant};
 use serde_json::Value;
 
 use crate::error::{ApiError, codes};
+use crate::kind::ClientIdentity;
 use crate::policy::MethodSpec;
 
 /// One bucket's rate: `tokens` per `per`, with a burst of twice that.
@@ -26,13 +27,15 @@ pub struct Rate {
 }
 
 impl Rate {
-    const fn per_second(tokens: u32) -> Self {
+    /// `tokens` per second.
+    pub const fn per_second(tokens: u32) -> Self {
         Self {
             tokens,
             per: Duration::from_secs(1),
         }
     }
-    const fn per_minute(tokens: u32) -> Self {
+    /// `tokens` per minute.
+    pub const fn per_minute(tokens: u32) -> Self {
         Self {
             tokens,
             per: Duration::from_secs(60),
@@ -63,6 +66,20 @@ impl Default for RateLimits {
         }
     }
 }
+
+impl RateLimits {
+    const fn rate(&self, kind: Kind) -> Rate {
+        match kind {
+            Kind::Mutating => self.mutating,
+            Kind::Read => self.read,
+            Kind::Probe => self.probe,
+            Kind::SessionRequest => self.session_request,
+        }
+    }
+}
+
+/// Chooses the rates of a caller: configured per credential class (05 section 13.2).
+pub type LimitsFor = dyn Fn(&ClientIdentity) -> RateLimits + Send + Sync;
 
 #[derive(Debug, Clone, Copy)]
 struct Bucket {
@@ -109,10 +126,20 @@ impl Kind {
 }
 
 /// Buckets of every credential seen, keyed by credential id. Bounded: idle entries are dropped first.
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub struct RateLimiter {
     limits: RateLimits,
+    limits_for: Option<std::sync::Arc<LimitsFor>>,
     buckets: Mutex<HashMap<(String, Kind), Bucket>>,
+}
+
+impl std::fmt::Debug for RateLimiter {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RateLimiter")
+            .field("limits", &self.limits)
+            .field("per_caller", &self.limits_for.is_some())
+            .finish_non_exhaustive()
+    }
 }
 
 /// Entries kept before idle buckets are pruned.
@@ -123,16 +150,17 @@ impl RateLimiter {
     pub fn new(limits: RateLimits) -> Self {
         Self {
             limits,
+            limits_for: None,
             buckets: Mutex::default(),
         }
     }
 
-    fn rate(&self, kind: Kind) -> Rate {
-        match kind {
-            Kind::Mutating => self.limits.mutating,
-            Kind::Read => self.limits.read,
-            Kind::Probe => self.limits.probe,
-            Kind::SessionRequest => self.limits.session_request,
+    /// A limiter whose rates depend on the caller; `limits_for` must be cheap, it runs on every call.
+    pub fn per_caller(limits_for: std::sync::Arc<LimitsFor>) -> Self {
+        Self {
+            limits: RateLimits::default(),
+            limits_for: Some(limits_for),
+            buckets: Mutex::default(),
         }
     }
 
@@ -165,26 +193,59 @@ impl RateLimiter {
         params: &Value,
         now: Instant,
     ) -> Result<(), ApiError> {
-        self.charge(credential, Self::costs(spec, params), now)
+        self.charge(credential, self.limits, Self::costs(spec, params), now)
     }
 
-    /// Charge the `session_request` token of an enqueued job that raises a `session_grant` approval.
-    pub fn charge_session_request(&self, credential: &str) -> Result<(), ApiError> {
-        self.charge_session_request_at(credential, Instant::now())
+    /// Charge one call of `identity` now, at the rates chosen for it.
+    pub fn check_identity(
+        &self,
+        identity: &ClientIdentity,
+        spec: &MethodSpec,
+        params: &Value,
+    ) -> Result<(), ApiError> {
+        self.charge(
+            identity.credential_id.as_str(),
+            self.limits_of(identity),
+            Self::costs(spec, params),
+            Instant::now(),
+        )
     }
 
-    /// [`Self::charge_session_request`] at `now`.
+    /// Charge the `session_request` token of an enqueued job that raises a `session_grant` approval, at the rates
+    /// chosen for its requester.
+    pub fn charge_session_request(&self, identity: &ClientIdentity) -> Result<(), ApiError> {
+        self.charge(
+            identity.credential_id.as_str(),
+            self.limits_of(identity),
+            vec![(Kind::SessionRequest, 1)],
+            Instant::now(),
+        )
+    }
+
+    /// Charge a `session_request` token of `credential` at the default rates at `now`.
     pub fn charge_session_request_at(
         &self,
         credential: &str,
         now: Instant,
     ) -> Result<(), ApiError> {
-        self.charge(credential, vec![(Kind::SessionRequest, 1)], now)
+        self.charge(
+            credential,
+            self.limits,
+            vec![(Kind::SessionRequest, 1)],
+            now,
+        )
+    }
+
+    fn limits_of(&self, identity: &ClientIdentity) -> RateLimits {
+        self.limits_for
+            .as_ref()
+            .map_or(self.limits, |choose| choose(identity))
     }
 
     fn charge(
         &self,
         credential: &str,
+        limits: RateLimits,
         costs: Vec<(Kind, u32)>,
         now: Instant,
     ) -> Result<(), ApiError> {
@@ -201,7 +262,7 @@ impl RateLimiter {
         // Check every bucket on a copy first, so a refused call charges none of them.
         let mut updated = Vec::new();
         for (kind, cost) in costs {
-            let rate = self.rate(kind);
+            let rate = limits.rate(kind);
             let key = (credential.to_owned(), kind);
             let mut bucket = buckets.get(&key).copied().unwrap_or(Bucket {
                 level: f64::from(rate.tokens) * 2.0,
@@ -314,6 +375,50 @@ mod tests {
         limiter
             .check_at("a", enqueue, &params, now + Duration::from_secs(2))
             .unwrap();
+    }
+
+    #[test]
+    fn per_caller_rates_follow_the_chosen_limits() {
+        use crate::kind::{ClientKind, ClientRole};
+        let caller = |kind: ClientKind, id: &str| ClientIdentity {
+            credential_id: crate::auth::CredentialId::parse(id).unwrap(),
+            kind,
+            role: ClientRole::Test,
+            permissions: kind.default_permissions(),
+            client_name: "test".into(),
+        };
+        let slow = RateLimits {
+            mutating: Rate::per_second(1),
+            ..RateLimits::default()
+        };
+        let limiter =
+            RateLimiter::per_caller(std::sync::Arc::new(move |identity: &ClientIdentity| {
+                if identity.kind == ClientKind::Agent {
+                    slow
+                } else {
+                    RateLimits::default()
+                }
+            }));
+        let control = lookup("jobs.control").unwrap();
+        let agent = caller(ClientKind::Agent, "cli_01M45NHJ2AHWMXT8JVJ7BEEJX7");
+        let human = caller(ClientKind::Human, "cli_01M45NHJ3XS0QXG9T42HHN2YR8");
+        for _ in 0..2 {
+            limiter
+                .check_identity(&agent, control, &Value::Null)
+                .unwrap();
+        }
+        let refused = limiter
+            .check_identity(&agent, control, &Value::Null)
+            .unwrap_err();
+        assert_eq!(
+            refused.envelope().details.as_ref().unwrap()["limit"],
+            "mutating"
+        );
+        for _ in 0..100 {
+            limiter
+                .check_identity(&human, control, &Value::Null)
+                .unwrap();
+        }
     }
 
     #[test]

@@ -265,6 +265,11 @@ impl RuntimeBackend {
         }))
     }
 
+    /// The configuration this daemon started with.
+    pub fn config(&self) -> &DaemonConfig {
+        &self.config
+    }
+
     /// Identity reported during the mutual handshake.
     pub fn info(&self) -> DaemonInfo {
         self.info.clone()

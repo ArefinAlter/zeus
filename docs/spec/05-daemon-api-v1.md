@@ -1261,6 +1261,8 @@ Token buckets per credential (all connections of one credential share them), wit
 
 Exceeding a bucket yields `api.rate_limited` with `details.limit` (the bucket name) and `details.retry_after_ms`. Independent of rates, at most 50 approvals are pending at once (01 section 5.3 rule 4).
 
+**Configuration (implemented 2026-10-18).** The router buckets are set by `api.rate_limits.agent.<rate>` and `api.rate_limits.service.<name>.<rate>`, where `<name>` is the service credential's name and `<rate>` is `mutating_per_s` (1 to 1,000), `read_per_s` (1 to 10,000), `probe_per_s` (1 to 1,000) or `session_request_per_min` (1 to 600). Setting one rate of an unlisted service creates its entry from the defaults; at most 64 services are listed, under credential names that are not reserved. A service without an entry, and every human-capable credential, uses the defaults. `decide` is `approvals.decisions_per_minute`; `admin` is fixed. Changes apply at the next daemon start (`restart_required`).
+
 ## 14. Audit
 
 The daemon writes these audit records (04 section 4.4) for API activity. Clients never write audit records.

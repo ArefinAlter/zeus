@@ -73,37 +73,7 @@ impl RuntimeBackend {
         }
         let old = DaemonConfig::load(path)
             .map_err(|_| ApiError::invalid_params("cannot load stored configuration"))?;
-        let mut value = serde_json::to_value(&old).map_err(|_| internal())?;
-        let parts = p.key.split('.').collect::<Vec<_>>();
-        if parts.is_empty() || parts.len() > 3 || parts.iter().any(|s| s.is_empty()) {
-            return Err(ApiError::invalid_params("invalid configuration key"));
-        }
-        if crate::config::INEFFECTIVE_KEYS.contains(&p.key.as_str()) {
-            return Err(ApiError::not_implemented(
-                "this setting is accepted in the file for compatibility but the engine does not use it yet",
-            ));
-        }
-        let mut target = &mut value;
-        for part in &parts[..parts.len() - 1] {
-            target = target
-                .get_mut(*part)
-                .ok_or_else(|| ApiError::invalid_params("unknown configuration key"))?;
-        }
-        let target = target
-            .get_mut(parts[parts.len() - 1])
-            .ok_or_else(|| ApiError::invalid_params("unknown configuration key"))?;
-        let previous = target.clone();
-        *target = p.value;
-        let config: DaemonConfig = serde_json::from_value(value)
-            .map_err(|_| ApiError::invalid_params("configuration value has the wrong type"))?;
-        if crate::config::changes_ineffective(&old, &config) {
-            return Err(ApiError::not_implemented(
-                "this setting is accepted in the file for compatibility but the engine does not use it yet",
-            ));
-        }
-        config.validate().map_err(|_| {
-            ApiError::invalid_params("configuration value is outside its permitted bounds")
-        })?;
+        let (config, previous) = apply_setting(&old, &p.key, p.value.clone())?;
         let body = toml::to_string_pretty(&config).map_err(|_| internal())?;
         let mut entry =
             AuditEntry::new(Timestamp::now(), actor, "config.changed", AuditOutcome::Ok);
@@ -147,5 +117,135 @@ impl RuntimeBackend {
             applied: false,
             restart_required: true,
         })
+    }
+}
+
+/// The configuration with `key` set to `new`, validated, and the value it replaces. Keys name existing settings,
+/// except that `api.rate_limits.service.<name>.<rate>` creates that service's entry from the defaults.
+fn apply_setting(
+    old: &DaemonConfig,
+    key: &str,
+    new: serde_json::Value,
+) -> ApiResult<(DaemonConfig, serde_json::Value)> {
+    let mut value = serde_json::to_value(old).map_err(|_| internal())?;
+    let parts = key.split('.').collect::<Vec<_>>();
+    if parts.is_empty() || parts.len() > 5 || parts.iter().any(|s| s.is_empty()) {
+        return Err(ApiError::invalid_params("invalid configuration key"));
+    }
+    if crate::config::INEFFECTIVE_KEYS.contains(&key) {
+        return Err(ApiError::not_implemented(
+            "this setting is accepted in the file for compatibility but the engine does not use it yet",
+        ));
+    }
+    if let ["api", "rate_limits", "service", name, _] = parts.as_slice()
+        && let Some(services) = value
+            .pointer_mut("/api/rate_limits/service")
+            .and_then(serde_json::Value::as_object_mut)
+        && !services.contains_key(*name)
+    {
+        services.insert(
+            (*name).to_owned(),
+            serde_json::to_value(crate::config::RateConfig::default()).map_err(|_| internal())?,
+        );
+    }
+    let mut target = &mut value;
+    for part in &parts {
+        target = target
+            .get_mut(*part)
+            .ok_or_else(|| ApiError::invalid_params("unknown configuration key"))?;
+    }
+    let previous = std::mem::replace(target, new);
+    let config: DaemonConfig = serde_json::from_value(value)
+        .map_err(|_| ApiError::invalid_params("configuration value has the wrong type"))?;
+    if crate::config::changes_ineffective(old, &config) {
+        return Err(ApiError::not_implemented(
+            "this setting is accepted in the file for compatibility but the engine does not use it yet",
+        ));
+    }
+    config.validate().map_err(|_| {
+        ApiError::invalid_params("configuration value is outside its permitted bounds")
+    })?;
+    Ok((config, previous))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_parent_table_cannot_carry_an_ineffective_setting() {
+        let old = DaemonConfig::default();
+        let mut scheduler = serde_json::to_value(&old.scheduler).unwrap();
+        scheduler["segment_size_mib"] = serde_json::json!(32);
+        let error = apply_setting(&old, "scheduler", scheduler).unwrap_err();
+        assert_eq!(
+            error.envelope().code.as_str(),
+            zeus_api::error::codes::NOT_IMPLEMENTED
+        );
+        // The same table without that change is accepted.
+        let mut scheduler = serde_json::to_value(&old.scheduler).unwrap();
+        scheduler["concurrent_jobs"] = serde_json::json!(8);
+        let (config, _) = apply_setting(&old, "scheduler", scheduler).unwrap();
+        assert_eq!(config.scheduler.concurrent_jobs, 8);
+    }
+
+    #[test]
+    fn settings_replace_existing_keys_and_create_service_rates() {
+        let old = DaemonConfig::default();
+        let (config, previous) = apply_setting(
+            &old,
+            "api.rate_limits.agent.mutating_per_s",
+            serde_json::json!(5),
+        )
+        .unwrap();
+        assert_eq!(previous, 50);
+        assert_eq!(config.api.rate_limits.agent.mutating_per_s, 5);
+        let (config, previous) = apply_setting(
+            &config,
+            "api.rate_limits.service.ogun.read_per_s",
+            serde_json::json!(400),
+        )
+        .unwrap();
+        assert_eq!(previous, 200, "a new entry starts from the defaults");
+        assert_eq!(config.api.rate_limits.service["ogun"].read_per_s, 400);
+        assert_eq!(config.api.rate_limits.service["ogun"].mutating_per_s, 50);
+        // The file form round-trips.
+        let text = toml::to_string_pretty(&config).unwrap();
+        assert_eq!(DaemonConfig::parse(&text).unwrap(), config);
+        for (key, value, code) in [
+            (
+                "api.rate_limits.agent.mutating_per_s",
+                serde_json::json!(0),
+                "api.invalid_params",
+            ),
+            (
+                "api.rate_limits.service.Ogun.read_per_s",
+                serde_json::json!(5),
+                "api.invalid_params",
+            ),
+            (
+                "api.rate_limits.service.agent.read_per_s",
+                serde_json::json!(5),
+                "api.invalid_params",
+            ),
+            (
+                "api.rate_limits.service.ogun.unknown",
+                serde_json::json!(5),
+                "api.invalid_params",
+            ),
+            (
+                "api.rate_limits.human.read_per_s",
+                serde_json::json!(5),
+                "api.invalid_params",
+            ),
+            (
+                "scheduler.segment_size_mib",
+                serde_json::json!(8),
+                "api.not_implemented",
+            ),
+        ] {
+            let error = apply_setting(&old, key, value).unwrap_err();
+            assert_eq!(error.envelope().code.as_str(), code, "{key}");
+        }
     }
 }

@@ -980,8 +980,18 @@ impl ApprovalPort for ConsentManager {
                     .as_ref()
                     .is_some_and(|job| job.state == JobState::Queued)
                 && let Some(rates) = self.rates.get()
+                && let Ok(credential) = self.credential(requester)
             {
-                rates.charge_session_request(requester)?;
+                // At the rates chosen for the requester: its effective kind and, for a service, its name.
+                rates.charge_session_request(&ClientIdentity {
+                    credential_id: credential.id,
+                    kind: REQUESTER_KIND
+                        .try_with(|kind| *kind)
+                        .unwrap_or(credential.kind),
+                    role: credential.role,
+                    permissions: credential.permissions,
+                    client_name: String::new(),
+                })?;
             }
             let a = self.prepare(ApprovalPreparation {
                 requester,

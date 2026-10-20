@@ -42,8 +42,12 @@ pub async fn run(paths: ZeusPaths) -> Result<()> {
     let native = backend.clone();
     let classify = backend.clone();
     let credentials = backend.credentials();
-    let rates = Arc::new(zeus_api::rate::RateLimiter::new(
-        zeus_api::rate::RateLimits::default(),
+    let rates = Arc::new(zeus_api::rate::RateLimiter::per_caller(
+        backend
+            .config()
+            .api
+            .rate_limits
+            .per_caller(credentials.clone()),
     ));
     backend.share_rate_limiter(rates.clone());
     let router = crate::build_router(backend.clone())
