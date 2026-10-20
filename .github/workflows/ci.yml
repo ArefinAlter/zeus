@@ -1,6 +1,6 @@
 # Required checks for the zeus app workspace. The workspace builds against the sibling zeus-core checkout
 # (path dependencies), so every Rust job checks it out next to this repository: the branch with the same
-# name when it exists, otherwise main, or an explicit ref for a manual run.
+# name when it exists, otherwise the pinned coordinated core revision, or an explicit manual ref.
 #
 # zeus-core is private: the repository secret ZEUS_CORE_TOKEN must hold a fine-grained token with read-only
 # "Contents" access to ArefinAlter/zeus-core. Pull requests from forks do not receive it and cannot build.
@@ -13,7 +13,7 @@ on:
   workflow_dispatch:
     inputs:
       core_ref:
-        description: zeus-core branch, tag or commit (default the same branch name, else main)
+        description: zeus-core branch, tag or commit (default matching branch, else pinned companion)
         required: false
         default: ""
 
@@ -49,7 +49,7 @@ jobs:
                 "https://x-access-token:${TOKEN}@github.com/ArefinAlter/zeus-core.git" "$BRANCH" >/dev/null 2>&1; then
               ref="$BRANCH"
             else
-              ref="main"
+              ref="c3f433f931d482a6e4d482a2e5d579476e34bfee"
             fi
           fi
           echo "zeus-core ref: $ref"
