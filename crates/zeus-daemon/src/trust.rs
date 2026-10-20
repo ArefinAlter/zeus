@@ -511,6 +511,7 @@ mod offline_tests {
             config_dir: dir.path().to_owned(),
             runtime_dir: dir.path().to_owned(),
             user_identity: "test".into(),
+            profile: None,
         };
         let lock = std::fs::OpenOptions::new()
             .read(true)

@@ -13,6 +13,7 @@ async fn shutdown_defaults_validates_before_effects_and_persists_one_announcemen
         config_dir: dir.path().join("config"),
         runtime_dir: dir.path().join("runtime"),
         user_identity: "test".into(),
+        profile: None,
     };
     zeus_daemon::provision::provision(&paths, Timestamp::now()).unwrap();
     let backend = RuntimeBackend::open(

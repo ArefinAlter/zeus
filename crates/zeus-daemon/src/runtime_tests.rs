@@ -23,6 +23,7 @@ fn paths(root: &Path) -> zeus_api::endpoint::ZeusPaths {
         config_dir: root.join("config"),
         runtime_dir: root.join("runtime"),
         user_identity: "test".into(),
+        profile: None,
     }
 }
 async fn setup(root: &Path) -> Arc<RuntimeBackend> {
