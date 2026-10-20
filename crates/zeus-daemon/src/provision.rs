@@ -298,6 +298,7 @@ mod tests {
             config_dir: dir.join("config"),
             runtime_dir: dir.join("run"),
             user_identity: "test".into(),
+            profile: None,
         }
     }
 

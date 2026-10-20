@@ -8,7 +8,7 @@ Draft 1 · 2026-10-16. Defines the `zeus` command surface and human terminal int
 
 Data goes to stdout; diagnostics and progress go to stderr. `--json` produces one JSON document and conflicts with `--ndjson`; the latter emits one object per list entry. Errors include their stable 00/05 code and map to section 4. Output MUST redact URLs and secrets using 00. File names, requester text and server errors MUST pass the display sanitizer before terminal rendering. Success is reported only after a successful daemon response, never because a message was merely written.
 
-Global flags: `--json`, `--ndjson`, `--quiet`/`-q`, `--no-color`, `--dry-run`, `--yes`, `--profile`. `NO_COLOR` disables color. The current parser accepts `--profile`, but profile-specific configuration loading is unfinished and MUST NOT be presented as working isolation.
+Global flags: `--json`, `--ndjson`, `--quiet`/`-q`, `--no-color`, `--dry-run`, `--yes`, `--profile`. `NO_COLOR` disables color. `--profile NAME` (or `ZEUS_PROFILE`; `default` selects the default) is a separate namespace: each default state, configuration and runtime directory gains `profiles/NAME`, and the daemon endpoint derives from the user and the profile, so profiles never share credentials, state or a daemon. Explicit `ZEUS_STATE_DIR`, `ZEUS_CONFIG_DIR` and `ZEUS_RUNTIME_DIR` are used exactly as given. A `zeusd` that the CLI starts inherits the CLI's profile. Browsers launch the native host without a profile, so browser integration uses the default profile.
 
 ## 2. Command catalogue
 
@@ -81,7 +81,7 @@ Snapshots are paginated and refreshed after notifications and periodically. A la
 
 Required checks: parser and stable exits, JSON/NDJSON behavior, pipe input cannot approve, stale/altered/unknown facts cannot approve, typed-code mismatch cannot approve, canceled wait leaves the job active, terminal restoration on EOF/error/Ctrl-C, TUI action legality, event lag repair, Windows key-event handling and `NO_COLOR`.
 
-Current implementation limitations requiring follow-up: real browser/terminal platform acceptance, daemon autostart registration, profile-specific loading, streaming progress independent of snapshot RPC latency, and exact spec06 MCP resource/pagination parity. These are not implied complete by this draft.
+Current implementation limitations requiring follow-up: real browser/terminal platform acceptance, daemon autostart registration, streaming progress independent of snapshot RPC latency, and exact spec06 MCP resource/pagination parity. These are not implied complete by this draft.
 
 Executable registration is explicit: install `zeusd`, `zeus` and `zeus-native-host` together, then run `zeusd init` (also used by `zeus daemon install`). Startup only reads registrations; missing or changed pins disable human authority. After an upgrade, stop the daemon and run `zeusd trust-clients` at the controlling terminal. It holds the daemon lock, shows old/new canonical paths and BLAKE3 digests, requires fresh typed confirmation after the input delay, rehashes the installed files, atomically replaces private pins with a backup, and records intent/completion in the anchored audit chain. There is no noninteractive override. Deleting pins or automatically replacing a mismatched digest is not an approved recovery procedure. Real-terminal and installer upgrade acceptance remain release gates.
 

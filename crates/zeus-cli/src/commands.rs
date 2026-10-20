@@ -920,7 +920,7 @@ pub async fn run_local(
             ))
         }
         Command::Daemon(DaemonCommand::Status) => daemon_status_local(paths),
-        Command::Daemon(DaemonCommand::Install) => daemon_run(&["init"]),
+        Command::Daemon(DaemonCommand::Install) => daemon_run(paths, &["init"]),
         Command::Daemon(DaemonCommand::Start) => daemon_start(paths).await,
         Command::NativeHost(sub) => native_host(sub, global, paths),
         _ => Err(ApiError::internal("not a local command")),
@@ -990,7 +990,7 @@ async fn daemon_start(paths: &ZeusPaths) -> ApiResult<CmdOutput> {
     // Installation is explicit: never silently create a new identity during a failed connection.
     crate::connect::load_secret(paths)?;
     crate::connect::load_credential(paths, Identity::Cli)?;
-    let mut command = std::process::Command::new(zeusd_path()?);
+    let mut command = zeusd_command(paths)?;
     command
         .arg("run")
         .stdin(std::process::Stdio::null())
@@ -1033,17 +1033,24 @@ async fn daemon_start(paths: &ZeusPaths) -> ApiResult<CmdOutput> {
     ))
 }
 
-fn daemon_run(args: &[&str]) -> ApiResult<CmdOutput> {
+/// A `zeusd` command bound to the same profile as this CLI, whatever `ZEUS_PROFILE` the shell holds.
+fn zeusd_command(paths: &ZeusPaths) -> ApiResult<std::process::Command> {
+    let mut command = std::process::Command::new(zeusd_path()?);
+    command.env(
+        "ZEUS_PROFILE",
+        paths.profile.as_deref().unwrap_or("default"),
+    );
+    Ok(command)
+}
+
+fn daemon_run(paths: &ZeusPaths, args: &[&str]) -> ApiResult<CmdOutput> {
     let exe = zeusd_path()?;
-    let output = std::process::Command::new(&exe)
-        .args(args)
-        .output()
-        .map_err(|e| {
-            ApiError::new(
-                codes::UNAVAILABLE,
-                format!("cannot run {}: {e}", exe.display()),
-            )
-        })?;
+    let output = zeusd_command(paths)?.args(args).output().map_err(|e| {
+        ApiError::new(
+            codes::UNAVAILABLE,
+            format!("cannot run {}: {e}", exe.display()),
+        )
+    })?;
     let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
     let exit = if output.status.success() {
         Exit::Success
@@ -1586,6 +1593,7 @@ mod tests {
             config_dir: dir.path().join("c"),
             runtime_dir: dir.path().join("r"),
             user_identity: "t".into(),
+            profile: None,
         };
         let cli = parse(&["completions", "bash"]);
         assert!(!needs_daemon(&cli.command));
@@ -1613,6 +1621,7 @@ mod tests {
             config_dir: dir.path().join("c"),
             runtime_dir: dir.path().join("r"),
             user_identity: "t".into(),
+            profile: None,
         };
         let host = dir.path().join("zeus-native-host");
         let cli = parse(&[

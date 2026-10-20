@@ -94,6 +94,7 @@ mod tests {
             config_dir: dir.path().join("config"),
             runtime_dir: dir.path().join("run"),
             user_identity: "t".into(),
+            profile: None,
         };
         let error = connect(&paths, Identity::Cli).await.err().unwrap();
         assert_eq!(error.envelope().code.as_str(), codes::UNAVAILABLE);
