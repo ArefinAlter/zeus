@@ -178,6 +178,9 @@ pub struct CloudService {
     stopping: AtomicBool,
     /// When retention last ran; it runs at startup and then at most hourly.
     retained_at: std::sync::Mutex<Option<std::time::Instant>>,
+    /// Makes retention fail, to prove deliveries continue without it.
+    #[cfg(test)]
+    fail_retention: AtomicBool,
 }
 /// Finished deliveries (and the plans they used) are kept this long after their last change.
 const TERMINAL_RETENTION_MS: u64 = 30 * 86_400_000;
@@ -241,10 +244,16 @@ impl CloudService {
             workers: Default::default(),
             stopping: AtomicBool::new(false),
             retained_at: Default::default(),
+            #[cfg(test)]
+            fail_retention: AtomicBool::new(false),
         }))
     }
     /// Apply bounded retention at `now` (roadmap D05); audited when it removed anything.
     pub(crate) fn retain_at(&self, now: Timestamp) -> ApiResult<()> {
+        #[cfg(test)]
+        if self.fail_retention.load(Ordering::Acquire) {
+            return Err(fail());
+        }
         let pruned = self.store.prune(
             now,
             TERMINAL_RETENTION_MS,
@@ -271,17 +280,23 @@ impl CloudService {
         }
         Ok(())
     }
-    fn retain_hourly(&self) -> ApiResult<()> {
-        let due = self
-            .retained_at
-            .lock()
-            .map_err(|_| fail())?
-            .is_none_or(|at| at.elapsed() >= std::time::Duration::from_secs(3600));
-        if due {
-            self.retain_at(Timestamp::now())?;
-            *self.retained_at.lock().map_err(|_| fail())? = Some(std::time::Instant::now());
+    /// Run retention when an hour has passed since the last attempt. A failure is logged and retried at the next
+    /// hour; it never stops deliveries from starting or being polled.
+    fn retain_hourly(&self) {
+        let Ok(mut retained_at) = self.retained_at.lock() else {
+            return;
+        };
+        if retained_at.is_some_and(|at| at.elapsed() < std::time::Duration::from_secs(3600)) {
+            return;
         }
-        Ok(())
+        *retained_at = Some(std::time::Instant::now());
+        drop(retained_at);
+        if let Err(e) = self.retain_at(Timestamp::now()) {
+            tracing::warn!(
+                code = %e.envelope().code,
+                "cloud state retention failed; deliveries continue and it is retried within the hour"
+            );
+        }
     }
     fn admit(&self) -> ApiResult<()> {
         if self.stopping.load(Ordering::Acquire) {
