@@ -8,8 +8,14 @@ use anyhow::{Context, Result, bail};
 use zeus_api::endpoint::ZeusPaths;
 use zeus_types::Timestamp;
 
-fn init_logging() {
-    let filter = tracing_subscriber::EnvFilter::try_from_env("ZEUS_LOG")
+/// `ZEUS_LOG` wins, then the configuration's `log_filter` (for `run`), then `info`.
+fn init_logging(config: Option<&zeus_daemon::DaemonConfig>) {
+    let env = std::env::var("ZEUS_LOG").ok();
+    let filter = config
+        .cloned()
+        .unwrap_or_default()
+        .effective_log_filter(env.as_deref());
+    let filter = tracing_subscriber::EnvFilter::try_new(filter)
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
     tracing_subscriber::fmt()
         .with_env_filter(filter)
@@ -19,9 +25,15 @@ fn init_logging() {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    init_logging();
     let mut args = std::env::args().skip(1);
-    match args.next().as_deref() {
+    let command = args.next();
+    // An invalid file is reported by `run` itself; logging then starts with the defaults.
+    let config = (command.as_deref() == Some("run"))
+        .then(|| ZeusPaths::discover().ok())
+        .flatten()
+        .and_then(|paths| zeus_daemon::DaemonConfig::load(&paths.config_file()).ok());
+    init_logging(config.as_ref());
+    match command.as_deref() {
         Some("--version" | "-V") => {
             println!("zeusd {}", env!("CARGO_PKG_VERSION"));
             Ok(())
