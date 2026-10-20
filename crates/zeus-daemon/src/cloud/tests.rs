@@ -382,6 +382,27 @@ impl Fixture {
     }
 }
 #[tokio::test]
+async fn a_failing_retention_never_stops_deliveries() {
+    let f = Fixture::new().await;
+    f.service.fail_retention.store(true, Ordering::Release);
+    let id = f.source_job(b"retention fails");
+    let delivery = f
+        .submit(
+            CloudSource::CompletedJob { job_id: id },
+            DeliveryMode::StagedUpload,
+            "retention",
+        )
+        .await;
+    f.service.tick().await.unwrap();
+    f.approve(&delivery).await;
+    f.service.tick().await.unwrap();
+    f.settle().await;
+    assert_eq!(
+        f.get(&delivery.delivery_id).state,
+        CloudDeliveryState::Completed
+    );
+}
+#[tokio::test]
 async fn approval_is_required_upload_verified_once_and_original_file_preserved() {
     let f = Fixture::new().await;
     let id = f.source_job(b"verified original");
