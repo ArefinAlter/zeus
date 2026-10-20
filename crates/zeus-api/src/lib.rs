@@ -73,6 +73,8 @@ pub mod capabilities {
     pub const FILES_ROOTS: &str = "files.roots";
     /// `files.organize` and `files.undo`.
     pub const FILES_ORGANIZE: &str = "files.organize";
+    /// `artifacts.get`, `artifacts.list`, `artifacts.lineage` and `artifacts.ingest`.
+    pub const ARTIFACTS: &str = "artifacts";
     /// Workflow methods (later phase).
     pub const WORKFLOWS: &str = "workflows";
     /// LLM provider methods (later phase).
@@ -88,6 +90,7 @@ pub mod capabilities {
         CLIENTS,
         FILES_ROOTS,
         FILES_ORGANIZE,
+        ARTIFACTS,
         WORKFLOWS,
         LLM,
     ];

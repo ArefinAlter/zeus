@@ -193,6 +193,12 @@ pub const METHODS: &[MethodSpec] = &[
     MethodSpec::needs("files.roots.register", FilesRootsRegister)
         .mutates()
         .only_role(ClientRole::Service),
+    MethodSpec::needs("artifacts.get", FilesRead).later(),
+    MethodSpec::needs("artifacts.list", FilesRead).later(),
+    MethodSpec::needs("artifacts.lineage", FilesRead).later(),
+    MethodSpec::needs("artifacts.ingest", FilesWrite)
+        .mutates()
+        .later(),
 ];
 
 /// The relay method for native-messaging frames. It is a notification, not an RPC method, so it has its own
@@ -325,6 +331,7 @@ mod tests {
             "files.convert",
             "files.undo",
             "files.roots.register",
+            "artifacts.ingest",
             "workflows.plan",
             "workflows.run",
             "workflows.control",

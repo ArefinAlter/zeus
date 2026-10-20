@@ -13,6 +13,10 @@ use zeus_api::methods::admin::{
     LlmAuthSignOutResult, LlmAuthStartParams, LlmAuthStartResult, LlmAuthStatusParams,
     LlmAuthStatusResult, LlmConfigureParams, LlmConfigureResult, LlmStatusParams, LlmStatusResult,
 };
+use zeus_api::methods::artifacts::{
+    ArtifactsGetParams, ArtifactsGetResult, ArtifactsIngestParams, ArtifactsIngestResult,
+    ArtifactsLineageParams, ArtifactsLineageResult, ArtifactsListParams, ArtifactsListResult,
+};
 use zeus_api::methods::cloud::*;
 use zeus_api::methods::daemon::{
     KillSwitchParams, KillSwitchResult, ShutdownParams, ShutdownResult, StatusParams, StatusResult,
@@ -115,6 +119,14 @@ backend! {
     files_undo(FilesUndoParams) -> FilesUndoResult;
     /// `files.roots.register` (role `service` only).
     files_roots_register(FilesRootsRegisterParams) -> FilesRootsRegisterResult;
+    /// `artifacts.get`.
+    artifacts_get(ArtifactsGetParams) -> ArtifactsGetResult;
+    /// `artifacts.list`.
+    artifacts_list(ArtifactsListParams) -> ArtifactsListResult;
+    /// `artifacts.lineage`.
+    artifacts_lineage(ArtifactsLineageParams) -> ArtifactsLineageResult;
+    /// `artifacts.ingest`.
+    artifacts_ingest(ArtifactsIngestParams) -> ArtifactsIngestResult;
     /// `clients.list` (admin, human-only).
     clients_list(ClientsListParams) -> ClientsListResult;
     /// `clients.add` (admin, human-only, `cli_interactive` evidence).

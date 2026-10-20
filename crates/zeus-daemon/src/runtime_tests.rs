@@ -488,6 +488,372 @@ async fn service_clients_are_confined_to_their_roots_jobs_and_records() {
         ["set.bin"]
     );
     assert_eq!(files.items[0].job_id, Some(own_id));
+    backend.flush_outbox().await.unwrap();
+    let artifacts = backend
+        .artifacts_list(&service, Default::default())
+        .await
+        .unwrap();
+    contract("ArtifactsListResult", &artifacts);
+    assert_eq!(artifacts.items.len(), 1);
+    assert_eq!(artifacts.items[0]["job_id"], own_id.to_string());
+    let everything = backend
+        .artifacts_list(&agent, Default::default())
+        .await
+        .unwrap();
+    assert_eq!(everything.items.len(), 2);
+    let foreign = everything
+        .items
+        .iter()
+        .find(|a| a["job_id"] == their_id.to_string())
+        .unwrap();
+    let foreign_id: zeus_types::ArtifactId = serde_json::from_value(foreign["id"].clone()).unwrap();
+    for error in [
+        backend
+            .artifacts_get(
+                &service,
+                ArtifactsGetParams {
+                    artifact_id: foreign_id,
+                },
+            )
+            .await
+            .unwrap_err(),
+        backend
+            .artifacts_lineage(
+                &service,
+                ArtifactsLineageParams {
+                    artifact_id: foreign_id,
+                    direction: LineageDirection::Ancestors,
+                    max_depth: None,
+                    max_nodes: None,
+                },
+            )
+            .await
+            .unwrap_err(),
+    ] {
+        assert_eq!(error.envelope().code.as_str(), "artifact.not_found");
+    }
+    let own_artifact: zeus_types::ArtifactId =
+        serde_json::from_value(artifacts.items[0]["id"].clone()).unwrap();
+    let got = backend
+        .artifacts_get(
+            &service,
+            ArtifactsGetParams {
+                artifact_id: own_artifact,
+            },
+        )
+        .await
+        .unwrap();
+    contract("ArtifactsGetResult", &got);
+    // A derived record of the service's job with three parents: its own download, another client's
+    // download and content never recorded here.
+    let parent = |id: zeus_types::ArtifactId, role: &str| {
+        let record = backend.artifacts.get(id).unwrap();
+        zeus_artifact::ParentRef {
+            artifact_id: Some(id),
+            blake3: record.blake3,
+            sha256: record.sha256,
+            size_bytes: record.size_bytes,
+            role: role.into(),
+        }
+    };
+    let unknown = zeus_verify::hash_bytes(b"settings never ingested");
+    let derived_file = root_path.join("derived.bin");
+    std::fs::write(&derived_file, b"derived bytes").unwrap();
+    let mut draft = zeus_artifact::ArtifactDraft::local("zeus", "0", Some("derived.bin".into()));
+    draft.record.origin = zeus_artifact::ArtifactOrigin::Derived;
+    draft.record.produced_at = Some(Timestamp::now());
+    draft.record.job_id = Some(own_id);
+    draft.record.parents = vec![
+        parent(own_artifact, "input"),
+        parent(foreign_id, "input"),
+        zeus_artifact::ParentRef {
+            artifact_id: None,
+            blake3: unknown.blake3,
+            sha256: unknown.sha256,
+            size_bytes: 23,
+            role: "config".into(),
+        },
+    ];
+    let derived = backend
+        .artifacts
+        .ingest(&derived_file, draft, None)
+        .unwrap()
+        .id;
+    let ancestors = || ArtifactsLineageParams {
+        artifact_id: derived,
+        direction: LineageDirection::Ancestors,
+        max_depth: None,
+        max_nodes: None,
+    };
+    let full = backend
+        .artifacts_lineage(&agent, ancestors())
+        .await
+        .unwrap();
+    contract("ArtifactsLineageResult", &full);
+    assert!(!full.truncated);
+    let ids = full.nodes.iter().map(|n| n.artifact_id).collect::<Vec<_>>();
+    assert_eq!(
+        ids,
+        [Some(derived), Some(own_artifact), Some(foreign_id), None]
+    );
+    assert_eq!(
+        full.nodes[0]
+            .links
+            .iter()
+            .map(|l| (l.node, l.role.as_str()))
+            .collect::<Vec<_>>(),
+        [(1, "input"), (2, "input"), (3, "config")]
+    );
+    assert_eq!(
+        full.nodes.iter().map(|n| n.depth).collect::<Vec<_>>(),
+        [0, 1, 1, 1]
+    );
+    assert_eq!(full.nodes[3].blake3, unknown.blake3);
+    // The service never sees the other client's record: that parent becomes content-only.
+    let scoped = backend
+        .artifacts_lineage(&service, ancestors())
+        .await
+        .unwrap();
+    assert!(scoped.truncated);
+    assert_eq!(
+        scoped
+            .nodes
+            .iter()
+            .map(|n| n.artifact_id)
+            .collect::<Vec<_>>(),
+        [Some(derived), Some(own_artifact), None, None]
+    );
+    let bounded = backend
+        .artifacts_lineage(
+            &agent,
+            ArtifactsLineageParams {
+                artifact_id: derived,
+                direction: LineageDirection::Ancestors,
+                max_depth: None,
+                max_nodes: Some(2),
+            },
+        )
+        .await
+        .unwrap();
+    assert!(bounded.truncated);
+    assert_eq!(bounded.nodes.len(), 2);
+    let children = backend
+        .artifacts_lineage(
+            &agent,
+            ArtifactsLineageParams {
+                artifact_id: own_artifact,
+                direction: LineageDirection::Descendants,
+                max_depth: Some(2),
+                max_nodes: None,
+            },
+        )
+        .await
+        .unwrap();
+    contract("ArtifactsLineageResult", &children);
+    assert!(!children.truncated);
+    assert_eq!(children.nodes.len(), 2);
+    assert_eq!(children.nodes[1].artifact_id, Some(derived));
+    assert_eq!(children.nodes[0].links[0].node, 1);
+    // Newest first, with the state and digest filters.
+    let newest = backend
+        .artifacts_list(&agent, Default::default())
+        .await
+        .unwrap();
+    assert_eq!(newest.items[0]["id"], derived.to_string());
+    let by_digest = backend
+        .artifacts_list(
+            &agent,
+            ArtifactsListParams {
+                sha256: Some(backend.artifacts.get(derived).unwrap().sha256),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(by_digest.items.len(), 1);
+    assert!(
+        backend
+            .artifacts_list(
+                &agent,
+                ArtifactsListParams {
+                    state: Some(ArtifactStateFilter::Deleted),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap()
+            .items
+            .is_empty()
+    );
+    assert_eq!(
+        backend
+            .artifacts_lineage(
+                &agent,
+                ArtifactsLineageParams {
+                    artifact_id: own_artifact,
+                    direction: LineageDirection::Ancestors,
+                    max_depth: Some(0),
+                    max_nodes: None,
+                },
+            )
+            .await
+            .unwrap_err()
+            .envelope()
+            .code
+            .as_str(),
+        "api.invalid_params"
+    );
+
+    // The service ingests a file it produced in its root; a retry with the same key replays it.
+    let produced = root_path.join("summary.json");
+    std::fs::write(&produced, br#"{"rows":3}"#).unwrap();
+    let ingest = |path: &Path, parents: Vec<serde_json::Value>| ArtifactsIngestParams {
+        path: path.display().to_string(),
+        name: None,
+        media_type: Some("application/json".into()),
+        parents,
+        operation: None,
+        metadata: None,
+        idempotency_key: Some("summary-1".into()),
+    };
+    let input = serde_json::to_value(parent(own_artifact, "input")).unwrap();
+    let first = backend
+        .artifacts_ingest(&service, ingest(&produced, vec![input.clone()]))
+        .await
+        .unwrap();
+    contract("ArtifactsIngestResult", &first);
+    assert!(first.created && !first.replayed);
+    assert_eq!(first.artifact["origin"]["kind"], "derived");
+    assert_eq!(first.artifact["declared_media_type"], "application/json");
+    let summary: zeus_types::ArtifactId =
+        serde_json::from_value(first.artifact["id"].clone()).unwrap();
+    let again = backend
+        .artifacts_ingest(&service, ingest(&produced, vec![input.clone()]))
+        .await
+        .unwrap();
+    assert!(again.replayed);
+    assert_eq!(again.artifact["id"], first.artifact["id"]);
+    assert_eq!(
+        backend
+            .artifacts_ingest(
+                &service,
+                ArtifactsIngestParams {
+                    name: Some("other.json".into()),
+                    ..ingest(&produced, vec![input.clone()])
+                },
+            )
+            .await
+            .unwrap_err()
+            .envelope()
+            .code
+            .as_str(),
+        "api.idempotency_conflict"
+    );
+    // Visible to the service although no job of its produced it.
+    backend
+        .artifacts_get(
+            &service,
+            ArtifactsGetParams {
+                artifact_id: summary,
+            },
+        )
+        .await
+        .unwrap();
+    // Files outside its roots, and parents it cannot see, are refused like missing ones.
+    let elsewhere = dir.path().join("downloads").join("elsewhere.bin");
+    std::fs::write(&elsewhere, b"not the service's").unwrap();
+    for (params, code) in [
+        (
+            ArtifactsIngestParams {
+                idempotency_key: None,
+                ..ingest(&elsewhere, vec![])
+            },
+            "policy.path_outside_roots",
+        ),
+        (
+            ArtifactsIngestParams {
+                idempotency_key: None,
+                ..ingest(
+                    &produced,
+                    vec![serde_json::to_value(parent(foreign_id, "input")).unwrap()],
+                )
+            },
+            "artifact.lineage_invalid",
+        ),
+        (
+            ArtifactsIngestParams {
+                idempotency_key: None,
+                ..ingest(
+                    &produced,
+                    vec![
+                        serde_json::json!({"artifact_id": null, "blake3": unknown.blake3,
+                        "sha256": unknown.sha256, "size_bytes": 23, "role": "Bad Role"}),
+                    ],
+                )
+            },
+            "api.invalid_params",
+        ),
+    ] {
+        assert_eq!(
+            backend
+                .artifacts_ingest(&service, params)
+                .await
+                .unwrap_err()
+                .envelope()
+                .code
+                .as_str(),
+            code
+        );
+    }
+    // Quarantine is never shed: a file derived from a quarantined record is quarantined too.
+    let flagged_file = dir.path().join("downloads").join("tool.bin");
+    std::fs::write(&flagged_file, b"MZ flagged").unwrap();
+    let mut flagged = zeus_artifact::ArtifactDraft::local("zeus", "0", Some("tool.bin".into()));
+    flagged.record.quarantined = true;
+    flagged.record.quarantine_reasons = vec![zeus_types::QuarantineReason::ExecutableType];
+    let flagged = backend
+        .artifacts
+        .ingest(&flagged_file, flagged, None)
+        .unwrap()
+        .id;
+    let unpacked = dir.path().join("downloads").join("unpacked.txt");
+    std::fs::write(&unpacked, b"unpacked text").unwrap();
+    let derived_from_flagged = backend
+        .artifacts_ingest(
+            &agent,
+            ArtifactsIngestParams {
+                idempotency_key: None,
+                media_type: None,
+                ..ingest(
+                    &unpacked,
+                    vec![serde_json::to_value(parent(flagged, "input")).unwrap()],
+                )
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(derived_from_flagged.artifact["quarantined"], true);
+    assert_eq!(
+        derived_from_flagged.artifact["quarantine_reasons"],
+        serde_json::json!(["executable_type"])
+    );
+    // A copy of quarantined bytes elsewhere stays quarantined as well.
+    let copy = dir.path().join("downloads").join("renamed.txt");
+    std::fs::write(&copy, b"MZ flagged").unwrap();
+    let copied = backend
+        .artifacts_ingest(
+            &agent,
+            ArtifactsIngestParams {
+                idempotency_key: None,
+                media_type: None,
+                ..ingest(&copy, vec![])
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(copied.artifact["quarantined"], true);
+    assert_eq!(copied.artifact["origin"]["kind"], "local");
+
     // A file another client's job wrote inside the service's root carries none of that job's provenance.
     let foreign = backend
         .jobs_enqueue(&agent, request(Some(&root_path)))
@@ -513,8 +879,11 @@ async fn service_clients_are_confined_to_their_roots_jobs_and_records() {
         .files_list(&service, Default::default())
         .await
         .unwrap();
-    assert_eq!(files.items.len(), 2);
-    let theirs = files.items.iter().find(|f| f.path != "set.bin").unwrap();
+    let theirs = files
+        .items
+        .iter()
+        .find(|f| f.path.starts_with("set ("))
+        .unwrap();
     assert_eq!(theirs.job_id, None);
     assert_eq!(theirs.source_url_redacted, None);
     let records = backend
