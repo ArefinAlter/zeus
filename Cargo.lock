@@ -5908,6 +5908,7 @@ dependencies = [
  "zeus-native-host",
  "zeus-types",
  "zeus-verify",
+ "zeus-workflow",
 ]
 
 [[package]]

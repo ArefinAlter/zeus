@@ -25,6 +25,9 @@ Global flags: `--json`, `--ndjson`, `--quiet`/`-q`, `--no-color`, `--dry-run`, `
 | `approvals approve <ID> [--scope <SCOPE>]` | Fetch the full request, verify its binding, review it at the controlling terminal, then decide. The flag constrains the user's selection; it does not make the decision. |
 | `approvals deny <ID> [--never]` | Review and deny; an explicit block is scoped to the exact origin. |
 | `sessions list / revoke <ID>` | Inspect permissions without exposing cookies, or revoke through a human surface. |
+| `clients list [--include-revoked] / add --name NAME [--kind agent\|service] [--role ROLE] [--permission P]... / revoke <ID>` | Admin credential management from a verified physical terminal (05 section 9.11). `add` prints the path of the owner-only token file, never the token. `revoke` closes the credential's connections and withdraws its pending requests. |
+| `workflow plan --goal G --url U... [--candidate FILE] / dry-run <PLAN> / run <PLAN> --plan-hash H / get <RUN> / ls / pause / resume / cancel <RUN> / manifest <RUN>` | The workflow API of 05 section 9.7 and 08. `plan` samples pages or validates a plan file against them and prints the plan hash; `run` binds that hash and leaves the run waiting for `approvals approve`. Nothing is drafted or approved by the CLI. |
+| `files list [DIR] / organize <DIR> --rules FILE [--apply] / undo <OPERATION>` | `files.list`, and the organiser of 05 section 9.6: a dry run unless `--apply`, which raises a `destructive_op` approval; files move only after `approvals approve`. `undo` plans the reversal behind its own approval. |
 | `audit tail [--limit <N>] / verify` | Read redacted records or verify their chain. |
 | `daemon install` | Create first-run state and credentials via `zeusd init`. OS autostart registration is still a separate release task. |
 | `daemon start / stop / status` | Spawn `zeusd run` and wait for authenticated readiness; request shutdown; inspect status. Starting does not silently create new credentials. |
@@ -40,7 +43,7 @@ Global flags: `--json`, `--ndjson`, `--quiet`/`-q`, `--no-color`, `--dry-run`, `
 
 `mcp --http` is a reserved opt-in bridge. Until Host/Origin validation and bearer-token authentication exist, the CLI MUST refuse that option; it MUST NOT quietly run stdio instead.
 
-Cookie and Authorization header injection, cookie-file import, automatic approval, and bypassing site access controls are outside this command contract. Batch stdin input, recursive retrieval, queue schedule editing, conversion and organization commands are proposals until added to the command tree and backed by implemented daemon methods. Wget-style behavior is described in the product design document, not implied by accepting a URL.
+Cookie and Authorization header injection, cookie-file import, automatic approval, and bypassing site access controls are outside this command contract. Batch stdin input, recursive retrieval, queue schedule editing and conversion commands are proposals until added to the command tree and backed by implemented daemon methods. Wget-style behavior is described in the product design document, not implied by accepting a URL.
 
 ## 3. Human terminal decisions
 

@@ -25,6 +25,7 @@ zeus-api.workspace = true
 zeus-a2a-bridge.workspace = true
 zeus-mcp.workspace = true
 zeus-llm.workspace = true
+zeus-workflow.workspace = true
 # core:begin
 zeus-types.workspace = true
 zeus-verify.workspace = true
