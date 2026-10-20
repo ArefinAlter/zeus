@@ -7,6 +7,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use zeus_types::{ApprovalId, Hex256, JobId, RedactedUrl, Timestamp};
 
+use crate::methods::admin::ServiceRoot;
 use crate::paging::{Page, PageRequest};
 
 /// `files.list` parameters.
@@ -50,6 +51,31 @@ pub struct FileEntry {
 
 /// `files.list` result.
 pub type FilesListResult = Page<FileEntry>;
+
+/// `files.roots.register` parameters (role `service` only; 05 section 9.6).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct FilesRootsRegisterParams {
+    /// Absolute directory inside one of the user's write roots.
+    pub path: String,
+    /// Optional label, 1 to 64 characters. Untrusted display text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// Idempotency key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idempotency_key: Option<String>,
+}
+
+/// `files.roots.register` result.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct FilesRootsRegisterResult {
+    /// True when this response replays a durable mutation receipt.
+    #[serde(default)]
+    pub replayed: bool,
+    /// The registered root.
+    pub root: ServiceRoot,
+    /// False when the same canonical path was already registered by this service.
+    pub created: bool,
+}
 
 /// One step of a file plan.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

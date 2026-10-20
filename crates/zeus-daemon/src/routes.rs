@@ -1,20 +1,21 @@
 //! Registers a [`Backend`] on a [`zeus_api::Router`].
 //!
-//! `daemon.ping` is answered here; every other MVP method is forwarded to the backend. Later-stage methods
-//! (files organize/convert/undo and clients) remain unregistered: the router answers
-//! `api.not_implemented` for them while the policy table still enforces who may call them.
+//! `daemon.ping` is answered here; every other implemented method is forwarded to the backend. Methods that are
+//! catalogued but not built remain unregistered: the router answers `api.not_implemented` for them while the policy
+//! table still enforces who may call them.
 
 use std::sync::Arc;
 
 use zeus_api::Router;
 use zeus_api::methods::daemon::{PingParams, PingResult};
 use zeus_api::methods::{
-    ApprovalsDecide, ApprovalsGet, ApprovalsList, AuditTail, AuditVerify, ConfigGet, ConfigSet,
-    DaemonKillSwitch, DaemonPing, DaemonShutdown, DaemonStatus, DoctorRun, EventsSubscribe,
-    EventsUnsubscribe, FilesList, JobsControl, JobsEnqueue, JobsGet, JobsList, JobsProbe,
-    JobsVerify, JobsWait, LlmAuthCancel, LlmAuthSignOut, LlmAuthStart, LlmAuthStatus, LlmConfigure,
-    LlmStatus, SessionsList, SessionsRequest, SessionsRevoke, WorkflowsControl, WorkflowsDryRun,
-    WorkflowsGet, WorkflowsList, WorkflowsManifest, WorkflowsPlan, WorkflowsRun,
+    ApprovalsDecide, ApprovalsGet, ApprovalsList, AuditTail, AuditVerify, ClientsAdd, ClientsList,
+    ClientsRevoke, ConfigGet, ConfigSet, DaemonKillSwitch, DaemonPing, DaemonShutdown,
+    DaemonStatus, DoctorRun, EventsSubscribe, EventsUnsubscribe, FilesList, FilesRootsRegister,
+    JobsControl, JobsEnqueue, JobsGet, JobsList, JobsProbe, JobsVerify, JobsWait, LlmAuthCancel,
+    LlmAuthSignOut, LlmAuthStart, LlmAuthStatus, LlmConfigure, LlmStatus, SessionsList,
+    SessionsRequest, SessionsRevoke, WorkflowsControl, WorkflowsDryRun, WorkflowsGet,
+    WorkflowsList, WorkflowsManifest, WorkflowsPlan, WorkflowsRun,
 };
 use zeus_api::methods::{
     CloudAccountsConfigure, CloudAccountsList, CloudAccountsRevoke, CloudControl, CloudGet,
@@ -77,6 +78,10 @@ pub fn build_router<B: Backend>(backend: Arc<B>) -> Router {
     let router = forward!(router, backend, ApprovalsGet, approvals_get);
     let router = forward!(router, backend, ApprovalsDecide, approvals_decide);
     let router = forward!(router, backend, FilesList, files_list);
+    let router = forward!(router, backend, FilesRootsRegister, files_roots_register);
+    let router = forward!(router, backend, ClientsList, clients_list);
+    let router = forward!(router, backend, ClientsAdd, clients_add);
+    let router = forward!(router, backend, ClientsRevoke, clients_revoke);
     let router = forward!(router, backend, AuditTail, audit_tail);
     let router = forward!(router, backend, AuditVerify, audit_verify);
     let router = forward!(router, backend, ConfigGet, config_get);

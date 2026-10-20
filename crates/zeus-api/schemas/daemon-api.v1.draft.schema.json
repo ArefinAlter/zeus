@@ -1171,7 +1171,7 @@
       ]
     },
     "ClientRecord": {
-      "description": "A client credential record (never the token).",
+      "description": "A client credential as the daemon describes it. Never contains the token or its verifier.",
       "properties": {
         "created_at": {
           "description": "Creation.",
@@ -1187,26 +1187,57 @@
           "description": "Authority class."
         },
         "last_used_at": {
-          "description": "Last successful authentication.",
+          "default": null,
+          "description": "Last successful authentication since the daemon started; `null` when unknown.",
           "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:([0-5][0-9]|60)\\.[0-9]{3}Z$",
           "type": [
             "string",
             "null"
           ]
         },
+        "name": {
+          "description": "File name stem under `<state>/credentials/`.",
+          "type": "string"
+        },
+        "permissions": {
+          "description": "Effective permissions, a subset of the kind's ceiling.",
+          "items": {
+            "$ref": "#/$defs/Permission"
+          },
+          "type": "array",
+          "uniqueItems": true
+        },
         "revoked": {
           "description": "Revoked credentials stay listed.",
           "type": "boolean"
         },
+        "revoked_at": {
+          "default": null,
+          "description": "When it was revoked.",
+          "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:([0-5][0-9]|60)\\.[0-9]{3}Z$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "role": {
           "$ref": "#/$defs/ClientRole",
           "description": "Role."
+        },
+        "roots": {
+          "description": "Service clients only: their registered roots (inactive once revoked).",
+          "items": {
+            "$ref": "#/$defs/ServiceRoot"
+          },
+          "type": "array"
         }
       },
       "required": [
         "credential_id",
+        "name",
         "kind",
         "role",
+        "permissions",
         "created_at",
         "revoked"
       ],
@@ -1262,15 +1293,92 @@
         }
       ]
     },
+    "ClientsAddParams": {
+      "description": "`clients.add` parameters (human-only; 05 section 9.11).",
+      "properties": {
+        "idempotency_key": {
+          "description": "Idempotency key.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "kind": {
+          "$ref": "#/$defs/ClientKind",
+          "description": "`agent` or `service`. Human and admin credentials come only from provisioning."
+        },
+        "name": {
+          "description": "`[a-z][a-z0-9_-]{0,31}`, unique, not `cli`, `agent`, `a2a` or `host`.",
+          "type": "string"
+        },
+        "permissions": {
+          "description": "Narrowing within the kind's ceiling. Default: the ceiling.",
+          "items": {
+            "$ref": "#/$defs/Permission"
+          },
+          "type": [
+            "array",
+            "null"
+          ],
+          "uniqueItems": true
+        },
+        "role": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ClientRole"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Default `service` for kind `service`, `mcp` for kind `agent`; must be allowed for the kind."
+        }
+      },
+      "required": [
+        "name",
+        "kind"
+      ],
+      "type": "object"
+    },
+    "ClientsAddResult": {
+      "description": "`clients.add` result. The token is written to `credential_file` and never returned.",
+      "properties": {
+        "client": {
+          "$ref": "#/$defs/ClientRecord",
+          "description": "The new credential."
+        },
+        "credential_file": {
+          "description": "Absolute path of the owner-only token file.",
+          "type": "string"
+        },
+        "replayed": {
+          "default": false,
+          "description": "True when this response replays a durable mutation receipt.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "client",
+        "credential_file"
+      ],
+      "type": "object"
+    },
     "ClientsListParams": {
       "description": "`clients.list` parameters.",
+      "properties": {
+        "include_revoked": {
+          "default": false,
+          "description": "Also list revoked credentials. Default false.",
+          "type": "boolean"
+        }
+      },
       "type": "object"
     },
     "ClientsListResult": {
       "description": "`clients.list` result.",
       "properties": {
         "clients": {
-          "description": "All credentials.",
+          "description": "Credentials, oldest first.",
           "items": {
             "$ref": "#/$defs/ClientRecord"
           },
@@ -1288,6 +1396,13 @@
         "credential_id": {
           "description": "Credential id.",
           "type": "string"
+        },
+        "idempotency_key": {
+          "description": "Idempotency key.",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [
@@ -1300,7 +1415,13 @@
       "properties": {
         "client": {
           "$ref": "#/$defs/ClientRecord",
-          "description": "The credential after revocation; existing connections using it are closed."
+          "description": "The credential after revocation."
+        },
+        "connections_closed": {
+          "description": "Live connections of this credential that were closed.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
         },
         "replayed": {
           "default": false,
@@ -1309,7 +1430,8 @@
         }
       },
       "required": [
-        "client"
+        "client",
+        "connections_closed"
       ],
       "type": "object"
     },
@@ -3365,6 +3487,56 @@
       "required": [
         "steps",
         "applied"
+      ],
+      "type": "object"
+    },
+    "FilesRootsRegisterParams": {
+      "description": "`files.roots.register` parameters (role `service` only; 05 section 9.6).",
+      "properties": {
+        "idempotency_key": {
+          "description": "Idempotency key.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "label": {
+          "description": "Optional label, 1 to 64 characters. Untrusted display text.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "path": {
+          "description": "Absolute directory inside one of the user's write roots.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "type": "object"
+    },
+    "FilesRootsRegisterResult": {
+      "description": "`files.roots.register` result.",
+      "properties": {
+        "created": {
+          "description": "False when the same canonical path was already registered by this service.",
+          "type": "boolean"
+        },
+        "replayed": {
+          "default": false,
+          "description": "True when this response replays a durable mutation receipt.",
+          "type": "boolean"
+        },
+        "root": {
+          "$ref": "#/$defs/ServiceRoot",
+          "description": "The registered root."
+        }
+      },
+      "required": [
+        "root",
+        "created"
       ],
       "type": "object"
     },
@@ -7790,6 +7962,37 @@
         }
       ]
     },
+    "ServiceRoot": {
+      "description": "A write root registered by a service client (05 section 7.6).",
+      "properties": {
+        "client_id": {
+          "description": "The owning service's credential id.",
+          "type": "string"
+        },
+        "created_at": {
+          "description": "Registration time.",
+          "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:([0-5][0-9]|60)\\.[0-9]{3}Z$",
+          "type": "string"
+        },
+        "label": {
+          "description": "Optional label, untrusted display text.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "path": {
+          "description": "Absolute, canonical path of the root.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "client_id",
+        "created_at"
+      ],
+      "type": "object"
+    },
     "SessionGrant": {
       "description": "A recorded consent. Holds no cookies: cookies are fetched per use and wiped.",
       "properties": {
@@ -9575,6 +9778,14 @@
         "$ref": "#/$defs/AuditVerifyResult"
       }
     },
+    "clients.add": {
+      "params": {
+        "$ref": "#/$defs/ClientsAddParams"
+      },
+      "result": {
+        "$ref": "#/$defs/ClientsAddResult"
+      }
+    },
     "clients.list": {
       "params": {
         "$ref": "#/$defs/ClientsListParams"
@@ -9765,6 +9976,14 @@
       },
       "result": {
         "$ref": "#/$defs/FilesOrganizeResult"
+      }
+    },
+    "files.roots.register": {
+      "params": {
+        "$ref": "#/$defs/FilesRootsRegisterParams"
+      },
+      "result": {
+        "$ref": "#/$defs/FilesRootsRegisterResult"
       }
     },
     "files.undo": {

@@ -83,6 +83,22 @@ impl ConsentManager {
         self.limits = limits;
         self
     }
+    /// End every pending approval `requester` raised as `cancel` by `system` (05 section 7.6 rule 8), serialised
+    /// with decisions and batch joins.
+    pub(crate) async fn withdraw_requester(&self, requester: &str) -> ApiResult<()> {
+        let _gate = self.gate.lock().await;
+        let now = Timestamp::now();
+        self.journal
+            .transact(|tx| {
+                for approval in tx.approvals(Some(&[ApprovalState::Pending]))? {
+                    if approval.requested_by.as_deref() == Some(requester) {
+                        cancel_pending(tx, approval, "requester_revoked", now)?;
+                    }
+                }
+                Ok(())
+            })
+            .map_err(error)
+    }
     /// Denial back-off (07 section 9.4). Derived from durable decisions, so it survives a restart: after a human
     /// denies an unattended requester a session for an origin, new session requests by that requester for that
     /// origin are refused for 10 minutes, or 24 hours after three denials within a day. A later approval for the
@@ -907,53 +923,64 @@ impl ApprovalPort for ConsentManager {
     async fn withdraw(&self, id: ApprovalId) -> Result<(), ErrorEnvelope> {
         self.journal
             .transact(|tx| {
-                if let Some(mut approval) = tx.approval(id)?
+                if let Some(approval) = tx.approval(id)?
                     && approval.state == ApprovalState::Pending
                 {
-                    let now = Timestamp::now();
-                    approval.state = ApprovalState::Canceled;
-                    approval.decided_at = Some(now);
-                    approval.decision = Some(Decision {
-                        outcome: DecisionOutcome::Cancel,
-                        scope: None,
-                        actor: Actor::system(),
-                        grant_id: None,
-                    });
-                    tx.put_approval(&approval)?;
-                    if approval.revision.is_some() && approval.request_hash.is_some() {
-                        tx.put_approval_decision(
-                            id,
-                            &serde_json::json!({
-                                "approval_id": id,
-                                "revision": approval.revision,
-                                "request_hash": approval.request_hash,
-                                "outcome": "cancel",
-                                "actor": Actor::system(),
-                                "decided_at": now,
-                                "grant_ids": [],
-                                "system_reason": "request_withdrawn"
-                            }),
-                        )?;
-                    }
-                    tx.append_event(
-                        now,
-                        approval.job_id,
-                        approval.run_id,
-                        zeus_types::event::ApprovalDecidedData {
-                            approval_id: id,
-                            kind: approval.kind,
-                            outcome: DecisionOutcome::Cancel,
-                            scope: None,
-                            actor: Actor::system(),
-                            grant_id: None,
-                        }
-                        .into(),
-                    )?;
+                    cancel_pending(tx, approval, "request_withdrawn", Timestamp::now())?;
                 }
                 Ok(())
             })
             .map_err(|error| error.to_envelope())
     }
+}
+
+/// End a pending approval as `cancel` by `system` inside `tx`: the approval, its decision record (with
+/// `system_reason`) and the `approval.decided` event.
+fn cancel_pending(
+    tx: &mut dyn zeus_journal::WriteTxn,
+    mut approval: Approval,
+    system_reason: &str,
+    now: Timestamp,
+) -> zeus_journal::JournalResult<()> {
+    approval.state = ApprovalState::Canceled;
+    approval.decided_at = Some(now);
+    approval.decision = Some(Decision {
+        outcome: DecisionOutcome::Cancel,
+        scope: None,
+        actor: Actor::system(),
+        grant_id: None,
+    });
+    tx.put_approval(&approval)?;
+    if approval.revision.is_some() && approval.request_hash.is_some() {
+        tx.put_approval_decision(
+            approval.id,
+            &serde_json::json!({
+                "approval_id": approval.id,
+                "revision": approval.revision,
+                "request_hash": approval.request_hash,
+                "outcome": "cancel",
+                "actor": Actor::system(),
+                "decided_at": now,
+                "grant_ids": [],
+                "system_reason": system_reason
+            }),
+        )?;
+    }
+    tx.append_event(
+        now,
+        approval.job_id,
+        approval.run_id,
+        zeus_types::event::ApprovalDecidedData {
+            approval_id: approval.id,
+            kind: approval.kind,
+            outcome: DecisionOutcome::Cancel,
+            scope: None,
+            actor: Actor::system(),
+            grant_id: None,
+        }
+        .into(),
+    )?;
+    Ok(())
 }
 
 #[cfg(test)]

@@ -172,10 +172,14 @@ rpc_methods! {
     LlmAuthCancel = "llm.auth.cancel" (LlmAuthCancelParams) -> LlmAuthFlow;
     /// Clear provider credentials and request remote revocation.
     LlmAuthSignOut = "llm.auth.sign_out" (LlmAuthSignOutParams) -> LlmAuthSignOutResult;
-    /// List client credentials (admin, later).
+    /// List client credentials (admin).
     ClientsList = "clients.list" (ClientsListParams) -> ClientsListResult;
-    /// Revoke a client credential (admin, later).
+    /// Create an agent or service credential (admin).
+    ClientsAdd = "clients.add" (ClientsAddParams) -> ClientsAddResult;
+    /// Revoke a client credential (admin).
     ClientsRevoke = "clients.revoke" (ClientsRevokeParams) -> ClientsRevokeResult;
+    /// Register a write root owned by a service client.
+    FilesRootsRegister = "files.roots.register" (FilesRootsRegisterParams) -> FilesRootsRegisterResult;
 }
 
 /// Names of notifications sent by the daemon to clients (they have no response).

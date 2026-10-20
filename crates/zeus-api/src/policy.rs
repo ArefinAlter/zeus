@@ -183,13 +183,16 @@ pub const METHODS: &[MethodSpec] = &[
     MethodSpec::needs("llm.auth.sign_out", LlmConfigure)
         .human()
         .later(),
-    MethodSpec::needs("clients.list", DaemonAdmin)
-        .human()
-        .later(),
+    MethodSpec::needs("clients.list", DaemonAdmin).human(),
+    MethodSpec::needs("clients.add", DaemonAdmin)
+        .mutates()
+        .human(),
     MethodSpec::needs("clients.revoke", DaemonAdmin)
         .mutates()
-        .human()
-        .later(),
+        .human(),
+    MethodSpec::needs("files.roots.register", FilesRootsRegister)
+        .mutates()
+        .only_role(ClientRole::Service),
 ];
 
 /// The relay method for native-messaging frames. It is a notification, not an RPC method, so it has its own
@@ -321,6 +324,7 @@ mod tests {
             "files.organize",
             "files.convert",
             "files.undo",
+            "files.roots.register",
             "workflows.plan",
             "workflows.run",
             "workflows.control",
@@ -384,6 +388,42 @@ mod tests {
         let shutdown = lookup("daemon.shutdown").unwrap();
         assert!(authorize(Some(&human), shutdown, &Value::Null).is_err());
         assert!(authorize(Some(&admin), shutdown, &Value::Null).is_ok());
+    }
+
+    #[test]
+    fn a_service_calls_no_human_only_method_and_alone_registers_roots() {
+        let service = identity(ClientKind::Service, ClientRole::Service);
+        let agent = identity(ClientKind::Agent, ClientRole::Mcp);
+        let admin = identity(ClientKind::Admin, ClientRole::Cli);
+        for method in METHODS.iter().filter(|m| m.human_only) {
+            for params in [
+                serde_json::json!({}),
+                serde_json::json!({"reveal_urls": true}),
+            ] {
+                assert!(
+                    authorize(Some(&service), method, &params).is_err(),
+                    "{}",
+                    method.name
+                );
+            }
+        }
+        let spec = lookup("jobs.get").unwrap();
+        assert!(
+            authorize(
+                Some(&service),
+                spec,
+                &serde_json::json!({"reveal_urls": true})
+            )
+            .is_err()
+        );
+        let roots = lookup("files.roots.register").unwrap();
+        assert!(authorize(Some(&service), roots, &Value::Null).is_ok());
+        assert!(authorize(Some(&agent), roots, &Value::Null).is_err());
+        assert!(authorize(Some(&admin), roots, &Value::Null).is_err());
+        // A forged service-kind identity on another role still cannot register roots.
+        let mut forged = identity(ClientKind::Service, ClientRole::Mcp);
+        forged.permissions.insert(Permission::FilesRootsRegister);
+        assert!(authorize(Some(&forged), roots, &Value::Null).is_err());
     }
 
     #[test]
