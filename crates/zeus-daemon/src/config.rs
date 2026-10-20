@@ -34,6 +34,18 @@ pub enum ConfigError {
 /// of one commit unit (4 MiB) instead of planning 8 to 32 MiB segments.
 pub const INEFFECTIVE_KEYS: &[&str] = &["scheduler.segment_size_mib"];
 
+/// Whether `new` changes any of [`INEFFECTIVE_KEYS`] from `old`, however it was reached: setting a parent table
+/// replaces its children too.
+pub fn changes_ineffective(old: &DaemonConfig, new: &DaemonConfig) -> bool {
+    let (Ok(old), Ok(new)) = (serde_json::to_value(old), serde_json::to_value(new)) else {
+        return true;
+    };
+    INEFFECTIVE_KEYS.iter().any(|key| {
+        let pointer = format!("/{}", key.replace('.', "/"));
+        old.pointer(&pointer) != new.pointer(&pointer)
+    })
+}
+
 /// Scheduler limits (01 section 10).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
@@ -283,6 +295,17 @@ mod tests {
         assert_eq!(config.scheduler.segment_size_mib, 16);
         assert_eq!(config.timeouts.session_wait_ms, 3_600_000);
         assert_eq!(config.approvals.max_pending, 50);
+    }
+
+    #[test]
+    fn ineffective_settings_are_detected_whichever_key_changed_them() {
+        let old = DaemonConfig::default();
+        let mut new = old.clone();
+        new.scheduler.concurrent_jobs += 1;
+        assert!(!changes_ineffective(&old, &new));
+        // As `config.set key="scheduler"` with a whole table would.
+        new.scheduler.segment_size_mib = 32;
+        assert!(changes_ineffective(&old, &new));
     }
 
     #[test]
