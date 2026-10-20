@@ -11,7 +11,8 @@ use std::{
 };
 use tokio::sync::Mutex;
 use zeus_api::methods::{
-    admin::*, cloud::*, daemon::*, events::*, files::*, jobs::*, sessions::*, workflows::*,
+    admin::*, artifacts::*, cloud::*, daemon::*, events::*, files::*, jobs::*, sessions::*,
+    workflows::*,
 };
 use zeus_api::{ApiError, ApiResult, CallContext, Page};
 use zeus_engine::{Engine, EngineBuilder, EngineConfig};
@@ -76,6 +77,8 @@ pub struct RuntimeBackend {
     connections: std::sync::Mutex<HashMap<zeus_types::ConnectionId, zeus_api::auth::CredentialId>>,
     admin_limits: std::sync::Mutex<HashMap<String, crate::approvals::DecisionLimiter>>,
     organizer: Arc<crate::organizer::Organizer>,
+    artifacts: Arc<zeus_artifact::ArtifactStore>,
+    ingest_owners: artifact_ingest::IngestOwners,
     #[cfg(test)]
     fail_kill_switch_audit: std::sync::atomic::AtomicBool,
 }
@@ -218,12 +221,13 @@ impl RuntimeBackend {
             consent.clone(),
             audit.clone(),
         )?);
+        let ingest_owners = artifact_ingest::IngestOwners::open(&state_dir)?;
         let outbox = Arc::new(std::sync::Mutex::new(crate::outbox::Outbox::open(
             &state_dir,
             &config.effective_write_roots(),
             journal.clone(),
             audit.clone(),
-            artifacts,
+            artifacts.clone(),
         )?));
         Ok(Arc::new(Self {
             engine,
@@ -254,6 +258,8 @@ impl RuntimeBackend {
             connections: Default::default(),
             admin_limits: Default::default(),
             organizer,
+            artifacts,
+            ingest_owners,
             #[cfg(test)]
             fail_kill_switch_audit: Default::default(),
         }))
@@ -1359,6 +1365,34 @@ impl Backend for RuntimeBackend {
     ) -> ApiResult<FilesUndoResult> {
         self.undo(ctx, p).await
     }
+    async fn artifacts_get(
+        &self,
+        ctx: &CallContext,
+        p: ArtifactsGetParams,
+    ) -> ApiResult<ArtifactsGetResult> {
+        self.artifact_get(ctx, p)
+    }
+    async fn artifacts_list(
+        &self,
+        ctx: &CallContext,
+        p: ArtifactsListParams,
+    ) -> ApiResult<ArtifactsListResult> {
+        self.artifact_list(ctx, p)
+    }
+    async fn artifacts_lineage(
+        &self,
+        ctx: &CallContext,
+        p: ArtifactsLineageParams,
+    ) -> ApiResult<ArtifactsLineageResult> {
+        self.artifact_lineage(ctx, p)
+    }
+    async fn artifacts_ingest(
+        &self,
+        ctx: &CallContext,
+        p: ArtifactsIngestParams,
+    ) -> ApiResult<ArtifactsIngestResult> {
+        self.artifact_ingest(ctx, p).await
+    }
     async fn clients_list(
         &self,
         _ctx: &CallContext,
@@ -1385,6 +1419,10 @@ impl Backend for RuntimeBackend {
 #[path = "native.rs"]
 mod native;
 
+#[path = "artifact_api.rs"]
+mod artifact_api;
+#[path = "artifact_ingest.rs"]
+mod artifact_ingest;
 #[path = "clients.rs"]
 mod clients;
 #[path = "configuration.rs"]

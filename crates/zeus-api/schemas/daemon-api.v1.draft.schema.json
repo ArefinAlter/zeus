@@ -684,6 +684,242 @@
       },
       "type": "object"
     },
+    "ArtifactStateFilter": {
+      "description": "Record state filter of `artifacts.list`.",
+      "oneOf": [
+        {
+          "const": "active",
+          "description": "Active records.",
+          "type": "string"
+        },
+        {
+          "const": "deleted",
+          "description": "Tombstones of deleted artifacts.",
+          "type": "string"
+        }
+      ]
+    },
+    "ArtifactsGetParams": {
+      "description": "`artifacts.get` parameters.",
+      "properties": {
+        "artifact_id": {
+          "description": "The artifact (`art_...`).",
+          "pattern": "^art_[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "artifact_id"
+      ],
+      "type": "object"
+    },
+    "ArtifactsGetResult": {
+      "description": "`artifacts.get` result.",
+      "properties": {
+        "artifact": {
+          "description": "The export form (artifact.v1 `Artifact`, 13 section 10.1)."
+        }
+      },
+      "required": [
+        "artifact"
+      ],
+      "type": "object"
+    },
+    "ArtifactsIngestParams": {
+      "description": "`artifacts.ingest` parameters: register a local file the caller produced (13 section 7).",
+      "properties": {
+        "idempotency_key": {
+          "description": "Retry key (00 section 5.4); the ingest key is derived from it (05 section 9.13).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "media_type": {
+          "description": "Claimed media type, 1 to 255 characters, recorded as `declared_media_type`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "metadata": {
+          "additionalProperties": true,
+          "description": "Caller metadata (artifact.v1 `Metadata`): at most 32 members. Untrusted data.",
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "name": {
+          "description": "Name hint, 1 to 255 characters; the file name when absent.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "operation": {
+          "description": "The producing operation (artifact.v1 `Operation`); `zeus.ingest` when absent."
+        },
+        "parents": {
+          "description": "Inputs (artifact.v1 `ParentRef`), at most 1024. With parents the record is `derived`.",
+          "items": true,
+          "type": "array"
+        },
+        "path": {
+          "description": "Absolute path of a regular file inside a write root the caller may use (a service: its roots).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "type": "object"
+    },
+    "ArtifactsIngestResult": {
+      "description": "`artifacts.ingest` result.",
+      "properties": {
+        "artifact": {
+          "description": "Export form of the new or existing record."
+        },
+        "created": {
+          "description": "This call committed the record.",
+          "type": "boolean"
+        },
+        "replayed": {
+          "description": "The result came from the idempotency store (05 section 12).",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "artifact",
+        "created",
+        "replayed"
+      ],
+      "type": "object"
+    },
+    "ArtifactsLineageParams": {
+      "description": "`artifacts.lineage` parameters.",
+      "properties": {
+        "artifact_id": {
+          "description": "The start record.",
+          "pattern": "^art_[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+          "type": "string"
+        },
+        "direction": {
+          "$ref": "#/$defs/LineageDirection",
+          "description": "Direction of the walk."
+        },
+        "max_depth": {
+          "description": "Levels to follow, 1 to 64 (default 8).",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "max_nodes": {
+          "description": "Nodes to return, 1 to 500 (default 100).",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "artifact_id",
+        "direction"
+      ],
+      "type": "object"
+    },
+    "ArtifactsLineageResult": {
+      "description": "`artifacts.lineage` result. Full records are read with `artifacts.get`.",
+      "properties": {
+        "nodes": {
+          "description": "Node 0 is the start record; records outside the caller's view are omitted.",
+          "items": {
+            "$ref": "#/$defs/LineageNode"
+          },
+          "type": "array"
+        },
+        "truncated": {
+          "description": "A depth or node bound stopped the walk, or records were omitted.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "nodes",
+        "truncated"
+      ],
+      "type": "object"
+    },
+    "ArtifactsListParams": {
+      "description": "`artifacts.list` parameters. Without `state`, active records and tombstones are both listed.",
+      "properties": {
+        "blake3": {
+          "description": "Only artifacts with this BLAKE3 content identity.",
+          "pattern": "^[0-9a-f]{64}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "cursor": {
+          "description": "Opaque cursor from a previous result. Valid only for the same method and filters.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "job_id": {
+          "description": "Only the artifact a job produced.",
+          "pattern": "^job_[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "limit": {
+          "description": "Page size. Absent: 50. Values above 100 are clamped to 100; 0 is invalid.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "run_id": {
+          "description": "Only artifacts of a workflow run.",
+          "pattern": "^run_[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sha256": {
+          "description": "Only artifacts with this SHA-256 digest.",
+          "pattern": "^[0-9a-f]{64}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "state": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactStateFilter"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Only records in this state."
+        }
+      },
+      "type": "object"
+    },
     "AttachInfo": {
       "description": "What the native host reports about how it was launched (spec 02 section 3.4).",
       "properties": {
@@ -5395,6 +5631,85 @@
         }
       ]
     },
+    "LineageDirection": {
+      "description": "Which way `artifacts.lineage` walks.",
+      "oneOf": [
+        {
+          "const": "ancestors",
+          "description": "Parents, grandparents, ...",
+          "type": "string"
+        },
+        {
+          "const": "descendants",
+          "description": "Artifacts derived from this one.",
+          "type": "string"
+        }
+      ]
+    },
+    "LineageLink": {
+      "description": "An edge of a lineage node: the index of a parent (ancestors) or child (descendants) in `nodes`.",
+      "properties": {
+        "node": {
+          "description": "Index into `nodes`.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "role": {
+          "description": "The parent role (`input`, `config`, `manifest` or a producer role).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "node",
+        "role"
+      ],
+      "type": "object"
+    },
+    "LineageNode": {
+      "description": "One node of a lineage walk (13 section 4.3).",
+      "properties": {
+        "artifact_id": {
+          "description": "The record; null for a content-only node (a parent known only by its digests).",
+          "pattern": "^art_[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "blake3": {
+          "description": "BLAKE3 content identity.",
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "depth": {
+          "description": "Levels from the start record (0).",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "links": {
+          "description": "Parents (ancestors) or children (descendants) of this node.",
+          "items": {
+            "$ref": "#/$defs/LineageLink"
+          },
+          "type": "array"
+        },
+        "size_bytes": {
+          "description": "Length.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "blake3",
+        "size_bytes",
+        "depth",
+        "links"
+      ],
+      "type": "object"
+    },
     "LlmAccount": {
       "description": "Account identity visible only on the human auth surface.",
       "properties": {
@@ -6136,6 +6451,27 @@
           "items": {
             "$ref": "#/$defs/RunReport"
           },
+          "type": "array"
+        },
+        "next_cursor": {
+          "description": "Cursor for the next page, `null` at the end.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "items"
+      ],
+      "type": "object"
+    },
+    "Page6": {
+      "description": "One page of results.",
+      "properties": {
+        "items": {
+          "description": "The items.",
+          "items": true,
           "type": "array"
         },
         "next_cursor": {
@@ -9876,6 +10212,38 @@
       },
       "result": {
         "$ref": "#/$defs/Page3"
+      }
+    },
+    "artifacts.get": {
+      "params": {
+        "$ref": "#/$defs/ArtifactsGetParams"
+      },
+      "result": {
+        "$ref": "#/$defs/ArtifactsGetResult"
+      }
+    },
+    "artifacts.ingest": {
+      "params": {
+        "$ref": "#/$defs/ArtifactsIngestParams"
+      },
+      "result": {
+        "$ref": "#/$defs/ArtifactsIngestResult"
+      }
+    },
+    "artifacts.lineage": {
+      "params": {
+        "$ref": "#/$defs/ArtifactsLineageParams"
+      },
+      "result": {
+        "$ref": "#/$defs/ArtifactsLineageResult"
+      }
+    },
+    "artifacts.list": {
+      "params": {
+        "$ref": "#/$defs/ArtifactsListParams"
+      },
+      "result": {
+        "$ref": "#/$defs/Page6"
       }
     },
     "audit.tail": {
