@@ -35,6 +35,8 @@ pub struct MethodSpec {
     pub human_param: Option<&'static str>,
     /// Restrict to one client role.
     pub role: Option<ClientRole>,
+    /// The capability that gates the method (05 section 8.2), if any.
+    pub capability: Option<&'static str>,
 }
 
 impl MethodSpec {
@@ -47,6 +49,7 @@ impl MethodSpec {
             stage: Stage::Mvp,
             human_param: None,
             role: None,
+            capability: None,
         }
     }
 
@@ -82,6 +85,11 @@ impl MethodSpec {
 
     const fn only_role(mut self, role: ClientRole) -> Self {
         self.role = Some(role);
+        self
+    }
+
+    const fn gated(mut self, capability: &'static str) -> Self {
+        self.capability = Some(capability);
         self
     }
 
@@ -121,11 +129,11 @@ pub const METHODS: &[MethodSpec] = &[
     MethodSpec::needs("jobs.enqueue", JobsWrite).mutates(),
     MethodSpec::needs("jobs.list", JobsRead),
     MethodSpec::needs("jobs.get", JobsRead).human_if("reveal_urls"),
-    MethodSpec::needs("jobs.wait", JobsRead),
+    MethodSpec::needs("jobs.wait", JobsRead).gated("jobs.wait"),
     MethodSpec::needs("jobs.control", JobsControl).mutates(),
     MethodSpec::needs("jobs.verify", JobsRead),
-    MethodSpec::needs("events.subscribe", EventsRead),
-    MethodSpec::needs("events.unsubscribe", EventsRead),
+    MethodSpec::needs("events.subscribe", EventsRead).gated("events"),
+    MethodSpec::needs("events.unsubscribe", EventsRead).gated("events"),
     MethodSpec::needs("sessions.list", SessionsRead),
     MethodSpec::needs("sessions.request", SessionsRequest).mutates(),
     MethodSpec::needs("sessions.revoke", SessionsRevoke)
@@ -138,27 +146,41 @@ pub const METHODS: &[MethodSpec] = &[
         .human(),
     MethodSpec::needs("files.list", FilesRead),
     MethodSpec::needs("files.organize", FilesWrite)
+        .gated("files.organize")
         .mutates()
         .later(),
     MethodSpec::needs("files.convert", FilesWrite)
+        .gated("files.convert")
         .mutates()
         .later(),
     MethodSpec::needs("files.undo", FilesWrite)
+        .gated("files.organize")
         .mutates()
         .later(),
     MethodSpec::needs("workflows.plan", WorkflowsPlan)
+        .gated("workflows")
         .mutates()
         .later(),
-    MethodSpec::needs("workflows.dry_run", WorkflowsPlan).later(),
+    MethodSpec::needs("workflows.dry_run", WorkflowsPlan)
+        .gated("workflows")
+        .later(),
     MethodSpec::needs("workflows.run", WorkflowsRun)
+        .gated("workflows")
         .mutates()
         .later(),
-    MethodSpec::needs("workflows.get", WorkflowsPlan).later(),
-    MethodSpec::needs("workflows.list", WorkflowsPlan).later(),
+    MethodSpec::needs("workflows.get", WorkflowsPlan)
+        .gated("workflows")
+        .later(),
+    MethodSpec::needs("workflows.list", WorkflowsPlan)
+        .gated("workflows")
+        .later(),
     MethodSpec::needs("workflows.control", WorkflowsRun)
+        .gated("workflows")
         .mutates()
         .later(),
-    MethodSpec::needs("workflows.manifest", WorkflowsPlan).later(),
+    MethodSpec::needs("workflows.manifest", WorkflowsPlan)
+        .gated("workflows")
+        .later(),
     MethodSpec::needs("audit.tail", AuditRead),
     MethodSpec::needs("audit.verify", AuditRead),
     MethodSpec::needs("config.get", ConfigRead),
@@ -166,8 +188,11 @@ pub const METHODS: &[MethodSpec] = &[
         .mutates()
         .human(),
     MethodSpec::needs("doctor.run", DaemonRead),
-    MethodSpec::needs("llm.status", LlmRead).later(),
+    MethodSpec::needs("llm.status", LlmRead)
+        .gated("llm")
+        .later(),
     MethodSpec::needs("llm.configure", LlmConfigure)
+        .gated("llm")
         .mutates()
         .human()
         .later(),
@@ -183,28 +208,41 @@ pub const METHODS: &[MethodSpec] = &[
     MethodSpec::needs("llm.auth.sign_out", LlmConfigure)
         .human()
         .later(),
-    MethodSpec::needs("clients.list", DaemonAdmin).human(),
+    MethodSpec::needs("clients.list", DaemonAdmin)
+        .gated("clients")
+        .human(),
     MethodSpec::needs("clients.add", DaemonAdmin)
+        .gated("clients")
         .mutates()
         .human(),
     MethodSpec::needs("clients.revoke", DaemonAdmin)
+        .gated("clients")
         .mutates()
         .human(),
     MethodSpec::needs("files.roots.register", FilesRootsRegister)
+        .gated("files.roots")
         .mutates()
         .only_role(ClientRole::Service),
-    MethodSpec::needs("artifacts.get", FilesRead).later(),
-    MethodSpec::needs("artifacts.list", FilesRead).later(),
-    MethodSpec::needs("artifacts.lineage", FilesRead).later(),
+    MethodSpec::needs("artifacts.get", FilesRead)
+        .gated("artifacts")
+        .later(),
+    MethodSpec::needs("artifacts.list", FilesRead)
+        .gated("artifacts")
+        .later(),
+    MethodSpec::needs("artifacts.lineage", FilesRead)
+        .gated("artifacts")
+        .later(),
     MethodSpec::needs("artifacts.ingest", FilesWrite)
+        .gated("artifacts")
         .mutates()
         .later(),
 ];
 
 /// The relay method for native-messaging frames. It is a notification, not an RPC method, so it has its own
 /// entry: only a `native_host`-role credential holding `nm.relay` may send it.
-pub const NM_FRAME: MethodSpec =
-    MethodSpec::needs("nm.frame", NmRelay).only_role(ClientRole::NativeHost);
+pub const NM_FRAME: MethodSpec = MethodSpec::needs("nm.frame", NmRelay)
+    .gated("nm.relay")
+    .only_role(ClientRole::NativeHost);
 
 /// Look a method up by wire name.
 pub fn lookup(name: &str) -> Option<&'static MethodSpec> {
@@ -241,6 +279,41 @@ pub fn authorize(
             codes::HUMAN_REQUIRED,
             format!("{} can only be called by a human-kind client", spec.name),
         ));
+    }
+    Ok(())
+}
+
+/// Step 4 of 05 section 7.4: the method's capability, and that of a gated parameter, must have been negotiated in
+/// `daemon.hello`. The gated parameters are `idempotency_key` on mutating methods (`idempotency`) and `since_seq`
+/// of `events.subscribe` (`events.replay`).
+pub fn require_capabilities(
+    spec: &MethodSpec,
+    params: &Value,
+    negotiated: &std::collections::BTreeSet<String>,
+) -> Result<(), ApiError> {
+    let present = |name: &str| params.get(name).is_some_and(|v| !v.is_null());
+    let needed = spec
+        .capability
+        .into_iter()
+        .chain(
+            (spec.mutating && present("idempotency_key"))
+                .then_some(crate::capabilities::IDEMPOTENCY),
+        )
+        .chain(
+            (spec.name == "events.subscribe" && present("since_seq"))
+                .then_some(crate::capabilities::EVENTS_REPLAY),
+        );
+    for capability in needed {
+        if !negotiated.contains(capability) {
+            return Err(ApiError::new(
+                codes::CAPABILITY_MISSING,
+                format!(
+                    "{} needs capability `{capability}`, which this connection did not negotiate",
+                    spec.name
+                ),
+            )
+            .with_detail("capability", capability));
+        }
     }
     Ok(())
 }
@@ -431,6 +504,35 @@ mod tests {
         let mut forged = identity(ClientKind::Service, ClientRole::Mcp);
         forged.permissions.insert(Permission::FilesRootsRegister);
         assert!(authorize(Some(&forged), roots, &Value::Null).is_err());
+    }
+
+    #[test]
+    fn gated_methods_follow_the_capability_table() {
+        for method in METHODS.iter().chain([&NM_FRAME]) {
+            if let Some(capability) = method.capability {
+                assert!(
+                    crate::capabilities::ALL.contains(&capability) || capability == "files.convert",
+                    "{}",
+                    method.name
+                );
+            }
+        }
+        assert_eq!(
+            lookup("artifacts.ingest").unwrap().capability,
+            Some("artifacts")
+        );
+        assert_eq!(
+            lookup("files.undo").unwrap().capability,
+            Some("files.organize")
+        );
+        assert_eq!(lookup("jobs.list").unwrap().capability, None);
+        assert_eq!(lookup("cloud.submit").unwrap().capability, None);
+        let negotiated = ["events".to_string()].into_iter().collect();
+        let subscribe = lookup("events.subscribe").unwrap();
+        assert!(require_capabilities(subscribe, &serde_json::json!({}), &negotiated).is_ok());
+        let replay = serde_json::json!({"since_seq": 4});
+        let error = require_capabilities(subscribe, &replay, &negotiated).unwrap_err();
+        assert_eq!(error.envelope().code.as_str(), codes::CAPABILITY_MISSING);
     }
 
     #[test]

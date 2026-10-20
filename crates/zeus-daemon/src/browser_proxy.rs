@@ -626,6 +626,7 @@ mod tests {
                 connection_id: ids.connection_id(),
                 notifier,
                 limits: zeus_api::methods::daemon::ConnectionLimits::STANDARD,
+                capabilities: zeus_api::capabilities::all(),
             };
             let hello:HelloBody=serde_json::from_value(json!({"client":"zeus-extension","extension_id":extension,"extension_version":"0.1.0","browser":{"name":"chrome","version":"test"},"protocol_versions":[1],"capabilities":["fetch_proxy"],"profile_id":"0123456789abcdef0123456789abcdef","sw_instance_id":"0123456789abcdef"})).unwrap();
             let connection = broker.attach(ctx, hello, true).unwrap();

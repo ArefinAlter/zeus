@@ -73,6 +73,7 @@ fn context(
             connection_id: zeus_types::IdGenerator::new().connection_id(),
             notifier,
             limits: zeus_api::methods::daemon::ConnectionLimits::STANDARD,
+            capabilities: zeus_api::capabilities::all(),
         },
         receiver,
     )
