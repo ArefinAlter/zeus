@@ -70,6 +70,11 @@ pub struct RuntimeBackend {
     pub(crate) cloud: Arc<crate::cloud::CloudService>,
     subscriptions: Mutex<HashMap<String, (zeus_types::ConnectionId, tokio::task::AbortHandle)>>,
     deferred_audit: crate::deferred_audit::DeferredAudit,
+    state_dir: PathBuf,
+    credentials: Arc<crate::provision::FileCredentialStore>,
+    /// Authenticated connections and their credential, for `clients.revoke`.
+    connections: std::sync::Mutex<HashMap<zeus_types::ConnectionId, zeus_api::auth::CredentialId>>,
+    admin_limits: std::sync::Mutex<HashMap<String, crate::approvals::DecisionLimiter>>,
     #[cfg(test)]
     fail_kill_switch_audit: std::sync::atomic::AtomicBool,
 }
@@ -171,6 +176,12 @@ impl RuntimeBackend {
             config.effective_write_roots(),
         )?;
         workflows.recover_audit_receipts(audit.as_ref())?;
+        let roots_of = credentials.clone();
+        workflows.attach_service_roots(Arc::new(move |id| {
+            zeus_api::auth::CredentialId::parse(id)
+                .map(|id| roots_of.roots(&id))
+                .unwrap_or_default()
+        }));
         let engine = EngineBuilder::new(engine_config)
             .clock(clock)
             .session_provider(browser.clone())
@@ -231,6 +242,10 @@ impl RuntimeBackend {
             mutations: Mutex::new(()),
             subscriptions: Mutex::new(HashMap::new()),
             deferred_audit,
+            state_dir,
+            credentials,
+            connections: Default::default(),
+            admin_limits: Default::default(),
             #[cfg(test)]
             fail_kill_switch_audit: Default::default(),
         }))
@@ -239,6 +254,11 @@ impl RuntimeBackend {
     /// Identity reported during the mutual handshake.
     pub fn info(&self) -> DaemonInfo {
         self.info.clone()
+    }
+
+    /// The credential store shared with the IPC handshake, so credential changes reach live connections.
+    pub fn credentials(&self) -> Arc<crate::provision::FileCredentialStore> {
+        self.credentials.clone()
     }
     /// Bind the configuration file selected by startup flags/environment.
     pub fn set_config_path(&self, path: PathBuf) -> ApiResult<()> {
@@ -308,12 +328,24 @@ impl RuntimeBackend {
         entry
             .data
             .insert("peer_pid".into(), serde_json::json!(ctx.peer.pid));
+        entry
+            .data
+            .insert("role".into(), serde_json::json!(ctx.identity.role));
         self.audit.append(entry).map_err(error)?;
+        self.credentials
+            .touch(&ctx.identity.credential_id, Timestamp::now());
+        self.connections
+            .lock()
+            .map_err(|_| internal())?
+            .insert(ctx.connection_id, ctx.identity.credential_id.clone());
         Ok(())
     }
 
     /// Remove connection-owned work on disconnect without canceling independent downloads.
     pub async fn disconnect(&self, ctx: &CallContext) {
+        if let Ok(mut connections) = self.connections.lock() {
+            connections.remove(&ctx.connection_id);
+        }
         self.browser.disconnect(ctx.connection_id);
         self.subscriptions.lock().await.retain(|_, (owner, task)| {
             if owner == &ctx.connection_id {
@@ -558,6 +590,21 @@ impl Backend for RuntimeBackend {
             return Ok(result);
         }
         self.admit()?;
+        // A service writes only inside its registered roots; resolve every entry before any job exists.
+        let service_dirs = match Self::scope(ctx).service() {
+            Some(_) => Some(
+                p.jobs
+                    .iter()
+                    .map(|job| {
+                        self.service_destination(
+                            &ctx.identity.credential_id,
+                            job.dest_dir.as_deref(),
+                        )
+                    })
+                    .collect::<ApiResult<Vec<_>>>()?,
+            ),
+            None => None,
+        };
         let mut entries: Vec<EnqueuedJob> = receipt
             .as_ref()
             .map(|r| {
@@ -581,6 +628,9 @@ impl Backend for RuntimeBackend {
                     .job_source(ctx.identity.credential_id.as_str()),
             )
             .map_err(|_| internal())?;
+            if let Some(dirs) = &service_dirs {
+                value["dest_dir"] = serde_json::json!(dirs[index]);
+            }
             if let Some(key) = &p.idempotency_key {
                 if key.is_empty() || key.len() > 128 {
                     return Err(ApiError::invalid_params(
@@ -666,8 +716,9 @@ impl Backend for RuntimeBackend {
         }
         Ok(result)
     }
-    async fn jobs_list(&self, _ctx: &CallContext, p: JobsListParams) -> ApiResult<JobsListResult> {
+    async fn jobs_list(&self, ctx: &CallContext, p: JobsListParams) -> ApiResult<JobsListResult> {
         p.page.validate()?;
+        let scope = Self::scope(ctx);
         let rows = self
             .journal
             .read(|tx| tx.jobs(&zeus_journal::store::JobFilter::default()))
@@ -676,7 +727,8 @@ impl Backend for RuntimeBackend {
             .into_iter()
             .map(|r| r.job)
             .filter(|j| {
-                (p.states.is_empty() || p.states.contains(&j.state))
+                scope.job(j)
+                    && (p.states.is_empty() || p.states.contains(&j.state))
                     && p.run_id.is_none_or(|r| j.spec.source.run_id == Some(r))
                     && p.source_kind.is_none_or(|s| j.spec.source.kind == s)
                     && p.origin.as_ref().is_none_or(|o| &j.spec.origin() == o)
@@ -693,6 +745,7 @@ impl Backend for RuntimeBackend {
     }
     async fn jobs_get(&self, ctx: &CallContext, p: JobsGetParams) -> ApiResult<JobsGetResult> {
         let job = self.engine.get(p.job_id).await.map_err(error)?;
+        Self::scope(ctx).require_job(&job)?;
         let revealed = if p.reveal_urls {
             let surface = if ctx.identity.role == zeus_api::ClientRole::Tui {
                 Surface::Tui
@@ -723,13 +776,14 @@ impl Backend for RuntimeBackend {
             revealed,
         })
     }
-    async fn jobs_wait(&self, _ctx: &CallContext, p: JobsWaitParams) -> ApiResult<JobsWaitResult> {
+    async fn jobs_wait(&self, ctx: &CallContext, p: JobsWaitParams) -> ApiResult<JobsWaitResult> {
         if p.job_ids.is_empty()
             || p.job_ids.len() > 100
             || !(1..=MAX_WAIT_MS).contains(&p.timeout_ms)
         {
             return Err(ApiError::invalid_params("invalid jobs.wait bounds"));
         }
+        self.require_jobs_visible(ctx, &p.job_ids)?;
         let deadline = tokio::time::Instant::now() + Duration::from_millis(p.timeout_ms);
         let cursor = p
             .since_seq
@@ -808,6 +862,7 @@ impl Backend for RuntimeBackend {
         ctx: &CallContext,
         p: JobsControlParams,
     ) -> ApiResult<JobsControlResult> {
+        self.require_jobs_visible(ctx, &[p.job_id])?;
         let _gate = self.mutations.lock().await;
         let action = match p.action {
             ControlAction::Pause => zeus_engine::api::ControlAction::Pause,
@@ -861,10 +916,11 @@ impl Backend for RuntimeBackend {
     }
     async fn jobs_verify(
         &self,
-        _ctx: &CallContext,
+        ctx: &CallContext,
         p: JobsVerifyParams,
     ) -> ApiResult<JobsVerifyResult> {
         let job = self.engine.get(p.job_id).await.map_err(error)?;
+        Self::scope(ctx).require_job(&job)?;
         let original = job
             .result
             .ok_or_else(|| ApiError::new("api.invalid_transition", "job is not complete"))?;
@@ -969,16 +1025,18 @@ impl Backend for RuntimeBackend {
     }
     async fn sessions_list(
         &self,
-        _ctx: &CallContext,
+        ctx: &CallContext,
         p: SessionsListParams,
     ) -> ApiResult<SessionsListResult> {
+        let scope = Self::scope(ctx);
         let grants = self
             .journal
             .read(|tx| tx.grants())
             .map_err(error)?
             .into_iter()
             .filter(|g| {
-                p.origin.as_ref().is_none_or(|o| o == &g.origin)
+                scope.grant(g, &self.journal)
+                    && p.origin.as_ref().is_none_or(|o| o == &g.origin)
                     && (p.include_inactive || g.is_effective_at(Timestamp::now()))
             })
             .collect();
@@ -1011,9 +1069,10 @@ impl Backend for RuntimeBackend {
     }
     async fn audit_tail(
         &self,
-        _ctx: &CallContext,
+        ctx: &CallContext,
         p: AuditTailParams,
     ) -> ApiResult<AuditTailResult> {
+        let scope = Self::scope(ctx);
         let limit = p.limit.unwrap_or(20);
         if !(1..=100).contains(&limit) {
             return Err(ApiError::invalid_params("audit limit must be 1 to 100"));
@@ -1026,8 +1085,10 @@ impl Backend for RuntimeBackend {
         .map_err(|_| internal())?
         .map_err(error)?;
         Ok(AuditTailResult {
+            // A service sees the records its own credential caused (05 section 7.5).
             records: records
                 .into_iter()
+                .filter(|r| scope.audit(r.actor.client_id.as_deref()))
                 .map(serde_json::to_value)
                 .collect::<Result<_, _>>()
                 .map_err(|_| internal())?,
@@ -1147,16 +1208,22 @@ impl Backend for RuntimeBackend {
     }
     async fn files_list(
         &self,
-        _ctx: &CallContext,
+        ctx: &CallContext,
         p: FilesListParams,
     ) -> ApiResult<FilesListResult> {
-        let roots =
-            zeus_fs::WriteRoots::open(&self.config.effective_write_roots()).map_err(error)?;
-        let dir = p
-            .dir
-            .as_deref()
-            .map(PathBuf::from)
-            .unwrap_or_else(|| self.config.effective_write_roots()[0].clone());
+        // A service lists only its registered roots (05 section 7.5); everyone else the user's write roots.
+        let visible = match Self::scope(ctx).service() {
+            Some(_) => self.credentials.roots(&ctx.identity.credential_id),
+            None => self.config.effective_write_roots(),
+        };
+        let first = visible.first().cloned().ok_or_else(|| {
+            ApiError::new(
+                zeus_types::codes::POLICY_PATH_OUTSIDE_ROOTS,
+                "no write root is visible to this client",
+            )
+        })?;
+        let roots = zeus_fs::WriteRoots::open(&visible).map_err(error)?;
+        let dir = p.dir.as_deref().map(PathBuf::from).unwrap_or(first);
         let dir = roots.resolve_dest_dir(&dir).map_err(error)?;
         let root = roots.root_for(&dir).map_err(error)?;
         let mut pending = vec![dir];
@@ -1223,11 +1290,41 @@ impl Backend for RuntimeBackend {
         entries.sort_by(|a, b| a.path.cmp(&b.path));
         page(entries, &p.page)
     }
+    async fn files_roots_register(
+        &self,
+        ctx: &CallContext,
+        p: FilesRootsRegisterParams,
+    ) -> ApiResult<FilesRootsRegisterResult> {
+        self.register_root(ctx, p).await
+    }
+    async fn clients_list(
+        &self,
+        _ctx: &CallContext,
+        p: ClientsListParams,
+    ) -> ApiResult<ClientsListResult> {
+        self.list_clients(p)
+    }
+    async fn clients_add(
+        &self,
+        ctx: &CallContext,
+        p: ClientsAddParams,
+    ) -> ApiResult<ClientsAddResult> {
+        self.add_client(ctx, p).await
+    }
+    async fn clients_revoke(
+        &self,
+        ctx: &CallContext,
+        p: ClientsRevokeParams,
+    ) -> ApiResult<ClientsRevokeResult> {
+        self.revoke_client(ctx, p).await
+    }
 }
 
 #[path = "native.rs"]
 mod native;
 
+#[path = "clients.rs"]
+mod clients;
 #[path = "configuration.rs"]
 mod configuration;
 #[path = "events_backend.rs"]

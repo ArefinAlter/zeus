@@ -6,11 +6,12 @@
 
 use async_trait::async_trait;
 use zeus_api::methods::admin::{
-    AuditTailParams, AuditTailResult, AuditVerifyParams, AuditVerifyResult, ConfigGetParams,
-    ConfigGetResult, ConfigSetParams, ConfigSetResult, DoctorParams, DoctorResult,
-    LlmAuthCancelParams, LlmAuthFlow, LlmAuthSignOutParams, LlmAuthSignOutResult,
-    LlmAuthStartParams, LlmAuthStartResult, LlmAuthStatusParams, LlmAuthStatusResult,
-    LlmConfigureParams, LlmConfigureResult, LlmStatusParams, LlmStatusResult,
+    AuditTailParams, AuditTailResult, AuditVerifyParams, AuditVerifyResult, ClientsAddParams,
+    ClientsAddResult, ClientsListParams, ClientsListResult, ClientsRevokeParams,
+    ClientsRevokeResult, ConfigGetParams, ConfigGetResult, ConfigSetParams, ConfigSetResult,
+    DoctorParams, DoctorResult, LlmAuthCancelParams, LlmAuthFlow, LlmAuthSignOutParams,
+    LlmAuthSignOutResult, LlmAuthStartParams, LlmAuthStartResult, LlmAuthStatusParams,
+    LlmAuthStatusResult, LlmConfigureParams, LlmConfigureResult, LlmStatusParams, LlmStatusResult,
 };
 use zeus_api::methods::cloud::*;
 use zeus_api::methods::daemon::{
@@ -19,7 +20,9 @@ use zeus_api::methods::daemon::{
 use zeus_api::methods::events::{
     SubscribeParams, SubscribeResult, UnsubscribeParams, UnsubscribeResult,
 };
-use zeus_api::methods::files::{FilesListParams, FilesListResult};
+use zeus_api::methods::files::{
+    FilesListParams, FilesListResult, FilesRootsRegisterParams, FilesRootsRegisterResult,
+};
 use zeus_api::methods::jobs::{
     EnqueueParams, EnqueueResult, JobsControlParams, JobsControlResult, JobsGetParams,
     JobsGetResult, JobsListParams, JobsListResult, JobsVerifyParams, JobsVerifyResult,
@@ -105,6 +108,14 @@ backend! {
     approvals_decide(ApprovalsDecideParams) -> ApprovalsDecideResult;
     /// `files.list`.
     files_list(FilesListParams) -> FilesListResult;
+    /// `files.roots.register` (role `service` only).
+    files_roots_register(FilesRootsRegisterParams) -> FilesRootsRegisterResult;
+    /// `clients.list` (admin, human-only).
+    clients_list(ClientsListParams) -> ClientsListResult;
+    /// `clients.add` (admin, human-only, `cli_interactive` evidence).
+    clients_add(ClientsAddParams) -> ClientsAddResult;
+    /// `clients.revoke` (admin, human-only, `cli_interactive` evidence).
+    clients_revoke(ClientsRevokeParams) -> ClientsRevokeResult;
     /// `audit.tail`.
     audit_tail(AuditTailParams) -> AuditTailResult;
     /// `audit.verify`.

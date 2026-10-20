@@ -905,7 +905,7 @@ Paged listing of files under the write roots visible to the caller (section 7.5)
 Role `service` only (section 7.6). Registers a directory the service owns as one of its write roots.
 
 1. `path` is absolute. After canonicalisation (symbolic links resolved) it MUST lie inside one of the user's write roots (configuration `files.write_roots`, set by a human) and MUST NOT be a user write root itself, the state directory or inside it. Otherwise: `policy.path_outside_roots`.
-2. The daemon creates the directory if it does not exist (mode `0700` on Unix), records the root in the journal with the service's credential id, and returns it. Registering the same canonical path again returns the existing record with `created: false`. A path inside another service's root is `api.invalid_params`.
+2. The daemon creates the directory if it does not exist (mode `0700` on Unix), records the root durably with the service's credential id (in the daemon's credential index, beside the credential it belongs to), and returns it. Registering the same canonical path again returns the existing record with `created: false`. A path inside, or containing, another service's root is `api.invalid_params`, so roots never overlap.
 3. At most 16 roots per service (`api.rate_limited` with `details.limit = "service_roots"`).
 4. Roots never widen anything for other kinds: agents and humans keep writing inside the user's write roots, which already contain the service roots.
 
@@ -989,7 +989,7 @@ Admin, human-only; the CLI runs these commands only from an interactive terminal
 |---|---|
 | `name` | `[a-z][a-z0-9_-]{0,31}`, unique, not `cli`, `agent` or `host`. Becomes the file `<state>/credentials/<name>.token`. |
 | `kind` | `agent` or `service`. Human and admin credentials are created only by provisioning (section 6.5). |
-| `role` | Default `service` for kind `service` and `mcp` for kind `agent`; must be allowed for the kind (section 7.2). |
+| `role` | Default `service` for kind `service` and `mcp` for kind `agent`; must be allowed for the kind (section 7.2). Through the API an `agent` credential takes `mcp`, `a2a` or `embedded` only: a role whose job source or approval requester label would read as the person's own CLI (`cli`, `tui`, `gui`, `test`) is refused with `api.invalid_params`. |
 | `permissions` | Optional narrowing within the kind's ceiling (section 7.3). Default: the ceiling. |
 
 The daemon mints the credential id and a token, stores the verifier, writes the token file owner-only, and returns `{client, credential_file, replayed}`. The token is never part of a result. The audit record (`tool.call` with the new credential id, kind and role) is written ahead.

@@ -46,6 +46,7 @@ mod browser_proxy;
 mod deferred_audit;
 mod mutations;
 mod outbox;
+mod visibility;
 
 /// Explicit model configuration and budgeted execution.
 pub mod models;

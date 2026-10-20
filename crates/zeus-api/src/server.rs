@@ -134,6 +134,7 @@ pub struct Router {
     disconnected: Option<BoxedHandler>,
     authenticated: Option<Box<AuthenticationHook>>,
     shutdown: Option<ShutdownController>,
+    revocations: Option<tokio::sync::watch::Receiver<u64>>,
 }
 
 impl Router {
@@ -208,6 +209,14 @@ impl Router {
         F: Fn(&mut CallContext) -> Result<(), ApiError> + Send + Sync + 'static,
     {
         self.authenticated = Some(Box::new(handler));
+        self
+    }
+
+    /// Close live connections whose credential was revoked: the store bumps `revocations` after each revocation,
+    /// and every connection then re-checks its own credential. Requests also re-check before dispatch.
+    #[must_use]
+    pub fn with_revocations(mut self, revocations: tokio::sync::watch::Receiver<u64>) -> Self {
+        self.revocations = Some(revocations);
         self
     }
 
@@ -378,6 +387,14 @@ where
     let shutdown = ctx.router.shutdown.clone().unwrap_or_default();
     let mut stopping = shutdown.subscribe();
     let mut stopping_notified = false;
+    let mut revocations = ctx.router.revocations.clone();
+    let revoked = |call: &Option<CallContext>| {
+        call.as_ref().is_some_and(|call| {
+            ctx.credentials
+                .get(&call.identity.credential_id)
+                .is_none_or(|c| c.revoked)
+        })
+    };
 
     loop {
         while tasks.try_join_next().is_some() {}
@@ -416,6 +433,20 @@ where
                 tokio::select! {
                     biased;
                     _ = stopping.changed() => continue,
+                    _ = async {
+                        let changed = match revocations.as_mut() {
+                            Some(rx) => rx.changed().await.is_ok(),
+                            None => false,
+                        };
+                        if !changed {
+                            std::future::pending::<()>().await;
+                        }
+                    } => {
+                        if revoked(call_ctx) {
+                            return Ok(());
+                        }
+                        continue;
+                    },
                     _ = async { match notice { Some(notice) => tokio::time::sleep_until(notice.deadline).await, None => std::future::pending().await } } => return Ok(()),
                     result = &mut read => break result,
                 }
@@ -539,6 +570,15 @@ where
                     // A peer that sends work before authenticating is not a client we want to keep.
                     return Err(error);
                 };
+                if revoked(call_ctx) {
+                    let error =
+                        ApiError::new(codes::NOT_AUTHENTICATED, "the credential was revoked");
+                    let _ = notifier_send(
+                        notifier,
+                        Message::Response(Response::failure(Some(request.id), &error)),
+                    );
+                    return Err(error);
+                }
                 if shutdown.notice().is_some() {
                     let error = ApiError::new(codes::UNAVAILABLE, "daemon is stopping")
                         .with_detail("reason", "stopping");

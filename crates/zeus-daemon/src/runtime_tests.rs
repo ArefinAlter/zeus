@@ -267,6 +267,325 @@ async fn authenticated_api_download_survives_restart_with_receipts_and_provenanc
     http.abort();
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn service_clients_are_confined_to_their_roots_jobs_and_records() {
+    let dir = tempfile::tempdir().unwrap();
+    let backend = setup(dir.path()).await;
+    let (admin, _rx) = context(dir.path(), "cli");
+    let actor = Actor::human(Surface::CliInteractive);
+    let add = |name: &str, kind| ClientsAddParams {
+        name: name.into(),
+        kind,
+        role: None,
+        permissions: None,
+        idempotency_key: None,
+    };
+    // Unverified terminals, agents and bad requests cannot create credentials.
+    assert_eq!(
+        backend
+            .clients_add(&admin, add("ogun", ClientKind::Service))
+            .await
+            .unwrap_err()
+            .envelope()
+            .code
+            .as_str(),
+        "api.human_required"
+    );
+    for (params, code) in [
+        (add("agent", ClientKind::Agent), "api.invalid_params"),
+        (add("Ogun", ClientKind::Service), "api.invalid_params"),
+        (add("person", ClientKind::Human), "api.invalid_params"),
+        (
+            ClientsAddParams {
+                role: Some(ClientRole::Cli),
+                ..add("disguised", ClientKind::Agent)
+            },
+            "api.invalid_params",
+        ),
+        (
+            ClientsAddParams {
+                permissions: Some([zeus_api::Permission::KillSwitch].into()),
+                ..add("widened", ClientKind::Agent)
+            },
+            "api.invalid_params",
+        ),
+    ] {
+        let error = backend
+            .add_client_as(actor.clone(), &admin, params)
+            .await
+            .unwrap_err();
+        assert_eq!(error.envelope().code.as_str(), code);
+    }
+    let created = backend
+        .add_client_as(
+            actor.clone(),
+            &admin,
+            ClientsAddParams {
+                idempotency_key: Some("link-ogun".into()),
+                ..add("ogun", ClientKind::Service)
+            },
+        )
+        .await
+        .unwrap();
+    contract("ClientsAddResult", &created);
+    assert_eq!(created.client.role, ClientRole::Service);
+    assert!(Path::new(&created.credential_file).is_file());
+    assert!(
+        !serde_json::to_string(&created).unwrap().contains("zt1_"),
+        "the token never leaves its file"
+    );
+    let replay = backend
+        .add_client_as(
+            actor.clone(),
+            &admin,
+            ClientsAddParams {
+                idempotency_key: Some("link-ogun".into()),
+                ..add("ogun", ClientKind::Service)
+            },
+        )
+        .await
+        .unwrap();
+    assert!(replay.replayed);
+    assert_eq!(replay.client, created.client);
+    assert_eq!(
+        backend
+            .add_client_as(actor.clone(), &admin, add("ogun", ClientKind::Agent))
+            .await
+            .unwrap_err()
+            .envelope()
+            .code
+            .as_str(),
+        "api.conflict"
+    );
+    let listed = backend
+        .clients_list(&admin, Default::default())
+        .await
+        .unwrap();
+    contract("ClientsListResult", &listed);
+    assert!(listed.clients.iter().any(|c| c.name == "ogun"));
+    assert!(listed.clients.iter().any(|c| c.name == "cli"));
+
+    // The service registers a root inside the user's write root, never the root itself or outside it.
+    let (service, _rx2) = context(dir.path(), "ogun");
+    assert_eq!(service.identity.kind, ClientKind::Service);
+    let root_path = dir.path().join("downloads").join("ogun");
+    let register = |path: &Path| FilesRootsRegisterParams {
+        path: path.display().to_string(),
+        label: Some("ogun datasets".into()),
+        idempotency_key: None,
+    };
+    let root = backend
+        .files_roots_register(&service, register(&root_path))
+        .await
+        .unwrap();
+    contract("FilesRootsRegisterResult", &root);
+    assert!(root.created && root_path.is_dir());
+    assert!(
+        !backend
+            .files_roots_register(&service, register(&root_path))
+            .await
+            .unwrap()
+            .created
+    );
+    for outside in [dir.path().join("downloads"), dir.path().join("elsewhere")] {
+        assert_eq!(
+            backend
+                .files_roots_register(&service, register(&outside))
+                .await
+                .unwrap_err()
+                .envelope()
+                .code
+                .as_str(),
+            "policy.path_outside_roots"
+        );
+    }
+
+    // Its jobs land in its root; a destination elsewhere is refused before any job exists.
+    let data = (0..50_000).map(|n| (n % 241) as u8).collect::<Vec<_>>();
+    let (url, http) = http(data.clone()).await;
+    let request = |dest: Option<&Path>| -> EnqueueParams {
+        let mut job = serde_json::json!({"url":url,"filename":"set.bin"});
+        if let Some(dest) = dest {
+            job["dest_dir"] = serde_json::json!(dest.display().to_string());
+        }
+        serde_json::from_value(serde_json::json!({ "jobs": [job] })).unwrap()
+    };
+    assert_eq!(
+        backend
+            .jobs_enqueue(&service, request(Some(&dir.path().join("downloads"))))
+            .await
+            .unwrap_err()
+            .envelope()
+            .code
+            .as_str(),
+        "policy.path_outside_roots"
+    );
+    let own = backend.jobs_enqueue(&service, request(None)).await.unwrap();
+    let own_id = own.jobs[0].job_id.unwrap();
+    let (agent, _rx3) = context(dir.path(), "agent");
+    let theirs = backend.jobs_enqueue(&agent, request(None)).await.unwrap();
+    let their_id = theirs.jobs[0].job_id.unwrap();
+    let done = backend
+        .jobs_wait(
+            &agent,
+            JobsWaitParams {
+                job_ids: vec![own_id, their_id],
+                until: WaitUntil::AllTerminal,
+                timeout_ms: 10_000,
+                since_seq: None,
+                progress_bytes: None,
+            },
+        )
+        .await
+        .unwrap();
+    assert!(done.jobs.iter().all(|j| j.state == JobState::Completed));
+    assert_eq!(std::fs::read(root_path.join("set.bin")).unwrap(), data);
+
+    // A service sees its own jobs, files and audit records; another client's job is "not found".
+    let visible = backend
+        .jobs_list(&service, Default::default())
+        .await
+        .unwrap();
+    assert_eq!(
+        visible.items.iter().map(|j| j.id).collect::<Vec<_>>(),
+        [own_id]
+    );
+    assert_eq!(
+        backend
+            .jobs_get(
+                &service,
+                JobsGetParams {
+                    job_id: their_id,
+                    reveal_urls: false
+                }
+            )
+            .await
+            .unwrap_err()
+            .envelope()
+            .code
+            .as_str(),
+        "api.not_found"
+    );
+    assert_eq!(
+        backend
+            .jobs_list(&agent, Default::default())
+            .await
+            .unwrap()
+            .items
+            .len(),
+        2
+    );
+    let files = backend
+        .files_list(&service, Default::default())
+        .await
+        .unwrap();
+    assert_eq!(
+        files
+            .items
+            .iter()
+            .map(|f| f.path.as_str())
+            .collect::<Vec<_>>(),
+        ["set.bin"]
+    );
+    let records = backend
+        .audit_tail(
+            &service,
+            AuditTailParams {
+                limit: Some(100),
+                after_seq: None,
+            },
+        )
+        .await
+        .unwrap();
+    assert!(!records.records.is_empty());
+    assert!(
+        records
+            .records
+            .iter()
+            .all(|r| r["actor"]["client_id"] == service.identity.credential_id.as_str())
+    );
+
+    // Revocation withdraws its pending requests, deactivates its roots and ends authentication.
+    let pending = backend
+        .sessions_request(
+            &service,
+            serde_json::from_value(
+                serde_json::json!({"origin":"https://portal.example.org","scope":"site","reason":"datasets"}),
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap()
+        .approval_id
+        .unwrap();
+    assert_eq!(
+        backend
+            .revoke_client_as(
+                actor.clone(),
+                &admin,
+                ClientsRevokeParams {
+                    credential_id: admin.identity.credential_id.to_string(),
+                    idempotency_key: None
+                }
+            )
+            .await
+            .unwrap_err()
+            .envelope()
+            .code
+            .as_str(),
+        "api.invalid_params"
+    );
+    let revoked = backend
+        .revoke_client_as(
+            actor.clone(),
+            &admin,
+            ClientsRevokeParams {
+                credential_id: service.identity.credential_id.to_string(),
+                idempotency_key: None,
+            },
+        )
+        .await
+        .unwrap();
+    contract("ClientsRevokeResult", &revoked);
+    assert!(revoked.client.revoked && revoked.client.revoked_at.is_some());
+    assert!(!Path::new(&created.credential_file).exists());
+    assert!(
+        backend
+            .credentials
+            .get(&service.identity.credential_id)
+            .unwrap()
+            .revoked
+    );
+    assert!(
+        backend
+            .credentials
+            .roots(&service.identity.credential_id)
+            .is_empty()
+    );
+    let withdrawn = backend
+        .journal
+        .read(|tx| tx.approval(pending))
+        .unwrap()
+        .unwrap();
+    assert_eq!(withdrawn.state, ApprovalState::Canceled);
+    let again = backend
+        .revoke_client_as(
+            actor,
+            &admin,
+            ClientsRevokeParams {
+                credential_id: service.identity.credential_id.to_string(),
+                idempotency_key: None,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(again.connections_closed, 0);
+    // Its downloaded file and job continue to exist for the person.
+    assert!(root_path.join("set.bin").is_file());
+    backend.engine.shutdown().await.unwrap();
+    http.abort();
+}
+
 #[tokio::test]
 async fn one_decision_reaches_every_job_of_a_batched_approval() {
     use zeus_api::methods::sessions::{ApprovalView, ConfirmationLevel, DecideOutcome};

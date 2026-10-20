@@ -66,6 +66,10 @@ pub mod capabilities {
     pub const IDEMPOTENCY: &str = "idempotency";
     /// The `nm.frame` relay for the native-messaging host.
     pub const NM_RELAY: &str = "nm.relay";
+    /// `clients.list`, `clients.add`, `clients.revoke`.
+    pub const CLIENTS: &str = "clients";
+    /// `files.roots.register`.
+    pub const FILES_ROOTS: &str = "files.roots";
     /// Workflow methods (later phase).
     pub const WORKFLOWS: &str = "workflows";
     /// LLM provider methods (later phase).
@@ -78,6 +82,8 @@ pub mod capabilities {
         JOBS_WAIT,
         IDEMPOTENCY,
         NM_RELAY,
+        CLIENTS,
+        FILES_ROOTS,
         WORKFLOWS,
         LLM,
     ];

@@ -283,10 +283,14 @@ pub struct WorkflowService {
     audit: Arc<dyn AuditSink>,
     engine: OnceLock<zeus_engine::Engine>,
     roots: Vec<PathBuf>,
+    /// The registered roots of a service caller; services plan only inside them (05 section 7.6).
+    service_roots: OnceLock<ServiceRoots>,
     gate: Mutex<()>,
     stopping: AtomicBool,
     audit_receipts: std::sync::Mutex<std::collections::BTreeSet<String>>,
 }
+/// Looks up the active roots of a service credential id.
+pub(crate) type ServiceRoots = Arc<dyn Fn(&str) -> Vec<PathBuf> + Send + Sync>;
 impl WorkflowService {
     /// Open private durable state. This performs no HTTP requests.
     pub fn open(
@@ -309,6 +313,7 @@ impl WorkflowService {
             audit,
             engine: OnceLock::new(),
             roots,
+            service_roots: OnceLock::new(),
             gate: Mutex::new(()),
             stopping: AtomicBool::new(false),
             audit_receipts: std::sync::Mutex::new(Default::default()),
@@ -456,14 +461,39 @@ impl WorkflowService {
         }
         Ok(run)
     }
-    fn resolved_plan(&self, mut plan: Plan) -> ApiResult<Plan> {
+    /// Bind the service-root lookup once at startup.
+    pub(crate) fn attach_service_roots(&self, lookup: ServiceRoots) {
+        let _ = self.service_roots.set(lookup);
+    }
+    /// Resolve the plan destination inside the caller's roots: a service's registered roots, else the user's.
+    fn resolved_plan_for(&self, identity: &ClientIdentity, plan: Plan) -> ApiResult<Plan> {
+        if identity.kind != ClientKind::Service {
+            return self.resolved_plan(plan);
+        }
+        let roots = self
+            .service_roots
+            .get()
+            .map(|lookup| lookup(identity.credential_id.as_str()))
+            .unwrap_or_default();
+        if roots.is_empty() {
+            return Err(ApiError::new(
+                "policy.path_outside_roots",
+                "a service plans downloads only inside its registered roots",
+            ));
+        }
+        self.resolved_plan_in(plan, &roots)
+    }
+    fn resolved_plan(&self, plan: Plan) -> ApiResult<Plan> {
+        self.resolved_plan_in(plan, &self.roots)
+    }
+    fn resolved_plan_in(&self, mut plan: Plan, allowed: &[PathBuf]) -> ApiResult<Plan> {
         let roots =
-            zeus_fs::WriteRoots::open(&self.roots).map_err(|e| ApiError::from(e.to_envelope()))?;
+            zeus_fs::WriteRoots::open(allowed).map_err(|e| ApiError::from(e.to_envelope()))?;
         let requested = Path::new(&plan.sinks.dest_dir);
         let destination = if requested.is_absolute() {
             requested.to_owned()
         } else {
-            self.roots.first().ok_or_else(fail)?.join(requested)
+            allowed.first().ok_or_else(fail)?.join(requested)
         };
         let safe = roots
             .resolve_dest_dir(&destination)
@@ -534,7 +564,7 @@ impl WorkflowService {
             diagnostics = validate_plan(&candidate);
             diagnostics.extend(validate_samples(&candidate, &samples));
             if !has_errors(&diagnostics) {
-                let candidate = self.resolved_plan(candidate)?;
+                let candidate = self.resolved_plan_for(identity, candidate)?;
                 self.validate_environment(&candidate)
                     .await
                     .map_err(runtime_error)?;
