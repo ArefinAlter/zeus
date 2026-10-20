@@ -186,6 +186,101 @@ impl ConsentManager {
             .map(ApprovalView::try_from)
             .collect()
     }
+    /// Join a new job to the pending `session_grant` approval with the same batch key (origin, requester, run),
+    /// as a new revision with recomputed facts (07 section 4.7). Returns `None` when there is none or it is full.
+    /// Callers hold the engine's admission gate, so two joins never race on one revision.
+    fn join_batch(
+        &self,
+        pending: &[Approval],
+        requester: &str,
+        origin: &Origin,
+        job: &Job,
+        dest_path: Option<&str>,
+        reason_codes: &[String],
+    ) -> ApiResult<Option<Approval>> {
+        const MAX_JOBS: usize = 50;
+        const MAX_ITEMS: usize = 20;
+        const MAX_DEST_DIRS: usize = 8;
+        let now = Timestamp::now();
+        let Some(mut approval) = pending
+            .iter()
+            .find(|a| {
+                a.kind == ApprovalKind::SessionGrant
+                    && a.requested_by.as_deref() == Some(requester)
+                    && a.origin.as_ref() == Some(origin)
+                    && a.run_id == job.spec.source.run_id
+                    && a.is_open_at(now)
+                    && a.facts
+                        .as_ref()
+                        .and_then(|f| f.get("transfer"))
+                        .is_some_and(serde_json::Value::is_object)
+            })
+            .cloned()
+        else {
+            return Ok(None);
+        };
+        let mut facts = serde_json::Value::Object(approval.facts.clone().ok_or_else(missing)?);
+        let revision = approval.revision.unwrap_or(1).saturating_add(1);
+        let ids = facts["transfer"]["job_ids"]
+            .as_array()
+            .map(Vec::len)
+            .unwrap_or(0);
+        if ids >= MAX_JOBS || revision > 1000 {
+            return Ok(None);
+        }
+        let transfer = &mut facts["transfer"];
+        transfer["job_ids"]
+            .as_array_mut()
+            .ok_or_else(missing)?
+            .push(serde_json::json!(job.id));
+        match job.spec.expected_size {
+            Some(size) => {
+                let known = transfer["total_bytes"].as_u64().unwrap_or(0);
+                transfer["total_bytes"] = serde_json::json!(known.saturating_add(size));
+            }
+            None => {
+                let unknown = transfer["unknown_size_count"].as_u64().unwrap_or(0);
+                transfer["unknown_size_count"] = serde_json::json!(unknown + 1);
+            }
+        }
+        if let Some(dir) = dest_path
+            .and_then(|p| std::path::Path::new(p).parent())
+            .map(|p| p.to_string_lossy().into_owned())
+        {
+            let dirs = transfer["dest_dirs"].as_array_mut().ok_or_else(missing)?;
+            if !dirs.iter().any(|d| d.as_str() == Some(dir.as_str())) {
+                if dirs.len() < MAX_DEST_DIRS {
+                    dirs.push(serde_json::json!(dir));
+                } else {
+                    let omitted = transfer["dest_dirs_omitted"].as_u64().unwrap_or(0);
+                    transfer["dest_dirs_omitted"] = serde_json::json!(omitted + 1);
+                }
+            }
+        }
+        let items = facts["items"].as_array_mut().ok_or_else(missing)?;
+        if items.len() < MAX_ITEMS {
+            items.push(serde_json::json!({"job_id":job.id,
+                "untrusted_name":clean(job.spec.filename.as_deref().unwrap_or("download")),
+                "untrusted_url":job.spec.url.redact(RedactMode::Log),"total_bytes":job.spec.expected_size}));
+        } else {
+            let omitted = facts["items_omitted"].as_u64().unwrap_or(0);
+            facts["items_omitted"] = serde_json::json!(omitted + 1);
+        }
+        for code in reason_codes {
+            if approval.reason_codes.len() < 8 && !approval.reason_codes.contains(code) {
+                approval.reason_codes.push(code.clone());
+            }
+        }
+        facts["reason_codes"] = serde_json::json!(approval.reason_codes);
+        facts["revision"] = serde_json::json!(revision);
+        facts["issued_at"] = serde_json::json!(now);
+        approval.summary.total_bytes = facts["transfer"]["total_bytes"].as_u64();
+        approval.revision = Some(revision);
+        approval.request_hash = Some(crate::approvals::facts_hash(&facts)?);
+        approval.facts = facts.as_object().cloned();
+        // `expires_at` never changes: joining cannot extend a deadline.
+        Ok(Some(approval))
+    }
     fn prepare(&self, preparation: ApprovalPreparation<'_>) -> ApiResult<Approval> {
         let ApprovalPreparation {
             requester,
@@ -615,6 +710,21 @@ impl ConsentManager {
             revoked_by: None,
             revocation_reason: None,
         });
+        // A batched `once` approval creates one grant per covered job (07 section 4.7 rule 5).
+        let extra: Vec<SessionGrant> = match (&grant, view.facts["transfer"]["job_ids"].as_array())
+        {
+            (Some(first), Some(ids)) if first.scope == GrantScope::Once => ids
+                .iter()
+                .filter_map(|v| v.as_str()?.parse::<JobId>().ok())
+                .filter(|id| Some(*id) != a.job_id)
+                .map(|id| SessionGrant {
+                    id: IdGenerator::new().grant_id(),
+                    job_id: Some(id),
+                    ..first.clone()
+                })
+                .collect(),
+            _ => Vec::new(),
+        };
         let mut entry = AuditEntry::new(
             now,
             validated.actor.clone(),
@@ -634,7 +744,7 @@ impl ConsentManager {
             .insert("confirmation".into(), serde_json::json!(p.confirmation));
         entry.write_ahead = true;
         self.audit.append(entry).map_err(error)?;
-        if let Some(grant) = &grant {
+        for grant in grant.iter().chain(&extra) {
             let mut entry = AuditEntry::new(
                 now,
                 validated.actor.clone(),
@@ -662,7 +772,7 @@ impl ConsentManager {
             grant_id: grant.as_ref().map(|g| g.id),
         });
         let mut record = serde_json::json!({"approval_id":a.id,"revision":a.revision,"request_hash":a.request_hash,"outcome":validated.outcome,
-            "scope":validated.scope,"actor":validated.actor,"decided_at":now,"grant_ids":grant.iter().map(|g|g.id).collect::<Vec<_>>(),"evidence":evidence});
+            "scope":validated.scope,"actor":validated.actor,"decided_at":now,"grant_ids":grant.iter().chain(&extra).map(|g|g.id).collect::<Vec<_>>(),"evidence":evidence});
         if validated.scope.is_none() {
             record
                 .as_object_mut()
@@ -683,7 +793,7 @@ impl ConsentManager {
                 }
                 tx.put_approval(&a)?;
                 tx.put_approval_decision(a.id, &record)?;
-                if let Some(grant) = &grant {
+                for grant in grant.iter().chain(&extra) {
                     tx.put_grant(grant)?;
                     tx.append_event(
                         now,
@@ -735,6 +845,21 @@ impl ApprovalPort for ConsentManager {
             {
                 // Refuses the enqueue, or fails an admitted job (S14) instead of raising another prompt.
                 self.check_denial_backoff(requester, origin, Timestamp::now())?;
+                // A new job joins its requester's pending approval for the origin: one prompt, not one per file.
+                // Only enqueue (a job still `queued`) joins, because the engine serialises enqueues.
+                if let Some(job) = request.job.as_ref()
+                    && job.state == JobState::Queued
+                    && let Some(joined) = self.join_batch(
+                        &pending,
+                        requester,
+                        origin,
+                        job,
+                        request.dest_path.as_deref(),
+                        &request.reason_codes,
+                    )?
+                {
+                    return Ok(joined);
+                }
             }
             if !request.reason_codes.iter().any(|r| r == "kill_switch") {
                 // Engine-raised approvals belong to jobs already admitted; only the daemon-wide cap applies here.
@@ -1006,6 +1131,110 @@ mod tests {
                 .await
                 .unwrap();
         }
+    }
+    #[tokio::test]
+    async fn new_jobs_of_one_requester_and_origin_share_one_revisioned_approval() {
+        let temp = tempfile::tempdir().unwrap();
+        let (manager, agent, human) = setup(temp.path());
+        let ids = IdGenerator::new();
+        let request = |origin: &str, n: u64| {
+            let job_id = ids.job_id();
+            let mut spec: JobSpec = serde_json::from_value(serde_json::json!({
+                "url": format!("{origin}/files/{n}.pdf"), "session_origin": origin,
+                "filename": format!("paper-{n}.pdf"), "expected_size": 1000 + n,
+                "source": {"kind":"agent","via":"mcp","client_id": agent.credential_id.as_str()}
+            }))
+            .unwrap();
+            spec.source.client_id = Some(agent.credential_id.to_string());
+            ApprovalRequest {
+                job: Some(Job::new(job_id, spec, JobState::Queued, Timestamp::now())),
+                dest_path: Some(
+                    temp.path()
+                        .join(format!("paper-{n}.pdf"))
+                        .display()
+                        .to_string(),
+                ),
+                kind: ApprovalKind::SessionGrant,
+                job_id: Some(job_id),
+                run_id: None,
+                origin: Some(Origin::parse(origin).unwrap()),
+                allowed_scopes: vec![GrantScope::Once, GrantScope::Site, GrantScope::Never],
+                reason_codes: vec!["session.first_use".into()],
+                summary: ApprovalSummary {
+                    title: "paper".into(),
+                    url_redacted: None,
+                    total_bytes: None,
+                    source_kind: Some(SourceKind::Agent),
+                    requested_by: Some(agent.credential_id.to_string()),
+                },
+            }
+        };
+        let mut approval = None;
+        let mut jobs = Vec::new();
+        for n in 0..3 {
+            let r = request("https://portal.example.org", n);
+            jobs.push(r.job_id.unwrap());
+            // The engine persists what the port returns, with its job; do the same here.
+            let a = manager.request(r).await.unwrap();
+            manager.store(&a).unwrap();
+            approval = Some(a);
+        }
+        let approval = approval.unwrap();
+        assert_eq!(approval.revision, Some(3));
+        let pending = manager
+            .journal
+            .read(|tx| tx.approvals(Some(&[ApprovalState::Pending])))
+            .unwrap();
+        assert_eq!(pending.len(), 1, "one prompt for three files");
+        let view = ApprovalView::try_from(approval.clone()).unwrap();
+        assert_eq!(
+            view.request_hash,
+            crate::approvals::facts_hash(&view.facts).unwrap()
+        );
+        zeus_types::spec_testing::SpecSchemas::load()
+            .check(
+                true,
+                "approvals.v1",
+                "ApprovalRequest",
+                &serde_json::to_value(&view).unwrap(),
+            )
+            .unwrap();
+        assert_eq!(
+            view.facts["transfer"]["job_ids"].as_array().unwrap().len(),
+            3
+        );
+        assert_eq!(view.facts["transfer"]["total_bytes"], 3003);
+        assert_eq!(view.facts["items"].as_array().unwrap().len(), 3);
+        // Another origin, or another requester, never joins.
+        let other = manager
+            .request(request("https://other.example.org", 9))
+            .await
+            .unwrap();
+        assert_ne!(other.id, approval.id);
+        // Approving once creates one grant per covered job.
+        let p = ApprovalsDecideParams {
+            approval_id: approval.id,
+            request_hash: view.request_hash,
+            outcome: DecideOutcome::Approve,
+            scope: Some(GrantScope::Once),
+            channel: Surface::CliInteractive,
+            confirmation: ConfirmationLevel::Gesture,
+            idempotency_key: None,
+        };
+        manager
+            .decide(&human, &p, evidence(&human, &p))
+            .await
+            .unwrap();
+        let grants = manager.journal.read(|tx| tx.grants()).unwrap();
+        let mut bound: Vec<_> = grants.iter().filter_map(|g| g.job_id).collect();
+        bound.sort();
+        jobs.sort();
+        assert_eq!(bound, jobs);
+        assert!(
+            grants
+                .iter()
+                .all(|g| g.scope == GrantScope::Once && g.approval_id == approval.id)
+        );
     }
     #[tokio::test]
     async fn a_denial_backs_off_the_requester_for_that_origin_only() {
