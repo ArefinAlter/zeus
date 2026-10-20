@@ -147,7 +147,37 @@ impl WorkflowStore {
         self.get(&format!("run:{id}"))
     }
     fn save_run(&self, row: &StoredRun) -> ApiResult<()> {
-        self.put(&format!("run:{}", row.snapshot.report.run_id), row)
+        let mut row = row.clone();
+        self.stamp_report(&mut row);
+        self.put(&format!("run:{}", row.snapshot.report.run_id), &row)
+    }
+    fn stamp_report(&self, row: &mut StoredRun) {
+        if row.snapshot.report.status != RunStatus::Running {
+            row.snapshot.elapsed_ms = self.elapsed(row);
+            row.active_since = None;
+        }
+        row.snapshot.report.updated_at = Some(self.now());
+        row.snapshot.report.elapsed_ms = self.elapsed(row);
+        if row.snapshot.report.status == RunStatus::Running
+            && row.snapshot.report.report_version > 0
+        {
+            row.snapshot
+                .report
+                .started_at
+                .get_or_insert_with(|| self.now());
+        }
+        row.snapshot.report.possibly_incomplete = matches!(
+            row.snapshot.report.status,
+            RunStatus::Canceled
+                | RunStatus::Failed
+                | RunStatus::Stopped
+                | RunStatus::BudgetExhausted
+        ) || row
+            .snapshot
+            .report
+            .stop_reason
+            .as_deref()
+            .is_some_and(|reason| reason.starts_with("budget_") || reason == "drift");
     }
     fn mutate_run<T>(
         &self,
@@ -169,6 +199,7 @@ impl WorkflowStore {
                 serde_json::from_slice(value.value()).map_err(|_| fail())?
             };
             result = mutate(&mut row)?;
+            self.stamp_report(&mut row);
             let data = serde_json::to_vec(&row).map_err(|_| fail())?;
             table
                 .insert(key.as_str(), data.as_slice())
@@ -278,6 +309,7 @@ impl WorkflowStore {
             row.snapshot = next.clone();
             row.snapshot.elapsed_ms = row.snapshot.elapsed_ms.max(elapsed);
             row.active_since = (next.report.status == RunStatus::Running).then(|| self.now());
+            self.stamp_report(&mut row);
             if matches!(
                 next.report.status,
                 RunStatus::Canceled | RunStatus::Failed | RunStatus::BudgetExhausted
@@ -294,7 +326,7 @@ impl WorkflowStore {
                 let bytes = binding
                     .bytes(&WorkflowsControlResult {
                         replayed: false,
-                        run: next.report.clone(),
+                        run: row.snapshot.report.clone(),
                     })
                     .map_err(|_| runtime_fail())?;
                 table
@@ -459,6 +491,7 @@ impl WorkflowService {
                     row.snapshot.elapsed_ms = self.store.elapsed(row);
                     row.active_since = None;
                     row.snapshot.report.status = RunStatus::Paused;
+                    row.snapshot.report.pause_reason = Some("kill_switch".into());
                     row.snapshot.last_error = Some(reason.into());
                     row.snapshot.checkpoint_seq = row.snapshot.checkpoint_seq.saturating_add(1);
                 }
@@ -813,11 +846,13 @@ impl WorkflowService {
             let runtime =
                 WorkflowRuntime::new(plan.clone(), zeus_types::IdGenerator::new().run_id())
                     .map_err(runtime_error)?;
+            let mut snapshot = runtime.snapshot().clone();
+            snapshot.report.plan_id = Some(p.plan_id.clone());
             let row = StoredRun {
                 owner: identity.credential_id.to_string(),
                 plan_id: p.plan_id.clone(),
                 plan,
-                snapshot: runtime.snapshot().clone(),
+                snapshot,
                 approval_id: None,
                 pending: vec![],
                 jobs: BTreeMap::new(),
@@ -859,6 +894,7 @@ impl WorkflowService {
         self.store
             .mutate_run(row.snapshot.report.run_id, |current| {
                 current.approval_id = Some(approval_id);
+                current.snapshot.report.approval_id = Some(approval_id);
                 let receipt = current
                     .run_receipt
                     .get_or_insert(WorkflowsRunResult {
@@ -873,7 +909,81 @@ impl WorkflowService {
     }
     /// Read a redacted run report.
     pub fn get(&self, identity: &ClientIdentity, p: WorkflowsGetParams) -> ApiResult<RunReport> {
-        Ok(self.owned_run(identity, p.run_id)?.snapshot.report)
+        self.public_report(self.owned_run(identity, p.run_id)?)
+    }
+    fn public_report(&self, row: StoredRun) -> ApiResult<RunReport> {
+        let elapsed = self.store.elapsed(&row);
+        let mut report = row.snapshot.report;
+        report.plan_id = Some(row.plan_id);
+        report.approval_id = row.approval_id;
+        report.elapsed_ms = elapsed;
+        if report.report_version == 0 {
+            // Older 'started_at' was recorded at reservation, before human approval.
+            report.created_at = report.created_at.or(report.started_at.take());
+        }
+        report.possibly_incomplete = matches!(
+            report.status,
+            RunStatus::Canceled
+                | RunStatus::Failed
+                | RunStatus::Stopped
+                | RunStatus::BudgetExhausted
+        ) || report
+            .stop_reason
+            .as_deref()
+            .is_some_and(|reason| reason.starts_with("budget_") || reason == "drift");
+        if let Some(counts) = &mut report.counts {
+            let jobs = self
+                .journal
+                .read(|tx| {
+                    let mut ids = row
+                        .jobs
+                        .values()
+                        .copied()
+                        .collect::<std::collections::BTreeSet<_>>();
+                    // An enqueue can commit before the outbox records its returned ID.
+                    for intent in &row.pending {
+                        if let Some(key) = &intent.spec.idempotency_key
+                            && let Some(receipt) = tx.idempotency(&row.owner, key)?
+                        {
+                            ids.insert(receipt.job_id);
+                        }
+                    }
+                    ids.into_iter()
+                        .map(|id| tx.job(id))
+                        .collect::<zeus_journal::JournalResult<Vec<_>>>()
+                })
+                .map_err(|_| fail())?;
+            counts.files_enqueued = 0;
+            counts.files_completed = 0;
+            counts.files_failed = 0;
+            counts.files_canceled = 0;
+            counts.files_quarantined = 0;
+            counts.bytes_done = 0;
+            for record in jobs
+                .into_iter()
+                .flatten()
+                .filter(|record| record.job.spec.source.run_id == Some(report.run_id))
+            {
+                counts.files_enqueued = counts.files_enqueued.saturating_add(1);
+                counts.bytes_done = counts
+                    .bytes_done
+                    .saturating_add(record.job.progress.bytes_done);
+                match record.job.state {
+                    JobState::Completed => counts.files_completed += 1,
+                    JobState::Failed => counts.files_failed += 1,
+                    JobState::Canceled => counts.files_canceled += 1,
+                    _ => {}
+                }
+                if record.job.quarantined {
+                    counts.files_quarantined += 1;
+                }
+            }
+            report.files_enqueued = counts.files_enqueued;
+            report.files_completed = counts.files_completed;
+            report.files_failed = counts.files_failed;
+            report.bytes_done = counts.bytes_done;
+        }
+        Ok(report)
     }
     /// List only runs visible to this identity.
     pub fn list(
@@ -894,7 +1004,7 @@ impl WorkflowService {
             .list::<StoredRun>("run:")?
             .into_iter()
             .filter(|(_, r)| Self::owner(identity, &r.owner))
-            .map(|(_, r)| r.snapshot.report)
+            .map(|(_, r)| r)
             .collect::<Vec<_>>();
         let limit = p.page.effective_limit();
         if offset > rows.len() {
@@ -902,7 +1012,12 @@ impl WorkflowService {
         }
         Ok(zeus_api::Page {
             next_cursor: (offset + limit < rows.len()).then(|| (offset + limit).to_string()),
-            items: rows.into_iter().skip(offset).take(limit).collect(),
+            items: rows
+                .into_iter()
+                .skip(offset)
+                .take(limit)
+                .map(|row| self.public_report(row))
+                .collect::<ApiResult<Vec<_>>>()?,
         })
     }
     /// Apply control to discovery and owned jobs.
@@ -955,9 +1070,22 @@ impl WorkflowService {
             )
             .await
             .map_err(runtime_error)?;
+        if binding.is_some() {
+            let mut receipt = self
+                .store
+                .replay::<WorkflowsControlResult>(binding.as_ref())?
+                .ok_or_else(fail)?;
+            receipt.replayed = false;
+            return Ok(receipt);
+        }
         Ok(WorkflowsControlResult {
             replayed: false,
-            run: runtime.report().clone(),
+            run: self
+                .store
+                .run(p.run_id)?
+                .ok_or_else(missing)?
+                .snapshot
+                .report,
         })
     }
     /// Export provenance records after the journal outbox has caught up.
@@ -1267,6 +1395,10 @@ impl WorkflowService {
                         r.pending.remove(0);
                         r.snapshot.report.files_enqueued =
                             r.snapshot.report.files_enqueued.saturating_sub(1);
+                        if let Some(counts) = &mut r.snapshot.report.counts {
+                            counts.items_skipped_existing =
+                                counts.items_skipped_existing.saturating_add(1);
+                        }
                         Ok(())
                     })
                     .map_err(|_| runtime_fail())?;
@@ -1768,6 +1900,274 @@ mod tests {
             requested_dry_run: None,
         }
     }
+
+    fn report_intent(run_id: RunId, key: &str, index: u32) -> JobIntent {
+        let mut source = zeus_types::Source::new(zeus_types::SourceKind::Workflow);
+        source.run_id = Some(run_id);
+        let mut spec = zeus_types::JobSpec::new(
+            zeus_types::HttpUrl::parse("https://example.org/report-file").unwrap(),
+            source,
+        );
+        spec.idempotency_key = Some(key.into());
+        JobIntent {
+            spec,
+            index,
+            on_existing: OnExisting::Skip,
+            byte_budget_remaining: 1024,
+            declared_size: None,
+        }
+    }
+
+    fn report_job(run_id: RunId, state: JobState, bytes_done: u64) -> zeus_journal::JobRecord {
+        let spec = report_intent(run_id, "fixture-only", 1).spec;
+        let mut job = zeus_types::Job::new(
+            zeus_types::IdGenerator::new().job_id(),
+            spec,
+            state,
+            Timestamp::now(),
+        );
+        job.progress.bytes_done = bytes_done;
+        let internal = serde_json::from_value(serde_json::json!({
+            "epoch": 1,
+            "dest_path": "report-fixture.bin",
+            "zpart_path": "report-fixture.bin.zpart",
+            "zpart_file_id": null,
+            "total_bytes": null,
+            "data_complete": false,
+            "bound_validators": {},
+            "range_support": "unknown"
+        }))
+        .unwrap();
+        zeus_journal::JobRecord::new(job, internal)
+    }
+
+    #[test]
+    fn public_report_uses_current_durable_job_states_and_excludes_pending_intents() {
+        let dir = tempfile::tempdir().unwrap();
+        let service = receipt_service(dir.path());
+        let mut stored = row();
+        let run_id = stored.snapshot.report.run_id;
+        stored.snapshot.report.files_enqueued = 99;
+        stored.snapshot.report.files_completed = 98;
+        stored.snapshot.report.files_failed = 97;
+        stored.snapshot.report.bytes_done = 96;
+        stored.snapshot.report.counts = Some(RunCounts {
+            pages_fetched: 4,
+            pages_failed: 2,
+            items_seen: 12,
+            items_duplicate: 3,
+            items_filtered: 2,
+            files_enqueued: 99,
+            files_completed: 98,
+            files_failed: 97,
+            files_canceled: 96,
+            files_quarantined: 95,
+            bytes_done: 94,
+            ..Default::default()
+        });
+        stored.pending = vec![
+            report_intent(run_id, "wf:report:not-admitted-one", 1),
+            report_intent(run_id, "wf:report:not-admitted-two", 2),
+        ];
+        let downloading = report_job(run_id, JobState::Downloading, 100);
+        let mut completed = report_job(run_id, JobState::Completed, 200);
+        completed.job.quarantined = true;
+        completed.job.quarantine_reasons = vec![zeus_types::QuarantineReason::ExecutableType];
+        let mut failed = report_job(run_id, JobState::Failed, 30);
+        let canceled = report_job(run_id, JobState::Canceled, 40);
+        let foreign = report_job(
+            zeus_types::IdGenerator::new().run_id(),
+            JobState::Completed,
+            9000,
+        );
+        for (index, record) in [&downloading, &completed, &failed, &canceled, &foreign]
+            .into_iter()
+            .enumerate()
+        {
+            stored.jobs.insert(format!("intent-{index}"), record.id());
+        }
+        // Duplicate outbox mappings and stale missing IDs must not inflate the totals.
+        stored
+            .jobs
+            .insert("same-completed-job".into(), completed.id());
+        stored.jobs.insert(
+            "missing-job".into(),
+            zeus_types::IdGenerator::new().job_id(),
+        );
+        service
+            .journal
+            .transact(|tx| {
+                for record in [&downloading, &completed, &failed, &canceled, &foreign] {
+                    tx.put_job(record)?;
+                }
+                Ok(())
+            })
+            .unwrap();
+
+        let first = service.public_report(stored.clone()).unwrap();
+        let counts = first.counts.as_ref().unwrap();
+        assert_eq!(counts.files_enqueued, 4);
+        assert_eq!(counts.files_completed, 1);
+        assert_eq!(counts.files_failed, 1);
+        assert_eq!(counts.files_canceled, 1);
+        assert_eq!(counts.files_quarantined, 1);
+        assert_eq!(counts.bytes_done, 370);
+        assert_eq!((counts.pages_fetched, counts.pages_failed), (4, 2));
+        assert_eq!(
+            (
+                counts.items_seen,
+                counts.items_duplicate,
+                counts.items_filtered
+            ),
+            (12, 3, 2)
+        );
+        assert_eq!(
+            (
+                first.files_enqueued,
+                first.files_completed,
+                first.files_failed,
+                first.bytes_done
+            ),
+            (4, 1, 1, 370)
+        );
+
+        // Engine state may advance without another workflow checkpoint being committed.
+        failed.job.state = JobState::Completed;
+        failed.job.progress.bytes_done = 50;
+        service.journal.transact(|tx| tx.put_job(&failed)).unwrap();
+        let current = service.public_report(stored).unwrap();
+        let counts = current.counts.as_ref().unwrap();
+        assert_eq!(
+            (
+                counts.files_enqueued,
+                counts.files_completed,
+                counts.files_failed
+            ),
+            (4, 2, 0)
+        );
+        assert_eq!(counts.bytes_done, 390);
+        assert_eq!(
+            (
+                current.files_enqueued,
+                current.files_completed,
+                current.files_failed,
+                current.bytes_done
+            ),
+            (4, 2, 0, 390)
+        );
+    }
+
+    #[test]
+    fn public_report_recovers_admitted_jobs_before_outbox_mapping_is_saved() {
+        let dir = tempfile::tempdir().unwrap();
+        let service = receipt_service(dir.path());
+        let mut stored = row();
+        let run_id = stored.snapshot.report.run_id;
+        let key = "wf:report:receipt-before-mapping";
+        stored.pending = vec![
+            report_intent(run_id, key, 1),
+            report_intent(run_id, "wf:report:other-owner", 2),
+            report_intent(run_id, "wf:report:no-receipt", 3),
+        ];
+        assert!(stored.jobs.is_empty());
+        let before = service.public_report(stored.clone()).unwrap();
+        assert_eq!(before.counts.unwrap().files_enqueued, 0);
+        assert_eq!(before.files_enqueued, 0);
+
+        let admitted = report_job(run_id, JobState::Downloading, 64);
+        let hidden_receipt_job = report_job(run_id, JobState::Completed, 9000);
+        let now = Timestamp::now();
+        service
+            .journal
+            .transact(|tx| {
+                tx.put_job(&admitted)?;
+                tx.put_job(&hidden_receipt_job)?;
+                for (owner, receipt_key, job_id) in [
+                    (stored.owner.as_str(), key, admitted.id()),
+                    (
+                        "another-requester",
+                        "wf:report:other-owner",
+                        hidden_receipt_job.id(),
+                    ),
+                ] {
+                    tx.put_idempotency(&zeus_journal::IdempotencyRow {
+                        client_id: owner.into(),
+                        key: receipt_key.into(),
+                        request_hash: zeus_types::Hex256::from_bytes([0; 32]),
+                        job_id,
+                        method: Some("jobs.enqueue".into()),
+                        result: None,
+                        created_at: now,
+                        expires_at: now.saturating_add_ms(86_400_000),
+                    })?;
+                }
+                Ok(())
+            })
+            .unwrap();
+
+        // The durable engine receipt closes the enqueue-before-outbox-checkpoint gap.
+        let receipt_only = service.public_report(stored.clone()).unwrap();
+        let counts = receipt_only.counts.unwrap();
+        assert_eq!(
+            (
+                counts.files_enqueued,
+                counts.files_completed,
+                counts.bytes_done
+            ),
+            (1, 0, 64)
+        );
+        assert_eq!(
+            (receipt_only.files_enqueued, receipt_only.bytes_done),
+            (1, 64)
+        );
+        stored.jobs.insert("now-mapped".into(), admitted.id());
+        let mapped = service.public_report(stored).unwrap();
+        assert_eq!(mapped.counts.unwrap().files_enqueued, 1);
+        assert_eq!(mapped.files_enqueued, 1);
+    }
+
+    #[test]
+    fn public_report_keeps_legacy_counts_unknown_and_relabels_reservation_time() {
+        let dir = tempfile::tempdir().unwrap();
+        let service = receipt_service(dir.path());
+        let reservation = Timestamp::UNIX_EPOCH.saturating_add_ms(1000);
+        let known_creation = Timestamp::UNIX_EPOCH.saturating_add_ms(500);
+        for created_at in [None, Some(known_creation)] {
+            let mut legacy = row();
+            legacy.snapshot.report.report_version = 0;
+            legacy.snapshot.report.counts = None;
+            legacy.snapshot.report.status = RunStatus::AwaitingApproval;
+            legacy.snapshot.report.created_at = created_at;
+            legacy.snapshot.report.started_at = Some(reservation);
+            legacy.snapshot.report.files_enqueued = 7;
+            legacy.snapshot.report.files_completed = 5;
+            legacy.snapshot.report.files_failed = 2;
+            legacy.snapshot.report.bytes_done = 123;
+            let run_id = legacy.snapshot.report.run_id;
+            let record = report_job(run_id, JobState::Completed, 999);
+            legacy.jobs.insert("legacy-job".into(), record.id());
+            service.journal.transact(|tx| tx.put_job(&record)).unwrap();
+
+            let report = service.public_report(legacy).unwrap();
+            assert_eq!(report.report_version, 0);
+            assert!(
+                report.counts.is_none(),
+                "unknown discovery counts must stay unknown"
+            );
+            assert_eq!(report.created_at, created_at.or(Some(reservation)));
+            assert_eq!(report.started_at, None);
+            assert_eq!(
+                (
+                    report.files_enqueued,
+                    report.files_completed,
+                    report.files_failed,
+                    report.bytes_done
+                ),
+                (7, 5, 2, 123)
+            );
+        }
+    }
+
     #[test]
     fn durable_intents_and_keys_commit_together_and_stale_checkpoints_cannot_undo_pause() {
         let dir = tempfile::TempDir::new().unwrap();

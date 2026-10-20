@@ -81,6 +81,19 @@ pub mod codes {
         (REQUEST_HASH_MISMATCH, ErrorClass::Conflict, false),
         (SCOPE_NOT_ALLOWED, ErrorClass::InvalidRequest, false),
         ("api.conflict", ErrorClass::Conflict, false),
+        // Artifact lifecycle plans never authorize blind retries with refreshed parameters.
+        ("artifact.plan_stale", ErrorClass::Conflict, false),
+        ("artifact.plan_expired", ErrorClass::Conflict, false),
+        (
+            "artifact.lifecycle_reconciliation_required",
+            ErrorClass::Conflict,
+            false,
+        ),
+        (
+            "artifact.operation_in_progress",
+            ErrorClass::Conflict,
+            false,
+        ),
         // Cloud mutations can have succeeded remotely before a local error. None authorizes
         // blind transport retry; inspect the durable delivery/checkpoint first (spec 14).
         ("cloud.unsupported", ErrorClass::Unsupported, false),

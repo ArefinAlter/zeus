@@ -223,7 +223,7 @@ When several needs of the same kind arise for the same origin from the same requ
 6. **Stale decisions.** A decision naming the hash of an older revision fails with `policy.request_hash_mismatch`, `details.current_revision`. The error deliberately does not carry the new hash: the surface MUST fetch the approval again (`approvals.get`, `approval.list`) and re-render it, restarting its input delay (section 10.1).
 7. Surfaces SHOULD show what changed between revisions ("1 more download joined").
 
-Implemented (2026-10-18): `session_grant` batching when a new job is enqueued, rules 1 to 3 and 5, including one `once` grant per covered job and a daemon-wide decision applied to every covered job. Not yet: `handoff` batching by browser profile, and rule 4 (leaving): a canceled covered job stays listed in the facts, and the decision skips it when applied.
+Implemented (2026-10-21): enqueue batches for `session_grant` and `handoff`, with a 50-job cap, fixed deadline, revision/hash changes and one `once` grant per covered job. Handoffs additionally require the same requesting credential, browser family, nonempty profile and private-window flag. Canceling a covered job (S32) removes it and recomputes transfer facts in the same journal transaction; the final departure stores `job_canceled` and emits one cancellation. If revision 1000 is exhausted, the daemon withdraws that binding and atomically rebinds the surviving jobs to a fresh approval ID at revision 1, preserving the original deadline and scope choices. Display samples retain the daemon's existing sanitized strings. Decisions against older facts fail closed. Joining from transitions other than initial enqueue, and disappearance of a need outside cancellation, remain open.
 
 ### 4.8 Who sees what
 

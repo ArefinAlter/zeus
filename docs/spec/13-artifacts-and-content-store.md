@@ -926,7 +926,7 @@ The library contains no product policy: quotas, modes, retention defaults, priva
 
 ### 16.2 Daemon methods
 
-Zeus exposes its store through the daemon API with these methods, defined in a later section of 05 together with their parameters, permissions and rows in the method policy table: `artifacts.get`, `artifacts.list`, `artifacts.lineage`, `artifacts.ingest`. Every record they return is an export form. Ogun defines its own API.
+Zeus exposes its store through the daemon API with these methods, defined in 05 together with their parameters, permissions and rows in the method policy table: `artifacts.get`, `artifacts.list`, `artifacts.lineage`, `artifacts.ingest`, `artifacts.lifecycle.preview` and `artifacts.lifecycle.apply`. Every record they return is an export form. The lifecycle methods bind an exact active-record snapshot and a 15-minute plan hash; tombstoning and retention weakening require a human destructive-operation approval. Materialization uses a confined verified copy without replacement and refuses quarantine. Collection is not exposed by this interface. The executable contract and CLI flow are in [the lifecycle design](../design/artifact-lifecycle-api.md). Ogun defines its own API.
 
 ## 17. Error codes
 
@@ -947,6 +947,10 @@ Namespace `artifact` (registered in 00 section 9.3). File-system failures use th
 | `artifact.lineage_invalid` | `invalid_request` | no | A parent `artifact_id` does not name an earlier record of this store. |
 | `artifact.import_conflict` | `conflict` | no | This source record was imported earlier with different digests. |
 | `artifact.materialize_unsupported` | `unsupported` | no | No mode of the policy is workable for this target. |
+| `artifact.plan_stale` | `conflict` | no | The lifecycle preview, expected record snapshot or destination no longer matches; preview and review again. Zeus API code. |
+| `artifact.plan_expired` | `conflict` | no | The lifecycle preview expired or has an invalid lifetime; obtain a fresh preview. Zeus API code. |
+| `artifact.lifecycle_reconciliation_required` | `conflict` | no | A copy started before an interruption and its destination exists. Inspect it and preview another destination; never adopt or overwrite it automatically. Zeus API code. |
+| `artifact.operation_in_progress` | `conflict` | no | The same materialization is still executing. Wait for its receipt, then repeat the identical request; no parallel copy is launched. Zeus API code. |
 
 Refusals by product policy use the existing codes (`policy.quarantine_blocked`, `policy.path_outside_roots`).
 

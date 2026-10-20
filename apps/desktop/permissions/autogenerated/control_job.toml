@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-control-job"
+description = "Enables the control_job command without any pre-configured scope."
+commands.allow = ["control_job"]
+
+[[permission]]
+identifier = "deny-control-job"
+description = "Denies the control_job command without any pre-configured scope."
+commands.deny = ["control_job"]

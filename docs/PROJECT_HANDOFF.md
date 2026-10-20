@@ -1,12 +1,12 @@
 # Zeus project handoff
 
-Snapshot reviewed **2026-10-18**. Runtime/test baseline recorded **2026-10-16** and rerun **2026-10-18** after the continuation work. Audience: the maintainer and developers taking over implementation, integration and release work across the four Zeus repositories.
+Updated **2026-10-21** for the parallel continuation; final validation/publication records are pending. Historical snapshot reviewed **2026-10-18**. Runtime/test baseline recorded **2026-10-16** and rerun **2026-10-18** after the continuation work. Audience: the maintainer and developers taking over implementation, integration and release work across the four Zeus repositories.
 
-Zeus has an executable pre-alpha download engine, persistent daemon, CLI/TUI, MCP stdio, browser relay, public-page workflow runtime, model adapters and cloud delivery. It is **not a released product**. Installed browser/provider acceptance, important contract/security gaps, model-to-product integration, conversion/organization and the production GUI remain unfinished. Start with the [end-to-end roadmap](../ROADMAP.md), then use the commands and discrepancy register below.
+Zeus has an executable pre-alpha download engine, persistent daemon, CLI/TUI, MCP stdio, browser relay, public-page workflow runtime, model adapters and cloud delivery. It is **not a released product**. Installed browser/provider acceptance, remaining contract/security gaps, sandboxed conversion, model file classification, scheduler integration and production desktop acceptance remain unfinished. Organization/undo, artifact lifecycle RPC/CLI and a restricted real-state desktop shell execute. Start with the [end-to-end roadmap](../ROADMAP.md), then use the commands and discrepancy register below.
 
 ## Repository and review snapshot
 
-These are the implementation revisions reviewed for this handoff. Later documentation-only commits can advance the PR head without changing this baseline. All four PRs were **open drafts against main** when checked on October 18; none had been merged. All source worktrees were clean before this documentation update.
+The following table is the historical October 18 review snapshot, not the current main/publication record. Later documentation-only commits can advance the PR head without changing this baseline. All four PRs were **open drafts against main** at that October 18 check; no merge was recorded in that snapshot. All source worktrees were clean before this documentation update.
 
 | Repository and original directory | Branch | Implementation revision | Draft PR |
 | --- | --- | --- | --- |
@@ -15,7 +15,7 @@ These are the implementation revisions reviewed for this handoff. Later document
 | `zeus-extension` — `A:\zeus-extension` / `/mnt/a/zeus-extension` | `codex/browser-contracts-20261016` | `b0491c2b7027c91102294dfba273ce73816d3928` | [extension PR 1](https://github.com/ArefinAlter/zeus-extension/pull/1) |
 | `zeus-site` — `A:\zeus-site` / `/mnt/a/zeus-site` | `codex/download-workspace-preview-20261016` | `74bdcca5e21bc6ff11b05ea2821c9bdbb8b5f750` | [site PR 1](https://github.com/ArefinAlter/zeus-site/pull/1) |
 
-The app depends on nine `zeus-core` crates through sibling paths. Do not combine app changes with an old core checkout. The extension has generated/copied contracts from the app specs. Keep exact companion revisions in PR descriptions and release records. These draft branches contain the new runtime; checking out `main` alone does not reproduce it.
+The app depends on nine `zeus-core` crates through sibling paths. Do not combine app changes with an old core checkout. The extension has generated/copied contracts from the app specs. Keep exact companion revisions in PR descriptions and release records. That statement described the October 18 draft branches. Coordinated integration has since advanced; use the final companion revisions recorded after the current validation/publish pass rather than reproducing this historical table as current state.
 
 GitHub showed successful CodeRabbit statuses on all four PRs and successful Vercel preview checks on the site PR. Those statuses **do not establish Rust or browser test CI**. No tracked GitHub Actions workflows were found in the app/core baseline despite older prose claiming CI coverage. Required test/MSRV/security CI is an open task.
 
@@ -37,6 +37,14 @@ The app working tree additionally contains the three grouped MCP tools, generate
 
 The MCP catalogue is now generated with `node docs/spec/tools/mcp-catalogue.mjs --write`; `--check` compares the file embedded in Rust and verifies the stated digest/budgets. Use `zeus artifacts --help` and `zeus get --help` for the new commands. `/` searches the live TUI snapshot; it does not search the filesystem. See the [current implementation ledger](IMPLEMENTATION_STATUS.md#2026-10-21-continuation) for verification and remaining gaps. The October 18 revision/PR table above is historical, not a new GitHub check.
 
+### Parallel continuation of 2026-10-21 (integration pending)
+
+The coordinated pass adds handoff batching and atomic cancellation amendment/withdrawal in app/core, a two-permission native-host ceiling with legacy migration, artifact lifecycle preview/apply RPC and CLI, versioned workflow reports, and the [restricted Tauri client](../apps/desktop/README.md). Matching core/extension contracts accompany the app; the earlier same-day statement about no sibling changes applies only to that earlier pass.
+
+The desktop uses a dedicated `gui.token` (Agent/Gui, seven explicit permissions), real daemon snapshots and five typed bridge commands. It previews and enqueues retained URL batches, controls eligible selected jobs, and reads run/file/artifact facts. It cannot decide approvals or borrow the CLI/host token. Artifact deletion is an approved record tombstone; retention weakening needs terminal approval, and materialization is a verified new copy. CLI callers save the exact JSON preview and retry `artifacts apply` with the same key after human approval.
+
+Current focused evidence is **116 daemon + 52 workflow tests passed**, and **321 extension tests passed**. The bundled Windows desktop source check, five headless Rust bridge tests, four Node frontend tests, strict app Clippy and all 256 normative examples pass. Final full core/app test totals, desktop/core lint and publication SHAs must be added after they are known. No native GUI launch, mobile/device, live browser/provider, signing/store or rescue-corpus acceptance is inferred. See the [current ledger](IMPLEMENTATION_STATUS.md#2026-10-21-parallel-continuation).
+
 ## Architecture and ownership
 
 ```mermaid
@@ -46,7 +54,7 @@ flowchart LR
   C[CLI and TUI] --> D
   M[MCP stdio] --> D
   A[Optional A2A bridge] --> D
-  G[Planned Tauri client] -.-> D
+  G[Restricted Tauri client] --> D
   D --> E[zeus-core engine]
   D --> W[Workflow and model services]
   D --> CL[Cloud orchestration and adapters]
@@ -67,7 +75,8 @@ The daemon has one local IPC listener; HTTP bridges are separate optional proces
 | [zeus-daemon](../crates/zeus-daemon) | IPC ownership, engine adapter, durable approval/grant/stop state, browser broker, workflows, models, cloud orchestration and receipt stores. |
 | [zeus-cloud](../crates/zeus-cloud/README.md) | Explicit provider capabilities, native Drive/Yandex/Baidu, configured rclone, private checkpoints and credential-store port. |
 | [zeus-cli](../crates/zeus-cli) and [zeus-mcp](../crates/zeus-mcp/README.md) | Human CLI/TUI/auth/cloud review and constrained agent tools/resources. MCP has no decision/account-configuration authority. |
-| [zeus-native-host](../crates/zeus-native-host) | Native framing, browser-parent verification, registration and bidirectional relay. |
+| [zeus-native-host](../crates/zeus-native-host) | Native framing, browser-parent verification, registration and bidirectional relay; only `daemon.read`/`nm.relay`, with popup decisions authorized by native channel evidence. |
+| [desktop client](../apps/desktop/README.md) | Independent Tauri workspace, restricted Agent/Gui IPC bridge, real paged downloads, link review/enqueue and run/file/artifact views; no GUI decision authority. |
 | [zeus-workflow](../crates/zeus-workflow) and [zeus-llm](../crates/zeus-llm) | Plan validation/extraction/runtime and model/provider/privacy/spend mechanisms; daemon owns persistence/policy. |
 | [zeus-a2a](../crates/zeus-a2a) and [zeus-a2a-bridge](../crates/zeus-a2a-bridge/README.md) | Task/card mapping and opt-in loopback four-method download profile. |
 | `zeus-extension` | Browser consent, rescue, session release, fetch fallback, popup/options and generated protocol contracts. |
@@ -82,11 +91,11 @@ Ogun's architecture embeds `zeus-core` while keeping its own product state, poli
 | Public URL → local file | Daemon/CLI and API execute download, verification, provenance and recovery. Windows actual-process smoke passed. | Broad platform/origin/fault acceptance and advanced scheduling. |
 | Browser failure → rescued file | Extension, native host and daemon/core pieces execute under fixtures. | No installed Chrome/Edge/Firefox end-to-end acceptance recorded. Refresh/redirect integration is incomplete. |
 | Agent → daemon | Thirteen MCP tools over stdio, including workflows/files/artifacts; API events/wait. | Host compatibility, remaining resource/pagination details and optional MCP HTTP. |
-| Workflow → files | Caller-supplied plans can be sampled, validated, approved and run through the daemon API with budgets/checkpoints; since 2026-10-18 a terminal user can ask for model-drafted selectors, and `zeus workflow` drives runs. | Authenticated rendering, remaining strategies and MCP workflow tools. |
+| Workflow → files | Caller-supplied plans can be sampled, validated, approved and run through the daemon API with budgets/checkpoints; since 2026-10-18 a terminal user can ask for model-drafted selectors, and `zeus workflow` drives runs. | Authenticated rendering, remaining strategies and revised-plan continuation. Versioned reports and grouped MCP workflow tools exist. |
 | Model configuration/auth | Provider adapters, auth flows, keyring port, policy verification and spend ledger exist; workflow drafting is the first production caller (2026-10-18). | Further callers such as file classification, actual account/keyring validation and production policy distribution. |
 | Cloud destination | Staged/streaming/native URL-import modes with durable approvals/reconciliation and provider fixtures. | Native cloud OAuth/refresh, live providers, richer recovery/progress and archival. |
-| Files → organization/conversion | Since 2026-10-18: the organiser and undo, each applied only after a terminal-decided approval, and `artifacts.*` reads, lineage and ingest. | Converter and confined process execution, model-assisted classification, artifact retention/deletion/materialization through the API. |
-| Human desktop workspace | Live Rust TUI plus interactive HTML design/site previews. | Production Tauri client, scheduler, persistent inbox and trusted GUI decisions. |
+| Files → organization/conversion | The organiser and undo use terminal-decided approvals. Artifact reads/lineage/ingest and exact preview/apply tombstones, retention and verified copy materialization execute through RPC/CLI. | Sandboxed conversion, model classification, artifact import/export/events and full platform containment acceptance. |
+| Human desktop workspace | Live Rust TUI and restricted Tauri client connected to real daemon state; separate HTML/site simulations remain labeled. | Installed GUI/accessibility acceptance, event replay, scheduler, persistent inbox/packages, index and trusted GUI decisions. |
 | Other agents → Zeus | Authenticated local A2A submit/get/list/cancel with restart recovery. | External SDK conformance and any additional/remote profile. |
 
 This inventory supersedes the old assessment that `EngineBuilder::build()`, daemon startup, MCP stdio and native relay are still stubs. It does not mean every declared interface now works.
@@ -180,7 +189,7 @@ Current cloud capacity limits include 64 accounts, 128 nonterminal deliveries, 1
 
 ## State and recovery
 
-[ZeusPaths](../crates/zeus-api/src/endpoint.rs) resolves platform paths. Explicit overrides are `ZEUS_STATE_DIR`, `ZEUS_CONFIG_DIR` and `ZEUS_RUNTIME_DIR`; keep them consistent across daemon/clients. `--profile` / `ZEUS_PROFILE` is parsed but does not currently select separate storage. Windows named pipes remain per-user even with separate state paths.
+[ZeusPaths](../crates/zeus-api/src/endpoint.rs) resolves platform paths. Explicit overrides are `ZEUS_STATE_DIR`, `ZEUS_CONFIG_DIR` and `ZEUS_RUNTIME_DIR`; keep them consistent across daemon/clients. `--profile` / `ZEUS_PROFILE` selects separate state, configuration and runtime paths. Windows named pipes remain per-user even with separate state paths.
 
 | State | Purpose and handling |
 | --- | --- |
@@ -294,9 +303,10 @@ Treat these as explicit follow-up work. Normative prose still governs contracts;
 | Resolved 2026-10-18 | The 17 `NotImplemented` functions of the core control modules are implemented and tested (windowed rate, Kalman, ETA band, P-squared quantile and hedge trigger, UCB1, Thompson and sliding-window UCB, reliability formulas, CUSUM). The engine scheduler does not call the advanced selectors yet. | Core `estimate.rs`, `mirror.rs`, `hedge.rs`, `math.rs`, `cusum.rs`. Linux reflink exists; other platforms/acceptance remain partial. |
 | Resolved 2026-10-18 | Spec 10 and ARCHITECTURE now describe the running bridge, the app-owned stores and the A2A index. | [spec 10](spec/10-a2a.md), [architecture](ARCHITECTURE.md), [ADR 0012](adr/0012-app-owned-stores-beside-the-journal.md) (Proposed; needs review). |
 | Partly resolved 2026-10-18 | Workflow selector drafting now calls the model (human terminal only, structure-only prompt). Classification has no caller yet. | [workflow_draft.rs](../crates/zeus-daemon/src/workflow_draft.rs). |
-| Partly resolved 2026-10-18 | Workflow and file CLI commands, `files.organize`/`files.undo` and `clients.*` exist. `files.convert` and MCP workflow/file tools remain; the MCP tools need a decision on the spec 06 catalogue budget. | [routes](../crates/zeus-daemon/src/routes.rs), [MCP catalogue](../crates/zeus-mcp/src/catalogue.rs). |
+| Resolved subset 2026-10-21 | Workflow/file/artifact grouped MCP tools and CLI commands exist; ADR 0013 resolves the catalogue budget. Lifecycle RPC/CLI supports tombstones, retention and copy materialization. `files.convert`, lifecycle MCP mutations, import/export/events and GC administration remain open. | [routes](../crates/zeus-daemon/src/routes.rs), [MCP catalogue](../crates/zeus-mcp/src/catalogue.rs), [artifact lifecycle](../crates/zeus-daemon/src/artifact_lifecycle.rs). |
+| Resolved subset 2026-10-21 | Enqueue handoff batching and S32 cancellation amendment/last-member/overflow behavior are tested. Native host has only relay/status permissions; legacy credentials keep their identities/tokens. | [consent](../crates/zeus-daemon/src/consent.rs), [policy](../crates/zeus-api/src/policy.rs). Non-enqueue joining, other need disappearance and renewal remain open. |
 | Phase 2 | Native cloud OAuth, live provider validation, policy-signing distribution and comprehensive artifact/cloud retention UX remain. | [cloud guide](../crates/zeus-daemon/src/cloud/README.md), [model spec](spec/09-llm-provider.md). Obtain real operational inputs and record acceptance separately from fixtures. |
-| Phase 3 | Web preview simulates inbox/packages/schedules/approvals/cloud; no production Tauri, GUI trust channel or MCP App views. | [design](design/download-workspace.md). Connect actual capabilities before changing simulation labels. |
+| Phase 3 | Restricted real-state Tauri client exists. Durable event replay, persistent inbox/packages, scheduling, filesystem index, trusted GUI decisions and MCP App views remain open. Web/site previews still use sample state. | [desktop boundaries](../apps/desktop/README.md), [design](design/client-workflows-and-platforms.md). Installed GUI/platform/accessibility acceptance remains pending. |
 
 Other spec open issues include journal URL encryption, audit anchoring/signatures, per-client visibility/credentials, large-file verification timeouts, requester-scoped grants, revised-plan continuation, artifact events/exports/privacy and cross-product integration. Use [the spec index](spec/README.md) and each document's open issues alongside the roadmap; stale entries require explicit resolution.
 

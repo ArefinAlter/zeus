@@ -15,6 +15,8 @@ zeus artifacts ingest /absolute/permitted/root/report.pdf --idempotency-key repo
 
 Artifact queries preserve public records and pagination. `ls` accepts SHA-256/BLAKE3, producing job/run and state filters; pass the returned `next_cursor` as `--cursor` with the same filters. `--ndjson` prints list records. Ingest uses daemon containment and hashing, never moves the source and refuses `--dry-run`; repeat its key only with identical input.
 
+`artifacts delete`, `retention` and `materialize` create reviewable plans. Save their `--json` output and pass it to `artifacts apply PLAN.json --idempotency-key KEY`. Deletion tombstones a record while preserving user files and shared bytes. Deletion and weaker retention first request a typed human terminal approval; retry the same plan and key after approval. Materialization makes a verified copy in a permitted root without replacing an existing file. See the [lifecycle API design](../../docs/design/artifact-lifecycle-api.md) for examples, recovery and cancellation limits.
+
 In `zeus tui`, `/` searches loaded jobs by name, redacted URL or state. Enter finishes typing; Escape clears search; Ctrl-C exits. Search text cannot trigger pause/resume/cancel shortcuts. Selection follows job identity when snapshots reorder, and the table scrolls to keep the selected job visible. This is a live queue filter, not a filesystem index.
 
 ## Cloud delivery

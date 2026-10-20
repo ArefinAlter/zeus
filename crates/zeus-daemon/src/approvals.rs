@@ -64,7 +64,8 @@ pub fn validate_decision(
         return Err(ApiError::new(
             codes::REQUEST_HASH_MISMATCH,
             "the request changed since it was shown; review it again",
-        ));
+        )
+        .with_detail("current_revision", approval.approval.revision.unwrap_or(1)));
     }
 
     let allowed = &approval.approval.allowed_scopes;

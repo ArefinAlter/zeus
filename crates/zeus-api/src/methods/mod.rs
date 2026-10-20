@@ -190,6 +190,10 @@ rpc_methods! {
     ArtifactsLineage = "artifacts.lineage" (ArtifactsLineageParams) -> ArtifactsLineageResult;
     /// Register a local file in the artifact store.
     ArtifactsIngest = "artifacts.ingest" (ArtifactsIngestParams) -> ArtifactsIngestResult;
+    /// Preview an exact artifact retention, tombstone or materialization effect.
+    ArtifactsLifecyclePreview = "artifacts.lifecycle.preview" (ArtifactsLifecyclePreviewParams) -> ArtifactsLifecyclePreviewResult;
+    /// Apply a preview or request its independently decided human approval.
+    ArtifactsLifecycleApply = "artifacts.lifecycle.apply" (ArtifactsLifecycleApplyParams) -> ArtifactsLifecycleApplyResult;
 }
 
 /// Names of notifications sent by the daemon to clients (they have no response).

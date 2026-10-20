@@ -44,7 +44,7 @@ impl RuntimeBackend {
     }
 
     /// The record, or `artifact.not_found` when it is unknown or outside the caller's view.
-    fn visible_artifact(
+    pub(super) fn visible_artifact(
         &self,
         ctx: &CallContext,
         id: zeus_types::ArtifactId,

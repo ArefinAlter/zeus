@@ -1,11 +1,11 @@
 //! `artifacts.*`: the content-addressed artifact store of spec 13, read through its export form (05 section 9.13).
 //!
 //! Every record is the store's portable export (artifact.v1 `Artifact`), privacy-reduced for the API: URL
-//! queries dropped and session origins withheld. Ingestion (`artifacts.ingest`) is not offered yet.
+//! queries dropped and session origins withheld. Lifecycle changes bind a preview to an exact record snapshot.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use zeus_types::{ArtifactId, Hex256, JobId, RunId};
+use zeus_types::{ApprovalId, ArtifactId, Hex256, JobId, RunId, Timestamp};
 
 use crate::paging::{Page, PageRequest};
 
@@ -150,5 +150,119 @@ pub struct ArtifactsIngestResult {
     /// This call committed the record.
     pub created: bool,
     /// The result came from the idempotency store (05 section 12).
+    pub replayed: bool,
+}
+
+/// Object protection selected for an active artifact record.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ArtifactRetention {
+    /// Protect the stored content while this record remains active.
+    Keep,
+    /// Permit later collection when no other record or lease protects the content.
+    Evictable,
+}
+
+/// One explicit artifact lifecycle effect. Collection and quarantine release are separate policies.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ArtifactLifecycleOperation {
+    /// Tombstone the record. User files, materializations and shared content remain untouched.
+    Delete,
+    /// Change object protection. Weakening protection requires a person's approval.
+    SetRetention {
+        /// Protection policy.
+        retention: ArtifactRetention,
+        /// Additional protection deadline, or no deadline.
+        #[serde(default)]
+        retain_until: Option<Timestamp>,
+    },
+    /// Copy verified bytes to a new file inside a write root visible to this caller.
+    Materialize {
+        /// Absolute destination; existing files and partial files are never replaced.
+        path: String,
+    },
+}
+
+/// An exact preview accepted by `artifacts.lifecycle.apply`; requester edits are revalidated by the daemon.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ArtifactLifecyclePlan {
+    /// Plan format, currently 1.
+    pub version: u32,
+    /// Record to change or copy.
+    pub artifact_id: ArtifactId,
+    /// BLAKE3 of the canonical API export before the change (the expected record revision).
+    pub expected_record_blake3: Hex256,
+    /// Expected CAS content identity.
+    pub blake3: Hex256,
+    /// Expected interoperable content digest.
+    pub sha256: Hex256,
+    /// Exact logical length.
+    pub size_bytes: u64,
+    /// Quarantine state; this operation cannot clear it.
+    pub quarantined: bool,
+    /// Protection policy before the change.
+    pub current_retention: ArtifactRetention,
+    /// Protection deadline before the change.
+    pub current_retain_until: Option<Timestamp>,
+    /// Complete effect, including the daemon-resolved destination when copying.
+    pub operation: ArtifactLifecycleOperation,
+    /// A human `destructive_op` approval is required before this effect can execute.
+    pub requires_approval: bool,
+    /// Preview expiration; no more than 15 minutes after it is produced.
+    pub expires_at: Timestamp,
+}
+
+/// `artifacts.lifecycle.preview` parameters. This method does not persist or execute a plan.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ArtifactsLifecyclePreviewParams {
+    /// Visible active artifact record.
+    pub artifact_id: ArtifactId,
+    /// Requested effect.
+    pub operation: ArtifactLifecycleOperation,
+}
+
+/// `artifacts.lifecycle.preview` result. Save this entire receipt for a later apply.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ArtifactsLifecyclePreviewResult {
+    /// Daemon-computed effect and expected record snapshot.
+    pub plan: ArtifactLifecyclePlan,
+    /// BLAKE3 of the canonical `{t:"zeus.artifact.lifecycle.v1",plan}` object.
+    pub plan_hash: Hex256,
+}
+
+/// `artifacts.lifecycle.apply` parameters. Repeat this exact request after a person approves it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ArtifactsLifecycleApplyParams {
+    /// Complete preview, without amendments.
+    pub plan: ArtifactLifecyclePlan,
+    /// Hash returned with the preview.
+    pub plan_hash: Hex256,
+    /// Required retry key: 1 to 128 UTF-8 bytes, without control characters.
+    pub idempotency_key: String,
+}
+
+/// A pending approval or a durable completed lifecycle receipt.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct ArtifactsLifecycleApplyResult {
+    /// The requested effect completed.
+    pub applied: bool,
+    /// Existing approval to review; the API never approves it on the caller's behalf.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval_id: Option<ApprovalId>,
+    /// Portable record after completion, including its tombstone for deletion.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifact: Option<serde_json::Value>,
+    /// Materialized destination, when this effect copied bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    /// Materialization mode actually used (`copy`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
+    /// This retry key reused its pending request or completed durable receipt.
     pub replayed: bool,
 }

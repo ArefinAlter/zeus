@@ -237,6 +237,13 @@ pub const METHODS: &[MethodSpec] = &[
         .gated("artifacts")
         .mutates()
         .later(),
+    MethodSpec::needs("artifacts.lifecycle.preview", FilesWrite)
+        .gated("artifacts")
+        .later(),
+    MethodSpec::needs("artifacts.lifecycle.apply", FilesWrite)
+        .gated("artifacts")
+        .mutates()
+        .later(),
 ];
 
 /// The relay method for native-messaging frames. It is a notification, not an RPC method, so it has its own
@@ -262,6 +269,13 @@ pub fn authorize(
         return Ok(());
     }
     let identity = identity.ok_or_else(ApiError::not_authenticated)?;
+    if identity.role == ClientRole::NativeHost
+        && spec
+            .permission
+            .is_some_and(|permission| !ClientRole::native_host_permissions().contains(&permission))
+    {
+        return Err(ApiError::permission_denied(spec.name));
+    }
     if let Some(permission) = spec.permission
         && !identity.has(permission)
     {
@@ -406,6 +420,7 @@ mod tests {
             "files.undo",
             "files.roots.register",
             "artifacts.ingest",
+            "artifacts.lifecycle.apply",
             "workflows.plan",
             "workflows.run",
             "workflows.control",
@@ -461,6 +476,23 @@ mod tests {
         let cli = identity(ClientKind::Admin, ClientRole::Cli);
         assert!(authorize(Some(&host), &NM_FRAME, &Value::Null).is_ok());
         assert!(authorize(Some(&cli), &NM_FRAME, &Value::Null).is_err());
+    }
+
+    #[test]
+    fn native_relay_cannot_use_broad_legacy_permissions_for_general_api_authority() {
+        let host = identity(ClientKind::Human, ClientRole::NativeHost);
+        // Deliberately inject the old broad identity: the table must still protect every method.
+        assert!(host.has(Permission::ApprovalsDecide));
+        for method in METHODS.iter().filter(|method| !method.is_pre_auth()) {
+            let permitted = method.permission == Some(Permission::DaemonRead);
+            assert_eq!(
+                authorize(Some(&host), method, &serde_json::json!({})).is_ok(),
+                permitted,
+                "{}",
+                method.name
+            );
+        }
+        assert!(authorize(Some(&host), &NM_FRAME, &serde_json::json!({})).is_ok());
     }
 
     #[test]

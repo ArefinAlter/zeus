@@ -1,6 +1,6 @@
 # Required checks for the zeus app workspace. The workspace builds against the sibling zeus-core checkout
 # (path dependencies), so every Rust job checks it out next to this repository: the branch with the same
-# name when it exists, otherwise main, or an explicit ref for a manual run.
+# name when it exists, otherwise the compatible revision pinned below, or an explicit ref for a manual run.
 #
 # zeus-core is private: the repository secret ZEUS_CORE_TOKEN must hold a fine-grained token with read-only
 # "Contents" access to ArefinAlter/zeus-core. Pull requests from forks do not receive it and cannot build.
@@ -13,7 +13,7 @@ on:
   workflow_dispatch:
     inputs:
       core_ref:
-        description: zeus-core branch, tag or commit (default the same branch name, else main)
+        description: zeus-core branch, tag or commit (default the same branch name, else the pinned compatible revision)
         required: false
         default: ""
 
@@ -49,7 +49,7 @@ jobs:
                 "https://x-access-token:${TOKEN}@github.com/ArefinAlter/zeus-core.git" "$BRANCH" >/dev/null 2>&1; then
               ref="$BRANCH"
             else
-              ref="b32e784938fb0fc7166805934f94f25e39b5e6ec"
+              ref="6ec728e10aec14ecd10b088b7d077da3d35feada"
             fi
           fi
           echo "zeus-core ref: $ref"
@@ -168,6 +168,59 @@ jobs:
         with:
           manifest-path: zeus/Cargo.toml
           command: check
+
+  # The independent desktop workspace keeps GUI dependencies out of daemon jobs.
+  # macOS remains informational until installed-client and platform acceptance is complete.
+  desktop:
+    name: Desktop (${{ matrix.os }})
+    needs: core-ref
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            informational: false
+          - os: macos-15
+            informational: true
+    runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.informational }}
+    env:
+      CARGO_BUILD_JOBS: "3"
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          path: zeus
+      - uses: actions/checkout@v5
+        with:
+          repository: ArefinAlter/zeus-core
+          ref: ${{ needs.core-ref.outputs.ref }}
+          token: ${{ secrets.ZEUS_CORE_TOKEN }}
+          path: zeus-core
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: zeus/apps/desktop
+          key: desktop
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+      - name: Desktop formatting
+        working-directory: zeus
+        run: cargo fmt --manifest-path apps/desktop/Cargo.toml --all --check
+      - name: Headless bridge tests
+        working-directory: zeus
+        run: cargo test --manifest-path apps/desktop/Cargo.toml --no-default-features --locked
+      - name: Bundled desktop source check
+        working-directory: zeus
+        run: cargo check --manifest-path apps/desktop/Cargo.toml --all-targets --locked
+      - name: Desktop Clippy
+        working-directory: zeus
+        run: cargo clippy --manifest-path apps/desktop/Cargo.toml --all-targets --locked -- -D warnings
+      - name: Frontend model tests
+        working-directory: zeus
+        run: node --test apps/desktop/tests/model.test.mjs
 
   # Build/test evidence is separate from installed-platform, browser, keyring and GUI acceptance.
   # Keep new CPU/OS combinations informational until their failures and missing capabilities are resolved.

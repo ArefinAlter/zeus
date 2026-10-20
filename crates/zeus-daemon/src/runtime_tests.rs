@@ -4,6 +4,8 @@ use zeus_api::server::Notifier;
 use zeus_api::{ClientIdentity, ClientKind, ClientRole, auth::CredentialStore};
 use zeus_types::{Actor, HttpUrl};
 
+include!("approval_lifecycle_tests.rs");
+
 fn contract(def: &str, value: &impl serde::Serialize) {
     static SCHEMAS: std::sync::OnceLock<zeus_types::spec_testing::SpecSchemas> =
         std::sync::OnceLock::new();
@@ -26,7 +28,7 @@ fn paths(root: &Path) -> zeus_api::endpoint::ZeusPaths {
         profile: None,
     }
 }
-async fn setup(root: &Path) -> Arc<RuntimeBackend> {
+pub(super) async fn setup(root: &Path) -> Arc<RuntimeBackend> {
     let paths = paths(root);
     crate::provision::provision(&paths, Timestamp::now()).unwrap();
     RuntimeBackend::open(
@@ -39,7 +41,7 @@ async fn setup(root: &Path) -> Arc<RuntimeBackend> {
     .await
     .unwrap()
 }
-fn context(
+pub(super) fn context(
     root: &Path,
     name: &str,
 ) -> (

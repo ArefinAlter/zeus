@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="color-scheme" content="dark light" />
+  <title>Zeus workspace</title>
+  <link rel="stylesheet" href="style.css" />
+  <script type="module" src="app.js"></script>
+</head>
+<body>
+  <a class="skip" href="#content">Skip to workspace</a>
+  <div class="shell">
+    <aside class="sidebar">
+      <a class="brand" href="#jobs">Zeus<span>YOUR LOCAL WORKSPACE</span></a>
+      <nav aria-label="Workspace">
+        <button data-view="jobs" aria-current="page">↓ <span>Downloads</span></button>
+        <button data-view="inbox">＋ <span>Link inbox</span></button>
+        <button data-view="runs">◇ <span>Workflow runs</span></button>
+        <button data-view="files">▤ <span>Files</span></button>
+        <button data-view="artifacts">◈ <span>Artifacts</span></button>
+        <button data-view="approvals">✓ <span>Approvals</span></button>
+      </nav>
+      <div class="local-note">On your device<span>The local daemon handles transfers, permissions and integrity.</span></div>
+    </aside>
+    <div class="workspace">
+      <header class="topbar">
+        <div><span id="connection-dot" class="dot"></span><span id="connection">Connecting to the local daemon…</span></div>
+        <button id="refresh">Reconnect / refresh</button>
+      </header>
+      <main id="content" tabindex="-1">
+        <div class="heading"><div><p class="eyebrow">THE DOWNLOAD DESK</p><h1 id="title">Downloads</h1><p id="description">Durable progress, current state and the files coming home.</p></div><button id="add-links" class="primary">＋ Add links</button></div>
+        <p id="notice" class="notice" role="status" aria-live="polite" hidden></p>
+        <section class="health" aria-label="Daemon health">
+          <div><span>Journal</span><strong id="journal">Unknown</strong></div>
+          <div><span>Browser connection</span><strong id="browser">Unknown</strong></div>
+          <div><span>Pending approvals</span><strong id="pending">—</strong></div>
+          <div><span>Daemon version</span><strong id="version">—</strong></div>
+        </section>
+        <section id="list-panel">
+          <div class="toolbar"><label>Find in this page<input id="search" type="search" placeholder="Name, state or identifier" /></label><span id="count">No snapshot yet</span></div>
+          <div class="desk">
+            <div class="table-wrap"><table><thead id="table-head"></thead><tbody id="rows"></tbody></table><p id="empty" class="empty">Connect to load this workspace.</p></div>
+            <aside class="inspector" aria-label="Selected item"><p class="eyebrow">INSPECTOR</p><h2 id="detail-title">Choose an item</h2><dl id="detail"></dl></aside>
+          </div>
+          <div id="job-actions" class="actions"><span id="selection-count">0 selected</span><button data-action="pause" disabled>Pause</button><button data-action="resume" disabled>Resume</button><button data-action="retry" disabled>Retry</button><button data-action="cancel" class="danger" disabled>Cancel unfinished</button></div>
+          <div class="pagination"><button id="first-page" disabled>First page</button><span>Up to 100 records per page. Search filters this page.</span><button id="next-page" disabled>Next page →</button></div>
+          <p id="page-note" class="page-note"></p>
+        </section>
+        <section id="inbox-panel" hidden>
+          <div class="inbox-grid">
+            <article class="card"><p class="eyebrow">COLLECT, THEN REVIEW</p><h2>Bring your links together.</h2><p>Paste one HTTP or HTTPS URL per line. Exact duplicates are removed; distinct signed links stay distinct. Preview resolves destinations before any jobs are created.</p><label for="links">Links</label><textarea id="links" rows="9" spellcheck="false" autocomplete="off" placeholder="https://example.org/files/report.pdf"></textarea><label for="destination">Destination inside a configured write root (optional)</label><input id="destination" autocomplete="off" placeholder="Use daemon default" /><div class="form-actions"><button id="preview" class="primary" disabled>Preview downloads</button><span id="link-count">0 unique links</span></div></article>
+            <article class="card"><p class="eyebrow">DAEMON PREVIEW</p><h2>Review the exact batch.</h2><p id="review-description">A preview will show redacted sources, destination paths and any approval requirements.</p><div id="review-items"></div><button id="enqueue" class="primary" disabled>Start reviewed downloads</button><p class="page-note">Approvals are reviewed through the Zeus CLI. This desktop identity cannot grant access or change permissions.</p></article>
+          </div>
+          <article id="receipt-card" class="card" hidden><p class="eyebrow">OPERATION RECEIPT</p><pre id="receipt"></pre></article>
+        </section>
+      </main>
+      <footer>Local workspace · desktop preview <span id="sequence"></span></footer>
+    </div>
+  </div>
+  <dialog id="cancel-dialog" aria-labelledby="cancel-title" aria-describedby="cancel-description">
+    <form method="dialog">
+      <p class="eyebrow">CANCEL UNFINISHED WORK</p>
+      <h2 id="cancel-title">Cancel the selected downloads?</h2>
+      <p id="cancel-description"></p>
+      <div class="form-actions"><button value="back" autofocus>Keep downloading</button><button value="confirm" class="danger">Cancel downloads</button></div>
+    </form>
+  </dialog>
+</body>
+</html>

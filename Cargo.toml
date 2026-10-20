@@ -1,5 +1,6 @@
 [workspace]
 resolver = "3"
+exclude = ["apps/desktop"]
 members = [
     "crates/zeus-api",
     "crates/zeus-daemon",

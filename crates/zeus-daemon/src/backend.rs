@@ -15,7 +15,9 @@ use zeus_api::methods::admin::{
 };
 use zeus_api::methods::artifacts::{
     ArtifactsGetParams, ArtifactsGetResult, ArtifactsIngestParams, ArtifactsIngestResult,
-    ArtifactsLineageParams, ArtifactsLineageResult, ArtifactsListParams, ArtifactsListResult,
+    ArtifactsLifecycleApplyParams, ArtifactsLifecycleApplyResult, ArtifactsLifecyclePreviewParams,
+    ArtifactsLifecyclePreviewResult, ArtifactsLineageParams, ArtifactsLineageResult,
+    ArtifactsListParams, ArtifactsListResult,
 };
 use zeus_api::methods::cloud::*;
 use zeus_api::methods::daemon::{
@@ -127,6 +129,10 @@ backend! {
     artifacts_lineage(ArtifactsLineageParams) -> ArtifactsLineageResult;
     /// `artifacts.ingest`.
     artifacts_ingest(ArtifactsIngestParams) -> ArtifactsIngestResult;
+    /// `artifacts.lifecycle.preview`.
+    artifacts_lifecycle_preview(ArtifactsLifecyclePreviewParams) -> ArtifactsLifecyclePreviewResult;
+    /// `artifacts.lifecycle.apply`.
+    artifacts_lifecycle_apply(ArtifactsLifecycleApplyParams) -> ArtifactsLifecycleApplyResult;
     /// `clients.list` (admin, human-only).
     clients_list(ClientsListParams) -> ClientsListResult;
     /// `clients.add` (admin, human-only, `cli_interactive` evidence).

@@ -204,6 +204,17 @@ impl WorkflowRuntime {
         let snapshot = RunSnapshot {
             checkpoint_seq: 0,
             report: RunReport {
+                report_version: 1,
+                plan_id: None,
+                approval_id: None,
+                grant_id: None,
+                created_at: Some(Timestamp::now()),
+                updated_at: Some(Timestamp::now()),
+                elapsed_ms: 0,
+                counts: Some(Default::default()),
+                pause_reason: None,
+                possibly_incomplete: false,
+                last_error: None,
                 run_id,
                 plan_hash: hash,
                 status: RunStatus::AwaitingApproval,
@@ -212,7 +223,7 @@ impl WorkflowRuntime {
                 files_completed: 0,
                 files_failed: 0,
                 bytes_done: 0,
-                started_at: Timestamp::now(),
+                started_at: None,
                 finished_at: None,
                 stop_reason: None,
                 drift: vec![],
@@ -230,6 +241,8 @@ impl WorkflowRuntime {
     pub fn restore(plan: Plan, snapshot: RunSnapshot) -> RuntimeResult<Self> {
         let validated = Self::new(plan.clone(), snapshot.report.run_id)?;
         if validated.snapshot.report.plan_hash != snapshot.report.plan_hash
+            || snapshot.report.report_version > 1
+            || (snapshot.report.report_version == 1 && snapshot.report.counts.is_none())
             || digest_keys(&snapshot.keys) != snapshot.keys_digest
             || snapshot.keys.len() > 2_000_000
             || snapshot.chains.len() > 100_000
@@ -260,6 +273,29 @@ impl WorkflowRuntime {
             .checked_add(1)
             .ok_or(RuntimeError::CheckpointConflict)?;
         next.keys_digest = digest_keys(&next.keys);
+        next.report.updated_at = Some(Timestamp::now());
+        next.report.elapsed_ms = next.elapsed_ms;
+        if next.report.status == RunStatus::Running && next.report.report_version > 0 {
+            next.report.started_at.get_or_insert_with(Timestamp::now);
+        }
+        next.report.possibly_incomplete = matches!(
+            next.report.status,
+            RunStatus::BudgetExhausted
+                | RunStatus::Stopped
+                | RunStatus::Failed
+                | RunStatus::Canceled
+        ) || next
+            .report
+            .stop_reason
+            .as_deref()
+            .is_some_and(|reason| reason.starts_with("budget_") || reason == "drift");
+        if let Some(counts) = &mut next.report.counts {
+            counts.pages_fetched = next.report.pages_fetched;
+            counts.files_enqueued = next.report.files_enqueued;
+            counts.files_completed = next.report.files_completed;
+            counts.files_failed = next.report.files_failed;
+            counts.bytes_done = next.report.bytes_done;
+        }
         port.commit(self.snapshot.checkpoint_seq, &next, jobs)
             .await?;
         self.snapshot = next;
@@ -287,6 +323,8 @@ impl WorkflowRuntime {
                     .await?;
                 next.report.status = RunStatus::Running;
                 next.last_error = None;
+                next.report.last_error = None;
+                next.report.pause_reason = None;
             }
             RunAction::Pause => {
                 if !matches!(
@@ -296,6 +334,7 @@ impl WorkflowRuntime {
                     return Err(RuntimeError::Policy("workflow.invalid_transition"));
                 }
                 next.report.status = RunStatus::Paused;
+                next.report.pause_reason = Some("client".into());
             }
             RunAction::Cancel => {
                 next.report.status = RunStatus::Canceled;
@@ -382,6 +421,7 @@ impl WorkflowRuntime {
             Err(error) => {
                 next.report.status = RunStatus::Paused;
                 next.last_error = Some("workflow.page_error".into());
+                record_page_error(&mut next, &error);
                 next.elapsed_ms = next
                     .elapsed_ms
                     .saturating_add(started.elapsed().as_millis() as u64);
@@ -402,6 +442,7 @@ impl WorkflowRuntime {
         if !(200..300).contains(&document.status) {
             next.report.status = RunStatus::Paused;
             next.last_error = Some("workflow.page_error".into());
+            record_page_error(&mut next, &RuntimeError::Port("workflow.page_error"));
             return self.save(port, next, &[]).await;
         }
         let extracted = match extract::extract(
@@ -462,6 +503,12 @@ impl WorkflowRuntime {
                 ),
             );
         }
+        if let Some(counts) = &mut next.report.counts {
+            counts.items_seen = counts.items_seen.saturating_add(extracted.total as u64);
+            counts.items_invalid = counts
+                .items_invalid
+                .saturating_add(extracted.invalid as u64);
+        }
         if next.chains[chain_index].pages == 1
             && let Some(selector) = &self.plan.stop.count_hint
         {
@@ -486,12 +533,26 @@ impl WorkflowRuntime {
         let mut fingerprint = blake3::Hasher::new();
         let mut off_domain = 0usize;
         for mut fields in extracted.items {
-            if self.plan.extract.follow.is_some()
-                && !self
+            if self.plan.extract.follow.is_some() {
+                match self
                     .add_detail(port, &mut next, &mut fields, &extracted.base)
-                    .await?
-            {
-                continue;
+                    .await
+                {
+                    Ok(true) => {}
+                    Ok(false) => continue,
+                    Err(error) => {
+                        // Retry the same listing after resume. Partial item work never committed.
+                        let mut failed = self.snapshot.clone();
+                        failed.report.status = RunStatus::Paused;
+                        failed.last_error = Some("workflow.page_error".into());
+                        record_page_error(&mut failed, &error);
+                        failed.elapsed_ms = failed
+                            .elapsed_ms
+                            .saturating_add(started.elapsed().as_millis() as u64);
+                        self.save(port, failed, &[]).await?;
+                        return Err(error);
+                    }
+                }
             }
             let Some(item_url) = fields.get("url").cloned() else {
                 continue;
@@ -500,13 +561,20 @@ impl WorkflowRuntime {
             fingerprint.update(b"\n");
             if !allowed(&self.plan, &item_url) {
                 off_domain += 1;
+                if let Some(counts) = &mut next.report.counts {
+                    counts.items_out_of_domain = counts.items_out_of_domain.saturating_add(1);
+                }
                 continue;
             }
             if !next.keys.insert(key("u", &item_url)) {
+                if let Some(counts) = &mut next.report.counts {
+                    counts.items_duplicate = counts.items_duplicate.saturating_add(1);
+                }
                 continue;
             }
             newly_seen += 1;
             if !self.filters(&mut next, &fields)? {
+                // Dedupe filters account for themselves; all other filters increment ordinary rejection.
                 continue;
             }
             if next.report.files_enqueued >= self.plan.budgets.max_files {
@@ -721,9 +789,15 @@ impl WorkflowRuntime {
                 )
             })?;
         let Some(url) = extract::resolve(base, &value) else {
+            if let Some(counts) = &mut next.report.counts {
+                counts.items_invalid = counts.items_invalid.saturating_add(1);
+            }
             return Ok(false);
         };
         if !allowed(&self.plan, &url) {
+            if let Some(counts) = &mut next.report.counts {
+                counts.items_out_of_domain = counts.items_out_of_domain.saturating_add(1);
+            }
             return Ok(false);
         }
         let document = self.fetch(port, &url).await?;
@@ -739,6 +813,9 @@ impl WorkflowRuntime {
             fields.extend(detail);
             Ok(true)
         } else {
+            if let Some(counts) = &mut next.report.counts {
+                counts.items_invalid = counts.items_invalid.saturating_add(1);
+            }
             Ok(false)
         }
     }
@@ -781,6 +858,13 @@ impl WorkflowRuntime {
                 }
             };
             if !keep {
+                if let Some(counts) = &mut next.report.counts {
+                    if matches!(filter, Filter::Dedupe { .. }) {
+                        counts.items_duplicate = counts.items_duplicate.saturating_add(1);
+                    } else {
+                        counts.items_filtered = counts.items_filtered.saturating_add(1);
+                    }
+                }
                 return Ok(false);
             }
         }
@@ -937,6 +1021,31 @@ fn matched(pattern: &str, value: &str) -> RuntimeResult<bool> {
         .map(|r| r.is_match(value))
         .map_err(|_| invalid("plan.selector_syntax", "invalid bounded regular expression"))
 }
+fn record_page_error(snapshot: &mut RunSnapshot, error: &RuntimeError) {
+    let (code, class) = match error {
+        RuntimeError::Policy(code) => (*code, zeus_types::ErrorClass::PolicyDenied),
+        RuntimeError::Port(code) => (*code, zeus_types::ErrorClass::Unavailable),
+        RuntimeError::Invalid(_) => (
+            "workflow.plan_invalid",
+            zeus_types::ErrorClass::InvalidRequest,
+        ),
+        RuntimeError::CheckpointConflict => ("api.conflict", zeus_types::ErrorClass::Conflict),
+    };
+    snapshot.report.pause_reason = Some("page_error".into());
+    snapshot.report.last_error = Some(zeus_types::ErrorEnvelope::new(
+        zeus_types::ErrorCode::from_static(code),
+        class,
+        false,
+        "Workflow document could not be fetched",
+    ));
+    if let Some(counts) = &mut snapshot.report.counts {
+        if code == "policy.robots_disallowed" {
+            counts.pages_skipped_robots = counts.pages_skipped_robots.saturating_add(1);
+        } else {
+            counts.pages_failed = counts.pages_failed.saturating_add(1);
+        }
+    }
+}
 fn record_drift(snapshot: &mut RunSnapshot, diagnostic: Diagnostic) {
     if snapshot.report.drift.len() < 100 {
         snapshot.report.drift.push(diagnostic);
@@ -947,6 +1056,7 @@ fn drift(plan: &Plan, snapshot: &mut RunSnapshot, diagnostic: Diagnostic) {
     match plan.stop.on_drift {
         OnDrift::Pause => {
             snapshot.report.status = RunStatus::Paused;
+            snapshot.report.pause_reason = Some("drift".into());
             snapshot.last_error = Some("workflow.drift".into());
         }
         OnDrift::Stop => end_discovery(snapshot, "drift"),

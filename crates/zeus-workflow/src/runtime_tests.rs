@@ -105,6 +105,87 @@ fn page(title: &str, file: &str) -> String {
     format!("<li class='paper'><h3>{title}</h3><a class='pdf' href='{file}'>Download</a></li>")
 }
 #[tokio::test(start_paused = true)]
+async fn report_counters_commit_once_with_discovery_and_survive_restore() {
+    let mut p = plan();
+    p.pagination = None;
+    p.filters = vec![Filter::UrlRegex {
+        pattern: "\\.pdf$".into(),
+        invert: false,
+    }];
+    let mut runtime =
+        WorkflowRuntime::new(p.clone(), zeus_types::IdGenerator::new().run_id()).unwrap();
+    assert!(runtime.report().started_at.is_none());
+    assert!(runtime.report().created_at.is_some());
+    let port = Memory::new();
+    port.pages.lock().unwrap().insert(
+        "https://portal.example.org/papers?year=2026".into(),
+        format!(
+            "{}{}{}{}{}",
+            page("First", "/one.pdf"),
+            page("Duplicate", "/one.pdf"),
+            page("Filtered", "/readme.txt"),
+            page("Outside", "https://elsewhere.example/file.pdf"),
+            "<li class='paper'><h3>No URL</h3></li>"
+        ),
+    );
+    port.fail_commit.store(true, Ordering::SeqCst);
+    assert!(runtime.step(&port).await.is_err());
+    assert_eq!(runtime.report().counts.as_ref().unwrap().items_seen, 0);
+    runtime.step(&port).await.unwrap();
+    let counts = runtime.report().counts.as_ref().unwrap();
+    assert_eq!(
+        (
+            counts.pages_fetched,
+            counts.items_seen,
+            counts.items_duplicate,
+            counts.items_filtered,
+            counts.items_out_of_domain,
+            counts.items_invalid
+        ),
+        (1, 5, 1, 1, 1, 1)
+    );
+    assert_eq!(counts.files_enqueued, 1);
+    assert!(runtime.report().started_at.is_some());
+    let mut restored = WorkflowRuntime::restore(p, runtime.snapshot().clone()).unwrap();
+    restored.step(&port).await.unwrap();
+    let counts = restored.report().counts.as_ref().unwrap();
+    assert_eq!(counts.items_seen, 5);
+    assert_eq!(counts.files_completed, 1);
+    assert_eq!(restored.report().status, RunStatus::Completed);
+    assert!(!restored.report().possibly_incomplete);
+    assert!(
+        !serde_json::to_string(restored.report())
+            .unwrap()
+            .contains("https://")
+    );
+}
+
+#[test]
+fn legacy_reports_retain_unknown_counters_instead_of_backfilling_zero() {
+    let runtime = WorkflowRuntime::new(plan(), zeus_types::IdGenerator::new().run_id()).unwrap();
+    let mut value = serde_json::to_value(runtime.report()).unwrap();
+    for name in [
+        "report_version",
+        "plan_id",
+        "approval_id",
+        "grant_id",
+        "created_at",
+        "updated_at",
+        "elapsed_ms",
+        "counts",
+        "pause_reason",
+        "possibly_incomplete",
+        "last_error",
+    ] {
+        value.as_object_mut().unwrap().remove(name);
+    }
+    value["started_at"] = serde_json::json!(zeus_types::Timestamp::now());
+    let old: RunReport = serde_json::from_value(value).unwrap();
+    assert_eq!(old.report_version, 0);
+    assert!(old.counts.is_none());
+    assert!(old.created_at.is_none());
+}
+#[tokio::test(start_paused = true)]
 async fn authorization_precedes_fetch_and_atomic_retry_does_not_lose_an_item() {
     let p = plan();
     let mut runtime =

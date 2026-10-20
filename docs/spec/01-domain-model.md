@@ -483,7 +483,7 @@ The normative table is machine-readable in [`schema/job-state-machine.v1.json`](
 | S26 | `downloading` | `canceled` | cancel | `client` | - | `job.state_changed` |
 | S30 | `awaiting_approval` | `queued` | approval approved | `human` | Approval decision is approve and the approval has not expired. grant.created is emitted only when the decision creates a grant. | `approval.decided`, `grant.created`, `job.state_changed` |
 | S31 | `awaiting_approval` | `failed` | approval denied or expired | `human`, `system` | Decision deny, or approval deadline passed (class policy_denied). grant.created is emitted only when a deny decision also records a never grant. | `approval.decided`, `grant.created`, `job.state_changed`, `job.failed` |
-| S32 | `awaiting_approval` | `canceled` | cancel | `client` | The pending approval is withdrawn (decision canceled, actor system). When other jobs share the approval (07 section 4.7) the job leaves it instead: the approval is amended and approval.decided is not emitted. | `approval.decided`, `job.state_changed` |
+| S32 | `awaiting_approval` | `canceled` | cancel | `client` | The pending approval is withdrawn (decision canceled, actor system). When other jobs share the approval (07 section 4.7) the job leaves it instead and emits approval.requested. Exhausted revisions withdraw the old binding before requesting a fresh binding for the remaining jobs. | `approval.decided`, `approval.requested`, `job.state_changed` |
 | S40 | `awaiting_session` | `queued` | material delivered | `engine` | Session lease, refreshed URL or proxy channel is now available. | `job.state_changed` |
 | S41 | `awaiting_session` | `awaiting_approval` | consent missing | `engine`, `policy` | Extension answered consent_required, or the grant was revoked or expired while waiting. | `job.state_changed`, `approval.requested` |
 | S42 | `awaiting_session` | `failed` | wait deadline or refresh impossible | `engine`, `system` | session_wait deadline passed, or the extension answered cannot_refresh / proxy failure with class blocked. | `job.state_changed`, `job.failed` |
@@ -696,6 +696,8 @@ Codes of this document. Class is fixed per code. "Retry" is the `retryable` valu
 | `policy.confirmation_required` | `unauthenticated` | no | A decision's confirmation is below what its facts require (07 section 12). |
 | `engine.crash_loop` | `internal` | no | S96. |
 | `engine.shutdown` | `unavailable` | yes | The daemon is stopping. |
+
+Zeus's artifact lifecycle API adds non-job conflict codes `artifact.plan_stale`, `artifact.plan_expired`, `artifact.lifecycle_reconciliation_required` and `artifact.operation_in_progress` (13 section 17). They are non-retryable by transport: recovery requires a fresh preview, inspection of an uncertain destination, or waiting for the same in-flight receipt. They do not change job-state transitions or the nine job classes.
 
 ### 8.3 Classification procedure
 

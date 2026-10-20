@@ -61,6 +61,12 @@ pub enum ClientRole {
 }
 
 impl ClientRole {
+    /// Permission ceiling for the native relay. Human decisions arrive through attested native frames;
+    /// the relay never holds general API decision, file, configuration or workflow authority.
+    pub const fn native_host_permissions() -> &'static [Permission] {
+        &[Permission::DaemonRead, Permission::NmRelay]
+    }
+
     /// The kinds a credential with this role may have (05 section 7.2).
     pub const fn allowed_kinds(self) -> &'static [ClientKind] {
         use ClientKind::*;

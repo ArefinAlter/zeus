@@ -30,7 +30,7 @@ pub use plan::{
 };
 pub use planner::{DryRunPlanner, Estimate, NotImplementedPlanner, PageFetcher, PageSample};
 pub use report::{
-    Checkpoint, Diagnostic, DryRunReport, PlannedItem, RunReport, RunStatus, Severity,
+    Checkpoint, Diagnostic, DryRunReport, PlannedItem, RunCounts, RunReport, RunStatus, Severity,
 };
 pub use validate::{has_errors, validate_plan, validate_samples};
 

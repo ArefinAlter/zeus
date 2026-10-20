@@ -1,0 +1,13 @@
+{
+  "identifier": "workspace",
+  "description": "Only the bundled main window may use the closed Zeus workspace bridge.",
+  "local": true,
+  "windows": ["main"],
+  "permissions": [
+    "allow-workspace-snapshot",
+    "allow-workspace-page",
+    "allow-preview-links",
+    "allow-enqueue-review",
+    "allow-control-job"
+  ]
+}

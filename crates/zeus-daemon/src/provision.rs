@@ -48,6 +48,7 @@ pub const DEFAULT_CREDENTIALS: &[(&str, ClientKind, ClientRole)] = &[
     ("agent", ClientKind::Agent, ClientRole::Mcp),
     ("a2a", ClientKind::Agent, ClientRole::A2a),
     ("host", ClientKind::Human, ClientRole::NativeHost),
+    ("gui", ClientKind::Agent, ClientRole::Gui),
 ];
 
 /// What [`provision`] did.
@@ -55,7 +56,7 @@ pub const DEFAULT_CREDENTIALS: &[(&str, ClientKind, ClientRole)] = &[
 pub struct ProvisionReport {
     /// The IPC secret file was created.
     pub created_ipc_secret: bool,
-    /// Credential files created, by name (`cli`, `agent`, `a2a`, `host`).
+    /// Credential files created, by name (`cli`, `agent`, `a2a`, `host`, `gui`).
     pub created_credentials: Vec<String>,
 }
 
@@ -172,6 +173,18 @@ fn credential_from(stored: &StoredCredential) -> Result<Credential, ProvisionErr
     })
 }
 
+/// Shrink legacy relay records without changing their identity, verifier, revocation or token file.
+fn narrow_native_host(stored: &mut StoredCredential) -> bool {
+    if stored.role != ClientRole::NativeHost {
+        return false;
+    }
+    let previous = stored.permissions.len();
+    stored
+        .permissions
+        .retain(|permission| ClientRole::native_host_permissions().contains(permission));
+    stored.permissions.len() != previous
+}
+
 /// What `clients.add` asks the store to create.
 #[derive(Debug, Clone)]
 pub struct NewCredential<'a> {
@@ -188,7 +201,7 @@ pub struct NewCredential<'a> {
 }
 
 /// Names of the provisioned credentials; `clients.add` cannot reuse them.
-pub const RESERVED_NAMES: &[&str] = &["cli", "agent", "a2a", "host"];
+pub const RESERVED_NAMES: &[&str] = &["cli", "agent", "a2a", "host", "gui"];
 /// Roots one service credential may register (05 section 13.1).
 pub const MAX_SERVICE_ROOTS: usize = 16;
 /// Credentials one store holds, revoked ones included, so the index stays small.
@@ -264,6 +277,9 @@ impl FileCredentialStore {
             if let Some(record) = stored.iter_mut().find(|r| r.id == id && r.name.is_none()) {
                 record.name = Some((*name).to_string());
             }
+        }
+        for record in &mut stored {
+            narrow_native_host(record);
         }
         let credentials = stored
             .iter()
@@ -639,6 +655,11 @@ pub fn provision(paths: &ZeusPaths, now: Timestamp) -> Result<ProvisionReport, P
         }
     };
 
+    let mut permissions_migrated = false;
+    for record in &mut records {
+        permissions_migrated |= narrow_native_host(record);
+    }
+
     for (name, kind, role) in DEFAULT_CREDENTIALS {
         let file = paths.credential_file(name);
         if file.exists() {
@@ -648,8 +669,23 @@ pub fn provision(paths: &ZeusPaths, now: Timestamp) -> Result<ProvisionReport, P
         }
         let token = Token::generate();
         let id = CredentialId::generate();
-        let credential = Credential::new(id.clone(), *kind, *role, token.auth_key(), now)
+        let mut credential = Credential::new(id.clone(), *kind, *role, token.auth_key(), now)
             .map_err(|e| ProvisionError::Corrupt(e.to_string()))?;
+        if *role == ClientRole::Gui {
+            // The first desktop client reads work and previews/enqueues/controls downloads.
+            // It is not an attested human decision surface and never borrows the CLI credential.
+            credential.permissions = [
+                Permission::JobsRead,
+                Permission::JobsWrite,
+                Permission::JobsControl,
+                Permission::ApprovalsRead,
+                Permission::FilesRead,
+                Permission::WorkflowsPlan,
+                Permission::DaemonRead,
+            ]
+            .into_iter()
+            .collect();
+        }
         let mut record = stored_from(&credential);
         record.name = Some((*name).to_string());
         records.push(record);
@@ -658,7 +694,7 @@ pub fn provision(paths: &ZeusPaths, now: Timestamp) -> Result<ProvisionReport, P
         report.created_credentials.push((*name).to_string());
     }
 
-    if !report.created_credentials.is_empty() {
+    if permissions_migrated || !report.created_credentials.is_empty() {
         let body = serde_json::to_vec_pretty(&StoreFile {
             version: 1,
             credentials: records,
@@ -710,7 +746,10 @@ mod tests {
         let paths = paths(dir.path());
         let first = provision(&paths, Timestamp::now()).unwrap();
         assert!(first.created_ipc_secret);
-        assert_eq!(first.created_credentials, ["cli", "agent", "a2a", "host"]);
+        assert_eq!(
+            first.created_credentials,
+            ["cli", "agent", "a2a", "host", "gui"]
+        );
         let before = std::fs::read(paths.credential_file("agent")).unwrap();
         let secret_before = std::fs::read(paths.ipc_secret_file()).unwrap();
 
@@ -732,7 +771,7 @@ mod tests {
         let paths = paths(dir.path());
         provision(&paths, Timestamp::now()).unwrap();
         let store_text = std::fs::read_to_string(paths.state_dir.join("credentials.json")).unwrap();
-        for name in ["cli", "agent", "a2a", "host"] {
+        for (name, _, _) in DEFAULT_CREDENTIALS {
             let client = load_client_credential(&paths, name).unwrap();
             let token_hex = &client.token.to_text()[4..];
             assert!(
@@ -740,6 +779,42 @@ mod tests {
                 "{name}: the token must not be stored"
             );
         }
+    }
+
+    #[test]
+    fn an_existing_install_gains_only_the_restricted_gui_credential() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths(dir.path());
+        provision(&paths, Timestamp::now()).unwrap();
+        let cli_before = std::fs::read(paths.credential_file("cli")).unwrap();
+        let secret_before = std::fs::read(paths.ipc_secret_file()).unwrap();
+        let store_path = paths.state_dir.join("credentials.json");
+        let mut stored: StoreFile =
+            serde_json::from_slice(&std::fs::read(&store_path).unwrap()).unwrap();
+        stored
+            .credentials
+            .retain(|record| record.role != ClientRole::Gui);
+        write_private(&store_path, &serde_json::to_vec(&stored).unwrap()).unwrap();
+        std::fs::remove_file(paths.credential_file("gui")).unwrap();
+
+        let upgraded = provision(&paths, Timestamp::now()).unwrap();
+        assert_eq!(upgraded.created_credentials, ["gui"]);
+        assert!(!upgraded.created_ipc_secret);
+        assert_eq!(
+            std::fs::read(paths.credential_file("cli")).unwrap(),
+            cli_before
+        );
+        assert_eq!(
+            std::fs::read(paths.ipc_secret_file()).unwrap(),
+            secret_before
+        );
+        let store = FileCredentialStore::load(&store_path).unwrap();
+        let gui = store
+            .get(&load_client_credential(&paths, "gui").unwrap().id)
+            .unwrap();
+        assert_eq!((gui.kind, gui.role), (ClientKind::Agent, ClientRole::Gui));
+        assert!(!gui.permissions.contains(&Permission::ApprovalsDecide));
+        assert!(!gui.permissions.contains(&Permission::DaemonAdmin));
     }
 
     #[test]
@@ -758,6 +833,83 @@ mod tests {
             .get(&load_client_credential(&paths, "agent").unwrap().id)
             .unwrap();
         assert!(!agent.permissions.contains(&Permission::ApprovalsDecide));
+        let gui = store
+            .get(&load_client_credential(&paths, "gui").unwrap().id)
+            .unwrap();
+        assert_eq!((gui.kind, gui.role), (ClientKind::Agent, ClientRole::Gui));
+        assert_eq!(
+            gui.permissions,
+            [
+                Permission::JobsRead,
+                Permission::JobsWrite,
+                Permission::JobsControl,
+                Permission::ApprovalsRead,
+                Permission::FilesRead,
+                Permission::WorkflowsPlan,
+                Permission::DaemonRead,
+            ]
+            .into_iter()
+            .collect()
+        );
+        assert!(!gui.permissions.contains(&Permission::ApprovalsDecide));
+        assert!(!gui.permissions.contains(&Permission::WorkflowsRun));
+        assert!(!gui.permissions.contains(&Permission::FilesWrite));
+        let host = store
+            .get(&load_client_credential(&paths, "host").unwrap().id)
+            .unwrap();
+        assert_eq!(
+            host.permissions,
+            ClientRole::native_host_permissions()
+                .iter()
+                .copied()
+                .collect()
+        );
+        assert_eq!(
+            (host.kind, host.role),
+            (ClientKind::Human, ClientRole::NativeHost)
+        );
+    }
+
+    #[test]
+    fn legacy_native_host_migration_preserves_token_and_identity_and_only_removes_authority() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths(dir.path());
+        provision(&paths, Timestamp::now()).unwrap();
+        let token = std::fs::read(paths.credential_file("host")).unwrap();
+        let id = load_client_credential(&paths, "host").unwrap().id;
+        let index = paths.state_dir.join("credentials.json");
+        let mut file: StoreFile = serde_json::from_slice(&std::fs::read(&index).unwrap()).unwrap();
+        let host = file
+            .credentials
+            .iter_mut()
+            .find(|record| record.id == id.as_str())
+            .unwrap();
+        host.permissions = ClientKind::Human.default_permissions();
+        host.permissions.insert(Permission::NmRelay);
+        let verifier = host.auth_key.clone();
+        write_private(&index, &serde_json::to_vec(&file).unwrap()).unwrap();
+        let expected: BTreeSet<_> = ClientRole::native_host_permissions()
+            .iter()
+            .copied()
+            .collect();
+        // Loading is already safe, even before the persistent first-run migration is invoked.
+        let loaded = FileCredentialStore::load(&index).unwrap();
+        assert_eq!(loaded.get(&id).unwrap().permissions, expected);
+        assert_eq!(loaded.record(&id).unwrap().permissions, expected);
+        assert_eq!(
+            provision(&paths, Timestamp::now()).unwrap(),
+            ProvisionReport::default()
+        );
+        assert_eq!(std::fs::read(paths.credential_file("host")).unwrap(), token);
+        assert_eq!(load_client_credential(&paths, "host").unwrap().id, id);
+        let after: StoreFile = serde_json::from_slice(&std::fs::read(index).unwrap()).unwrap();
+        let host = after
+            .credentials
+            .iter()
+            .find(|record| record.id == id.as_str())
+            .unwrap();
+        assert_eq!(host.permissions, expected);
+        assert_eq!(host.auth_key, verifier);
     }
 
     #[cfg(unix)]

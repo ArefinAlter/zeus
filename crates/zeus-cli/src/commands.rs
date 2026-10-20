@@ -1521,6 +1521,60 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn artifact_lifecycle_commands_preview_first_and_apply_exact_saved_receipts() {
+        let fake = Fake::new();
+        let id = zeus_types::IdGenerator::new().artifact_id().to_string();
+        let preview = json!({"plan":{
+            "version":1,"artifact_id":id,"expected_record_blake3":"a".repeat(64),
+            "blake3":"b".repeat(64),"sha256":"c".repeat(64),"size_bytes":42,"quarantined":false,
+            "current_retention":"evictable","current_retain_until":null,
+            "operation":{"kind":"materialize","path":"/downloads/new.txt"},"requires_approval":false,
+            "expires_at":"2026-10-21T12:00:00.000Z"},"plan_hash":"d".repeat(64)});
+        fake.answer("artifacts.lifecycle.preview", Ok(preview.clone()));
+        let cli = parse(&["artifacts", "materialize", &id, "/downloads/new.txt"]);
+        run_remote(&cli.command, &cli.global, &fake, false, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            fake.calls_to("artifacts.lifecycle.preview")[0]["operation"],
+            preview["plan"]["operation"]
+        );
+        assert!(fake.calls_to("artifacts.lifecycle.apply").is_empty());
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("preview.json");
+        std::fs::write(&file, serde_json::to_vec(&preview).unwrap()).unwrap();
+        let filename = file.display().to_string();
+        let cli = parse(&[
+            "artifacts",
+            "apply",
+            &filename,
+            "--idempotency-key",
+            "copy-key",
+        ]);
+        let mut dry = cli.global.clone();
+        dry.dry_run = true;
+        run_remote(&cli.command, &dry, &fake, false, None)
+            .await
+            .unwrap();
+        assert!(fake.calls_to("artifacts.lifecycle.apply").is_empty());
+        fake.answer("artifacts.lifecycle.apply", Ok(json!({"applied":true,"artifact":{"id":id},"path":"/downloads/new.txt","mode":"copy","replayed":false})));
+        run_remote(&cli.command, &cli.global, &fake, false, None)
+            .await
+            .unwrap();
+        let applied = &fake.calls_to("artifacts.lifecycle.apply")[0];
+        assert_eq!(applied["plan"], preview["plan"]);
+        assert_eq!(applied["plan_hash"], preview["plan_hash"]);
+        assert_eq!(applied["idempotency_key"], "copy-key");
+        assert!(fake.calls_to("approvals.decide").is_empty());
+        std::fs::write(&file, b"ZEUS-CANARY-invalid-preview").unwrap();
+        let error = run_remote(&cli.command, &cli.global, &fake, false, None)
+            .await
+            .unwrap_err();
+        assert!(!error.to_string().contains("ZEUS-CANARY-"));
+        assert_eq!(fake.calls_to("artifacts.lifecycle.apply").len(), 1);
+    }
+
+    #[tokio::test]
     async fn input_files_preserve_exact_signed_urls_and_validate_the_whole_batch_before_rpc() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("urls.txt");

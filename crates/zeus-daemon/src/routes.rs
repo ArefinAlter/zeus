@@ -9,14 +9,15 @@ use std::sync::Arc;
 use zeus_api::Router;
 use zeus_api::methods::daemon::{PingParams, PingResult};
 use zeus_api::methods::{
-    ApprovalsDecide, ApprovalsGet, ApprovalsList, ArtifactsGet, ArtifactsIngest, ArtifactsLineage,
-    ArtifactsList, AuditTail, AuditVerify, ClientsAdd, ClientsList, ClientsRevoke, ConfigGet,
-    ConfigSet, DaemonKillSwitch, DaemonPing, DaemonShutdown, DaemonStatus, DoctorRun,
-    EventsSubscribe, EventsUnsubscribe, FilesList, FilesOrganize, FilesRootsRegister, FilesUndo,
-    JobsControl, JobsEnqueue, JobsGet, JobsList, JobsProbe, JobsVerify, JobsWait, LlmAuthCancel,
-    LlmAuthSignOut, LlmAuthStart, LlmAuthStatus, LlmConfigure, LlmStatus, SessionsList,
-    SessionsRequest, SessionsRevoke, WorkflowsControl, WorkflowsDryRun, WorkflowsGet,
-    WorkflowsList, WorkflowsManifest, WorkflowsPlan, WorkflowsRun,
+    ApprovalsDecide, ApprovalsGet, ApprovalsList, ArtifactsGet, ArtifactsIngest,
+    ArtifactsLifecycleApply, ArtifactsLifecyclePreview, ArtifactsLineage, ArtifactsList, AuditTail,
+    AuditVerify, ClientsAdd, ClientsList, ClientsRevoke, ConfigGet, ConfigSet, DaemonKillSwitch,
+    DaemonPing, DaemonShutdown, DaemonStatus, DoctorRun, EventsSubscribe, EventsUnsubscribe,
+    FilesList, FilesOrganize, FilesRootsRegister, FilesUndo, JobsControl, JobsEnqueue, JobsGet,
+    JobsList, JobsProbe, JobsVerify, JobsWait, LlmAuthCancel, LlmAuthSignOut, LlmAuthStart,
+    LlmAuthStatus, LlmConfigure, LlmStatus, SessionsList, SessionsRequest, SessionsRevoke,
+    WorkflowsControl, WorkflowsDryRun, WorkflowsGet, WorkflowsList, WorkflowsManifest,
+    WorkflowsPlan, WorkflowsRun,
 };
 use zeus_api::methods::{
     CloudAccountsConfigure, CloudAccountsList, CloudAccountsRevoke, CloudControl, CloudGet,
@@ -86,6 +87,18 @@ pub fn build_router<B: Backend>(backend: Arc<B>) -> Router {
     let router = forward!(router, backend, ArtifactsList, artifacts_list);
     let router = forward!(router, backend, ArtifactsLineage, artifacts_lineage);
     let router = forward!(router, backend, ArtifactsIngest, artifacts_ingest);
+    let router = forward!(
+        router,
+        backend,
+        ArtifactsLifecyclePreview,
+        artifacts_lifecycle_preview
+    );
+    let router = forward!(
+        router,
+        backend,
+        ArtifactsLifecycleApply,
+        artifacts_lifecycle_apply
+    );
     let router = forward!(router, backend, ClientsList, clients_list);
     let router = forward!(router, backend, ClientsAdd, clients_add);
     let router = forward!(router, backend, ClientsRevoke, clients_revoke);
@@ -175,6 +188,8 @@ mod tests {
                         | "artifacts.list"
                         | "artifacts.lineage"
                         | "artifacts.ingest"
+                        | "artifacts.lifecycle.preview"
+                        | "artifacts.lifecycle.apply"
                 )
         }) {
             assert!(

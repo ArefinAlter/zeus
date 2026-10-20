@@ -2,7 +2,7 @@
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use zeus_types::{RunId, Timestamp};
+use zeus_types::{ApprovalId, ErrorEnvelope, GrantId, RunId, Timestamp};
 
 use crate::planner::Estimate;
 
@@ -125,8 +125,80 @@ pub enum RunStatus {
 }
 
 /// Progress and outcome of a run.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct RunCounts {
+    /// Successful document fetches committed to the checkpoint.
+    pub pages_fetched: u32,
+    /// Failed document attempts committed before pausing.
+    pub pages_failed: u32,
+    /// Document attempts refused by robots policy.
+    pub pages_skipped_robots: u32,
+    /// Extracted candidate items.
+    pub items_seen: u64,
+    /// Repeated URLs or dedupe keys.
+    pub items_duplicate: u64,
+    /// Items rejected by ordinary filters.
+    pub items_filtered: u64,
+    /// Items outside the approved domains.
+    pub items_out_of_domain: u64,
+    /// Items with missing or invalid required fields.
+    pub items_invalid: u64,
+    /// Durable intents skipped because their destination already exists.
+    pub items_skipped_existing: u64,
+    /// Jobs admitted to the engine; pending intents are excluded in API projections.
+    pub files_enqueued: u32,
+    /// Jobs currently completed.
+    pub files_completed: u32,
+    /// Jobs currently failed.
+    pub files_failed: u32,
+    /// Jobs currently canceled.
+    pub files_canceled: u32,
+    /// Jobs currently marked quarantined.
+    pub files_quarantined: u32,
+    /// Successful conversions; zero while conversion is unsupported.
+    pub files_converted: u32,
+    /// Failed conversions; zero while conversion is unsupported.
+    pub files_convert_failed: u32,
+    /// Committed bytes across admitted jobs.
+    pub bytes_done: u64,
+}
+
+/// Progress and outcome of a run, including compatibility fields for pre-alpha clients.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct RunReport {
+    /// One for reports whose discovery counters were recorded from run creation; zero for legacy checkpoints.
+    #[serde(default)]
+    pub report_version: u8,
+    /// Stored plan identity when known.
+    #[serde(default)]
+    pub plan_id: Option<crate::PlanId>,
+    /// Approval that authorized this run.
+    #[serde(default)]
+    pub approval_id: Option<ApprovalId>,
+    /// Effective workflow session grant; null for public-page runs.
+    #[serde(default)]
+    pub grant_id: Option<GrantId>,
+    /// Reservation time; legacy checkpoints may not retain it separately.
+    #[serde(default)]
+    pub created_at: Option<Timestamp>,
+    /// Most recent durable workflow update.
+    #[serde(default)]
+    pub updated_at: Option<Timestamp>,
+    /// Active running time, excluding approval waits and pauses.
+    #[serde(default)]
+    pub elapsed_ms: u64,
+    /// Discovery and job counters; null means the old checkpoint did not retain complete counters.
+    #[serde(default)]
+    pub counts: Option<RunCounts>,
+    /// Reason a run is paused, using the spec 08 vocabulary.
+    #[serde(default)]
+    pub pause_reason: Option<String>,
+    /// True when budgets, cancellation, errors or drift may have left sources unexplored.
+    #[serde(default)]
+    pub possibly_incomplete: bool,
+    /// Trusted error code/class/message only; never page content or a full URL.
+    #[serde(default)]
+    pub last_error: Option<ErrorEnvelope>,
     /// The run.
     pub run_id: RunId,
     /// Hash of the approved plan.
@@ -144,15 +216,16 @@ pub struct RunReport {
     /// Bytes committed.
     pub bytes_done: u64,
     /// When the run started.
-    pub started_at: Timestamp,
+    #[serde(default)]
+    pub started_at: Option<Timestamp>,
     /// When the run ended.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub finished_at: Option<Timestamp>,
     /// Why pagination stopped, for example `no_new_items` or `budget_pages`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub stop_reason: Option<String>,
     /// Drift findings (a selector that stopped matching, a layout change).
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default)]
     pub drift: Vec<Diagnostic>,
 }
 

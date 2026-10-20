@@ -78,6 +78,7 @@ pub struct RuntimeBackend {
     admin_limits: std::sync::Mutex<HashMap<String, crate::approvals::DecisionLimiter>>,
     organizer: Arc<crate::organizer::Organizer>,
     artifacts: Arc<zeus_artifact::ArtifactStore>,
+    artifact_copies: artifact_lifecycle::ActiveCopies,
     ingest_owners: artifact_ingest::IngestOwners,
     #[cfg(test)]
     fail_kill_switch_audit: std::sync::atomic::AtomicBool,
@@ -259,6 +260,7 @@ impl RuntimeBackend {
             admin_limits: Default::default(),
             organizer,
             artifacts,
+            artifact_copies: Default::default(),
             ingest_owners,
             #[cfg(test)]
             fail_kill_switch_audit: Default::default(),
@@ -1421,6 +1423,20 @@ impl Backend for RuntimeBackend {
     ) -> ApiResult<ArtifactsIngestResult> {
         self.artifact_ingest(ctx, p).await
     }
+    async fn artifacts_lifecycle_preview(
+        &self,
+        ctx: &CallContext,
+        p: ArtifactsLifecyclePreviewParams,
+    ) -> ApiResult<ArtifactsLifecyclePreviewResult> {
+        self.artifact_lifecycle_preview(ctx, p)
+    }
+    async fn artifacts_lifecycle_apply(
+        &self,
+        ctx: &CallContext,
+        p: ArtifactsLifecycleApplyParams,
+    ) -> ApiResult<ArtifactsLifecycleApplyResult> {
+        self.artifact_lifecycle_apply(ctx, p).await
+    }
     async fn clients_list(
         &self,
         _ctx: &CallContext,
@@ -1451,6 +1467,8 @@ mod native;
 mod artifact_api;
 #[path = "artifact_ingest.rs"]
 mod artifact_ingest;
+#[path = "artifact_lifecycle.rs"]
+mod artifact_lifecycle;
 #[path = "clients.rs"]
 mod clients;
 #[path = "configuration.rs"]

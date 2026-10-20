@@ -684,6 +684,168 @@
       },
       "type": "object"
     },
+    "ArtifactLifecycleOperation": {
+      "description": "One explicit artifact lifecycle effect. Collection and quarantine release are separate policies.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Tombstone the record. User files, materializations and shared content remain untouched.",
+          "properties": {
+            "kind": {
+              "const": "delete",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Change object protection. Weakening protection requires a person's approval.",
+          "properties": {
+            "kind": {
+              "const": "set_retention",
+              "type": "string"
+            },
+            "retain_until": {
+              "default": null,
+              "description": "Additional protection deadline, or no deadline.",
+              "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:([0-5][0-9]|60)\\.[0-9]{3}Z$",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "retention": {
+              "$ref": "#/$defs/ArtifactRetention",
+              "description": "Protection policy."
+            }
+          },
+          "required": [
+            "kind",
+            "retention"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Copy verified bytes to a new file inside a write root visible to this caller.",
+          "properties": {
+            "kind": {
+              "const": "materialize",
+              "type": "string"
+            },
+            "path": {
+              "description": "Absolute destination; existing files and partial files are never replaced.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "path"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "ArtifactLifecyclePlan": {
+      "additionalProperties": false,
+      "description": "An exact preview accepted by `artifacts.lifecycle.apply`; requester edits are revalidated by the daemon.",
+      "properties": {
+        "artifact_id": {
+          "description": "Record to change or copy.",
+          "pattern": "^art_[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+          "type": "string"
+        },
+        "blake3": {
+          "description": "Expected CAS content identity.",
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "current_retain_until": {
+          "description": "Protection deadline before the change.",
+          "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:([0-5][0-9]|60)\\.[0-9]{3}Z$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "current_retention": {
+          "$ref": "#/$defs/ArtifactRetention",
+          "description": "Protection policy before the change."
+        },
+        "expected_record_blake3": {
+          "description": "BLAKE3 of the canonical API export before the change (the expected record revision).",
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "expires_at": {
+          "description": "Preview expiration; no more than 15 minutes after it is produced.",
+          "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:([0-5][0-9]|60)\\.[0-9]{3}Z$",
+          "type": "string"
+        },
+        "operation": {
+          "$ref": "#/$defs/ArtifactLifecycleOperation",
+          "description": "Complete effect, including the daemon-resolved destination when copying."
+        },
+        "quarantined": {
+          "description": "Quarantine state; this operation cannot clear it.",
+          "type": "boolean"
+        },
+        "requires_approval": {
+          "description": "A human `destructive_op` approval is required before this effect can execute.",
+          "type": "boolean"
+        },
+        "sha256": {
+          "description": "Expected interoperable content digest.",
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "size_bytes": {
+          "description": "Exact logical length.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "version": {
+          "description": "Plan format, currently 1.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "version",
+        "artifact_id",
+        "expected_record_blake3",
+        "blake3",
+        "sha256",
+        "size_bytes",
+        "quarantined",
+        "current_retention",
+        "operation",
+        "requires_approval",
+        "expires_at"
+      ],
+      "type": "object"
+    },
+    "ArtifactRetention": {
+      "description": "Object protection selected for an active artifact record.",
+      "oneOf": [
+        {
+          "const": "keep",
+          "description": "Protect the stored content while this record remains active.",
+          "type": "string"
+        },
+        {
+          "const": "evictable",
+          "description": "Permit later collection when no other record or lease protects the content.",
+          "type": "string"
+        }
+      ]
+    },
     "ArtifactStateFilter": {
       "description": "Record state filter of `artifacts.list`.",
       "oneOf": [
@@ -794,6 +956,114 @@
         "artifact",
         "created",
         "replayed"
+      ],
+      "type": "object"
+    },
+    "ArtifactsLifecycleApplyParams": {
+      "additionalProperties": false,
+      "description": "`artifacts.lifecycle.apply` parameters. Repeat this exact request after a person approves it.",
+      "properties": {
+        "idempotency_key": {
+          "description": "Required retry key: 1 to 128 UTF-8 bytes, without control characters.",
+          "type": "string"
+        },
+        "plan": {
+          "$ref": "#/$defs/ArtifactLifecyclePlan",
+          "description": "Complete preview, without amendments."
+        },
+        "plan_hash": {
+          "description": "Hash returned with the preview.",
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "plan",
+        "plan_hash",
+        "idempotency_key"
+      ],
+      "type": "object"
+    },
+    "ArtifactsLifecycleApplyResult": {
+      "description": "A pending approval or a durable completed lifecycle receipt.",
+      "properties": {
+        "applied": {
+          "description": "The requested effect completed.",
+          "type": "boolean"
+        },
+        "approval_id": {
+          "description": "Existing approval to review; the API never approves it on the caller's behalf.",
+          "pattern": "^ap_[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "artifact": {
+          "description": "Portable record after completion, including its tombstone for deletion."
+        },
+        "mode": {
+          "description": "Materialization mode actually used (`copy`).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "path": {
+          "description": "Materialized destination, when this effect copied bytes.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "replayed": {
+          "description": "This retry key reused its pending request or completed durable receipt.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "applied",
+        "replayed"
+      ],
+      "type": "object"
+    },
+    "ArtifactsLifecyclePreviewParams": {
+      "additionalProperties": false,
+      "description": "`artifacts.lifecycle.preview` parameters. This method does not persist or execute a plan.",
+      "properties": {
+        "artifact_id": {
+          "description": "Visible active artifact record.",
+          "pattern": "^art_[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+          "type": "string"
+        },
+        "operation": {
+          "$ref": "#/$defs/ArtifactLifecycleOperation",
+          "description": "Requested effect."
+        }
+      },
+      "required": [
+        "artifact_id",
+        "operation"
+      ],
+      "type": "object"
+    },
+    "ArtifactsLifecyclePreviewResult": {
+      "additionalProperties": false,
+      "description": "`artifacts.lifecycle.preview` result. Save this entire receipt for a later apply.",
+      "properties": {
+        "plan": {
+          "$ref": "#/$defs/ArtifactLifecyclePlan",
+          "description": "Daemon-computed effect and expected record snapshot."
+        },
+        "plan_hash": {
+          "description": "BLAKE3 of the canonical `{t:\"zeus.artifact.lifecycle.v1\",plan}` object.",
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "plan",
+        "plan_hash"
       ],
       "type": "object"
     },
@@ -8078,21 +8348,186 @@
         }
       ]
     },
-    "RunReport": {
+    "RunCounts": {
       "description": "Progress and outcome of a run.",
       "properties": {
+        "bytes_done": {
+          "description": "Committed bytes across admitted jobs.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "files_canceled": {
+          "description": "Jobs currently canceled.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "files_completed": {
+          "description": "Jobs currently completed.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "files_convert_failed": {
+          "description": "Failed conversions; zero while conversion is unsupported.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "files_converted": {
+          "description": "Successful conversions; zero while conversion is unsupported.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "files_enqueued": {
+          "description": "Jobs admitted to the engine; pending intents are excluded in API projections.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "files_failed": {
+          "description": "Jobs currently failed.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "files_quarantined": {
+          "description": "Jobs currently marked quarantined.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "items_duplicate": {
+          "description": "Repeated URLs or dedupe keys.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "items_filtered": {
+          "description": "Items rejected by ordinary filters.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "items_invalid": {
+          "description": "Items with missing or invalid required fields.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "items_out_of_domain": {
+          "description": "Items outside the approved domains.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "items_seen": {
+          "description": "Extracted candidate items.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "items_skipped_existing": {
+          "description": "Durable intents skipped because their destination already exists.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "pages_failed": {
+          "description": "Failed document attempts committed before pausing.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "pages_fetched": {
+          "description": "Successful document fetches committed to the checkpoint.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "pages_skipped_robots": {
+          "description": "Document attempts refused by robots policy.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "pages_fetched",
+        "pages_failed",
+        "pages_skipped_robots",
+        "items_seen",
+        "items_duplicate",
+        "items_filtered",
+        "items_out_of_domain",
+        "items_invalid",
+        "items_skipped_existing",
+        "files_enqueued",
+        "files_completed",
+        "files_failed",
+        "files_canceled",
+        "files_quarantined",
+        "files_converted",
+        "files_convert_failed",
+        "bytes_done"
+      ],
+      "type": "object"
+    },
+    "RunReport": {
+      "description": "Progress and outcome of a run, including compatibility fields for pre-alpha clients.",
+      "properties": {
+        "approval_id": {
+          "default": null,
+          "description": "Approval that authorized this run.",
+          "pattern": "^ap_[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "bytes_done": {
           "description": "Bytes committed.",
           "format": "uint64",
           "minimum": 0,
           "type": "integer"
         },
+        "counts": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RunCounts"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Discovery and job counters; null means the old checkpoint did not retain complete counters."
+        },
+        "created_at": {
+          "default": null,
+          "description": "Reservation time; legacy checkpoints may not retain it separately.",
+          "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:([0-5][0-9]|60)\\.[0-9]{3}Z$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "drift": {
+          "default": [],
           "description": "Drift findings (a selector that stopped matching, a layout change).",
           "items": {
             "$ref": "#/$defs/Diagnostic"
           },
           "type": "array"
+        },
+        "elapsed_ms": {
+          "default": 0,
+          "description": "Active running time, excluding approval waits and pauses.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
         },
         "files_completed": {
           "description": "Files finished and verified.",
@@ -8113,6 +8548,7 @@
           "type": "integer"
         },
         "finished_at": {
+          "default": null,
           "description": "When the run ended.",
           "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:([0-5][0-9]|60)\\.[0-9]{3}Z$",
           "type": [
@@ -8120,15 +8556,69 @@
             "null"
           ]
         },
+        "grant_id": {
+          "default": null,
+          "description": "Effective workflow session grant; null for public-page runs.",
+          "pattern": "^gr_[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "last_error": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ErrorEnvelope"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Trusted error code/class/message only; never page content or a full URL."
+        },
         "pages_fetched": {
           "description": "Pages fetched so far.",
           "format": "uint32",
           "minimum": 0,
           "type": "integer"
         },
+        "pause_reason": {
+          "default": null,
+          "description": "Reason a run is paused, using the spec 08 vocabulary.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "plan_hash": {
           "description": "Hash of the approved plan.",
           "type": "string"
+        },
+        "plan_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PlanId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Stored plan identity when known."
+        },
+        "possibly_incomplete": {
+          "default": false,
+          "description": "True when budgets, cancellation, errors or drift may have left sources unexplored.",
+          "type": "boolean"
+        },
+        "report_version": {
+          "default": 0,
+          "description": "One for reports whose discovery counters were recorded from run creation; zero for legacy checkpoints.",
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": "integer"
         },
         "run_id": {
           "description": "The run.",
@@ -8136,16 +8626,30 @@
           "type": "string"
         },
         "started_at": {
+          "default": null,
           "description": "When the run started.",
           "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:([0-5][0-9]|60)\\.[0-9]{3}Z$",
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "status": {
           "$ref": "#/$defs/RunStatus",
           "description": "State."
         },
         "stop_reason": {
+          "default": null,
           "description": "Why pagination stopped, for example `no_new_items` or `budget_pages`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "updated_at": {
+          "default": null,
+          "description": "Most recent durable workflow update.",
+          "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:([0-5][0-9]|60)\\.[0-9]{3}Z$",
           "type": [
             "string",
             "null"
@@ -8160,8 +8664,7 @@
         "files_enqueued",
         "files_completed",
         "files_failed",
-        "bytes_done",
-        "started_at"
+        "bytes_done"
       ],
       "type": "object"
     },
@@ -10249,6 +10752,22 @@
       },
       "result": {
         "$ref": "#/$defs/ArtifactsIngestResult"
+      }
+    },
+    "artifacts.lifecycle.apply": {
+      "params": {
+        "$ref": "#/$defs/ArtifactsLifecycleApplyParams"
+      },
+      "result": {
+        "$ref": "#/$defs/ArtifactsLifecycleApplyResult"
+      }
+    },
+    "artifacts.lifecycle.preview": {
+      "params": {
+        "$ref": "#/$defs/ArtifactsLifecyclePreviewParams"
+      },
+      "result": {
+        "$ref": "#/$defs/ArtifactsLifecyclePreviewResult"
       }
     },
     "artifacts.lineage": {

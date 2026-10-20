@@ -4,7 +4,7 @@
 
 Your agents can find it. Zeus makes sure they actually get it: verified, filed and accounted for. It works with your real browser, never reads your cookie database, and keeps a tamper-evident record of what it did.
 
-> **Status: pre-alpha, implementation in progress.** The daemon, transfer engine, native relay, MCP stdio server, terminal interfaces, public-page workflow runner and model adapters now have executable implementations and hermetic tests. Real browser acceptance, cross-platform release validation and several roadmap capabilities remain unfinished. There is no public release or frozen API. See the [implementation and remaining-work ledger](docs/IMPLEMENTATION_STATUS.md).
+> **Status: pre-alpha, implementation in progress.** The daemon, transfer engine, native relay, MCP stdio server, terminal interfaces, restricted desktop client, public-page workflow runner and model adapters have executable implementations and hermetic tests. Real browser/GUI acceptance, cross-platform release validation and several roadmap capabilities remain unfinished. There is no public release or frozen API. See the [implementation and remaining-work ledger](docs/IMPLEMENTATION_STATUS.md).
 
 Zeus combines familiar download queues, resumable transfers and a link inbox with explicit agent plans, human approvals and per-run budgets. The [download workspace design](docs/design/download-workspace.md) includes a runnable visual prototype; its queue and agent controls are simulations until connected to the daemon.
 
@@ -50,6 +50,8 @@ One daemon owns all state; everything else is a client of its local JSON-RPC API
 | [zeus-site](https://github.com/ArefinAlter/zeus-site) | Static marketing site and a clearly labeled interactive product preview using sample state. |
 
 Clone them **side by side**: this workspace refers to `../zeus-core`.
+
+The optional [Tauri desktop client](apps/desktop/README.md) lives in its own Cargo workspace under `apps/desktop`. It uses the real daemon for download pages, reviewed link intake, job controls and run/file/artifact inspection; its Rust bridge owns the restricted credential. Follow its README for provisioning and launch instructions.
 
 ```
 zeus-workspace/

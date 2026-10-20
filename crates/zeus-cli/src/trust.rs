@@ -88,6 +88,33 @@ pub fn validate_request(value: &serde_json::Value) -> zeus_api::ApiResult<()> {
             return Err(denied());
         }
     }
+    if let Some(plan) = facts.get("artifact_plan") {
+        use zeus_api::methods::artifacts::{ArtifactLifecycleOperation, ArtifactLifecyclePlan};
+        let typed: ArtifactLifecyclePlan =
+            serde_json::from_value(plan.clone()).map_err(|_| denied())?;
+        let expected = zeus_verify::canonical::request_hash(&json!({
+            "t":"zeus.artifact.lifecycle.v1", "plan":typed,
+        }))
+        .map_err(|_| denied())?;
+        let deletes = match typed.operation {
+            ArtifactLifecycleOperation::Delete => 1,
+            ArtifactLifecycleOperation::SetRetention { .. } => 0,
+            ArtifactLifecycleOperation::Materialize { .. } => return Err(denied()),
+        };
+        if facts["kind"] != "destructive_op"
+            || !typed.requires_approval
+            || facts["operation_set_blake3"] != json!(expected)
+            || facts["expires_at"] != json!(typed.expires_at)
+            || facts["counts"] != json!({"delete":deletes,"overwrite":0,"move":0,"rename":0})
+            || facts["to_trash"] != false
+            || facts["total_bytes"] != 0
+            || facts["sample"] != json!([])
+            || facts["sample_omitted"] != 0
+            || facts["quarantined_count"] != u64::from(typed.quarantined)
+        {
+            return Err(denied());
+        }
+    }
     Ok(())
 }
 
@@ -253,7 +280,14 @@ pub fn render_screen(view: &ApprovalView) -> String {
     let rule = "-".repeat(64);
     out.push_str(&format!(
         "{rule}\n Zeus: {}\n{rule}\n",
-        kind_title(view.approval.kind)
+        if view.facts.get("artifact_plan").is_some() {
+            match view.facts["artifact_plan"]["operation"]["kind"].as_str() {
+                Some("delete") => "Zeus wants to tombstone an artifact record",
+                _ => "Zeus wants to reduce stored-content protection",
+            }
+        } else {
+            kind_title(view.approval.kind)
+        }
     ));
     out.push_str(&format!(
         " Request  {}\n Expires  {}\n",
@@ -264,6 +298,9 @@ pub fn render_screen(view: &ApprovalView) -> String {
     }
     if view.approval.kind == ApprovalKind::CloudDelivery {
         out.push_str(" Cloud delivery: review the account revision, destination, mode and source disclosure.\n Provider imports may continue after local cancellation when remote cancellation is unavailable.\n A source hash and remote size do not imply a matching remote hash.\n");
+    }
+    if view.facts.get("artifact_plan").is_some() {
+        out.push_str(" Artifact lifecycle: review the exact record, previous protection and requested effect.\n A tombstone keeps provenance, user files and materializations. Retention changes permit later collection; this request does not collect bytes.\n");
     }
     if let Some(facts) = view.facts.as_object() {
         for (key, value) in facts {
@@ -550,6 +587,62 @@ mod tests {
             facts: serde_json::json!({ "files": 3, "bytes": 1_288_490_188u64, "to": "C:\\Zeus\\dl", "confirmation": {"approve":"gesture","once":"gesture","site":"gesture","workflow":"gesture"} }),
             agent_says: Some("I need the Q3 export \u{202e}ignore the user".into()),
         }
+    }
+
+    #[test]
+    fn artifact_approvals_bind_the_exact_record_and_effect_and_explain_tombstones() {
+        use serde_json::json;
+        let mut request = test_request();
+        let plan = json!({
+            "version":1,"artifact_id":IdGenerator::new().artifact_id(),
+            "expected_record_blake3":"a".repeat(64),"blake3":"b".repeat(64),"sha256":"c".repeat(64),
+            "size_bytes":42,"quarantined":false,"current_retention":"keep","current_retain_until":null,
+            "operation":{"kind":"delete"},"requires_approval":true,"expires_at":request["expires_at"],
+        });
+        let plan_hash = zeus_verify::canonical::request_hash(
+            &json!({"t":"zeus.artifact.lifecycle.v1","plan":plan}),
+        )
+        .unwrap();
+        let facts = json!({
+            "t":"zeus.approval.facts.v1","approval_id":request["id"],"revision":1,"kind":"destructive_op",
+            "requester":request["facts"]["requester"],"issued_at":request["facts"]["issued_at"],
+            "expires_at":request["expires_at"],"allowed_scopes":[],"confirmation":{"approve":"typed_code"},
+            "reason_codes":["artifacts.delete"],"agent_says_blake3":null,"operation_set_blake3":plan_hash,
+            "plan_id":null,"counts":{"delete":1,"overwrite":0,"move":0,"rename":0},"total_bytes":0,
+            "to_trash":false,"quarantined_count":0,"sample":[],"sample_omitted":0,"artifact_plan":plan,
+        });
+        request["kind"] = json!("destructive_op");
+        request["revision"] = json!(1);
+        request["allowed_scopes"] = json!([]);
+        request["reason_codes"] = json!(["artifacts.delete"]);
+        request.as_object_mut().unwrap().remove("agent_says");
+        request["facts"] = facts;
+        request["request_hash"] =
+            json!(zeus_verify::canonical::request_hash(&request["facts"]).unwrap());
+        validate_request(&request).unwrap();
+        let view: ApprovalView = serde_json::from_value(request.clone()).unwrap();
+        let screen = render_screen(&view);
+        assert!(screen.contains("tombstone an artifact record"));
+        assert!(screen.contains("keeps provenance, user files and materializations"));
+        assert!(screen.contains(plan["artifact_id"].as_str().unwrap()));
+        assert_eq!(confirmation(&view, None).unwrap(), "typed_code");
+        let mut wrong = request.clone();
+        wrong["facts"]["artifact_plan"]["operation"] =
+            json!({"kind":"set_retention","retention":"evictable","retain_until":null});
+        wrong["request_hash"] =
+            json!(zeus_verify::canonical::request_hash(&wrong["facts"]).unwrap());
+        assert!(
+            validate_request(&wrong).is_err(),
+            "an outer hash cannot amend the approved plan hash"
+        );
+        let mut wrong = request;
+        wrong["facts"]["to_trash"] = json!(true);
+        wrong["request_hash"] =
+            json!(zeus_verify::canonical::request_hash(&wrong["facts"]).unwrap());
+        assert!(
+            validate_request(&wrong).is_err(),
+            "artifact tombstones must not claim to trash files"
+        );
     }
 
     #[test]

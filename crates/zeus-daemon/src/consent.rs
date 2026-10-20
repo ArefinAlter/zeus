@@ -10,6 +10,9 @@ use zeus_journal::Journal;
 use zeus_types::*;
 use zeus_verify::audit::{AuditEntry, AuditOutcome, AuditSink};
 
+#[path = "consent_artifacts.rs"]
+mod artifact_lifecycle;
+
 fn error(e: impl ToEnvelope) -> ApiError {
     e.to_envelope().into()
 }
@@ -236,7 +239,7 @@ impl ConsentManager {
             .map(ApprovalView::try_from)
             .collect()
     }
-    /// Join a new job to the pending `session_grant` approval with the same batch key (origin, requester, run),
+    /// Join a new job to a compatible pending session or browser handoff approval,
     /// as a new revision with recomputed facts (07 section 4.7). Returns `None` when there is none or it is full.
     /// Callers hold the engine's admission gate, so two joins never race on one revision; the engine writes the
     /// revision only while the stored approval is still pending at the one read here, so a decision committed in
@@ -257,7 +260,25 @@ impl ConsentManager {
         let Some(mut approval) = pending
             .iter()
             .find(|a| {
-                a.kind == ApprovalKind::SessionGrant
+                let kind = if job.spec.source.kind == SourceKind::BrowserHandoff {
+                    ApprovalKind::Handoff
+                } else {
+                    ApprovalKind::SessionGrant
+                };
+                let same_browser = kind != ApprovalKind::Handoff
+                    || job.spec.source.browser.as_ref().is_some_and(|browser| {
+                        browser.profile_id.as_ref().is_some_and(|profile| {
+                            !profile.is_empty()
+                                && a.facts.as_ref().is_some_and(|facts| {
+                                    facts["browser"]["profile_id"] == profile.as_str()
+                                        && facts["browser"]["name"]
+                                            == serde_json::json!(browser.name)
+                                        && facts["browser"]["incognito"] == browser.incognito
+                                })
+                        })
+                    });
+                a.kind == kind
+                    && same_browser
                     && a.requested_by.as_deref() == Some(requester)
                     && a.origin.as_ref() == Some(origin)
                     && a.run_id == job.spec.source.run_id
@@ -272,6 +293,13 @@ impl ConsentManager {
             return Ok(None);
         };
         let mut facts = serde_json::Value::Object(approval.facts.clone().ok_or_else(missing)?);
+        // A retry of an already-covered offer cannot inflate the batch or invalidate an in-flight review.
+        if facts["transfer"]["job_ids"]
+            .as_array()
+            .is_some_and(|ids| ids.iter().any(|id| *id == serde_json::json!(job.id)))
+        {
+            return Ok(Some(approval));
+        }
         let revision = approval.revision.unwrap_or(1).saturating_add(1);
         let ids = facts["transfer"]["job_ids"]
             .as_array()
@@ -406,10 +434,10 @@ impl ConsentManager {
                 .map_or(serde_json::Value::Null, |hint| {
                     serde_json::to_value(hint).unwrap()
                 });
-            facts["run_id"] = serde_json::Value::Null;
+            facts["run_id"] = serde_json::json!(job.and_then(|j| j.spec.source.run_id));
         }
         let request_hash = crate::approvals::facts_hash(&facts)?;
-        serde_json::from_value(serde_json::json!({"id":id,"kind":kind,"state":"pending","job_id":job.map(|j|j.id),"origin":origin,
+        serde_json::from_value(serde_json::json!({"id":id,"kind":kind,"state":"pending","job_id":job.map(|j|j.id),"run_id":job.and_then(|j|j.spec.source.run_id),"origin":origin,
             "allowed_scopes":scopes,"reason_codes":reasons,"summary":{"title":if kind==ApprovalKind::Handoff {"Rescue browser download"} else {"Use website session"}},
             "created_at":now,"expires_at":expiry,"request_hash":request_hash,"requested_by":requester,"revision":1,"facts":facts,"agent_says":agent_says}))
             .map_err(|_|ApiError::internal("cannot construct approval"))
@@ -942,16 +970,20 @@ impl ApprovalPort for ConsentManager {
                 .requested_by
                 .as_deref()
                 .ok_or_else(missing)?;
-            if request.kind == ApprovalKind::SessionGrant
-                && let Some(origin) = request.origin.as_ref()
+            if matches!(
+                request.kind,
+                ApprovalKind::SessionGrant | ApprovalKind::Handoff
+            ) && let Some(origin) = request.origin.as_ref()
             {
                 // Refuses the enqueue, or fails an admitted job (S14) instead of raising another prompt.
-                self.check_denial_backoff(
-                    requester,
-                    REQUESTER_KIND.try_with(|kind| *kind).ok(),
-                    origin,
-                    Timestamp::now(),
-                )?;
+                if request.kind == ApprovalKind::SessionGrant {
+                    self.check_denial_backoff(
+                        requester,
+                        REQUESTER_KIND.try_with(|kind| *kind).ok(),
+                        origin,
+                        Timestamp::now(),
+                    )?;
+                }
                 // A new job joins its requester's pending approval for the origin: one prompt, not one per file.
                 // Only enqueue (a job still `queued`) joins, because the engine serialises enqueues.
                 if let Some(job) = request.job.as_ref()
@@ -1008,6 +1040,7 @@ impl ApprovalPort for ConsentManager {
         result.map_err(|e: ApiError| e.envelope().clone())
     }
     async fn withdraw(&self, id: ApprovalId) -> Result<(), ErrorEnvelope> {
+        let _gate = self.gate.lock().await;
         self.journal
             .transact(|tx| {
                 if let Some(approval) = tx.approval(id)?
@@ -1141,6 +1174,7 @@ mod tests {
             idempotency_key: None,
         }
     }
+    include!("consent_batch_tests.rs");
     #[tokio::test]
     async fn session_requests_are_bound_isolated_and_do_not_grant() {
         let temp = tempfile::tempdir().unwrap();
