@@ -319,6 +319,68 @@ async fn one_decision_reaches_every_job_of_a_batched_approval() {
 }
 
 #[tokio::test]
+async fn canceling_one_batched_job_leaves_the_approval_to_the_others() {
+    use zeus_api::methods::jobs::{ControlAction, JobsControlParams};
+    use zeus_api::methods::sessions::{ApprovalView, ConfirmationLevel, DecideOutcome};
+    let dir = tempfile::tempdir().unwrap();
+    let backend = setup(dir.path()).await;
+    let (agent, _rx) = context(dir.path(), "agent");
+    let (human, _rx2) = context(dir.path(), "cli");
+    let request: EnqueueParams = serde_json::from_value(serde_json::json!({"jobs":[
+        {"url":"https://portal.example.org/a.pdf","session_origin":"https://portal.example.org"},
+        {"url":"https://portal.example.org/b.pdf","session_origin":"https://portal.example.org"}
+    ]}))
+    .unwrap();
+    let enqueued = backend.jobs_enqueue(&agent, request).await.unwrap();
+    let (canceled, waiting) = (
+        enqueued.jobs[0].job_id.unwrap(),
+        enqueued.jobs[1].job_id.unwrap(),
+    );
+    let id = enqueued.jobs[0].approval_id.unwrap();
+    backend
+        .jobs_control(
+            &agent,
+            JobsControlParams {
+                job_id: canceled,
+                action: ControlAction::Cancel,
+                priority: None,
+                idempotency_key: None,
+            },
+        )
+        .await
+        .unwrap();
+    let view = ApprovalView::try_from(backend.consent.get(&human.identity, id).unwrap()).unwrap();
+    assert_eq!(view.approval.state, ApprovalState::Pending);
+    let p = ApprovalsDecideParams {
+        approval_id: id,
+        request_hash: view.request_hash,
+        outcome: DecideOutcome::Deny,
+        scope: None,
+        channel: Surface::CliInteractive,
+        confirmation: ConfirmationLevel::Gesture,
+        idempotency_key: None,
+    };
+    let evidence = serde_json::json!({"client_id":human.identity.credential_id.as_str(),"surface":"cli_interactive",
+        "exe_verified":true,"credential_kind":human.identity.kind,"effective_kind":human.identity.kind,
+        "role":human.identity.role,"tty":"verified","confirmation":"gesture","peer_pid":1});
+    let (approval, grant) = backend
+        .consent
+        .decide(&human.identity, &p, evidence)
+        .await
+        .unwrap();
+    backend.apply_decision(&approval, &grant).await.unwrap();
+    assert_eq!(
+        backend.engine.get(canceled).await.unwrap().state,
+        JobState::Canceled
+    );
+    assert_eq!(
+        backend.engine.get(waiting).await.unwrap().state,
+        JobState::Failed
+    );
+    backend.engine.shutdown().await.unwrap();
+}
+
+#[tokio::test]
 async fn emergency_stop_persists_and_unverified_clients_cannot_release_it() {
     let dir = tempfile::tempdir().unwrap();
     let backend = setup(dir.path()).await;

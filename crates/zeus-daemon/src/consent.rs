@@ -201,7 +201,9 @@ impl ConsentManager {
     }
     /// Join a new job to the pending `session_grant` approval with the same batch key (origin, requester, run),
     /// as a new revision with recomputed facts (07 section 4.7). Returns `None` when there is none or it is full.
-    /// Callers hold the engine's admission gate, so two joins never race on one revision.
+    /// Callers hold the engine's admission gate, so two joins never race on one revision; the engine writes the
+    /// revision only while the stored approval is still pending at the one read here, so a decision committed in
+    /// between wins.
     fn join_batch(
         &self,
         pending: &[Approval],
