@@ -13,6 +13,9 @@
 
 pub mod canonical;
 pub mod expr;
+/// Text-free page outlines for model drafting.
+#[cfg(feature = "runtime")]
+pub mod outline;
 pub mod plan;
 pub mod planner;
 pub mod report;

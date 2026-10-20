@@ -52,6 +52,7 @@ mod visibility;
 /// Explicit model configuration and budgeted execution.
 pub mod models;
 
+mod workflow_draft;
 mod workflow_network;
 /// Durable bounded workflow orchestration.
 pub mod workflows;

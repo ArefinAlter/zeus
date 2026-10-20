@@ -28,6 +28,33 @@ pub struct WorkflowsPlanParams {
     /// Continue an existing draft.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plan_id: Option<PlanId>,
+    /// Ask the configured model to propose the selectors (human-only, verified terminal; ignored with `candidate`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub draft: Option<WorkflowDraftRequest>,
+}
+
+/// A model-drafting request. The model sees text-free page outlines (`metadata_only`, 09) and proposes only the
+/// `extract` member; domains, budgets, pace and destination are daemon defaults the person can edit.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct WorkflowDraftRequest {
+    /// Most this one request may cost, in micro-USD; zero allows only free local models.
+    pub max_cost_micro_usd: u64,
+}
+
+/// Accounting of a model draft.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct WorkflowDraftInfo {
+    /// The provider that answered.
+    pub provider: zeus_llm::ProviderKind,
+    /// Model identifier as reported.
+    pub model: String,
+    /// Prompt tokens.
+    pub input_tokens: u64,
+    /// Generated tokens.
+    pub output_tokens: u64,
+    /// Cost in micro-USD when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_micro_usd: Option<u64>,
 }
 
 /// `workflows.plan` result.
@@ -50,6 +77,9 @@ pub struct WorkflowsPlanResult {
     /// Hash the approval will bind to.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plan_hash: Option<String>,
+    /// Present when the candidate was drafted by the configured model: a proposal, never an approval.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub draft: Option<WorkflowDraftInfo>,
 }
 
 /// `workflows.dry_run` parameters.

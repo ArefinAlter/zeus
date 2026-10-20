@@ -872,6 +872,31 @@ async fn one_decision_reaches_every_job_of_a_batched_approval() {
 }
 
 #[tokio::test]
+async fn only_a_verified_person_can_spend_on_a_model_draft() {
+    let dir = tempfile::tempdir().unwrap();
+    let backend = setup(dir.path()).await;
+    for name in ["agent", "cli"] {
+        // The agent is never human; the CLI credential here has no verified executable or terminal.
+        let (ctx, _rx) = context(dir.path(), name);
+        let error = backend
+            .workflows_plan(
+                &ctx,
+                serde_json::from_value(serde_json::json!({"goal":"papers",
+                    "start_urls":["https://papers.example.org/list"],"draft":{"max_cost_micro_usd":1000}}))
+                .unwrap(),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error.envelope().code.as_str(),
+            "api.human_required",
+            "{name}"
+        );
+    }
+    backend.engine.shutdown().await.unwrap();
+}
+
+#[tokio::test]
 async fn emergency_stop_persists_and_unverified_clients_cannot_release_it() {
     let dir = tempfile::tempdir().unwrap();
     let backend = setup(dir.path()).await;

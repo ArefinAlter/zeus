@@ -429,10 +429,20 @@ impl Backend for RuntimeBackend {
     async fn workflows_plan(
         &self,
         ctx: &CallContext,
-        p: WorkflowsPlanParams,
+        mut p: WorkflowsPlanParams,
     ) -> ApiResult<WorkflowsPlanResult> {
         self.admit()?;
-        self.workflows.plan(&ctx.identity, p).await
+        let Some(draft) = p.draft.take() else {
+            return self.workflows.plan(&ctx.identity, p).await;
+        };
+        if p.candidate.is_some() {
+            return Err(ApiError::invalid_params(
+                "draft and candidate are exclusive",
+            ));
+        }
+        // Spending the person's model budget is their decision: drafting needs a verified terminal.
+        let actor = self.model_human(ctx)?;
+        self.draft_workflow(ctx, actor, p, draft).await
     }
     async fn workflows_dry_run(
         &self,
