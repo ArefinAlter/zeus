@@ -41,6 +41,12 @@ struct ApprovalPreparation<'a> {
     reason_codes: &'a [String],
 }
 
+tokio::task_local! {
+    /// The effective kind of the connection whose call is running (05 section 7.4), so approvals the engine raises
+    /// on its behalf apply the denial back-off to a downgraded credential (07 section 9.4).
+    pub(crate) static REQUESTER_KIND: ClientKind;
+}
+
 /// Owns serialized approval mutations and the write-ahead audit boundary.
 pub struct ConsentManager {
     journal: Journal,
@@ -77,22 +83,45 @@ impl ConsentManager {
         self.limits = limits;
         self
     }
+    /// End every pending approval `requester` raised as `cancel` by `system` (05 section 7.6 rule 8), serialised
+    /// with decisions and batch joins.
+    pub(crate) async fn withdraw_requester(&self, requester: &str) -> ApiResult<()> {
+        let _gate = self.gate.lock().await;
+        let now = Timestamp::now();
+        self.journal
+            .transact(|tx| {
+                for approval in tx.approvals(Some(&[ApprovalState::Pending]))? {
+                    if approval.requested_by.as_deref() == Some(requester) {
+                        cancel_pending(tx, approval, "requester_revoked", now)?;
+                    }
+                }
+                Ok(())
+            })
+            .map_err(error)
+    }
     /// Denial back-off (07 section 9.4). Derived from durable decisions, so it survives a restart: after a human
     /// denies an unattended requester a session for an origin, new session requests by that requester for that
     /// origin are refused for 10 minutes, or 24 hours after three denials within a day. A later approval for the
-    /// same pair clears it. Human-capable requesters and handoffs are never backed off.
+    /// same pair clears it. Human-capable requesters and handoffs are never backed off. `effective` is the kind
+    /// of the connection making the request, which is `agent` for a downgraded human or admin credential; without
+    /// a connection (approvals the engine raises on its own) the credential's kind decides.
     pub(crate) fn check_denial_backoff(
         &self,
         requester: &str,
+        effective: Option<ClientKind>,
         origin: &Origin,
         now: Timestamp,
     ) -> ApiResult<()> {
         const SHORT_MS: u64 = 10 * 60_000;
         const DAY_MS: u64 = 86_400_000;
-        let Ok(credential) = self.credential(requester) else {
-            return Ok(());
+        let kind = match effective {
+            Some(kind) => kind,
+            None => match self.credential(requester) {
+                Ok(credential) => credential.kind,
+                Err(_) => return Ok(()),
+            },
         };
-        if matches!(credential.kind, ClientKind::Human | ClientKind::Admin) {
+        if matches!(kind, ClientKind::Human | ClientKind::Admin) {
             return Ok(());
         }
         let decided = self
@@ -188,7 +217,9 @@ impl ConsentManager {
     }
     /// Join a new job to the pending `session_grant` approval with the same batch key (origin, requester, run),
     /// as a new revision with recomputed facts (07 section 4.7). Returns `None` when there is none or it is full.
-    /// Callers hold the engine's admission gate, so two joins never race on one revision.
+    /// Callers hold the engine's admission gate, so two joins never race on one revision; the engine writes the
+    /// revision only while the stored approval is still pending at the one read here, so a decision committed in
+    /// between wins.
     fn join_batch(
         &self,
         pending: &[Approval],
@@ -452,7 +483,12 @@ impl ConsentManager {
                 expires_at: Some(a.expires_at),
             });
         }
-        self.check_denial_backoff(identity.credential_id.as_str(), &p.origin, Timestamp::now())?;
+        self.check_denial_backoff(
+            identity.credential_id.as_str(),
+            Some(identity.kind),
+            &p.origin,
+            Timestamp::now(),
+        )?;
         self.check_caps(&pending, Some(identity.credential_id.as_str()))?;
         let a = self.prepare(ApprovalPreparation {
             requester: identity.credential_id.as_str(),
@@ -844,7 +880,12 @@ impl ApprovalPort for ConsentManager {
                 && let Some(origin) = request.origin.as_ref()
             {
                 // Refuses the enqueue, or fails an admitted job (S14) instead of raising another prompt.
-                self.check_denial_backoff(requester, origin, Timestamp::now())?;
+                self.check_denial_backoff(
+                    requester,
+                    REQUESTER_KIND.try_with(|kind| *kind).ok(),
+                    origin,
+                    Timestamp::now(),
+                )?;
                 // A new job joins its requester's pending approval for the origin: one prompt, not one per file.
                 // Only enqueue (a job still `queued`) joins, because the engine serialises enqueues.
                 if let Some(job) = request.job.as_ref()
@@ -882,53 +923,64 @@ impl ApprovalPort for ConsentManager {
     async fn withdraw(&self, id: ApprovalId) -> Result<(), ErrorEnvelope> {
         self.journal
             .transact(|tx| {
-                if let Some(mut approval) = tx.approval(id)?
+                if let Some(approval) = tx.approval(id)?
                     && approval.state == ApprovalState::Pending
                 {
-                    let now = Timestamp::now();
-                    approval.state = ApprovalState::Canceled;
-                    approval.decided_at = Some(now);
-                    approval.decision = Some(Decision {
-                        outcome: DecisionOutcome::Cancel,
-                        scope: None,
-                        actor: Actor::system(),
-                        grant_id: None,
-                    });
-                    tx.put_approval(&approval)?;
-                    if approval.revision.is_some() && approval.request_hash.is_some() {
-                        tx.put_approval_decision(
-                            id,
-                            &serde_json::json!({
-                                "approval_id": id,
-                                "revision": approval.revision,
-                                "request_hash": approval.request_hash,
-                                "outcome": "cancel",
-                                "actor": Actor::system(),
-                                "decided_at": now,
-                                "grant_ids": [],
-                                "system_reason": "request_withdrawn"
-                            }),
-                        )?;
-                    }
-                    tx.append_event(
-                        now,
-                        approval.job_id,
-                        approval.run_id,
-                        zeus_types::event::ApprovalDecidedData {
-                            approval_id: id,
-                            kind: approval.kind,
-                            outcome: DecisionOutcome::Cancel,
-                            scope: None,
-                            actor: Actor::system(),
-                            grant_id: None,
-                        }
-                        .into(),
-                    )?;
+                    cancel_pending(tx, approval, "request_withdrawn", Timestamp::now())?;
                 }
                 Ok(())
             })
             .map_err(|error| error.to_envelope())
     }
+}
+
+/// End a pending approval as `cancel` by `system` inside `tx`: the approval, its decision record (with
+/// `system_reason`) and the `approval.decided` event.
+fn cancel_pending(
+    tx: &mut dyn zeus_journal::WriteTxn,
+    mut approval: Approval,
+    system_reason: &str,
+    now: Timestamp,
+) -> zeus_journal::JournalResult<()> {
+    approval.state = ApprovalState::Canceled;
+    approval.decided_at = Some(now);
+    approval.decision = Some(Decision {
+        outcome: DecisionOutcome::Cancel,
+        scope: None,
+        actor: Actor::system(),
+        grant_id: None,
+    });
+    tx.put_approval(&approval)?;
+    if approval.revision.is_some() && approval.request_hash.is_some() {
+        tx.put_approval_decision(
+            approval.id,
+            &serde_json::json!({
+                "approval_id": approval.id,
+                "revision": approval.revision,
+                "request_hash": approval.request_hash,
+                "outcome": "cancel",
+                "actor": Actor::system(),
+                "decided_at": now,
+                "grant_ids": [],
+                "system_reason": system_reason
+            }),
+        )?;
+    }
+    tx.append_event(
+        now,
+        approval.job_id,
+        approval.run_id,
+        zeus_types::event::ApprovalDecidedData {
+            approval_id: approval.id,
+            kind: approval.kind,
+            outcome: DecisionOutcome::Cancel,
+            scope: None,
+            actor: Actor::system(),
+            grant_id: None,
+        }
+        .into(),
+    )?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -939,12 +991,25 @@ mod tests {
         auth::{Credential, MemoryCredentialStore, Token},
     };
     fn setup(path: &std::path::Path) -> (ConsentManager, ClientIdentity, ClientIdentity) {
+        let (manager, identity) = setup_with_identities(path);
+        let agent = identity(ClientKind::Agent, ClientRole::Mcp);
+        let human = identity(ClientKind::Human, ClientRole::Cli);
+        (manager, agent, human)
+    }
+    /// A manager and a factory of identities whose credentials it knows.
+    fn setup_with_identities(
+        path: &std::path::Path,
+    ) -> (
+        ConsentManager,
+        impl Fn(ClientKind, ClientRole) -> ClientIdentity,
+    ) {
         let clock = Arc::new(zeus_control::SystemClock::new());
         let journal = Journal::open(&path.join("state.redb"), &Default::default(), clock).unwrap();
         let credentials = Arc::new(MemoryCredentialStore::default());
-        let identity = |kind, role| {
+        let store = credentials.clone();
+        let identity = move |kind, role| {
             let id = CredentialId::generate();
-            credentials.insert(
+            store.insert(
                 Credential::new(
                     id.clone(),
                     kind,
@@ -962,8 +1027,6 @@ mod tests {
                 client_name: "untrusted forged name".into(),
             }
         };
-        let agent = identity(ClientKind::Agent, ClientRole::Mcp);
-        let human = identity(ClientKind::Human, ClientRole::Cli);
         let audit = zeus_verify::audit::AuditLog::open(
             &path.join("audit"),
             None,
@@ -974,8 +1037,7 @@ mod tests {
         .unwrap();
         (
             ConsentManager::new(journal, Arc::new(audit), credentials),
-            agent,
-            human,
+            identity,
         )
     }
     fn evidence(identity: &ClientIdentity, p: &ApprovalsDecideParams) -> serde_json::Value {
@@ -1276,12 +1338,62 @@ mod tests {
         let requester = agent.credential_id.as_str();
         assert!(
             manager
-                .check_denial_backoff(requester, &origin, until.saturating_add_ms(1))
+                .check_denial_backoff(requester, None, &origin, until.saturating_add_ms(1))
                 .is_ok()
         );
         let mut other = request();
         other.origin = Origin::parse("https://other.example.org").unwrap();
         assert!(manager.request_session(&agent, other).await.is_ok());
         assert!(manager.request_session(&human, request()).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn a_downgraded_human_capable_credential_is_backed_off() {
+        let temp = tempfile::tempdir().unwrap();
+        let (manager, identity) = setup_with_identities(temp.path());
+        let human = identity(ClientKind::Human, ClientRole::Cli);
+        // An unverified process holding an admin credential connects as an agent (05 section 7.4).
+        let mut downgraded = identity(ClientKind::Admin, ClientRole::Cli);
+        downgraded.kind = ClientKind::Agent;
+        downgraded.permissions = ClientKind::Agent.default_permissions();
+        let id = manager
+            .request_session(&downgraded, request())
+            .await
+            .unwrap()
+            .approval_id
+            .unwrap();
+        let a = manager.get(&human, id).unwrap();
+        let deny = ApprovalsDecideParams {
+            approval_id: id,
+            request_hash: a.request_hash.unwrap(),
+            outcome: DecideOutcome::Deny,
+            scope: None,
+            channel: Surface::CliInteractive,
+            confirmation: ConfirmationLevel::Gesture,
+            idempotency_key: None,
+        };
+        manager
+            .decide(&human, &deny, evidence(&human, &deny))
+            .await
+            .unwrap();
+        let refused = manager
+            .request_session(&downgraded, request())
+            .await
+            .unwrap_err();
+        assert_eq!(refused.envelope().code.as_str(), "policy.recently_denied");
+        // Approvals the engine raises outside any connection fall back to the credential's kind.
+        let requester = downgraded.credential_id.as_str();
+        let origin = request().origin;
+        let now = Timestamp::now();
+        assert!(
+            manager
+                .check_denial_backoff(requester, Some(ClientKind::Agent), &origin, now)
+                .is_err()
+        );
+        assert!(
+            manager
+                .check_denial_backoff(requester, None, &origin, now)
+                .is_ok()
+        );
     }
 }
