@@ -38,6 +38,7 @@ pub mod kind;
 pub mod methods;
 pub mod paging;
 pub mod policy;
+pub mod rate;
 pub mod schema;
 pub mod server;
 pub mod transport;

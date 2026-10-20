@@ -260,6 +260,10 @@ impl RuntimeBackend {
     pub fn credentials(&self) -> Arc<crate::provision::FileCredentialStore> {
         self.credentials.clone()
     }
+    /// Share the router's token buckets, so enqueued jobs that raise a session prompt spend `session_request`.
+    pub fn share_rate_limiter(&self, rates: Arc<zeus_api::rate::RateLimiter>) {
+        self.consent.share_rate_limiter(rates);
+    }
     /// Bind the configuration file selected by startup flags/environment.
     pub fn set_config_path(&self, path: PathBuf) -> ApiResult<()> {
         self.config_path.set(path).map_err(|_| internal())

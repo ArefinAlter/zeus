@@ -56,6 +56,8 @@ pub struct ConsentManager {
     decisions: Mutex<crate::approvals::DecisionLimiter>,
     limits: crate::approvals::ConsentLimits,
     started: std::time::Instant,
+    /// The router's token buckets, which also take the `session_request` token of enqueued jobs that raise a prompt.
+    rates: std::sync::OnceLock<Arc<zeus_api::rate::RateLimiter>>,
 }
 impl ConsentManager {
     /// Build an approvals manager using the daemon's durable stores.
@@ -72,7 +74,12 @@ impl ConsentManager {
             decisions: Mutex::new(crate::approvals::DecisionLimiter::per_minute()),
             limits: Default::default(),
             started: std::time::Instant::now(),
+            rates: std::sync::OnceLock::new(),
         }
+    }
+    /// Share the router's token buckets (05 section 13.2); the first call wins.
+    pub fn share_rate_limiter(&self, rates: Arc<zeus_api::rate::RateLimiter>) {
+        let _ = self.rates.set(rates);
     }
     /// Apply configured caps and the approve-decision rate (07 section 9).
     pub fn with_limits(mut self, limits: crate::approvals::ConsentLimits) -> Self {
@@ -905,6 +912,17 @@ impl ApprovalPort for ConsentManager {
             if !request.reason_codes.iter().any(|r| r == "kill_switch") {
                 // Engine-raised approvals belong to jobs already admitted; only the daemon-wide cap applies here.
                 self.check_caps(&pending, None)?;
+            }
+            // 05 section 13.2: an enqueued job that raises a session prompt (it joined none) spends one
+            // `session_request` token of its requester.
+            if request.kind == ApprovalKind::SessionGrant
+                && request
+                    .job
+                    .as_ref()
+                    .is_some_and(|job| job.state == JobState::Queued)
+                && let Some(rates) = self.rates.get()
+            {
+                rates.charge_session_request(requester)?;
             }
             let a = self.prepare(ApprovalPreparation {
                 requester,
