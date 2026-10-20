@@ -139,6 +139,57 @@ impl RuntimeBackend {
         Ok(result)
     }
 
+    /// Sample, ask the model for selectors, then validate the assembled plan like any candidate (M01).
+    pub(super) async fn draft_workflow(
+        &self,
+        ctx: &CallContext,
+        actor: zeus_types::Actor,
+        p: WorkflowsPlanParams,
+        draft: zeus_api::methods::workflows::WorkflowDraftRequest,
+    ) -> ApiResult<WorkflowsPlanResult> {
+        let sampled = self.workflows.plan(&ctx.identity, p.clone()).await?;
+        let (plan, info) = crate::workflow_draft::draft(
+            &self.models,
+            &p.goal,
+            &p.start_urls,
+            &sampled.samples,
+            draft.max_cost_micro_usd,
+        )
+        .await?;
+        let mut entry = zeus_verify::audit::AuditEntry::new(
+            Timestamp::now(),
+            actor,
+            "tool.call",
+            zeus_verify::audit::AuditOutcome::Ok,
+        );
+        entry
+            .data
+            .insert("tool".into(), serde_json::json!("workflows.plan"));
+        entry.data.insert("draft".into(), serde_json::json!(true));
+        entry
+            .data
+            .insert("provider".into(), serde_json::json!(info.provider));
+        entry.data.insert(
+            "cost_micro_usd".into(),
+            serde_json::json!(info.cost_micro_usd),
+        );
+        zeus_verify::audit::AuditSink::append(self.audit.as_ref(), entry).map_err(error)?;
+        let mut validated = self
+            .workflows
+            .plan(
+                &ctx.identity,
+                WorkflowsPlanParams {
+                    plan_id: Some(sampled.plan_id),
+                    candidate: Some(plan),
+                    draft: None,
+                    ..p
+                },
+            )
+            .await?;
+        validated.draft = Some(info);
+        Ok(validated)
+    }
+
     /// Execute approved file operations; the kill switch stops them (07 section 8.2).
     pub(super) async fn run_file_operations(&self) {
         let engaged = self

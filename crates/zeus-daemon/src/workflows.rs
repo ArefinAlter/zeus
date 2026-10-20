@@ -596,6 +596,7 @@ impl WorkflowService {
             diagnostics,
             plan: accepted,
             plan_hash,
+            draft: None,
         })
     }
     /// Dry-run pages and selectors with the same network restrictions as execution.

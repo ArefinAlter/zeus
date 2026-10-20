@@ -9454,6 +9454,62 @@
         }
       ]
     },
+    "WorkflowDraftInfo": {
+      "description": "Accounting of a model draft.",
+      "properties": {
+        "cost_micro_usd": {
+          "description": "Cost in micro-USD when known.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "input_tokens": {
+          "description": "Prompt tokens.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "model": {
+          "description": "Model identifier as reported.",
+          "type": "string"
+        },
+        "output_tokens": {
+          "description": "Generated tokens.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "provider": {
+          "$ref": "#/$defs/ProviderKind2",
+          "description": "The provider that answered."
+        }
+      },
+      "required": [
+        "provider",
+        "model",
+        "input_tokens",
+        "output_tokens"
+      ],
+      "type": "object"
+    },
+    "WorkflowDraftRequest": {
+      "description": "A model-drafting request. The model sees text-free page outlines (`metadata_only`, 09) and proposes only the\n`extract` member; domains, budgets, pace and destination are daemon defaults the person can edit.",
+      "properties": {
+        "max_cost_micro_usd": {
+          "description": "Most this one request may cost, in micro-USD; zero allows only free local models.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "max_cost_micro_usd"
+      ],
+      "type": "object"
+    },
     "WorkflowsControlParams": {
       "description": "`workflows.control` parameters.",
       "properties": {
@@ -9620,6 +9676,17 @@
           ],
           "description": "A candidate plan to validate against the samples. Absent on the first call."
         },
+        "draft": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkflowDraftRequest"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Ask the configured model to propose the selectors (human-only, verified terminal; ignored with `candidate`)."
+        },
         "goal": {
           "description": "The goal in words. Untrusted text; recorded, never interpreted.",
           "type": "string"
@@ -9667,6 +9734,17 @@
             "$ref": "#/$defs/Diagnostic"
           },
           "type": "array"
+        },
+        "draft": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkflowDraftInfo"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Present when the candidate was drafted by the configured model: a proposal, never an approval."
         },
         "plan": {
           "anyOf": [
