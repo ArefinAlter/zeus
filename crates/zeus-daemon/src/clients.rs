@@ -235,7 +235,9 @@ impl RuntimeBackend {
             Timestamp::now(),
         )?;
         if !before.revoked {
-            self.withdraw_pending_approvals(target.as_str())?;
+            // 05 section 7.6 rule 8: its pending approvals end as `cancel` by `system`; its jobs continue and a
+            // person can cancel them.
+            self.consent.withdraw_requester(target.as_str()).await?;
         }
         let result = ClientsRevokeResult {
             replayed: false,
@@ -248,55 +250,6 @@ impl RuntimeBackend {
         };
         self.store_receipt(binding, &result)?;
         Ok(result)
-    }
-
-    /// 05 section 7.6 rule 8: a revoked requester's pending approvals end as `cancel` by `system`. Its jobs
-    /// continue; a person can cancel them.
-    fn withdraw_pending_approvals(&self, requester: &str) -> ApiResult<()> {
-        use zeus_types::event::ApprovalDecidedData;
-        use zeus_types::{Actor, Decision, DecisionOutcome};
-        let now = Timestamp::now();
-        self.journal
-            .transact(|tx| {
-                for mut approval in tx.approvals(Some(&[ApprovalState::Pending]))? {
-                    if approval.requested_by.as_deref() != Some(requester) {
-                        continue;
-                    }
-                    approval.state = ApprovalState::Canceled;
-                    approval.decided_at = Some(now);
-                    approval.decision = Some(Decision {
-                        outcome: DecisionOutcome::Cancel,
-                        scope: None,
-                        actor: Actor::system(),
-                        grant_id: None,
-                    });
-                    tx.put_approval(&approval)?;
-                    if approval.revision.is_some() && approval.request_hash.is_some() {
-                        tx.put_approval_decision(
-                            approval.id,
-                            &serde_json::json!({"approval_id":approval.id,"revision":approval.revision,
-                                "request_hash":approval.request_hash,"outcome":"cancel","actor":Actor::system(),
-                                "decided_at":now,"grant_ids":[],"system_reason":"requester_revoked"}),
-                        )?;
-                    }
-                    tx.append_event(
-                        now,
-                        approval.job_id,
-                        approval.run_id,
-                        ApprovalDecidedData {
-                            approval_id: approval.id,
-                            kind: approval.kind,
-                            outcome: DecisionOutcome::Cancel,
-                            scope: None,
-                            actor: Actor::system(),
-                            grant_id: None,
-                        }
-                        .into(),
-                    )?;
-                }
-                Ok(())
-            })
-            .map_err(error)
     }
 
     pub(super) async fn register_root(
