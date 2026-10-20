@@ -1241,7 +1241,9 @@ impl Backend for RuntimeBackend {
         let dir = p.dir.as_deref().map(PathBuf::from).unwrap_or(first);
         let dir = roots.resolve_dest_dir(&dir).map_err(error)?;
         let root = roots.root_for(&dir).map_err(error)?;
-        // Files Zeus produced carry their job, digest, redacted source and quarantine flag (05 section 9.6).
+        // Files Zeus produced carry their job, digest, redacted source and quarantine flag (05 section 9.6), for jobs
+        // the caller may see: another client's job inside a service root stays a missing entity (05 section 7.5).
+        let scope = Self::scope(ctx);
         let produced: HashMap<
             PathBuf,
             (
@@ -1255,6 +1257,7 @@ impl Backend for RuntimeBackend {
             .read(|tx| tx.jobs(&zeus_journal::store::JobFilter::default()))
             .map_err(error)?
             .into_iter()
+            .filter(|r| scope.job(&r.job))
             .filter_map(|r| {
                 let result = r.job.result.as_ref()?;
                 Some((
