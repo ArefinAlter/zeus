@@ -16,3 +16,18 @@ Checks cover idempotent initialization, explicit executable pins, authenticated 
 `report.json` records assertions, executable hashes and crash/resume evidence. Per-command logs and synthetic state remain beside it for review. Exit code 0 means every assertion passed; a failure returns nonzero and cleans up only spawned process handles. Windows extended-length file paths are resolved with native canonicalization before checking that final files remain inside the synthetic write root.
 
 This test does not validate power-loss durability, every injected crash point, physical-terminal approvals, browsers, OS keyrings, providers, packaging or non-Windows behavior. It performs no browser registration, human approval, account login or paid model call.
+
+# Loopback benchmark
+
+`bench-daemon.mjs` records the alpha-gate measurements of the roadmap on this machine: idle daemon memory, peak memory with ten active jobs, and throughput of one 512 MiB download at 1, 4 and 16 connections per job. Build the release package first:
+
+```powershell
+cargo build --release -p zeus-cli -p zeus-daemon -p zeus-native-host --bins --all-features --target-dir target
+node tools/bench-daemon.mjs
+```
+
+Each run creates `target/bench-runs/<id>` with new synthetic state per scenario and a unique `ZEUS_PROFILE`, so its daemons get their own named pipes and never collide with, or stop, a user daemon. The source is a loopback Node server that serves byte ranges from memory, and the ten-job scenario paces its responses so all ten stay active while memory is sampled (working set and private bytes of the daemon process, through `Get-Process`). Timings run from enqueue to `completed` and therefore include the probe, journal commits, SHA-256/BLAKE3 verification and finalization.
+
+`--root DIR` puts a run on another drive, for example an SSD, to separate disk cost from engine cost; `report.json` then records that disk. Each run writes about 1.9 GiB of synthetic payloads, which you may delete afterwards.
+
+`report.json` records the machine (CPU, cores, memory, OS, Node, disk), the conditions and every number. Results of 2026-10-18 are in the [implementation ledger](../docs/IMPLEMENTATION_STATUS.md#2026-10-18-continuation). These are loopback results on one machine: they bound engine, journal and disk overhead, and say nothing about network latency, loss or remote server behavior. Use `--debug` to run the debug build instead; its numbers are not comparable.
