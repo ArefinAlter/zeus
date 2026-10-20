@@ -69,6 +69,9 @@ pub struct RuntimeBackend {
     pub(crate) workflows: Arc<crate::workflows::WorkflowService>,
     pub(crate) cloud: Arc<crate::cloud::CloudService>,
     subscriptions: Mutex<HashMap<String, (zeus_types::ConnectionId, tokio::task::AbortHandle)>>,
+    deferred_audit: crate::deferred_audit::DeferredAudit,
+    #[cfg(test)]
+    fail_kill_switch_audit: std::sync::atomic::AtomicBool,
 }
 
 impl RuntimeBackend {
@@ -122,6 +125,12 @@ impl RuntimeBackend {
         )
         .map_err(error)?;
         let audit = Arc::new(audit);
+        let deferred_audit =
+            crate::deferred_audit::DeferredAudit::open(&state_dir).map_err(|_| internal())?;
+        if deferred_audit.is_pending() {
+            let recorded = crate::deferred_audit::DeferredAudit::recorded_ids(&audit);
+            deferred_audit.replay(audit.as_ref(), &recorded);
+        }
         let credentials = Arc::new(
             crate::provision::FileCredentialStore::load(&state_dir.join("credentials.json"))
                 .map_err(|_| internal())?,
@@ -221,6 +230,9 @@ impl RuntimeBackend {
             shutdown: zeus_api::server::ShutdownController::default(),
             mutations: Mutex::new(()),
             subscriptions: Mutex::new(HashMap::new()),
+            deferred_audit,
+            #[cfg(test)]
+            fail_kill_switch_audit: Default::default(),
         }))
     }
 

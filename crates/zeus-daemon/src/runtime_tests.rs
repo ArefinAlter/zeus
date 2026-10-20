@@ -431,6 +431,69 @@ async fn emergency_stop_persists_and_unverified_clients_cannot_release_it() {
 }
 
 #[tokio::test]
+async fn emergency_stop_without_audit_is_recorded_once_the_log_recovers() {
+    use std::sync::atomic::Ordering;
+    fn kill_switch_records(backend: &RuntimeBackend) -> Vec<serde_json::Value> {
+        let mut records = Vec::new();
+        backend
+            .audit
+            .visit_records(|r| {
+                // Outbox observations of the journal event carry `journal_seq`; only direct records count.
+                if (r.action == "daemon.kill_switch" || r.action == "audit.error")
+                    && !r.data.contains_key("journal_seq")
+                {
+                    records.push(serde_json::to_value(r).unwrap());
+                }
+                Ok(())
+            })
+            .unwrap();
+        records
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let backend = setup(dir.path()).await;
+    backend
+        .fail_kill_switch_audit
+        .store(true, Ordering::Release);
+    let result = backend
+        .change_kill_switch(Actor::human(Surface::Tui), true, Some("stop now"))
+        .await
+        .unwrap();
+    assert!(result.engaged && result.changed);
+    assert!(backend.journal.meta().unwrap().kill_switch_engaged());
+    assert!(backend.deferred_audit.is_pending());
+    assert!(kill_switch_records(&backend).is_empty());
+    // Release is a widening action and fails closed while the log is unavailable.
+    assert!(
+        backend
+            .change_kill_switch(Actor::human(Surface::Tui), false, None)
+            .await
+            .is_err()
+    );
+    assert!(backend.journal.meta().unwrap().kill_switch_engaged());
+    backend
+        .fail_kill_switch_audit
+        .store(false, Ordering::Release);
+    backend.maintain().await.unwrap();
+    assert!(!backend.deferred_audit.is_pending());
+    let records = kill_switch_records(&backend);
+    assert_eq!(records.len(), 2);
+    assert_eq!(records[0]["action"], "audit.error");
+    assert_eq!(records[0]["data"]["reason"], "write_ahead_deferred");
+    assert_eq!(records[1]["data"]["deferred"], true);
+    assert_eq!(records[1]["data"]["action"], "engage");
+    assert_eq!(
+        records[1]["data"]["reason_blake3"],
+        blake3::hash(b"stop now").to_hex().to_string()
+    );
+    assert!(!records[1].to_string().contains("stop now"));
+    backend.engine.shutdown().await.unwrap();
+    drop(backend);
+    let backend = setup(dir.path()).await;
+    assert_eq!(kill_switch_records(&backend).len(), 2);
+    backend.engine.shutdown().await.unwrap();
+}
+
+#[tokio::test]
 async fn unverified_admin_is_downgraded_before_authentication_reply() {
     use zeus_api::{
         client::{Client, ClientConfig, IpcClient, call},
