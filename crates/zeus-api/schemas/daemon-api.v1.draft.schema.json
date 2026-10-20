@@ -3473,8 +3473,15 @@
           "type": "boolean"
         },
         "approval_id": {
-          "description": "The approval needed to apply destructive steps.",
+          "description": "The `destructive_op` approval a person must give before anything moves.",
           "pattern": "^ap_[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "operation_id": {
+          "description": "The stored operation; `files.undo` reverts it once it ran.",
           "type": [
             "string",
             "null"
@@ -3552,6 +3559,13 @@
     "FilesUndoParams": {
       "description": "`files.undo` parameters.",
       "properties": {
+        "idempotency_key": {
+          "description": "Idempotency key.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "operation_id": {
           "description": "Identifier of the operation in the undo journal.",
           "type": "string"
@@ -3565,13 +3579,28 @@
     "FilesUndoResult": {
       "description": "`files.undo` result.",
       "properties": {
+        "approval_id": {
+          "description": "The `destructive_op` approval for the undo (absent when there is nothing to revert).",
+          "pattern": "^ap_[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "operation_id": {
+          "description": "The undo's own operation.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "replayed": {
           "default": false,
           "description": "True when this response replays a durable mutation receipt.",
           "type": "boolean"
         },
         "steps": {
-          "description": "Steps reverted.",
+          "description": "The inverse steps, planned now and run after a person approves them.",
           "items": {
             "$ref": "#/$defs/FileStep"
           },

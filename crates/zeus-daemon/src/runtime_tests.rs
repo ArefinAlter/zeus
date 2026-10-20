@@ -644,6 +644,239 @@ async fn service_clients_are_confined_to_their_roots_jobs_and_records() {
     http.abort();
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn organizing_files_waits_for_a_person_runs_exactly_once_and_can_be_undone() {
+    use zeus_api::methods::files::{FilesOrganizeParams, FilesUndoParams};
+    use zeus_api::methods::sessions::{ApprovalView, ConfirmationLevel, DecideOutcome};
+    let dir = tempfile::tempdir().unwrap();
+    let backend = setup(dir.path()).await;
+    let (agent, _rx) = context(dir.path(), "agent");
+    let (human, _rx2) = context(dir.path(), "cli");
+    let downloads = dir.path().join("downloads");
+    let inbox = downloads.join("inbox");
+    std::fs::create_dir_all(&inbox).unwrap();
+    for (name, body) in [
+        ("a.pdf", "first paper"),
+        ("b.pdf", "second paper"),
+        ("notes.tmp", "scratch"),
+        ("keep.txt", "untouched"),
+    ] {
+        std::fs::write(inbox.join(name), body).unwrap();
+    }
+    let rules = serde_json::json!({"rules":[
+        {"when":{"ext":["pdf"]},"subdir":"papers"},
+        {"when":{"ext":["tmp"]},"trash":true}
+    ]});
+    let organize = |dry_run| FilesOrganizeParams {
+        dir: "inbox".into(),
+        rules: rules.clone(),
+        dry_run,
+        idempotency_key: None,
+    };
+    let approve = |id: zeus_types::ApprovalId, outcome| {
+        let backend = backend.clone();
+        let human = human.identity.clone();
+        async move {
+            let view = ApprovalView::try_from(backend.consent.get(&human, id).unwrap()).unwrap();
+            zeus_types::spec_testing::SpecSchemas::load()
+                .check(
+                    true,
+                    "approvals.v1",
+                    "ApprovalRequest",
+                    &serde_json::to_value(&view).unwrap(),
+                )
+                .unwrap();
+            let p = ApprovalsDecideParams {
+                approval_id: id,
+                request_hash: view.request_hash,
+                outcome,
+                scope: None,
+                channel: Surface::CliInteractive,
+                confirmation: ConfirmationLevel::TypedCode,
+                idempotency_key: None,
+            };
+            let evidence = serde_json::json!({"client_id":human.credential_id.as_str(),"surface":"cli_interactive",
+                "exe_verified":true,"credential_kind":human.kind,"effective_kind":human.kind,"role":human.role,
+                "tty":"verified","confirmation":"typed_code","peer_pid":1});
+            backend.consent.decide(&human, &p, evidence).await.unwrap();
+        }
+    };
+
+    // A dry run changes nothing and stores nothing.
+    let preview = backend
+        .files_organize(&agent, organize(true))
+        .await
+        .unwrap();
+    contract("FilesOrganizeResult", &preview);
+    assert_eq!(preview.steps.len(), 3);
+    assert!(preview.operation_id.is_none() && preview.approval_id.is_none());
+    assert!(
+        preview
+            .steps
+            .iter()
+            .any(|s| s.op == "trash" && s.destructive)
+    );
+    assert!(inbox.join("a.pdf").is_file());
+
+    // Applying only raises an approval; nothing moves until a person approves it.
+    let applied = backend
+        .files_organize(&agent, organize(false))
+        .await
+        .unwrap();
+    contract("FilesOrganizeResult", &applied);
+    let operation = applied.operation_id.clone().unwrap();
+    backend.maintain().await.unwrap();
+    assert!(inbox.join("a.pdf").is_file() && !inbox.join("papers").exists());
+    approve(applied.approval_id.unwrap(), DecideOutcome::Approve).await;
+    backend.maintain().await.unwrap();
+    assert_eq!(
+        backend.organizer.summary(&operation).unwrap(),
+        ("applied".into(), 3, 0)
+    );
+    assert_eq!(
+        std::fs::read_to_string(inbox.join("papers/a.pdf")).unwrap(),
+        "first paper"
+    );
+    assert!(inbox.join("papers/b.pdf").is_file());
+    assert!(!inbox.join("a.pdf").exists() && !inbox.join("notes.tmp").exists());
+    assert!(inbox.join("keep.txt").is_file());
+    let mut actions = Vec::new();
+    backend
+        .audit
+        .visit_records(|r| {
+            if r.action.starts_with("file.") && r.data.contains_key("operation_id") {
+                actions.push(r.action.clone());
+            }
+            Ok(())
+        })
+        .unwrap();
+    actions.sort();
+    assert_eq!(actions, ["file.deleted", "file.moved", "file.moved"]);
+    let listed = backend
+        .files_list(
+            &agent,
+            FilesListParams {
+                dir: Some("inbox/papers".into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    contract("FilesListResult", &listed);
+
+    // Undo plans the inverse, again behind a person's approval, and restores the trashed file.
+    let undo = backend
+        .files_undo(
+            &agent,
+            FilesUndoParams {
+                operation_id: operation.clone(),
+                idempotency_key: None,
+            },
+        )
+        .await
+        .unwrap();
+    contract("FilesUndoResult", &undo);
+    assert_eq!(undo.steps.len(), 3);
+    approve(undo.approval_id.unwrap(), DecideOutcome::Approve).await;
+    backend.maintain().await.unwrap();
+    for name in ["a.pdf", "b.pdf", "notes.tmp", "keep.txt"] {
+        assert!(inbox.join(name).is_file(), "{name} is back");
+    }
+    assert_eq!(
+        backend
+            .files_undo(
+                &agent,
+                FilesUndoParams {
+                    operation_id: operation,
+                    idempotency_key: None
+                }
+            )
+            .await
+            .unwrap_err()
+            .envelope()
+            .code
+            .as_str(),
+        "api.invalid_transition"
+    );
+
+    // A file that changed after the review is skipped, and a denial runs nothing.
+    let changed = backend
+        .files_organize(&agent, organize(false))
+        .await
+        .unwrap();
+    std::fs::write(inbox.join("a.pdf"), "edited after review, longer").unwrap();
+    approve(changed.approval_id.unwrap(), DecideOutcome::Approve).await;
+    backend.maintain().await.unwrap();
+    assert_eq!(
+        backend
+            .organizer
+            .summary(changed.operation_id.as_ref().unwrap())
+            .unwrap(),
+        ("applied".into(), 2, 1)
+    );
+    assert!(inbox.join("a.pdf").is_file());
+    std::fs::write(inbox.join("c.pdf"), "third").unwrap();
+    let denied = backend
+        .files_organize(&agent, organize(false))
+        .await
+        .unwrap();
+    approve(denied.approval_id.unwrap(), DecideOutcome::Deny).await;
+    backend.maintain().await.unwrap();
+    assert_eq!(
+        backend
+            .organizer
+            .summary(denied.operation_id.as_ref().unwrap())
+            .unwrap()
+            .0,
+        "dropped"
+    );
+    assert!(inbox.join("c.pdf").is_file());
+
+    // Rules are data: natural language, escapes and unknown members are refused before any scan.
+    for rules in [
+        serde_json::json!("tidy my downloads"),
+        serde_json::json!({"rules":[{"subdir":"../../outside"}]}),
+    ] {
+        assert_eq!(
+            backend
+                .files_organize(
+                    &agent,
+                    FilesOrganizeParams {
+                        dir: "inbox".into(),
+                        rules,
+                        dry_run: true,
+                        idempotency_key: None
+                    }
+                )
+                .await
+                .unwrap_err()
+                .envelope()
+                .code
+                .as_str(),
+            "api.invalid_params"
+        );
+    }
+    assert_eq!(
+        backend
+            .files_organize(
+                &agent,
+                FilesOrganizeParams {
+                    dir: dir.path().display().to_string(),
+                    rules: rules.clone(),
+                    dry_run: true,
+                    idempotency_key: None
+                }
+            )
+            .await
+            .unwrap_err()
+            .envelope()
+            .code
+            .as_str(),
+        "policy.path_outside_roots"
+    );
+    backend.engine.shutdown().await.unwrap();
+}
+
 #[tokio::test]
 async fn one_decision_reaches_every_job_of_a_batched_approval() {
     use zeus_api::methods::sessions::{ApprovalView, ConfirmationLevel, DecideOutcome};

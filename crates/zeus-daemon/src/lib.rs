@@ -45,6 +45,7 @@ pub mod browser;
 mod browser_proxy;
 mod deferred_audit;
 mod mutations;
+mod organizer;
 mod outbox;
 mod visibility;
 

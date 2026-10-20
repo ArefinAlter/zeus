@@ -71,6 +71,8 @@ pub mod capabilities {
     pub const CLIENTS: &str = "clients";
     /// `files.roots.register`.
     pub const FILES_ROOTS: &str = "files.roots";
+    /// `files.organize` and `files.undo`.
+    pub const FILES_ORGANIZE: &str = "files.organize";
     /// Workflow methods (later phase).
     pub const WORKFLOWS: &str = "workflows";
     /// LLM provider methods (later phase).
@@ -85,6 +87,7 @@ pub mod capabilities {
         NM_RELAY,
         CLIENTS,
         FILES_ROOTS,
+        FILES_ORGANIZE,
         WORKFLOWS,
         LLM,
     ];

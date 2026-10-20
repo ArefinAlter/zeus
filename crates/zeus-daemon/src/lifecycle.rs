@@ -172,6 +172,7 @@ impl RuntimeBackend {
     /// Run one bounded maintenance tick. Replaying terminal approvals repairs interrupted decisions.
     pub async fn maintain(&self) -> ApiResult<()> {
         self.replay_deferred_audit();
+        self.run_file_operations().await;
         let now = Timestamp::now();
         let origins = self.journal.transact(|tx| {
             let mut origins = std::collections::BTreeSet::new();

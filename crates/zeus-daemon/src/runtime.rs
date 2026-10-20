@@ -75,6 +75,7 @@ pub struct RuntimeBackend {
     /// Authenticated connections and their credential, for `clients.revoke`.
     connections: std::sync::Mutex<HashMap<zeus_types::ConnectionId, zeus_api::auth::CredentialId>>,
     admin_limits: std::sync::Mutex<HashMap<String, crate::approvals::DecisionLimiter>>,
+    organizer: Arc<crate::organizer::Organizer>,
     #[cfg(test)]
     fail_kill_switch_audit: std::sync::atomic::AtomicBool,
 }
@@ -211,6 +212,12 @@ impl RuntimeBackend {
                 service: "dev.zeus".into(),
             }),
         )?;
+        let organizer = Arc::new(crate::organizer::Organizer::open(
+            &state_dir,
+            journal.clone(),
+            consent.clone(),
+            audit.clone(),
+        )?);
         let outbox = Arc::new(std::sync::Mutex::new(crate::outbox::Outbox::open(
             &state_dir,
             &config.effective_write_roots(),
@@ -246,6 +253,7 @@ impl RuntimeBackend {
             credentials,
             connections: Default::default(),
             admin_limits: Default::default(),
+            organizer,
             #[cfg(test)]
             fail_kill_switch_audit: Default::default(),
         }))
@@ -1345,6 +1353,20 @@ impl Backend for RuntimeBackend {
     ) -> ApiResult<FilesRootsRegisterResult> {
         self.register_root(ctx, p).await
     }
+    async fn files_organize(
+        &self,
+        ctx: &CallContext,
+        p: FilesOrganizeParams,
+    ) -> ApiResult<FilesOrganizeResult> {
+        self.organize(ctx, p).await
+    }
+    async fn files_undo(
+        &self,
+        ctx: &CallContext,
+        p: FilesUndoParams,
+    ) -> ApiResult<FilesUndoResult> {
+        self.undo(ctx, p).await
+    }
     async fn clients_list(
         &self,
         _ctx: &CallContext,
@@ -1377,6 +1399,8 @@ mod clients;
 mod configuration;
 #[path = "events_backend.rs"]
 mod events_backend;
+#[path = "file_operations.rs"]
+mod file_operations;
 #[path = "lifecycle.rs"]
 mod lifecycle;
 #[cfg(test)]
