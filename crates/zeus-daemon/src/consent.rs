@@ -41,6 +41,12 @@ struct ApprovalPreparation<'a> {
     reason_codes: &'a [String],
 }
 
+tokio::task_local! {
+    /// The effective kind of the connection whose call is running (05 section 7.4), so approvals the engine raises
+    /// on its behalf apply the denial back-off to a downgraded credential (07 section 9.4).
+    pub(crate) static REQUESTER_KIND: ClientKind;
+}
+
 /// Owns serialized approval mutations and the write-ahead audit boundary.
 pub struct ConsentManager {
     journal: Journal,
@@ -80,19 +86,26 @@ impl ConsentManager {
     /// Denial back-off (07 section 9.4). Derived from durable decisions, so it survives a restart: after a human
     /// denies an unattended requester a session for an origin, new session requests by that requester for that
     /// origin are refused for 10 minutes, or 24 hours after three denials within a day. A later approval for the
-    /// same pair clears it. Human-capable requesters and handoffs are never backed off.
+    /// same pair clears it. Human-capable requesters and handoffs are never backed off. `effective` is the kind
+    /// of the connection making the request, which is `agent` for a downgraded human or admin credential; without
+    /// a connection (approvals the engine raises on its own) the credential's kind decides.
     pub(crate) fn check_denial_backoff(
         &self,
         requester: &str,
+        effective: Option<ClientKind>,
         origin: &Origin,
         now: Timestamp,
     ) -> ApiResult<()> {
         const SHORT_MS: u64 = 10 * 60_000;
         const DAY_MS: u64 = 86_400_000;
-        let Ok(credential) = self.credential(requester) else {
-            return Ok(());
+        let kind = match effective {
+            Some(kind) => kind,
+            None => match self.credential(requester) {
+                Ok(credential) => credential.kind,
+                Err(_) => return Ok(()),
+            },
         };
-        if matches!(credential.kind, ClientKind::Human | ClientKind::Admin) {
+        if matches!(kind, ClientKind::Human | ClientKind::Admin) {
             return Ok(());
         }
         let decided = self
@@ -357,7 +370,12 @@ impl ConsentManager {
                 expires_at: Some(a.expires_at),
             });
         }
-        self.check_denial_backoff(identity.credential_id.as_str(), &p.origin, Timestamp::now())?;
+        self.check_denial_backoff(
+            identity.credential_id.as_str(),
+            Some(identity.kind),
+            &p.origin,
+            Timestamp::now(),
+        )?;
         self.check_caps(&pending, Some(identity.credential_id.as_str()))?;
         let a = self.prepare(ApprovalPreparation {
             requester: identity.credential_id.as_str(),
@@ -734,7 +752,12 @@ impl ApprovalPort for ConsentManager {
                 && let Some(origin) = request.origin.as_ref()
             {
                 // Refuses the enqueue, or fails an admitted job (S14) instead of raising another prompt.
-                self.check_denial_backoff(requester, origin, Timestamp::now())?;
+                self.check_denial_backoff(
+                    requester,
+                    REQUESTER_KIND.try_with(|kind| *kind).ok(),
+                    origin,
+                    Timestamp::now(),
+                )?;
             }
             if !request.reason_codes.iter().any(|r| r == "kill_switch") {
                 // Engine-raised approvals belong to jobs already admitted; only the daemon-wide cap applies here.
@@ -814,12 +837,25 @@ mod tests {
         auth::{Credential, MemoryCredentialStore, Token},
     };
     fn setup(path: &std::path::Path) -> (ConsentManager, ClientIdentity, ClientIdentity) {
+        let (manager, identity) = setup_with_identities(path);
+        let agent = identity(ClientKind::Agent, ClientRole::Mcp);
+        let human = identity(ClientKind::Human, ClientRole::Cli);
+        (manager, agent, human)
+    }
+    /// A manager and a factory of identities whose credentials it knows.
+    fn setup_with_identities(
+        path: &std::path::Path,
+    ) -> (
+        ConsentManager,
+        impl Fn(ClientKind, ClientRole) -> ClientIdentity,
+    ) {
         let clock = Arc::new(zeus_control::SystemClock::new());
         let journal = Journal::open(&path.join("state.redb"), &Default::default(), clock).unwrap();
         let credentials = Arc::new(MemoryCredentialStore::default());
-        let identity = |kind, role| {
+        let store = credentials.clone();
+        let identity = move |kind, role| {
             let id = CredentialId::generate();
-            credentials.insert(
+            store.insert(
                 Credential::new(
                     id.clone(),
                     kind,
@@ -837,8 +873,6 @@ mod tests {
                 client_name: "untrusted forged name".into(),
             }
         };
-        let agent = identity(ClientKind::Agent, ClientRole::Mcp);
-        let human = identity(ClientKind::Human, ClientRole::Cli);
         let audit = zeus_verify::audit::AuditLog::open(
             &path.join("audit"),
             None,
@@ -849,8 +883,7 @@ mod tests {
         .unwrap();
         (
             ConsentManager::new(journal, Arc::new(audit), credentials),
-            agent,
-            human,
+            identity,
         )
     }
     fn evidence(identity: &ClientIdentity, p: &ApprovalsDecideParams) -> serde_json::Value {
@@ -1047,12 +1080,62 @@ mod tests {
         let requester = agent.credential_id.as_str();
         assert!(
             manager
-                .check_denial_backoff(requester, &origin, until.saturating_add_ms(1))
+                .check_denial_backoff(requester, None, &origin, until.saturating_add_ms(1))
                 .is_ok()
         );
         let mut other = request();
         other.origin = Origin::parse("https://other.example.org").unwrap();
         assert!(manager.request_session(&agent, other).await.is_ok());
         assert!(manager.request_session(&human, request()).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn a_downgraded_human_capable_credential_is_backed_off() {
+        let temp = tempfile::tempdir().unwrap();
+        let (manager, identity) = setup_with_identities(temp.path());
+        let human = identity(ClientKind::Human, ClientRole::Cli);
+        // An unverified process holding an admin credential connects as an agent (05 section 7.4).
+        let mut downgraded = identity(ClientKind::Admin, ClientRole::Cli);
+        downgraded.kind = ClientKind::Agent;
+        downgraded.permissions = ClientKind::Agent.default_permissions();
+        let id = manager
+            .request_session(&downgraded, request())
+            .await
+            .unwrap()
+            .approval_id
+            .unwrap();
+        let a = manager.get(&human, id).unwrap();
+        let deny = ApprovalsDecideParams {
+            approval_id: id,
+            request_hash: a.request_hash.unwrap(),
+            outcome: DecideOutcome::Deny,
+            scope: None,
+            channel: Surface::CliInteractive,
+            confirmation: ConfirmationLevel::Gesture,
+            idempotency_key: None,
+        };
+        manager
+            .decide(&human, &deny, evidence(&human, &deny))
+            .await
+            .unwrap();
+        let refused = manager
+            .request_session(&downgraded, request())
+            .await
+            .unwrap_err();
+        assert_eq!(refused.envelope().code.as_str(), "policy.recently_denied");
+        // Approvals the engine raises outside any connection fall back to the credential's kind.
+        let requester = downgraded.credential_id.as_str();
+        let origin = request().origin;
+        let now = Timestamp::now();
+        assert!(
+            manager
+                .check_denial_backoff(requester, Some(ClientKind::Agent), &origin, now)
+                .is_err()
+        );
+        assert!(
+            manager
+                .check_denial_backoff(requester, None, &origin, now)
+                .is_ok()
+        );
     }
 }
