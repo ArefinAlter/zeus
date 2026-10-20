@@ -30,6 +30,8 @@ pub struct FilesListParams {
 /// One file with its provenance. Names are untrusted data (01 section 12.1).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct FileEntry {
+    /// The write root containing the file (absolute, canonical).
+    pub root: String,
     /// Path relative to the write root.
     pub path: String,
     /// Size in bytes.
@@ -47,6 +49,9 @@ pub struct FileEntry {
     /// Where it came from, redacted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_url_redacted: Option<RedactedUrl>,
+    /// True for the `.zpart` file of an unfinished job.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub partial: bool,
 }
 
 /// `files.list` result.

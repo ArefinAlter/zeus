@@ -1226,6 +1226,33 @@ impl Backend for RuntimeBackend {
         let dir = p.dir.as_deref().map(PathBuf::from).unwrap_or(first);
         let dir = roots.resolve_dest_dir(&dir).map_err(error)?;
         let root = roots.root_for(&dir).map_err(error)?;
+        // Files Zeus produced carry their job, digest, redacted source and quarantine flag (05 section 9.6).
+        let produced: HashMap<
+            PathBuf,
+            (
+                zeus_types::JobId,
+                zeus_types::Hex256,
+                zeus_types::RedactedUrl,
+                bool,
+            ),
+        > = self
+            .journal
+            .read(|tx| tx.jobs(&zeus_journal::store::JobFilter::default()))
+            .map_err(error)?
+            .into_iter()
+            .filter_map(|r| {
+                let result = r.job.result.as_ref()?;
+                Some((
+                    PathBuf::from(&result.path),
+                    (
+                        r.job.id,
+                        result.sha256,
+                        r.job.spec.url.redact(zeus_types::RedactMode::Log),
+                        r.job.quarantined,
+                    ),
+                ))
+            })
+            .collect();
         let mut pending = vec![dir];
         let mut entries = Vec::new();
         let mut scanned = 0usize;
@@ -1265,7 +1292,9 @@ impl Backend for RuntimeBackend {
                     .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                     .map(|d| d.as_millis() as i64)
                     .unwrap_or(0);
+                let produced = produced.get(&checked);
                 entries.push(FileEntry {
+                    root: root.path().display().to_string(),
                     path: checked
                         .strip_prefix(root.path())
                         .map_err(|_| internal())?
@@ -1274,10 +1303,11 @@ impl Backend for RuntimeBackend {
                     size_bytes: metadata.len(),
                     modified_at: Timestamp::from_unix_millis(modified_ms)
                         .map_err(|_| internal())?,
-                    sha256: None,
-                    quarantined: false,
-                    job_id: None,
-                    source_url_redacted: None,
+                    sha256: produced.map(|j| j.1),
+                    quarantined: produced.is_some_and(|j| j.3),
+                    job_id: produced.map(|j| j.0),
+                    source_url_redacted: produced.map(|j| j.2.clone()),
+                    partial: checked.extension().is_some_and(|e| e == "zpart"),
                 });
                 if entries.len() > 100_000 {
                     return Err(ApiError::new(
