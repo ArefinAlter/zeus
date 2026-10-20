@@ -487,6 +487,36 @@ async fn service_clients_are_confined_to_their_roots_jobs_and_records() {
             .collect::<Vec<_>>(),
         ["set.bin"]
     );
+    assert_eq!(files.items[0].job_id, Some(own_id));
+    // A file another client's job wrote inside the service's root carries none of that job's provenance.
+    let foreign = backend
+        .jobs_enqueue(&agent, request(Some(&root_path)))
+        .await
+        .unwrap()
+        .jobs[0]
+        .job_id
+        .unwrap();
+    backend
+        .jobs_wait(
+            &agent,
+            JobsWaitParams {
+                job_ids: vec![foreign],
+                until: WaitUntil::AllTerminal,
+                timeout_ms: 10_000,
+                since_seq: None,
+                progress_bytes: None,
+            },
+        )
+        .await
+        .unwrap();
+    let files = backend
+        .files_list(&service, Default::default())
+        .await
+        .unwrap();
+    assert_eq!(files.items.len(), 2);
+    let theirs = files.items.iter().find(|f| f.path != "set.bin").unwrap();
+    assert_eq!(theirs.job_id, None);
+    assert_eq!(theirs.source_url_redacted, None);
     let records = backend
         .audit_tail(
             &service,
