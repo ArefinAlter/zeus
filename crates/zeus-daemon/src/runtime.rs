@@ -77,6 +77,13 @@ impl RuntimeBackend {
         config
             .validate()
             .map_err(|_| ApiError::invalid_params("invalid daemon configuration"))?;
+        if config.scheduler.segment_size_mib
+            != crate::config::SchedulerConfig::default().segment_size_mib
+        {
+            tracing::warn!(
+                "scheduler.segment_size_mib is not used by the engine yet; ranged requests use the commit unit"
+            );
+        }
         let roots = config.effective_write_roots();
         let default = roots
             .first()

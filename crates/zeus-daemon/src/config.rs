@@ -29,6 +29,11 @@ pub enum ConfigError {
     Invalid(String),
 }
 
+/// Keys that parse and validate but do not change behaviour yet. `config.set` refuses them and startup warns when
+/// the file changes them, so nobody mistakes them for working controls. The engine currently issues ranged requests
+/// of one commit unit (4 MiB) instead of planning 8 to 32 MiB segments.
+pub const INEFFECTIVE_KEYS: &[&str] = &["scheduler.segment_size_mib"];
+
 /// Scheduler limits (01 section 10).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
@@ -115,8 +120,18 @@ pub struct DaemonConfig {
     pub approvals: ApprovalConfig,
     /// Days to keep tombstones of finished jobs, 1 to 365.
     pub tombstone_days: Option<u32>,
-    /// Log filter in `tracing` syntax, for example `info`.
+    /// Log filter in `tracing` syntax, for example `info`. `ZEUS_LOG` overrides it; read at startup.
     pub log_filter: Option<String>,
+}
+
+impl DaemonConfig {
+    /// The log filter in force: `ZEUS_LOG` when set and valid, then `log_filter`, then `info`.
+    pub fn effective_log_filter(&self, env: Option<&str>) -> String {
+        env.filter(|v| tracing_subscriber::EnvFilter::try_new(v).is_ok())
+            .or(self.log_filter.as_deref())
+            .unwrap_or("info")
+            .to_owned()
+    }
 }
 
 fn check(name: &str, value: u64, low: u64, high: u64, errors: &mut Vec<String>) {
@@ -224,6 +239,11 @@ impl DaemonConfig {
         if let Some(days) = self.tombstone_days {
             check("tombstone_days", days.into(), 1, 365, &mut errors);
         }
+        if let Some(filter) = &self.log_filter
+            && (filter.len() > 512 || tracing_subscriber::EnvFilter::try_new(filter).is_err())
+        {
+            errors.push("log_filter is not a valid tracing filter".into());
+        }
         for root in &self.write_roots {
             if !root.is_absolute() {
                 errors.push(format!(
@@ -298,6 +318,19 @@ mod tests {
                 && text.contains("segment_size_mib")
                 && text.contains("max_pending")
         );
+    }
+
+    #[test]
+    fn the_log_filter_is_validated_and_the_environment_wins() {
+        let config = DaemonConfig::parse("log_filter = \"zeus_daemon=debug,warn\"\n").unwrap();
+        assert_eq!(config.effective_log_filter(None), "zeus_daemon=debug,warn");
+        assert_eq!(config.effective_log_filter(Some("trace")), "trace");
+        assert_eq!(
+            config.effective_log_filter(Some("[not a filter")),
+            "zeus_daemon=debug,warn"
+        );
+        assert_eq!(DaemonConfig::default().effective_log_filter(None), "info");
+        assert!(DaemonConfig::parse("log_filter = \"[unclosed\"\n").is_err());
     }
 
     #[test]

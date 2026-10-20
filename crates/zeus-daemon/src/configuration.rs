@@ -78,6 +78,11 @@ impl RuntimeBackend {
         if parts.is_empty() || parts.len() > 3 || parts.iter().any(|s| s.is_empty()) {
             return Err(ApiError::invalid_params("invalid configuration key"));
         }
+        if crate::config::INEFFECTIVE_KEYS.contains(&p.key.as_str()) {
+            return Err(ApiError::not_implemented(
+                "this setting is accepted in the file for compatibility but the engine does not use it yet",
+            ));
+        }
         let mut target = &mut value;
         for part in &parts[..parts.len() - 1] {
             target = target
