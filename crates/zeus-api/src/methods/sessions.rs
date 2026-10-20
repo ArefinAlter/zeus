@@ -17,8 +17,8 @@ use crate::paging::{Page, PageRequest};
 /// `sessions.list` parameters.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct SessionsListParams {
-    /// Paging.
-    #[serde(default)]
+    /// Paging: `limit` and `cursor` sit beside the filters (00 section 10).
+    #[serde(flatten)]
     pub page: PageRequest,
     /// Only this origin.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -158,8 +158,8 @@ pub enum ConfirmationLevel {
 /// `approvals.list` parameters.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ApprovalsListParams {
-    /// Paging.
-    #[serde(default)]
+    /// Paging: `limit` and `cursor` sit beside the filters (00 section 10).
+    #[serde(flatten)]
     pub page: PageRequest,
     /// Only this state. Absent: `pending`.
     #[serde(default, skip_serializing_if = "Option::is_none")]

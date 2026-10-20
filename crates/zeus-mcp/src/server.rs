@@ -860,12 +860,12 @@ mod tests {
         tools.call("zeus_status", json!({})).await.unwrap();
         let (method, params) = fake.last();
         assert_eq!(method, "jobs.list");
-        assert_eq!(params["page"]["limit"], 10);
+        assert_eq!(params["limit"], 10);
         tools
             .call("zeus_status", json!({ "limit": 500 }))
             .await
             .unwrap();
-        assert_eq!(fake.last().1["page"]["limit"], 50);
+        assert_eq!(fake.last().1["limit"], 50);
     }
 
     #[tokio::test]

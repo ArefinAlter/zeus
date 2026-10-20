@@ -104,8 +104,8 @@ pub type WorkflowsGetResult = RunReport;
 /// `workflows.list` parameters.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct WorkflowsListParams {
-    /// Paging.
-    #[serde(default)]
+    /// Paging: `limit` and `cursor` sit beside the filters (00 section 10).
+    #[serde(flatten)]
     pub page: PageRequest,
 }
 

@@ -154,8 +154,8 @@ pub struct EnqueueResult {
 /// `jobs.list` parameters.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct JobsListParams {
-    /// Paging.
-    #[serde(default)]
+    /// Paging: `limit` and `cursor` sit beside the filters (00 section 10).
+    #[serde(flatten)]
     pub page: PageRequest,
     /// Only these states.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
