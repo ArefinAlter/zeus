@@ -1072,3 +1072,143 @@ async fn staging_cleanup_failure_is_visible_and_retried_without_losing_remote_re
     assert!(view.artifact.is_some());
     f.service.shutdown().await;
 }
+
+#[tokio::test]
+async fn retention_ages_out_finished_history_but_never_live_evidence_or_a_replay() {
+    let f = Fixture::new().await;
+    let finished = f
+        .submit(
+            CloudSource::CompletedJob {
+                job_id: f.source_job(b"finished upload"),
+            },
+            DeliveryMode::StagedUpload,
+            "done",
+        )
+        .await;
+    f.approve(&finished).await;
+    f.service.tick().await.unwrap();
+    f.settle().await;
+    assert_eq!(
+        f.get(&finished.delivery_id).state,
+        CloudDeliveryState::Completed
+    );
+    let waiting = f
+        .submit(
+            CloudSource::CompletedJob {
+                job_id: f.source_job(b"still waiting"),
+            },
+            DeliveryMode::StagedUpload,
+            "waiting",
+        )
+        .await;
+    let orphan = f
+        .service
+        .plan(
+            &f.agent,
+            CloudPlanParams {
+                account_id: "drive".into(),
+                mode: DeliveryMode::StagedUpload,
+                source: CloudSource::CompletedJob {
+                    job_id: f.source_job(b"never submitted"),
+                },
+                remote_name: "never.bin".into(),
+                max_bytes: 1000000,
+                max_seconds: 3600,
+                allow_unbounded_remote: false,
+                idempotency_key: "plan-orphan".into(),
+            },
+        )
+        .await
+        .unwrap()
+        .plan;
+    // A receipt from before receipts carried a time is stamped first, so it ages from now.
+    f.service
+        .store
+        .save(
+            "receipt:legacy",
+            &Receipt {
+                hash: "h".into(),
+                result: serde_json::json!({}),
+                created_at: None,
+            },
+        )
+        .unwrap();
+    let later = Timestamp::now().saturating_add_ms(31 * 86_400_000);
+    let first = f
+        .service
+        .store
+        .prune(
+            later,
+            TERMINAL_RETENTION_MS,
+            RECEIPT_RETENTION_MS,
+            &f.service.staging,
+        )
+        .unwrap();
+    assert_eq!(first.deliveries, 1, "{first:?}");
+    assert_eq!(first.plans, 2, "the finished and the never-submitted plan");
+    assert_eq!(first.stamped, 1);
+    let store = &f.service.store;
+    assert!(
+        store
+            .get::<Delivery>(&format!("delivery:{}", finished.delivery_id))
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        store
+            .get::<Plan>(&format!("plan:{}", orphan.plan_id))
+            .unwrap()
+            .is_none()
+    );
+    // The waiting delivery, its plan and its receipts are live evidence and stay.
+    assert!(
+        store
+            .get::<Delivery>(&format!("delivery:{}", waiting.delivery_id))
+            .unwrap()
+            .is_some()
+    );
+    assert!(
+        store
+            .get::<Plan>(&format!("plan:{}", waiting.plan.plan_id))
+            .unwrap()
+            .is_some()
+    );
+    let receipts = store.keys("receipt:").unwrap();
+    assert!(receipts.contains(&"receipt:legacy".to_owned()));
+    assert_eq!(
+        receipts.len(),
+        3,
+        "the waiting plan and submit receipts, and the stamped legacy one"
+    );
+    // A replay of the pruned submission cannot run it again: its plan is gone.
+    assert!(
+        f.service
+            .submit(
+                &f.agent,
+                CloudSubmitParams {
+                    plan_id: finished.plan.plan_id.clone(),
+                    plan_hash: finished.plan.plan_hash,
+                    idempotency_key: "submit-done".into(),
+                },
+            )
+            .await
+            .is_err()
+    );
+    f.service.tick().await.unwrap();
+    assert_eq!(f.provider.uploads.load(Ordering::SeqCst), 1);
+    let second = f
+        .service
+        .store
+        .prune(
+            later.saturating_add_ms(8 * 86_400_000),
+            TERMINAL_RETENTION_MS,
+            RECEIPT_RETENTION_MS,
+            &f.service.staging,
+        )
+        .unwrap();
+    assert_eq!(
+        second.receipts, 1,
+        "the stamped legacy receipt ages out a week later"
+    );
+    f.service.shutdown().await;
+}

@@ -168,12 +168,11 @@ The CLI provides `zeus cloud accounts`, `plan`, `submit`, `list`, `get` and `con
 - Baidu's [precreate](https://pan.baidu.com/union/doc/基础网盘服务/上传/预上传/), [locate upload](https://pan.baidu.com/union/doc/基础网盘服务/上传/获取上传域名/), [multipart upload](https://pan.baidu.com/union/doc/基础网盘服务/上传/分片上传/) and [create file](https://pan.baidu.com/union/doc/基础网盘服务/上传/创建文件/) contracts.
 - [rclone rcat](https://rclone.org/commands/rclone_rcat/) describes known-length uploads and replay limits; [rclone MEGA](https://rclone.org/mega/) describes backend-specific access.
 
-The current daemon bounds outstanding deliveries, account/plan counts and private record sizes. It retains idempotency and uncertain-operation evidence and returns `cloud.capacity_exceeded` rather than silently dropping it. Exact current limits and cleanup behavior are in the [daemon implementation guide](../../crates/zeus-daemon/src/cloud/README.md). Automatic archival and retention management remain unfinished.
+The current daemon bounds outstanding deliveries, account/plan counts and private record sizes. It retains idempotency and uncertain-operation evidence and returns `cloud.capacity_exceeded` rather than silently dropping it. Exact current limits and cleanup behavior are in the [daemon implementation guide](../../crates/zeus-daemon/src/cloud/README.md). Automatic retention removes finished deliveries 30 days after their last change, expired plans without a live delivery, and idempotency receipts a week after they were written once their delivery is finished; uncertain or remote-pending operations and their receipts are kept.
 
 ## Open issues
 
 - Validate live provider accounts, OAuth application registrations, scope restrictions and quotas without treating simulated provider tests as vendor acceptance.
 - Complete human OAuth onboarding and refresh for native providers. Baidu application eligibility and account limits require live acceptance; no verified public remote-import API is enabled.
 - Broaden provider-specific resumability, cancellation and readback verification as those APIs permit; retain explicit capability limits.
-- Add archival/retention management without discarding live checkpoints or allowing repeated remote mutations.
 - Reconcile the implementation and generated API schemas with this draft before freezing the cloud contract.

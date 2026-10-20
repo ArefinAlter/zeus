@@ -147,6 +147,7 @@ impl CloudService {
         if self.stopping.load(Ordering::Acquire) {
             return Ok(());
         }
+        self.retain_hourly()?;
         self.workers
             .lock()
             .map_err(|_| fail())?
