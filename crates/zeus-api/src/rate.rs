@@ -2,9 +2,11 @@
 //!
 //! All connections of one credential share its buckets, so an unattended client cannot multiply its budget by
 //! opening connections, and each service credential has buckets of its own. A bucket holds twice its rate per
-//! second (or per minute) and refills continuously. `jobs.enqueue` costs one `mutating` token per job, and each
-//! job naming a `session_origin` also costs a `session_request` token. The `decide` and `admin` buckets of 13.2 are
-//! applied by the daemon, which knows when a decision is an approval and which calls are credential changes.
+//! second (or per minute) and refills continuously. `jobs.enqueue` costs one `mutating` token per job. An enqueued
+//! job that raises a `session_grant` approval costs a `session_request` token, charged by the daemon through
+//! [`RateLimiter::charge_session_request`] because only it knows whether a grant already covers the job or the job
+//! joins a pending batch. The `decide` and `admin` buckets of 13.2 are applied by the daemon, which knows when a
+//! decision is an approval and which calls are credential changes.
 use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -50,7 +52,7 @@ pub struct RateLimits {
     pub read: Rate,
     /// `jobs.probe`, `jobs.verify`, `audit.verify`.
     pub probe: Rate,
-    /// `sessions.request`, and enqueued jobs that name a `session_origin`.
+    /// `sessions.request`, and enqueued jobs that raise a `session_grant` approval.
     pub session_request: Rate,
 }
 
@@ -92,11 +94,9 @@ impl Bucket {
         let refill = now.saturating_duration_since(self.at).as_secs_f64() / per_token;
         self.level = (self.level + refill).min(capacity);
         self.at = now;
-        let cost = f64::from(cost);
-        if cost > capacity {
-            // A single request larger than the burst can never pass; report the longest honest wait.
-            return Err(Duration::from_secs_f64(capacity * per_token));
-        }
+        // A request larger than the burst waits for a full bucket and drains it, so it is slowed, never refused for
+        // good with a retry hint that cannot succeed.
+        let cost = f64::from(cost).min(capacity);
         if self.level >= cost {
             self.level -= cost;
             Ok(())
@@ -173,19 +173,6 @@ impl RateLimiter {
                 let jobs = params.get("jobs").and_then(Value::as_array);
                 let count = jobs.map_or(1, |j| j.len().clamp(1, 100) as u32);
                 costs.push((Kind::Mutating, count));
-                let sessions = jobs.map_or(0, |j| {
-                    j.iter()
-                        .filter(|job| job.get("session_origin").is_some_and(|o| !o.is_null()))
-                        .count() as u32
-                });
-                if sessions > 0
-                    && !params
-                        .get("dry_run")
-                        .and_then(Value::as_bool)
-                        .unwrap_or(false)
-                {
-                    costs.push((Kind::SessionRequest, sessions));
-                }
             }
             "sessions.request" => {
                 costs.push((Kind::Mutating, 1));
@@ -206,7 +193,7 @@ impl RateLimiter {
         params: &Value,
         now: Instant,
     ) -> Result<(), ApiError> {
-        self.charge(credential, self.limits, spec, params, now)
+        self.charge(credential, self.limits, Self::costs(spec, params), now)
     }
 
     /// Charge one call of `identity` now, at the rates chosen for it.
@@ -216,28 +203,52 @@ impl RateLimiter {
         spec: &MethodSpec,
         params: &Value,
     ) -> Result<(), ApiError> {
-        let limits = self
-            .limits_for
-            .as_ref()
-            .map_or(self.limits, |choose| choose(identity));
         self.charge(
             identity.credential_id.as_str(),
-            limits,
-            spec,
-            params,
+            self.limits_of(identity),
+            Self::costs(spec, params),
             Instant::now(),
         )
+    }
+
+    /// Charge the `session_request` token of an enqueued job that raises a `session_grant` approval, at the rates
+    /// chosen for its requester.
+    pub fn charge_session_request(&self, identity: &ClientIdentity) -> Result<(), ApiError> {
+        self.charge(
+            identity.credential_id.as_str(),
+            self.limits_of(identity),
+            vec![(Kind::SessionRequest, 1)],
+            Instant::now(),
+        )
+    }
+
+    /// Charge a `session_request` token of `credential` at the default rates at `now`.
+    pub fn charge_session_request_at(
+        &self,
+        credential: &str,
+        now: Instant,
+    ) -> Result<(), ApiError> {
+        self.charge(
+            credential,
+            self.limits,
+            vec![(Kind::SessionRequest, 1)],
+            now,
+        )
+    }
+
+    fn limits_of(&self, identity: &ClientIdentity) -> RateLimits {
+        self.limits_for
+            .as_ref()
+            .map_or(self.limits, |choose| choose(identity))
     }
 
     fn charge(
         &self,
         credential: &str,
         limits: RateLimits,
-        spec: &MethodSpec,
-        params: &Value,
+        costs: Vec<(Kind, u32)>,
         now: Instant,
     ) -> Result<(), ApiError> {
-        let costs = Self::costs(spec, params);
         let mut buckets = self
             .buckets
             .lock()
@@ -319,34 +330,51 @@ mod tests {
     }
 
     #[test]
-    fn enqueue_costs_one_token_per_job_and_session_jobs_spend_the_session_bucket() {
+    fn enqueue_costs_one_token_per_job_and_session_tokens_are_charged_per_raised_approval() {
         let limiter = RateLimiter::default();
         let now = Instant::now();
         let enqueue = lookup("jobs.enqueue").unwrap();
-        let jobs: Vec<_> = (0..20)
+        let jobs: Vec<_> = (0..25)
             .map(|_| serde_json::json!({"url":"https://a.example/x","session_origin":"https://a.example"}))
             .collect();
+        // Naming a session origin is not raising an approval: the router charges only `mutating`.
         limiter
-            .check_at(
-                "a",
-                enqueue,
-                &serde_json::json!({ "jobs": jobs[..20] }),
-                now,
-            )
+            .check_at("a", enqueue, &serde_json::json!({ "jobs": jobs }), now)
             .unwrap();
-        // The 10-per-minute session bucket (burst 20) is now empty, and refusing charged nothing.
-        let refused = limiter
-            .check_at("a", enqueue, &serde_json::json!({ "jobs": jobs[..1] }), now)
-            .unwrap_err();
+        // The daemon charges one token per approval actually raised; the burst is 20.
+        for _ in 0..20 {
+            limiter.charge_session_request_at("a", now).unwrap();
+        }
+        let refused = limiter.charge_session_request_at("a", now).unwrap_err();
         assert_eq!(
             refused.envelope().details.as_ref().unwrap()["limit"],
             "session_request"
         );
         let anonymous = serde_json::json!({"jobs":[{"url":"https://a.example/x"}]});
         limiter.check_at("a", enqueue, &anonymous, now).unwrap();
-        // Dry runs raise no approval and spend no session tokens.
-        let dry = serde_json::json!({ "jobs": jobs[..5], "dry_run": true });
-        limiter.check_at("a", enqueue, &dry, now).unwrap();
+    }
+
+    #[test]
+    fn a_call_larger_than_the_burst_drains_a_full_bucket_instead_of_failing_forever() {
+        let limiter = RateLimiter::new(RateLimits {
+            mutating: Rate::per_second(10),
+            ..RateLimits::default()
+        });
+        let now = Instant::now();
+        let enqueue = lookup("jobs.enqueue").unwrap();
+        let jobs: Vec<_> = (0..100)
+            .map(|_| serde_json::json!({"url":"https://a.example/x"}))
+            .collect();
+        let params = serde_json::json!({ "jobs": jobs });
+        limiter.check_at("a", enqueue, &params, now).unwrap();
+        let refused = limiter.check_at("a", enqueue, &params, now).unwrap_err();
+        assert_eq!(
+            refused.envelope().details.as_ref().unwrap()["retry_after_ms"],
+            2000
+        );
+        limiter
+            .check_at("a", enqueue, &params, now + Duration::from_secs(2))
+            .unwrap();
     }
 
     #[test]

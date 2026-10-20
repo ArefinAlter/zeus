@@ -49,7 +49,7 @@ jobs:
                 "https://x-access-token:${TOKEN}@github.com/ArefinAlter/zeus-core.git" "$BRANCH" >/dev/null 2>&1; then
               ref="$BRANCH"
             else
-              ref="67f24723907c15096883a22d358f2b86a6dc80c4"
+              ref="fda922243de1127c7e5f48bdcc1ab215666f6785"
             fi
           fi
           echo "zeus-core ref: $ref"
