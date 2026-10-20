@@ -89,7 +89,7 @@ impl ToolOutcome {
 
     fn from_api(error: &ApiError) -> Self {
         let envelope = error.envelope().clone();
-        let next = next_step_for(envelope.class);
+        let next = next_step_for_error(envelope.code.as_str(), envelope.class);
         Self::Error { envelope, next }
     }
 

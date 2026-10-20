@@ -8,7 +8,7 @@
 
 use schemars::JsonSchema;
 use serde::Serialize;
-use zeus_types::{ErrorClass, JobState, JobSummary};
+use zeus_types::{ErrorClass, ErrorEnvelope, JobState, JobSummary};
 
 /// What the agent can do next, derived from the error class. Advice, never an automatic action.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
@@ -38,6 +38,36 @@ pub fn next_step_for(class: ErrorClass) -> NextStep {
         | ErrorClass::Unauthenticated
         | ErrorClass::Unsupported
         | ErrorClass::Internal => ("none", None),
+    };
+    NextStep { action, tool }
+}
+
+/// Recovery advice for an error code (06, the code rows), falling back to [`next_step_for`] for its class.
+pub fn next_step_for_error(code: &str, class: ErrorClass) -> NextStep {
+    let (action, tool) = match code {
+        "fs.no_space" | "fs.quota_exceeded" => ("free_disk_space", None),
+        "fs.permission_denied"
+        | "fs.dest_missing"
+        | "fs.name_invalid"
+        | "policy.path_outside_roots" => ("fix_destination", None),
+        "fs.busy" | "fs.io_error" | "fs.too_many_open_files" => ("retry", Some("zeus_control")),
+        "url.refresh_failed" | "http.blocked_challenge" | "tls.handshake_blocked" => {
+            ("open_in_browser", None)
+        }
+        "session.consent_required" => ("request_session", Some("zeus_session_request")),
+        "session.extension_unavailable"
+        | "session.wait_expired"
+        | "policy.origin_never"
+        | "policy.approval_denied"
+        | "policy.approval_expired"
+        | "policy.too_many_pending"
+        | "policy.recently_denied"
+        | "policy.kill_switch_engaged" => ("ask_user", None),
+        "api.rate_limited" => ("wait", None),
+        "api.not_interruptible" => ("wait", Some("zeus_wait")),
+        "api.invalid_transition" | "api.not_found" => ("none", Some("zeus_status")),
+        "api.idempotency_conflict" | "api.invalid_params" => ("none", None),
+        _ => return next_step_for(class),
     };
     NextStep { action, tool }
 }
@@ -80,7 +110,7 @@ pub struct JobBrief {
 }
 
 /// Next step for a job state, when the state needs attention.
-fn next_for_state(state: JobState, class: Option<ErrorClass>) -> Option<NextStep> {
+fn next_for_state(state: JobState, error: Option<&ErrorEnvelope>) -> Option<NextStep> {
     match state {
         JobState::AwaitingApproval => Some(NextStep {
             action: "ask_user",
@@ -90,7 +120,10 @@ fn next_for_state(state: JobState, class: Option<ErrorClass>) -> Option<NextStep
             action: "wait",
             tool: Some("zeus_wait"),
         }),
-        JobState::Failed => Some(next_step_for(class.unwrap_or(ErrorClass::Permanent))),
+        JobState::Failed => Some(match error {
+            Some(e) => next_step_for_error(e.code.as_str(), e.class),
+            None => next_step_for(ErrorClass::Permanent),
+        }),
         _ => None,
     }
 }
@@ -111,7 +144,7 @@ impl JobBrief {
             quarantined: summary.quarantined,
             untrusted_path: None,
             untrusted_filename: summary.filename.clone(),
-            next: next_for_state(summary.state, class),
+            next: next_for_state(summary.state, summary.last_error.as_ref()),
         }
     }
 
@@ -134,7 +167,7 @@ impl JobBrief {
                 .as_ref()
                 .map(|p| p.filename.value.clone())
                 .or_else(|| view.spec.filename.clone()),
-            next: next_for_state(view.state, class),
+            next: next_for_state(view.state, view.error.as_ref()),
         }
     }
 }
@@ -328,6 +361,28 @@ mod tests {
                 assert!(tool.starts_with("zeus_"));
             }
         }
+    }
+
+    #[test]
+    fn approval_policy_codes_ask_the_user_even_when_their_class_is_retryable() {
+        for code in [
+            "policy.too_many_pending",
+            "policy.recently_denied",
+            "policy.kill_switch_engaged",
+        ] {
+            assert_eq!(
+                next_step_for_error(code, ErrorClass::Unavailable).action,
+                "ask_user"
+            );
+        }
+        assert_eq!(
+            next_step_for_error("fs.no_space", ErrorClass::Disk).action,
+            "free_disk_space"
+        );
+        assert_eq!(
+            next_step_for_error("vendor.unknown", ErrorClass::Throttled),
+            next_step_for(ErrorClass::Throttled)
+        );
     }
 
     #[test]
