@@ -15,7 +15,7 @@ The [2026-10-18 project handoff](PROJECT_HANDOFF.md) records the exact companion
 
 ## 2026-10-21 parallel continuation
 
-This pass adds coordinated app/core behavior and synchronized extension contracts. Earlier evidence below remains historical; it does not validate every later change. Final full-suite totals and publication SHAs are pending; the bundled Windows desktop source check has passed.
+This pass adds coordinated app/core behavior and synchronized extension contracts. Earlier evidence below remains historical; it does not validate every later change. The cleared app/core/extension/site changes are merged into `main`; the [handoff records exact implementation revisions](PROJECT_HANDOFF.md#current-main-integration) and final validation.
 
 | Area | Implemented | Remaining boundary |
 |---|---|---|

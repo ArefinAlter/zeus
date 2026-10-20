@@ -1,8 +1,25 @@
 # Zeus project handoff
 
-Updated **2026-10-21** for the parallel continuation; final validation/publication records are pending. Historical snapshot reviewed **2026-10-18**. Runtime/test baseline recorded **2026-10-16** and rerun **2026-10-18** after the continuation work. Audience: the maintainer and developers taking over implementation, integration and release work across the four Zeus repositories.
+Updated **2026-10-21** after coordinated integration into `main`. Historical snapshot reviewed **2026-10-18**. Runtime/test baseline recorded **2026-10-16** and rerun **2026-10-18** after the continuation work. Audience: the maintainer and developers taking over implementation, integration and release work across the four Zeus repositories.
 
 Zeus has an executable pre-alpha download engine, persistent daemon, CLI/TUI, MCP stdio, browser relay, public-page workflow runtime, model adapters and cloud delivery. It is **not a released product**. Installed browser/provider acceptance, remaining contract/security gaps, sandboxed conversion, model file classification, scheduler integration and production desktop acceptance remain unfinished. Organization/undo, artifact lifecycle RPC/CLI and a restricted real-state desktop shell execute. Start with the [end-to-end roadmap](../ROADMAP.md), then use the commands and discrepancy register below.
+
+## Current main integration
+
+The user authorized the coordinated push and merge. All four implementation/preview PRs are merged; the local checkouts are on `main`. The table records the implementation merges; later documentation-only commits can advance the app head without changing the tested source.
+
+| Repository | Tested implementation head | Main integration merge |
+|---|---|---|
+| App | `b017f5a52b7f9638f1045cbe66d63786efe02787` | [`e3fa7d1`](https://github.com/ArefinAlter/zeus/commit/e3fa7d1d989903a46525c655ac4c51575f64d29e), [PR 3](https://github.com/ArefinAlter/zeus/pull/3) |
+| Core | `9b9cd8142b27b8c04151b0ebc854ad4649b1315a` | [`a94655c`](https://github.com/ArefinAlter/zeus-core/commit/a94655cdef51e452f6f582fb4be6193ec4a1db1c), [PR 1](https://github.com/ArefinAlter/zeus-core/pull/1) |
+| Extension | `8d6dd0d6164696d614abb323e89a2195df9da2e2` | [`60db4ac`](https://github.com/ArefinAlter/zeus-extension/commit/60db4ac3c15aa23ef7b62b1cfd8abec1ff4cf8c7), [PR 1](https://github.com/ArefinAlter/zeus-extension/pull/1) |
+| Site | `74bdcca5e21bc6ff11b05ea2821c9bdbb8b5f750` | [`b5f7176`](https://github.com/ArefinAlter/zeus-site/commit/b5f7176dc2e367c28c674b9145845ea8e5f8fb55), [PR 1](https://github.com/ArefinAlter/zeus-site/pull/1) |
+
+Final validation: **496 app tests** (126 daemon, 52 workflow), **287 core tests** (one documentation example ignored), **321 extension tests**, five desktop Rust tests and four frontend model tests pass. Strict Clippy and formatting pass in all three Rust workspaces. Rust **1.90.0** source checks pass for core, app and desktop. The bundled Windows desktop executable builds; all 256 normative examples and the generated-schema/catalogue/fixture checks pass. The extension passes typecheck/lint/invariants and all Chrome/Firefox development/store builds; the site builds 25 pages. Tests use Windows x86-64 MSVC Rust 1.99.0 from WSL, not native Linux/macOS/ARM/mobile acceptance.
+
+Hosted CI is blocked: app checkout needs `ZEUS_CORE_TOKEN`, while GitHub refuses to start core/extension jobs because of account payment/spending-limit status. No required checks or branch protections were disabled. The merge uses the recorded local validation. Set up read-only private-core CI access and resolve account billing before rerunning hosted checks. Native GUI/browser/provider, signing/store and rescue-corpus acceptance remain open.
+
+The app pins functional core `6ec728e10aec14ecd10b088b7d077da3d35feada`. Core/extension CI pin app `f4da89dee3b0485e49f0f2b112143315048be321`, whose normative specs match these merges; subsequent receipt/recovery corrections changed private app runtime behavior without changing copied contracts.
 
 ## Repository and review snapshot
 
@@ -37,7 +54,7 @@ The app working tree additionally contains the three grouped MCP tools, generate
 
 The MCP catalogue is now generated with `node docs/spec/tools/mcp-catalogue.mjs --write`; `--check` compares the file embedded in Rust and verifies the stated digest/budgets. Use `zeus artifacts --help` and `zeus get --help` for the new commands. `/` searches the live TUI snapshot; it does not search the filesystem. See the [current implementation ledger](IMPLEMENTATION_STATUS.md#2026-10-21-continuation) for verification and remaining gaps. The October 18 revision/PR table above is historical, not a new GitHub check.
 
-### Parallel continuation of 2026-10-21 (integration pending)
+### Parallel continuation of 2026-10-21 (merged)
 
 The coordinated pass adds handoff batching and atomic cancellation amendment/withdrawal in app/core, a two-permission native-host ceiling with legacy migration, artifact lifecycle preview/apply RPC and CLI, versioned workflow reports, and the [restricted Tauri client](../apps/desktop/README.md). Matching core/extension contracts accompany the app; the earlier same-day statement about no sibling changes applies only to that earlier pass.
 

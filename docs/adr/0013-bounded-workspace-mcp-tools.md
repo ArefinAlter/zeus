@@ -1,7 +1,7 @@
 # ADR 0013: Bounded workspace tools and one generated MCP catalogue
 
 Date: 2026-10-20
-Status: implemented in the working tree; pending maintainer review
+Status: implemented and merged for pre-alpha (2026-10-21); real-host acceptance and API freeze remain open
 
 ## Context
 
