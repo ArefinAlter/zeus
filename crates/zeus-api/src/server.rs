@@ -223,8 +223,15 @@ impl Router {
 
     /// Apply the per-credential token buckets of 05 section 13.2 (authorisation step 8).
     #[must_use]
-    pub fn with_rate_limits(mut self, limits: crate::rate::RateLimits) -> Self {
-        self.rates = Some(Arc::new(crate::rate::RateLimiter::new(limits)));
+    pub fn with_rate_limits(self, limits: crate::rate::RateLimits) -> Self {
+        self.with_rate_limiter(Arc::new(crate::rate::RateLimiter::new(limits)))
+    }
+
+    /// Apply these token buckets, shared with the daemon, which charges the `session_request` token of each
+    /// enqueued job that raises an approval.
+    #[must_use]
+    pub fn with_rate_limiter(mut self, rates: Arc<crate::rate::RateLimiter>) -> Self {
+        self.rates = Some(rates);
         self
     }
 

@@ -144,11 +144,15 @@ impl DeferredAudit {
         records
     }
 
-    /// Ids already present in the log, so a startup replay never appends a record twice.
+    /// Ids already present in the log, so a startup replay never appends a record twice. Only the replayed record
+    /// itself (`deferred: true`) counts: its `audit.error` gap record carries the same id but may have reached the
+    /// log without it.
     pub(crate) fn recorded_ids(audit: &AuditLog) -> BTreeSet<String> {
         let mut ids = BTreeSet::new();
         let _ = audit.visit_records(|record| {
-            if let Some(id) = record.data.get("deferred_id").and_then(|v| v.as_str()) {
+            if record.data.get("deferred").and_then(|v| v.as_bool()) == Some(true)
+                && let Some(id) = record.data.get("deferred_id").and_then(|v| v.as_str())
+            {
                 ids.insert(id.to_owned());
             }
             Ok(())
@@ -345,6 +349,58 @@ mod tests {
         assert_eq!(deferred.replay(&sink, &BTreeSet::from([id])), 1);
         assert_eq!(sink.inner.to_values().len(), before);
         assert!(!deferred.is_pending());
+    }
+
+    /// A sink that accepts one append and then fails, as a disk that fills up between two appends.
+    struct OneAppend<'a> {
+        inner: &'a AuditLog,
+        used: AtomicBool,
+    }
+    impl AuditSink for OneAppend<'_> {
+        fn append(&self, entry: AuditEntry) -> zeus_verify::VerifyResult<AuditRecord> {
+            if self.used.swap(true, Ordering::AcqRel) {
+                Err(zeus_verify::VerifyError::AuditUnavailable(
+                    "disk full".into(),
+                ))
+            } else {
+                self.inner.append(entry)
+            }
+        }
+        fn head(&self) -> zeus_verify::VerifyResult<Option<zeus_types::AuditHead>> {
+            self.inner.head()
+        }
+    }
+
+    #[test]
+    fn a_gap_record_alone_does_not_count_as_the_record_reaching_the_log() {
+        let dir = tempfile::tempdir().unwrap();
+        let deferred = DeferredAudit::open(dir.path()).unwrap();
+        deferred.retain(&entry());
+        let id = deferred.load()[0].1.deferred_id.clone();
+        let audit = AuditLog::open(
+            &dir.path().join("audit"),
+            None,
+            zeus_types::IdGenerator::new().store_id(),
+            "0.1.0",
+            Default::default(),
+        )
+        .unwrap();
+        let filling = OneAppend {
+            inner: &audit,
+            used: AtomicBool::new(false),
+        };
+        // The gap record is appended, then the kill-switch record is not.
+        assert_eq!(
+            deferred.replay(&filling, &DeferredAudit::recorded_ids(&audit)),
+            0
+        );
+        drop(deferred);
+
+        let restarted = DeferredAudit::open(dir.path()).unwrap();
+        let recorded = DeferredAudit::recorded_ids(&audit);
+        assert!(!recorded.contains(&id));
+        assert_eq!(restarted.replay(&audit, &recorded), 1);
+        assert!(DeferredAudit::recorded_ids(&audit).contains(&id));
     }
 
     #[test]
