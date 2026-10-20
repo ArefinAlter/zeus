@@ -408,6 +408,7 @@ pub struct ServerHandshake<'a> {
     daemon: DaemonInfo,
     ids: IdGenerator,
     state: HandshakeState,
+    capabilities: BTreeSet<String>,
 }
 
 enum HandshakeState {
@@ -429,7 +430,13 @@ impl<'a> ServerHandshake<'a> {
             daemon,
             ids: IdGenerator::new(),
             state: HandshakeState::AwaitHello,
+            capabilities: BTreeSet::new(),
         }
+    }
+
+    /// The capabilities negotiated in `daemon.hello` (empty before it).
+    pub fn capabilities(&self) -> &BTreeSet<String> {
+        &self.capabilities
     }
 
     /// The authenticated identity once the handshake completed.
@@ -465,6 +472,7 @@ impl<'a> ServerHandshake<'a> {
             .filter(|c| capabilities::ALL.contains(&c.as_str()))
             .collect();
         let server_nonce = Nonce::generate();
+        self.capabilities = capabilities.clone();
         let result = HelloResult {
             protocol_version: version,
             capabilities,
@@ -569,6 +577,7 @@ pub struct ClientHandshake {
     client: ClientInfo,
     client_nonce: Nonce,
     protocol_versions: Vec<u16>,
+    capabilities: Vec<String>,
 }
 
 impl ClientHandshake {
@@ -579,14 +588,21 @@ impl ClientHandshake {
             client,
             client_nonce: Nonce::generate(),
             protocol_versions: vec![crate::PROTOCOL_VERSION],
+            capabilities: capabilities::ALL.iter().map(|c| (*c).to_string()).collect(),
         }
+    }
+
+    /// Offer only these capabilities in `daemon.hello` (default: everything this build understands).
+    pub fn with_capabilities(mut self, capabilities: Vec<String>) -> Self {
+        self.capabilities = capabilities;
+        self
     }
 
     /// The `daemon.hello` parameters.
     pub fn hello_params(&self) -> HelloParams {
         HelloParams {
             protocol_versions: self.protocol_versions.clone(),
-            capabilities: capabilities::ALL.iter().map(|c| (*c).to_string()).collect(),
+            capabilities: self.capabilities.iter().cloned().collect(),
             client: self.client.clone(),
             client_nonce: self.client_nonce.as_str().to_string(),
         }

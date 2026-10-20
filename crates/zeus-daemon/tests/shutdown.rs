@@ -40,6 +40,7 @@ async fn shutdown_defaults_validates_before_effects_and_persists_one_announcemen
         connection_id: zeus_types::IdGenerator::new().connection_id(),
         notifier,
         limits: ConnectionLimits::STANDARD,
+        capabilities: zeus_api::capabilities::all(),
     };
     let before = backend.journal.meta().unwrap().last_event_seq;
     assert!(

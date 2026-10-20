@@ -120,6 +120,8 @@ pub struct CallContext {
     pub notifier: Notifier,
     /// Limits in force.
     pub limits: ConnectionLimits,
+    /// Capabilities negotiated in `daemon.hello` (05 section 8.2); embedded callers pass [`crate::capabilities::all`].
+    pub capabilities: Arc<std::collections::BTreeSet<String>>,
 }
 
 type AuthenticationHook = dyn Fn(&mut CallContext) -> Result<(), ApiError> + Send + Sync;
@@ -277,17 +279,19 @@ impl Router {
                 format!("unknown method `{}`", short(&request.method)),
             )
         })?;
+        // 05 section 7.4, steps 3 to 8, in order.
+        let handler = self.routes.get(spec.name).ok_or_else(|| {
+            ApiError::not_implemented("this method is declared but not available in this build")
+        })?;
         let params = request.params_or_empty();
         if !params.is_object() {
             return Err(ApiError::invalid_params("params must be an object"));
         }
+        policy::require_capabilities(spec, &params, &ctx.capabilities)?;
         policy::authorize(Some(&ctx.identity), spec, &params)?;
         if let Some(rates) = &self.rates {
             rates.check(ctx.identity.credential_id.as_str(), spec, &params)?;
         }
-        let handler = self.routes.get(spec.name).ok_or_else(|| {
-            ApiError::not_implemented("this method is declared but not available in this build")
-        })?;
         handler(ctx.clone(), params).await
     }
 }
@@ -498,6 +502,7 @@ where
                 if note.method != "nm.frame"
                     || call.identity.role != crate::ClientRole::NativeHost
                     || !call.identity.has(crate::Permission::NmRelay)
+                    || !call.capabilities.contains(crate::capabilities::NM_RELAY)
                 {
                     return Err(ApiError::new(
                         codes::PERMISSION_DENIED,
@@ -549,6 +554,7 @@ where
                         connection_id: connection_id_from(&response),
                         notifier: notifier.clone(),
                         limits: connection_limits,
+                        capabilities: Arc::new(handshake.capabilities().clone()),
                     };
                     if let Some(classify) = &ctx.router.authenticated
                         && let Err(error) = classify(&mut call)

@@ -39,6 +39,8 @@ pub mod codes {
     pub const METHOD_NOT_FOUND: &str = "api.method_not_found";
     /// The method exists in the catalogue but this build does not implement it.
     pub const NOT_IMPLEMENTED: &str = "api.not_implemented";
+    /// The method or parameter needs a capability the connection did not negotiate (05 section 8.2).
+    pub const CAPABILITY_MISSING: &str = "api.capability_missing";
     /// A message line exceeded the limit.
     pub const PAYLOAD_TOO_LARGE: &str = "api.payload_too_large";
     /// Rate limit exceeded; `details.retry_after_ms` says when to retry.
@@ -70,6 +72,7 @@ pub mod codes {
         (INVALID_PARAMS, ErrorClass::InvalidRequest, false),
         (METHOD_NOT_FOUND, ErrorClass::Unsupported, false),
         (NOT_IMPLEMENTED, ErrorClass::Unsupported, false),
+        (CAPABILITY_MISSING, ErrorClass::Unsupported, false),
         (PAYLOAD_TOO_LARGE, ErrorClass::InvalidRequest, false),
         (RATE_LIMITED, ErrorClass::Unavailable, true),
         (UNAVAILABLE, ErrorClass::Unavailable, true),

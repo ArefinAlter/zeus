@@ -137,6 +137,7 @@ mod tests {
             connection_id: zeus_types::IdGenerator::new().connection_id(),
             notifier,
             limits: ConnectionLimits::STANDARD,
+            capabilities: zeus_api::capabilities::all(),
         }
     }
 
@@ -179,6 +180,23 @@ mod tests {
             assert!(
                 !registered.contains(method.name),
                 "{} is later but routed",
+                method.name
+            );
+        }
+    }
+
+    /// 05 section 8.2: a capability is advertised only when every method it gates is implemented.
+    #[test]
+    fn every_advertised_capability_is_fully_routed() {
+        let router = build_router(Arc::new(NotImplementedBackend));
+        let registered: std::collections::BTreeSet<_> = router.registered().into_iter().collect();
+        for method in METHODS.iter().filter(|m| {
+            m.capability
+                .is_some_and(|c| zeus_api::capabilities::ALL.contains(&c))
+        }) {
+            assert!(
+                registered.contains(method.name),
+                "{} is gated by an advertised capability but has no route",
                 method.name
             );
         }

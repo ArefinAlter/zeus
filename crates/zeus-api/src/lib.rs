@@ -94,4 +94,9 @@ pub mod capabilities {
         WORKFLOWS,
         LLM,
     ];
+
+    /// Every capability, for callers inside the daemon process that do not negotiate (tests, embedded transports).
+    pub fn all() -> std::sync::Arc<std::collections::BTreeSet<String>> {
+        std::sync::Arc::new(ALL.iter().map(|c| (*c).to_string()).collect())
+    }
 }
