@@ -1,9 +1,9 @@
 //! Who is calling: client kinds, roles, permissions and the authenticated identity.
 //!
-//! A credential fixes `(kind, role, permissions)`; a client cannot claim more in `daemon.hello`. Kinds are
-//! ordered `agent < human < admin`. Only `human` and above can decide approvals (and only with channel
-//! evidence, ADR 0007); no agent-kind credential can ever hold the permissions listed in
-//! [`ClientKind::human_only_permissions`].
+//! A credential fixes `(kind, role, permissions)`; a client cannot claim more in `daemon.hello`. Kinds are **not**
+//! ordered for authority (05 section 7.1): `service` sits beside `agent`. Only human-capable kinds (`human`, `admin`,
+//! [`ClientKind::is_human_capable`]) can decide approvals, and only with channel evidence (ADR 0007); no agent or
+//! service credential can ever hold the permissions listed in [`ClientKind::human_only_permissions`].
 
 use std::collections::BTreeSet;
 use std::fmt;
@@ -16,7 +16,8 @@ use zeus_types::{Actor, ActorKind, Source, SourceKind, SourceVia, Surface};
 use crate::auth::CredentialId;
 use crate::error::{ApiError, codes};
 
-/// Authority class of a client.
+/// Authority class of a client. The derived order exists for collections only; authority checks use
+/// [`ClientKind::is_human_capable`], never a comparison.
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,
 )]
@@ -24,6 +25,9 @@ use crate::error::{ApiError, codes};
 pub enum ClientKind {
     /// MCP server, A2A bridge, scripts holding the agent credential. Never decides approvals.
     Agent,
+    /// A first-party program using the daemon unattended (Ogun, ADR 0011): the agent ceiling plus root
+    /// registration, its own jobs, approvals, roots and audit records only. Never human-capable.
+    Service,
     /// CLI or TUI on a terminal, GUI, native host relaying the extension popup.
     Human,
     /// A human-kind client that may also stop the daemon and manage credentials.
@@ -48,6 +52,8 @@ pub enum ClientRole {
     Mcp,
     /// The A2A bridge (phase 2).
     A2a,
+    /// A first-party unattended program holding a `service` credential.
+    Service,
     /// An application embedding Zeus.
     Embedded,
     /// Test harnesses.
@@ -55,13 +61,22 @@ pub enum ClientRole {
 }
 
 impl ClientRole {
-    /// The highest kind a credential with this role may have.
-    pub const fn max_kind(self) -> ClientKind {
+    /// The kinds a credential with this role may have (05 section 7.2).
+    pub const fn allowed_kinds(self) -> &'static [ClientKind] {
+        use ClientKind::*;
         match self {
-            Self::Mcp | Self::A2a => ClientKind::Agent,
-            Self::Tui | Self::Gui | Self::NativeHost => ClientKind::Human,
-            Self::Cli | Self::Embedded | Self::Test => ClientKind::Admin,
+            Self::Mcp | Self::A2a => &[Agent],
+            Self::Tui | Self::Gui => &[Agent, Human],
+            Self::NativeHost => &[Human],
+            Self::Service => &[Service],
+            Self::Cli | Self::Embedded => &[Agent, Human, Admin],
+            Self::Test => &[Agent, Service, Human, Admin],
         }
+    }
+
+    /// True when a credential with this role may have `kind`.
+    pub fn allows(self, kind: ClientKind) -> bool {
+        self.allowed_kinds().contains(&kind)
     }
 
     /// The job [`Source`] this role produces when it enqueues work through the API.
@@ -73,7 +88,7 @@ impl ClientRole {
             Self::Tui => (SourceKind::Cli, SourceVia::Tui),
             Self::Gui => (SourceKind::Cli, SourceVia::Jsonrpc),
             Self::NativeHost => (SourceKind::BrowserHandoff, SourceVia::NativeMessaging),
-            Self::Embedded | Self::Test => (SourceKind::Agent, SourceVia::Jsonrpc),
+            Self::Service | Self::Embedded | Self::Test => (SourceKind::Agent, SourceVia::Jsonrpc),
         };
         let mut source = Source::new(kind);
         source.via = Some(via);
@@ -107,6 +122,8 @@ pub enum Permission {
     FilesRead,
     /// Organize, convert, undo (dry run by default, destructive steps need an approval).
     FilesWrite,
+    /// Register a write root the client owns (role `service` only, 05 section 7.6).
+    FilesRootsRegister,
     /// Plan, validate and dry-run workflows.
     WorkflowsPlan,
     /// Run and control workflows (needs an approval of the plan).
@@ -133,7 +150,7 @@ pub enum Permission {
 
 impl Permission {
     /// Every permission.
-    pub const ALL: [Self; 22] = [
+    pub const ALL: [Self; 23] = [
         Self::JobsRead,
         Self::JobsWrite,
         Self::JobsControl,
@@ -145,6 +162,7 @@ impl Permission {
         Self::ApprovalsDecide,
         Self::FilesRead,
         Self::FilesWrite,
+        Self::FilesRootsRegister,
         Self::WorkflowsPlan,
         Self::WorkflowsRun,
         Self::AuditRead,
@@ -172,6 +190,7 @@ impl Permission {
             Self::ApprovalsDecide => "approvals.decide",
             Self::FilesRead => "files.read",
             Self::FilesWrite => "files.write",
+            Self::FilesRootsRegister => "files.roots.register",
             Self::WorkflowsPlan => "workflows.plan",
             Self::WorkflowsRun => "workflows.run",
             Self::AuditRead => "audit.read",
@@ -269,13 +288,24 @@ impl ClientKind {
         ]
         .into_iter()
         .collect();
-        if self >= Self::Human {
-            set.extend(Self::human_only_permissions());
-        }
-        if self >= Self::Admin {
-            set.extend(Self::admin_only_permissions());
+        match self {
+            Self::Agent => {}
+            Self::Service => {
+                set.insert(FilesRootsRegister);
+            }
+            Self::Human => set.extend(Self::human_only_permissions()),
+            Self::Admin => {
+                set.extend(Self::human_only_permissions());
+                set.extend(Self::admin_only_permissions());
+            }
         }
         set
+    }
+
+    /// True for `human` and `admin`: the only kinds that may hold human-only permissions, receive a human actor or
+    /// call human-only methods. `agent` and `service` are never human-capable (05 section 7.1).
+    pub const fn is_human_capable(self) -> bool {
+        matches!(self, Self::Human | Self::Admin)
     }
 }
 
@@ -305,7 +335,7 @@ impl ClientIdentity {
     /// A human actor requires a human-or-admin kind **and** a trust surface (01 section 5.3 rule 1). Anything else
     /// is refused with `api.human_required`; agents never get a `human` actor, whatever surface they name.
     pub fn decision_actor(&self, surface: Surface) -> Result<Actor, ApiError> {
-        if self.kind >= ClientKind::Human && surface.is_trust_surface() {
+        if self.kind.is_human_capable() && surface.is_trust_surface() {
             let mut actor = Actor::human(surface);
             actor.client_id = Some(self.credential_id.to_string());
             Ok(actor)
@@ -326,7 +356,7 @@ impl ClientIdentity {
             _ => Surface::Jsonrpc,
         };
         let kind = match self.kind {
-            ClientKind::Agent => ActorKind::Agent,
+            ClientKind::Agent | ClientKind::Service => ActorKind::Agent,
             ClientKind::Human | ClientKind::Admin => ActorKind::Cli,
         };
         Actor {
@@ -352,8 +382,31 @@ mod tests {
     }
 
     #[test]
-    fn kinds_are_ordered() {
-        assert!(ClientKind::Agent < ClientKind::Human && ClientKind::Human < ClientKind::Admin);
+    fn only_human_and_admin_are_human_capable() {
+        assert!(!ClientKind::Agent.is_human_capable());
+        assert!(!ClientKind::Service.is_human_capable());
+        assert!(ClientKind::Human.is_human_capable() && ClientKind::Admin.is_human_capable());
+    }
+
+    #[test]
+    fn the_service_ceiling_is_the_agent_ceiling_plus_root_registration() {
+        let mut service = ClientKind::Service.default_permissions();
+        assert!(service.remove(&Permission::FilesRootsRegister));
+        assert_eq!(service, ClientKind::Agent.default_permissions());
+        for kind in [ClientKind::Agent, ClientKind::Human, ClientKind::Admin] {
+            assert!(
+                !kind
+                    .default_permissions()
+                    .contains(&Permission::FilesRootsRegister)
+            );
+        }
+        let service = identity(ClientKind::Service, ClientRole::Service);
+        assert!(service.decision_actor(Surface::CliInteractive).is_err());
+        assert_eq!(service.action_actor().kind, ActorKind::Agent);
+        assert_eq!(
+            ClientRole::Service.job_source("cli_x").kind,
+            SourceKind::Agent
+        );
     }
 
     #[test]
@@ -379,16 +432,31 @@ mod tests {
 
     #[test]
     fn nm_relay_is_in_no_default_set() {
-        for kind in [ClientKind::Agent, ClientKind::Human, ClientKind::Admin] {
+        for kind in [
+            ClientKind::Agent,
+            ClientKind::Service,
+            ClientKind::Human,
+            ClientKind::Admin,
+        ] {
             assert!(!kind.default_permissions().contains(&Permission::NmRelay));
         }
     }
 
     #[test]
-    fn agent_roles_cap_at_agent_kind() {
-        assert_eq!(ClientRole::Mcp.max_kind(), ClientKind::Agent);
-        assert_eq!(ClientRole::A2a.max_kind(), ClientKind::Agent);
-        assert_eq!(ClientRole::NativeHost.max_kind(), ClientKind::Human);
+    fn roles_fix_the_kinds_they_may_hold() {
+        assert_eq!(ClientRole::Mcp.allowed_kinds(), [ClientKind::Agent]);
+        assert_eq!(ClientRole::A2a.allowed_kinds(), [ClientKind::Agent]);
+        assert_eq!(ClientRole::NativeHost.allowed_kinds(), [ClientKind::Human]);
+        assert_eq!(ClientRole::Service.allowed_kinds(), [ClientKind::Service]);
+        for role in [
+            ClientRole::Cli,
+            ClientRole::Tui,
+            ClientRole::Mcp,
+            ClientRole::Embedded,
+        ] {
+            assert!(!role.allows(ClientKind::Service), "{role:?}");
+        }
+        assert!(!ClientRole::Tui.allows(ClientKind::Admin));
     }
 
     #[test]

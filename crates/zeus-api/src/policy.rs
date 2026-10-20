@@ -7,7 +7,7 @@
 use serde_json::Value;
 
 use crate::error::{ApiError, codes};
-use crate::kind::{ClientIdentity, ClientKind, ClientRole, Permission};
+use crate::kind::{ClientIdentity, ClientRole, Permission};
 
 /// Delivery stage of a method.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -227,7 +227,7 @@ pub fn authorize(
     let human_by_param = spec
         .human_param
         .is_some_and(|name| params.get(name).and_then(Value::as_bool).unwrap_or(false));
-    if (spec.human_only || human_by_param) && identity.kind < ClientKind::Human {
+    if (spec.human_only || human_by_param) && !identity.kind.is_human_capable() {
         return Err(ApiError::new(
             codes::HUMAN_REQUIRED,
             format!("{} can only be called by a human-kind client", spec.name),
@@ -240,6 +240,7 @@ pub fn authorize(
 mod tests {
     use super::*;
     use crate::auth::CredentialId;
+    use crate::kind::ClientKind;
     use std::collections::BTreeSet;
 
     fn identity(kind: ClientKind, role: ClientRole) -> ClientIdentity {
