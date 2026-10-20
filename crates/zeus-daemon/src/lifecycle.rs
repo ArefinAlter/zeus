@@ -153,6 +153,7 @@ impl RuntimeBackend {
                     .apply_approval(zeus_engine::api::ApprovalResolution {
                         approval,
                         grant: None,
+                        job_id: Some(record.job.id),
                     })
                     .await;
             }

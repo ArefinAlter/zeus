@@ -940,6 +940,7 @@ impl Backend for RuntimeBackend {
                 .apply_approval(zeus_engine::api::ApprovalResolution {
                     approval: approval.clone(),
                     grant: grant.clone(),
+                    job_id: approval.job_id,
                 })
                 .await
                 .map_err(error)?;
