@@ -2,8 +2,9 @@
 # (path dependencies), so every Rust job checks it out next to this repository: the branch with the same
 # name when it exists, otherwise the compatible revision pinned below, or an explicit ref for a manual run.
 #
-# zeus-core is private: the repository secret ZEUS_CORE_TOKEN must hold a fine-grained token with read-only
-# "Contents" access to ArefinAlter/zeus-core. Pull requests from forks do not receive it and cannot build.
+# zeus-core is private: ZEUS_CORE_SSH_KEY is the private half of a read-only deploy key
+# attached only to ArefinAlter/zeus-core. Fork pull requests do not receive it and cannot build.
+# See docs/CI_ACCESS.md for setup, verification and rotation.
 name: CI
 
 on:
@@ -35,20 +36,36 @@ jobs:
     outputs:
       ref: ${{ steps.resolve.outputs.ref }}
     steps:
+      # This job runs only the inline ref lookup. Checkout removes its temporary key at job exit.
+      - name: Authenticate private core ref lookup
+        uses: actions/checkout@v5
+        with:
+          repository: ArefinAlter/zeus-core
+          ref: 6ec728e10aec14ecd10b088b7d077da3d35feada
+          ssh-key: ${{ secrets.ZEUS_CORE_SSH_KEY }}
+          ssh-strict: true
+          persist-credentials: true
+          path: core-ref
+          sparse-checkout: /Cargo.toml
+          sparse-checkout-cone-mode: false
       - id: resolve
+        working-directory: core-ref
         shell: bash
         env:
           REQUESTED: ${{ inputs.core_ref }}
           BRANCH: ${{ github.head_ref || github.ref_name }}
-          TOKEN: ${{ secrets.ZEUS_CORE_TOKEN }}
         run: |
           set -euo pipefail
           ref="${REQUESTED:-}"
           if [ -z "$ref" ]; then
-            if git ls-remote --exit-code --heads \
-                "https://x-access-token:${TOKEN}@github.com/ArefinAlter/zeus-core.git" "$BRANCH" >/dev/null 2>&1; then
+            if git ls-remote --exit-code --heads origin "refs/heads/$BRANCH" >/dev/null; then
               ref="$BRANCH"
             else
+              lookup_status=$?
+              if [ "$lookup_status" -ne 2 ]; then
+                echo "::error::Cannot read private zeus-core refs; check CI deploy-key access."
+                exit "$lookup_status"
+              fi
               ref="6ec728e10aec14ecd10b088b7d077da3d35feada"
             fi
           fi
@@ -71,7 +88,9 @@ jobs:
         with:
           repository: ArefinAlter/zeus-core
           ref: ${{ needs.core-ref.outputs.ref }}
-          token: ${{ secrets.ZEUS_CORE_TOKEN }}
+          ssh-key: ${{ secrets.ZEUS_CORE_SSH_KEY }}
+          ssh-strict: true
+          persist-credentials: false
           path: zeus-core
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -105,7 +124,9 @@ jobs:
         with:
           repository: ArefinAlter/zeus-core
           ref: ${{ needs.core-ref.outputs.ref }}
-          token: ${{ secrets.ZEUS_CORE_TOKEN }}
+          ssh-key: ${{ secrets.ZEUS_CORE_SSH_KEY }}
+          ssh-strict: true
+          persist-credentials: false
           path: zeus-core
       - uses: dtolnay/rust-toolchain@1.90.0
       - uses: Swatinem/rust-cache@v2
@@ -129,7 +150,9 @@ jobs:
         with:
           repository: ArefinAlter/zeus-core
           ref: ${{ needs.core-ref.outputs.ref }}
-          token: ${{ secrets.ZEUS_CORE_TOKEN }}
+          ssh-key: ${{ secrets.ZEUS_CORE_SSH_KEY }}
+          ssh-strict: true
+          persist-credentials: false
           path: zeus-core
       - uses: actions/setup-node@v5
         with:
@@ -162,7 +185,9 @@ jobs:
         with:
           repository: ArefinAlter/zeus-core
           ref: ${{ needs.core-ref.outputs.ref }}
-          token: ${{ secrets.ZEUS_CORE_TOKEN }}
+          ssh-key: ${{ secrets.ZEUS_CORE_SSH_KEY }}
+          ssh-strict: true
+          persist-credentials: false
           path: zeus-core
       - uses: EmbarkStudios/cargo-deny-action@v2
         with:
@@ -194,7 +219,9 @@ jobs:
         with:
           repository: ArefinAlter/zeus-core
           ref: ${{ needs.core-ref.outputs.ref }}
-          token: ${{ secrets.ZEUS_CORE_TOKEN }}
+          ssh-key: ${{ secrets.ZEUS_CORE_SSH_KEY }}
+          ssh-strict: true
+          persist-credentials: false
           path: zeus-core
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -251,7 +278,9 @@ jobs:
         with:
           repository: ArefinAlter/zeus-core
           ref: ${{ needs.core-ref.outputs.ref }}
-          token: ${{ secrets.ZEUS_CORE_TOKEN }}
+          ssh-key: ${{ secrets.ZEUS_CORE_SSH_KEY }}
+          ssh-strict: true
+          persist-credentials: false
           path: zeus-core
       - uses: dtolnay/rust-toolchain@stable
         with:

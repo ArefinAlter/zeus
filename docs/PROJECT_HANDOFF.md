@@ -17,7 +17,7 @@ The user authorized the coordinated push and merge. All four implementation/prev
 
 Final validation: **496 app tests** (126 daemon, 52 workflow), **287 core tests** (one documentation example ignored), **321 extension tests**, five desktop Rust tests and four frontend model tests pass. Strict Clippy and formatting pass in all three Rust workspaces. Rust **1.90.0** source checks pass for core, app and desktop. The bundled Windows desktop executable builds; all 256 normative examples and the generated-schema/catalogue/fixture checks pass. The extension passes typecheck/lint/invariants and all Chrome/Firefox development/store builds; the site builds 25 pages. Tests use Windows x86-64 MSVC Rust 1.99.0 from WSL, not native Linux/macOS/ARM/mobile acceptance.
 
-Hosted CI is blocked: app checkout needs `ZEUS_CORE_TOKEN`, while GitHub refuses to start core/extension jobs because of account payment/spending-limit status. No required checks or branch protections were disabled. The merge uses the recorded local validation. Set up read-only private-core CI access and resolve account billing before rerunning hosted checks. Native GUI/browser/provider, signing/store and rescue-corpus acceptance remain open.
+At integration, app CI lacked its private-core credential and GitHub refused to start core/extension jobs because of account payment/spending-limit status. No required checks or branch protections were disabled; the merge used recorded local validation. The user-approved followup now configures [read-only deploy-key access](CI_ACCESS.md) through `ZEUS_CORE_SSH_KEY`, verified against private core over SSH. Account billing remains unresolved, and hosted workflow results must be checked separately. Native GUI/browser/provider, signing/store and rescue-corpus acceptance remain open.
 
 The app pins functional core `6ec728e10aec14ecd10b088b7d077da3d35feada`. Core/extension CI pin app `f4da89dee3b0485e49f0f2b112143315048be321`, whose normative specs match these merges; subsequent receipt/recovery corrections changed private app runtime behavior without changing copied contracts.
 
@@ -46,7 +46,7 @@ The continuation work in the [implementation ledger](IMPLEMENTATION_STATUS.md#20
 - `zeus-core`: `ApprovalResolution.job_id` (engine), two registered policy codes (`zeus-types`), the `zeus-control` algorithms, resynchronized `spec-fixtures/` and `.github/workflows/ci.yml`.
 - `zeus-extension`: resynchronized `schema/` copies and `.github/workflows/ci.yml`.
 
-To enable CI, add the repository secret `ZEUS_CORE_TOKEN` (a fine-grained token with read-only Contents access to `ArefinAlter/zeus-core`) to `zeus`, push, confirm a green run, then mark the Linux, Windows, MSRV, contracts and deny jobs as required checks. The core and extension workflows read the public `zeus` repository and need no secret.
+The original token setup is superseded by the configured [read-only SSH deploy key](CI_ACCESS.md); the current workflow does not use `ZEUS_CORE_TOKEN`. Resolve account billing, confirm green runs, then mark the Linux, Windows, MSRV, contracts and deny jobs as required checks. The core and extension workflows read the public `zeus` repository and need no private-core credential.
 
 ### Continuation of 2026-10-21 (uncommitted)
 
@@ -62,7 +62,7 @@ The desktop uses a dedicated `gui.token` (Agent/Gui, seven explicit permissions)
 
 Final local evidence: **496 app tests, 287 core tests and 321 extension tests pass**. Strict app/core/desktop Clippy, formatting, the bundled Windows desktop executable build and source check, five headless Rust bridge tests, four Node UI tests, generated schema/fixture checks and all 256 normative examples pass. The extension also passes typecheck/lint/invariant checks and all four browser build variants. Website build passes for 25 pages. Full details are in the [current ledger](IMPLEMENTATION_STATUS.md#2026-10-21-parallel-continuation).
 
-Hosted CI is blocked independently of local code validation: app jobs need the missing `ZEUS_CORE_TOKEN`, and GitHub refuses to start core/extension jobs because of account payment/spending-limit status. Billing changes and persistent CI credentials require maintainer setup. No native GUI launch, mobile/device, live browser/provider, signing/store or rescue-corpus acceptance is inferred.
+Hosted CI was blocked independently of local code validation by the missing app credential and core/extension account payment/spending-limit status. Read-only private-core access is now configured and verified in the [CI-access followup](CI_ACCESS.md); billing remains a maintainer action. No native GUI launch, mobile/device, live browser/provider, signing/store or rescue-corpus acceptance is inferred.
 
 ## Architecture and ownership
 
