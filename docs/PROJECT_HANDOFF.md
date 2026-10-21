@@ -6,7 +6,7 @@ Zeus has an executable pre-alpha download engine, persistent daemon, CLI/TUI, MC
 
 ## Current main integration
 
-The user authorized the coordinated push and merge. All four implementation/preview PRs are merged; the local checkouts are on `main`. The table records the implementation merges; later documentation-only commits can advance the app head without changing the tested source.
+The user authorized the coordinated push and merge. All four implementation/preview PRs are merged; the local checkouts are on `main`. The table records the implementation merges; the subsequent CI-access and TLS dependency updates are recorded in the [CI guide](CI_ACCESS.md).
 
 | Repository | Tested implementation head | Main integration merge |
 |---|---|---|
@@ -17,9 +17,9 @@ The user authorized the coordinated push and merge. All four implementation/prev
 
 Final validation: **496 app tests** (126 daemon, 52 workflow), **287 core tests** (one documentation example ignored), **321 extension tests**, five desktop Rust tests and four frontend model tests pass. Strict Clippy and formatting pass in all three Rust workspaces. Rust **1.90.0** source checks pass for core, app and desktop. The bundled Windows desktop executable builds; all 256 normative examples and the generated-schema/catalogue/fixture checks pass. The extension passes typecheck/lint/invariants and all Chrome/Firefox development/store builds; the site builds 25 pages. Tests use Windows x86-64 MSVC Rust 1.99.0 from WSL, not native Linux/macOS/ARM/mobile acceptance.
 
-At integration, app CI lacked its private-core credential and GitHub refused to start core/extension jobs because of account payment/spending-limit status. No required checks or branch protections were disabled; the merge used recorded local validation. The user-approved followup now configures [read-only deploy-key access](CI_ACCESS.md) through `ZEUS_CORE_SSH_KEY`, verified against private core over SSH. Account billing remains unresolved, and hosted workflow results must be checked separately. Native GUI/browser/provider, signing/store and rescue-corpus acceptance remain open.
+At integration, app CI lacked its private-core credential and GitHub refused to start core/extension jobs because of account payment/spending-limit status. No required checks or branch protections were disabled; the merge used recorded local validation. The user-approved followup configures [read-only deploy-key access](CI_ACCESS.md) through `ZEUS_CORE_SSH_KEY`, verified against private core over SSH and hosted checkouts. Its initial hosted run passes app tests on Windows x64, Linux x64/ARM64 and Intel/Apple Silicon macOS, MSRV 1.90, contracts and Windows/macOS desktop builds/tests. Windows ARM checkout ACLs and a newly published TLS advisory required the followup fixes documented in the guide. Account billing remains unresolved for core/extension. Native GUI/browser/provider, device/mobile, signing/store and rescue-corpus acceptance remain open.
 
-The app pins functional core `6ec728e10aec14ecd10b088b7d077da3d35feada`. Core/extension CI pin app `f4da89dee3b0485e49f0f2b112143315048be321`, whose normative specs match these merges; subsequent receipt/recovery corrections changed private app runtime behavior without changing copied contracts.
+The app now pins compatible core `6c622a18d6822222575902dc3e16b24be6d95ebc`, which adds the TLS lockfile patch after the original functional core `6ec728e10aec14ecd10b088b7d077da3d35feada`. Core/extension CI pin app `f4da89dee3b0485e49f0f2b112143315048be321`, whose normative specs match these merges; subsequent receipt/recovery corrections changed private app runtime behavior without changing copied contracts.
 
 ## Repository and review snapshot
 
