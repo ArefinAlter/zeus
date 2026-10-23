@@ -141,6 +141,7 @@ Ogun (ADR 0011) mints its own identifiers inside `ogund`, with the same syntax. 
 | `agr_` | Agent run | A recorded agent run. |
 | `edg_` | Edge | An Ogun edge installation; the namespace of the partitions it writes. |
 | `syn_` | Sync session | One edge-to-hub sync session. |
+| `ocl_` | Local credential | A client credential of `ogund`, Ogun's daemon. Distinct from Zeus `cli_`. |
 | `usr_` | Server user | A user of a self-hosted Ogun server. |
 | `wsp_` | Server workspace | A workspace on a self-hosted Ogun server. |
 | `tok_` | API token | An Ogun server API token; always acts as an agent, never as a person. |
