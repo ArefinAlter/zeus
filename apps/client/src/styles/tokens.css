@@ -1,0 +1,178 @@
+/* Zeus client design tokens, in the shape T3 Code's interface uses (its Tailwind theme: `--background`,
+   `--foreground`, `--card`, `--muted`, `--accent`, `--primary`, `--border`, `--input`, `--ring`, `--radius`,
+   `--sidebar-*`, the status pairs `--success` and `--success-foreground`, and so on). Neutral zinc surfaces with
+   one coloured role, `--primary`, which here is Zeus's ultramarine (brand/BRAND.md); the state colours follow the
+   brand's semantic table: olive for completed, terracotta for failed, gold for waiting for a person. The theme follows prefers-color-scheme; the
+   toggle sets data-theme on <html> for the current visit only. Fonts are the system stack, as in T3 Code; no
+   font is fetched or bundled. */
+
+:root {
+  --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  --font-mono: ui-monospace, 'SF Mono', 'SFMono-Regular', Menlo, Consolas, 'Liberation Mono', monospace;
+
+  --radius: 0.625rem; /* 10px: cards, dialogs */
+  --radius-sm: calc(var(--radius) - 4px); /* 6px: chips, pills */
+  --radius-md: calc(var(--radius) - 2px); /* 8px: buttons, inputs, rows */
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px); /* 14px: palette, large cards */
+
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --sidebar-w: 272px;
+  --statusbar-h: 28px;
+  --topbar-h: 40px;
+  --control-h: 32px;
+  --ease: cubic-bezier(0.4, 0, 0.2, 1);
+  --duration: 150ms;
+
+  /* Light (default): zinc. */
+  color-scheme: light;
+  --background: oklch(99.2% 0 0);
+  --foreground: oklch(27.4% 0.006 286.033);
+  --card: #ffffff;
+  --card-foreground: var(--foreground);
+  --popover: #ffffff;
+  --popover-foreground: var(--foreground);
+  --muted: oklch(98.5% 0 0);
+  --muted-foreground: oklch(55.2% 0.016 285.938);
+  --accent: oklch(96.7% 0.001 286.375);
+  --accent-foreground: oklch(21% 0.006 285.885);
+  --secondary: oklch(98.5% 0 0);
+  --secondary-foreground: var(--foreground);
+  --border: oklch(92% 0.004 286.32);
+  --input: oklch(87.1% 0.006 286.286);
+  --primary: #2347a8; /* ultramarine, 7.5:1 on marble */
+  --primary-foreground: #ffffff;
+  --primary-soft: color-mix(in srgb, var(--primary) 10%, transparent);
+  --ring: var(--primary);
+  --success: #6f8f3c;
+  --success-foreground: #56702f;
+  --warning: #c8a04a;
+  --warning-foreground: #8a6a22;
+  --error: #b5532f;
+  --error-foreground: #9e4526;
+  --info: oklch(62.3% 0.214 259.815);
+  --info-foreground: oklch(48.8% 0.217 264.376);
+  --sidebar: oklch(98.5% 0 0);
+  --sidebar-foreground: var(--foreground);
+  --sidebar-muted-foreground: var(--muted-foreground);
+  --sidebar-border: var(--border);
+  --sidebar-row-hover: oklch(99.2% 0 0);
+  --sidebar-row-selected: #ffffff;
+  --code-background: #ffffff;
+  --shadow-xs: 0 1px 2px rgb(0 0 0 / 0.05);
+  --shadow-sm: 0 1px 3px rgb(0 0 0 / 0.08), 0 1px 2px rgb(0 0 0 / 0.04);
+  --shadow-lg: 0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1);
+  --backdrop: rgb(0 0 0 / 0.4);
+
+  /* Set by the Appearance preferences (lib/themes.ts applyPrefs). */
+  --c-low: 1;
+  --c-high: 0;
+  --glass: 92%;
+  --cell-y: 8px;
+  --content-max: 1240px;
+  --line: color-mix(in oklab, color-mix(in srgb, var(--border) calc(var(--c-low) * 100%), transparent), var(--foreground) calc(var(--c-high) * 1%));
+  --line-strong: color-mix(in oklab, color-mix(in srgb, var(--input) calc(var(--c-low) * 100%), transparent), var(--foreground) calc(var(--c-high) * 1%));
+}
+
+:root[data-density='compact'] {
+  --control-h: 28px;
+  --cell-y: 5px;
+}
+
+:root[data-width='wide'] {
+  --content-max: 1560px;
+}
+
+:root[data-width='full'] {
+  --content-max: none;
+}
+
+/* Colour-blind-safe status colours: blue for succeeded, orange for failed (the words are printed regardless). */
+:root[data-status='colorblind'] {
+  --success: oklch(62% 0.19 255);
+  --success-foreground: oklch(48% 0.2 262);
+  --error: oklch(72% 0.17 55);
+  --error-foreground: oklch(52% 0.15 45);
+}
+:root[data-status='colorblind'][data-scheme='dark'] {
+  --success-foreground: oklch(76% 0.13 250);
+  --error-foreground: oklch(80% 0.14 60);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-scheme]) {
+    color-scheme: dark;
+    --background: oklch(14.5% 0 0);
+    --foreground: oklch(97% 0 0);
+    --card: color-mix(in srgb, oklch(14.5% 0 0) 97%, #ffffff);
+    --card-foreground: var(--foreground);
+    --popover: color-mix(in srgb, oklch(14.5% 0 0) 95%, #ffffff);
+    --popover-foreground: var(--foreground);
+    --muted: rgb(255 255 255 / 0.03);
+    --muted-foreground: #818181;
+    --accent: rgb(255 255 255 / 0.04);
+    --accent-foreground: oklch(97% 0 0);
+    --secondary: rgb(255 255 255 / 0.03);
+    --secondary-foreground: var(--foreground);
+    --border: rgb(255 255 255 / 0.06);
+    --input: rgb(255 255 255 / 0.08);
+    --primary: #8ea7f0;
+    --primary-foreground: #0f1626;
+    --primary-soft: color-mix(in srgb, var(--primary) 16%, transparent);
+    --ring: var(--primary);
+    --success-foreground: #a9c47c;
+    --warning-foreground: #dcb866;
+    --error: #d9693f;
+    --error-foreground: #ec8c6c;
+    --info-foreground: oklch(70.7% 0.165 254.624);
+    --sidebar: var(--card);
+    --sidebar-row-hover: var(--accent);
+    --sidebar-row-selected: var(--muted);
+    --code-background: #000000;
+    --shadow-xs: 0 1px 2px rgb(0 0 0 / 0.4);
+    --shadow-sm: 0 1px 3px rgb(0 0 0 / 0.5);
+    --shadow-lg: 0 10px 15px -3px rgb(0 0 0 / 0.6), 0 4px 6px -4px rgb(0 0 0 / 0.6);
+    --backdrop: rgb(0 0 0 / 0.6);
+  }
+}
+
+:root[data-scheme='dark'] {
+  color-scheme: dark;
+  --background: oklch(14.5% 0 0);
+  --foreground: oklch(97% 0 0);
+  --card: color-mix(in srgb, oklch(14.5% 0 0) 97%, #ffffff);
+  --card-foreground: var(--foreground);
+  --popover: color-mix(in srgb, oklch(14.5% 0 0) 95%, #ffffff);
+  --popover-foreground: var(--foreground);
+  --muted: rgb(255 255 255 / 0.03);
+  --muted-foreground: #818181;
+  --accent: rgb(255 255 255 / 0.04);
+  --accent-foreground: oklch(97% 0 0);
+  --secondary: rgb(255 255 255 / 0.03);
+  --secondary-foreground: var(--foreground);
+  --border: rgb(255 255 255 / 0.06);
+  --input: rgb(255 255 255 / 0.08);
+  --primary: #8ea7f0;
+  --primary-foreground: #0f1626;
+  --primary-soft: color-mix(in srgb, var(--primary) 16%, transparent);
+  --ring: var(--primary);
+  --success-foreground: #a9c47c;
+  --warning-foreground: #dcb866;
+  --error: #d9693f;
+  --error-foreground: #ec8c6c;
+  --info-foreground: oklch(70.7% 0.165 254.624);
+  --sidebar: var(--card);
+  --sidebar-row-hover: var(--accent);
+  --sidebar-row-selected: var(--muted);
+  --code-background: #000000;
+  --shadow-xs: 0 1px 2px rgb(0 0 0 / 0.4);
+  --shadow-sm: 0 1px 3px rgb(0 0 0 / 0.5);
+  --shadow-lg: 0 10px 15px -3px rgb(0 0 0 / 0.6), 0 4px 6px -4px rgb(0 0 0 / 0.6);
+  --backdrop: rgb(0 0 0 / 0.6);
+}

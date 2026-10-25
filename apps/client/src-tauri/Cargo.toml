@@ -1,0 +1,49 @@
+# The Zeus client's desktop shell: Tauri 2 around the shared frontend (`../dist/web`), on the scripted backend that
+# lives in the frontend. It has no daemon connection, no app commands and no plugins.
+#
+# This is its own Cargo workspace (ADR 0009 pattern): Tauri and the system webview never enter the daemon workspace at
+# the repository root, which excludes `apps/client/src-tauri`. It depends on no Zeus crate.
+[workspace]
+resolver = "3"
+members = ["."]
+
+[package]
+name = "zeus-client"
+description = "Zeus pre-alpha client: the desktop shell around the shared frontend, on its scripted backend."
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.90"
+license = "Apache-2.0"
+repository = "https://github.com/ArefinAlter/zeus"
+authors = ["Zeus contributors"]
+publish = false
+default-run = "zeus"
+
+[[bin]]
+name = "zeus"
+path = "src/main.rs"
+
+[features]
+default = ["custom-protocol"]
+# Production mode: the bundled frontend is embedded; no development server.
+custom-protocol = ["tauri/custom-protocol"]
+
+[dependencies]
+tauri = { version = "~2.11", default-features = false, features = ["wry", "compression", "common-controls-v6", "x11", "dbus"] }
+
+[build-dependencies]
+tauri-build = { version = "~2.6", default-features = false, features = ["config-json"] }
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[lints.clippy]
+dbg_macro = "warn"
+todo = "deny"
+unimplemented = "deny"
+
+[profile.release]
+codegen-units = 4
+lto = "thin"
+strip = true

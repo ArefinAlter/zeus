@@ -1,0 +1,30 @@
+{
+  "name": "zeus-client",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Zeus pre-alpha client: downloads, link grabber, queues, files search, agent threads and approvals on a scripted backend. Web and Tauri desktop builds share this frontend.",
+  "license": "Apache-2.0",
+  "author": "Verne Ltd.",
+  "type": "module",
+  "engines": {
+    "node": ">=22.18.0"
+  },
+  "scripts": {
+    "dev": "vite",
+    "typecheck": "tsc --noEmit -p .",
+    "test": "node --test src/model/*.test.mjs src/lib/*.test.mjs",
+    "build": "tsc --noEmit -p . && vite build",
+    "build:site": "tsc --noEmit -p . && vite build --mode site --outDir dist/site",
+    "preview": "vite preview",
+    "build:desktop": "node scripts/build-desktop.mjs",
+    "publish:site": "node scripts/publish-site.mjs"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "2.11.1",
+    "preact": "10.29.8"
+  },
+  "devDependencies": {
+    "typescript": "5.9.3",
+    "vite": "7.3.7"
+  }
+}
