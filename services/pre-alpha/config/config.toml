@@ -1,0 +1,3 @@
+# zeusd configuration for the hosted pre-alpha. Downloads go only under /data/downloads; each visitor sandbox is a
+# folder below /data/downloads/s/. Keys are those of crates/zeus-daemon/src/config.rs.
+write_roots = ["/data/downloads"]

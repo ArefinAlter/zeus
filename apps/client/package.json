@@ -1,0 +1,34 @@
+{
+  "name": "zeus-client",
+  "private": true,
+  "version": "0.0.1-alpha",
+  "description": "Zeus pre-alpha client: downloads, link grabber, queues, files search, agent threads and approvals. Talks to a real zeusd through zeus-web-bridge (hosted or local); a scripted backend remains for offline builds and tests.",
+  "license": "Apache-2.0",
+  "author": "Verne Ltd.",
+  "type": "module",
+  "engines": {
+    "node": ">=22.18.0"
+  },
+  "scripts": {
+    "dev": "vite",
+    "dev:hosted": "vite --mode hosted",
+    "typecheck": "tsc --noEmit -p .",
+    "test": "node --test src/model/*.test.mjs src/lib/*.test.mjs",
+    "build": "tsc --noEmit -p . && vite build --mode desktop",
+    "build:hosted": "tsc --noEmit -p . && vite build --mode hosted --outDir dist/hosted",
+    "build:scripted": "tsc --noEmit -p . && vite build --mode scripted --outDir dist/scripted",
+    "build:site": "tsc --noEmit -p . && vite build --mode site --outDir dist/site",
+    "preview": "vite preview",
+    "build:desktop": "node scripts/build-desktop.mjs",
+    "publish:site": "node scripts/publish-site.mjs"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "2.11.1",
+    "preact": "10.29.8"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "2.11.1",
+    "typescript": "5.9.3",
+    "vite": "7.3.7"
+  }
+}

@@ -1,0 +1,168 @@
+# The hosted Zeus pre-alpha: the real zeusd, its HTTP bridge, the pre-alpha service and a fixture file server, on an
+# internal network with no route to the internet. Only the edge proxy is published, and only on loopback; the host's
+# nginx serves it at https://zeus.103.191.50.32.sslip.io.
+#
+#   docker compose -p zeus-prealpha up -d
+#
+# See README.md in this directory.
+name: zeus-prealpha
+
+x-common: &common
+  restart: unless-stopped
+  logging:
+    driver: json-file
+    options: { max-size: "10m", max-file: "3" }
+  security_opt: ["no-new-privileges:true"]
+  cap_drop: ["ALL"]
+
+networks:
+  internal:
+    internal: true
+  edge: {}
+
+volumes:
+  zeus-state: {}
+  zeus-runtime: {}
+  downloads: {}
+  bridge-state: {}
+  svc-data: {}
+  fixtures: {}
+
+services:
+  # One-shot: give the volumes to the unprivileged user every other container runs as.
+  init:
+    image: zeus-prealpha-runtime:0.0.1-alpha
+    user: "0:0"
+    command: ["sh", "-c", "chown 10001:10001 /state /run/zeus /data/downloads /bridge /data/svc && chmod 700 /state /run/zeus"]
+    cap_drop: ["ALL"]
+    cap_add: ["CHOWN", "FOWNER"]
+    network_mode: none
+    volumes:
+      - zeus-state:/state
+      - zeus-runtime:/run/zeus
+      - downloads:/data/downloads
+      - bridge-state:/bridge
+      - svc-data:/data/svc
+    logging:
+      driver: json-file
+      options: { max-size: "1m", max-file: "1" }
+
+  zeusd:
+    <<: *common
+    image: zeus-prealpha-runtime:0.0.1-alpha
+    user: "10001:10001"
+    depends_on:
+      init: { condition: service_completed_successfully }
+    command: ["/opt/zeus/start-zeusd.sh"]
+    environment:
+      ZEUS_STATE_DIR: /state
+      ZEUS_CONFIG_DIR: /config
+      ZEUS_RUNTIME_DIR: /run/zeus
+      HOME: /state
+    volumes:
+      - zeus-state:/state
+      - zeus-runtime:/run/zeus
+      - downloads:/data/downloads
+      - ./config:/config:ro
+    networks: [internal]
+    mem_limit: 1g
+    cpus: 2
+    pids_limit: 256
+
+  bridge:
+    <<: *common
+    image: zeus-prealpha-runtime:0.0.1-alpha
+    user: "10001:10001"
+    command: ["/opt/zeus/start-bridge.sh"]
+    # The daemon checks its IPC peer; sharing the daemon's process namespace keeps that check meaningful.
+    pid: "service:zeusd"
+    depends_on:
+      zeusd: { condition: service_started }
+    environment:
+      ZEUS_STATE_DIR: /state
+      ZEUS_CONFIG_DIR: /config
+      ZEUS_RUNTIME_DIR: /run/zeus
+      HOME: /bridge
+      ZEUS_BRIDGE_MODE: hosted
+      ZEUS_BRIDGE_LISTEN: 0.0.0.0:8080
+      ZEUS_BRIDGE_STATE_DIR: /bridge
+      ZEUS_BRIDGE_ROOT: /data/downloads
+      ZEUS_BRIDGE_CATALOGUE: /fixtures/catalogue.json
+      ZEUS_BRIDGE_QUOTA_FILES: "40"
+      ZEUS_BRIDGE_QUOTA_MIB: "1024"
+      ZEUS_BRIDGE_TTL_HOURS: "24"
+      ZEUS_BRIDGE_MAX_SESSIONS: "5000"
+    volumes:
+      # Read-write: zeus-api re-applies owner-only modes to the secret and token files it opens.
+      - zeus-state:/state
+      - zeus-runtime:/run/zeus
+      - downloads:/data/downloads
+      - bridge-state:/bridge
+      - fixtures:/fixtures:ro
+      - ./config:/config:ro
+    networks: [internal]
+    mem_limit: 256m
+    cpus: 1
+
+  svc:
+    <<: *common
+    image: node:24-alpine
+    user: "10001:10001"
+    depends_on:
+      init: { condition: service_completed_successfully }
+    command: ["node", "--disable-warning=ExperimentalWarning", "/app/server.mjs"]
+    environment:
+      SVC_PORT: "8081"
+      SVC_DB: /data/svc/svc.sqlite
+      SVC_DOWNLOADS: /data/downloads
+      SVC_CATALOGUE: /fixtures/catalogue.json
+    volumes:
+      - ./svc:/app:ro
+      - svc-data:/data/svc
+      - downloads:/data/downloads:ro
+      - fixtures:/fixtures:ro
+    networks: [internal]
+    mem_limit: 256m
+    cpus: 1
+
+  fixtures:
+    <<: *common
+    image: nginx:1.27-alpine
+    user: "10001:10001"
+    volumes:
+      - fixtures:/srv:ro
+      - ./fixtures/nginx.conf:/etc/nginx/nginx.conf:ro
+    # Port 80 without root: the addresses visitors paste are plain http://files.example.org/... URLs.
+    sysctls: { net.ipv4.ip_unprivileged_port_start: "80" }
+    networks:
+      internal:
+        aliases: [files.example.org, mirror.example.net, docs.example.org]
+    mem_limit: 128m
+    cpus: 0.5
+
+  edge:
+    <<: *common
+    image: nginx:1.27-alpine
+    user: "10001:10001"
+    depends_on: [bridge, svc]
+    ports: ["127.0.0.1:18540:8080"]
+    volumes:
+      - ./web:/usr/share/nginx/html:ro
+      - ./edge/nginx.conf:/etc/nginx/nginx.conf:ro
+    networks: [internal, edge]
+    mem_limit: 128m
+    cpus: 1
+
+  # Files expire 24 hours after they were written; empty sandbox folders go after the same time.
+  janitor:
+    <<: *common
+    image: zeus-prealpha-runtime:0.0.1-alpha
+    user: "10001:10001"
+    depends_on:
+      init: { condition: service_completed_successfully }
+    command: ["/opt/zeus/janitor.sh"]
+    network_mode: none
+    volumes:
+      - downloads:/data/downloads
+    mem_limit: 64m
+    cpus: 0.25

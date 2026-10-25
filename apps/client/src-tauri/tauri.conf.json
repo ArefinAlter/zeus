@@ -1,0 +1,64 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Zeus",
+  "mainBinaryName": "zeus-client",
+  "version": "0.0.1-alpha",
+  "identifier": "dev.verne.zeus.client",
+  "build": {
+    "frontendDist": "../dist/web",
+    "devUrl": "http://localhost:5174"
+  },
+  "app": {
+    "withGlobalTauri": false,
+    "windows": [
+      {
+        "label": "main",
+        "create": false,
+        "title": "Zeus",
+        "width": 1360,
+        "height": 880,
+        "minWidth": 360,
+        "minHeight": 520,
+        "dragDropEnabled": false
+      }
+    ],
+    "security": {
+      "capabilities": [
+        "main"
+      ],
+      "freezePrototype": true,
+      "csp": "default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data:; connect-src ipc: http://ipc.localhost https://zeus.103.191.50.32.sslip.io http://127.0.0.1:* http://localhost:*; base-uri 'none'; form-action 'none'; object-src 'none'; frame-src 'none'; frame-ancestors 'none'",
+      "devCsp": "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data:; connect-src ipc: http://ipc.localhost ws://localhost:5174 http://localhost:5174 https://zeus.103.191.50.32.sslip.io http://127.0.0.1:* http://localhost:*; base-uri 'none'; form-action 'none'; object-src 'none'; frame-src 'none'; frame-ancestors 'none'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "category": "Utility",
+    "publisher": "Verne Ltd.",
+    "copyright": "Copyright 2026 Verne Ltd. Apache-2.0.",
+    "shortDescription": "Zeus",
+    "longDescription": "Zeus pre-alpha release: downloads, link grabber, queues, file search, agent threads and approvals. Connects to the hosted Zeus pre-alpha by default; Settings, Backend switches to your own zeusd through zeus-web-bridge or to offline sample data.",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.png",
+      "icons/icon.ico"
+    ],
+    "targets": [
+      "nsis",
+      "deb",
+      "appimage"
+    ],
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser"
+      }
+    },
+    "linux": {
+      "deb": {
+        "depends": []
+      }
+    }
+  }
+}

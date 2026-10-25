@@ -249,6 +249,29 @@ jobs:
         working-directory: zeus
         run: node --test apps/desktop/tests/model.test.mjs
 
+  # The pre-alpha client (apps/client): a web frontend on a scripted backend, with no daemon and no zeus-core build.
+  # Its Tauri shell is an independent Cargo workspace and is built locally, not in this job.
+  client:
+    name: Client (typecheck, model tests, web builds)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: apps/client/package-lock.json
+      - name: Install
+        working-directory: apps/client
+        run: npm ci
+      - name: Typecheck, test and build
+        working-directory: apps/client
+        run: |
+          npm run typecheck
+          npm test
+          npm run build
+          npm run build:site
+
   # Build/test evidence is separate from installed-platform, browser, keyring and GUI acceptance.
   # Keep new CPU/OS combinations informational until their failures and missing capabilities are resolved.
   compatibility:

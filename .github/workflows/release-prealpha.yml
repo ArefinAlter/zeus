@@ -1,0 +1,110 @@
+# Pre-alpha release builds (Windows x64 and Linux x64), uploaded to an existing GitHub release.
+#
+# Manual only: run it from the Actions tab with the tag of a release that already exists. It is not triggered by
+# pushing a tag. Release 0.0.1a was built locally (Windows natively, Linux in a Debian bookworm container) because the
+# account's Actions minutes were used up; this workflow reproduces the same assets for later releases.
+name: Release (pre-alpha)
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag to upload to (for example v0.0.1a)
+        required: true
+      core_ref:
+        description: zeus-core commit or branch
+        required: false
+        default: 6c622a18d6822222575902dc3e16b24be6d95ebc
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  CARGO_BUILD_JOBS: "4"
+
+jobs:
+  build:
+    name: Build (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: windows-x64
+            os: windows-latest
+            exe: .exe
+          - name: linux-x64
+            os: ubuntu-22.04
+            exe: ""
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.tag }}
+          path: zeus
+      - uses: actions/checkout@v5
+        with:
+          repository: ArefinAlter/zeus-core
+          ref: ${{ inputs.core_ref }}
+          ssh-key: ${{ secrets.ZEUS_CORE_SSH_KEY }}
+          ssh-strict: true
+          persist-credentials: false
+          path: zeus-core
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+      - name: Linux system packages
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libdbus-1-dev pkg-config patchelf file
+      - name: zeusd, zeus, zeus-native-host
+        working-directory: zeus
+        run: cargo build --release --locked -p zeus-daemon -p zeus-cli -p zeus-native-host
+      - name: zeus-web-bridge
+        working-directory: zeus/services/pre-alpha/gateway
+        run: cargo build --release --locked
+      - name: Zeus client (Tauri bundles)
+        working-directory: zeus/apps/client
+        shell: bash
+        run: |
+          npm ci
+          npm run build
+          if [ "$RUNNER_OS" = "Windows" ]; then npx tauri build --bundles nsis; else npx tauri build --bundles deb,appimage; fi
+      - name: Zeus desktop (real-daemon client)
+        working-directory: zeus
+        run: cargo build --release --locked --manifest-path apps/desktop/Cargo.toml
+      - name: Collect assets
+        shell: bash
+        env:
+          N: ${{ matrix.name }}
+          X: ${{ matrix.exe }}
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          T=zeus/target/release
+          C=zeus/apps/client/src-tauri/target/release
+          D=zeus/apps/desktop/target/release
+          B=zeus/services/pre-alpha/gateway/target/release
+          mkdir -p "zeus-cli-$N"
+          cp "$T/zeus$X" "$T/zeusd$X" "$T/zeus-native-host$X" "$B/zeus-web-bridge$X" "zeus-cli-$N/"
+          cp zeus/LICENSE zeus/NOTICE "zeus-cli-$N/"
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            7z a "out/zeus-cli-0.0.1a-$N.zip" "zeus-cli-$N" >/dev/null
+            cp "$C"/bundle/nsis/*.exe out/
+            mkdir -p "zeus-client-$N" && cp "$C/zeus-client.exe" "zeus-client-$N/" && 7z a "out/zeus-client-0.0.1a-$N-portable.zip" "zeus-client-$N" >/dev/null
+            mkdir -p "zeus-desktop-$N" && cp "$D/zeus-desktop.exe" "zeus-desktop-$N/" && 7z a "out/zeus-desktop-0.0.1a-$N.zip" "zeus-desktop-$N" >/dev/null
+          else
+            tar -czf "out/zeus-cli-0.0.1a-$N.tar.gz" "zeus-cli-$N"
+            cp "$C"/bundle/deb/*.deb "$C"/bundle/appimage/*.AppImage out/
+            mkdir -p "zeus-desktop-$N" && cp "$D/zeus-desktop" "zeus-desktop-$N/" && tar -czf "out/zeus-desktop-0.0.1a-$N.tar.gz" "zeus-desktop-$N"
+          fi
+          ls -la out
+      - name: Upload to the release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: gh release upload "$TAG" out/* --clobber --repo "$GITHUB_REPOSITORY"
