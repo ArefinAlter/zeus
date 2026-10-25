@@ -47,6 +47,18 @@ docker compose -p zeus-prealpha restart bridge svc
 The web client is `apps/client` built with `npm run build:hosted` and copied to `web/`. The host's nginx site is
 `host/zeus-prealpha.nginx`.
 
+## Operate (on the VPS, /opt/zeus-prealpha)
+
+- Compose project `zeus-prealpha`; containers `zeus-prealpha-{init,zeusd,bridge,svc,fixtures,edge,janitor}-1`;
+  networks `zeus-prealpha_internal` (internal) and `zeus-prealpha_edge`; only `127.0.0.1:18540` is published.
+- Status and logs: `docker compose -p zeus-prealpha ps`, `docker compose -p zeus-prealpha logs --tail 50 bridge`.
+- Restart: `docker compose -p zeus-prealpha restart` (sessions, settings and files survive; they live in volumes).
+- Expiry instead of a nightly reset: sessions end 24 hours after creation (bridge and service), the janitor deletes
+  sandbox files 24 hours after they were written. A full reset is `docker compose -p zeus-prealpha down -v`, then the
+  deploy steps above.
+- nginx: `/etc/nginx/sites-available/zeus-prealpha` (TLS by certbot, rate limits, headers), edited only under
+  `flock /tmp/verne-nginx.lock`.
+
 ## Local bridge
 
 ```sh
