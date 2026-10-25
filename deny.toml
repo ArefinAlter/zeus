@@ -14,10 +14,6 @@ version = 2
 yanked = "deny"
 # Each ignore names why the advisory cannot reach Zeus. Review them whenever a fixed release appears.
 ignore = [
-    # Marvin timing attack on RSA private-key operations (decryption/signing); `rsa` has no fixed release.
-    # It arrives through `jsonwebtoken` in zeus-llm, which only verifies ID-token signatures with public JWKs.
-    # Zeus holds no RSA private key and performs no RSA decryption or signing.
-    { id = "RUSTSEC-2023-0071", reason = "public-key JWT verification only; no RSA private-key operations" },
     # `zbus_names`, `zvariant`, `zvariant_derive` are unmaintained (merged into zbus 6), not vulnerable.
     # They arrive through the Linux secret-service backend of `keyring`; drop these when keyring moves to zbus 6.
     { id = "RUSTSEC-2026-0370", reason = "unmaintained, no vulnerability; via keyring's Linux backend" },

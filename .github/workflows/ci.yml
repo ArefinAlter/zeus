@@ -41,7 +41,7 @@ jobs:
         uses: actions/checkout@v5
         with:
           repository: ArefinAlter/zeus-core
-          ref: 454fb44dcf894439042cc43f1fde039e71dcbd10
+          ref: 0d2f586a94a2356f79febd19a1a3215f81b03809
           ssh-key: ${{ secrets.ZEUS_CORE_SSH_KEY }}
           ssh-strict: true
           persist-credentials: true
@@ -66,7 +66,7 @@ jobs:
                 echo "::error::Cannot read private zeus-core refs; check CI deploy-key access."
                 exit "$lookup_status"
               fi
-              ref="454fb44dcf894439042cc43f1fde039e71dcbd10"
+              ref="0d2f586a94a2356f79febd19a1a3215f81b03809"
             fi
           fi
           echo "zeus-core ref: $ref"
