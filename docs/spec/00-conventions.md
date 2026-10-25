@@ -127,7 +127,26 @@ Entity identifiers are a lowercase prefix, an underscore and a 26 character ULID
 | `plan_` | Workflow plan draft | daemon | yes | A stored candidate plan with its samples; expires 24 h after last use. An approved run keeps its plan by hash, not by id (08). |
 | `cli_` | Client credential | daemon (provisioning, `clients.add`) | yes, in the verifier store | Names a daemon API credential; it is the `client_id` of actors, job sources and audit records. Safe to log; the token it belongs to never is (05). |
 
-Ogun (ADR 0011) registers its own prefixes here when its spec O-00 is written. A new prefix requires an entry in this table.
+Ogun (ADR 0011) mints its own identifiers inside `ogund`, with the same syntax. They are listed here so no Zeus prefix ever collides with one; Ogun's spec O-00 section 3 is their normative definition, and Zeus code never mints or parses them.
+
+| Prefix | Ogun entity | Notes |
+|---|---|---|
+| `wf_` | Workflow | All versions of one workflow name; a version is named by its workflow hash. |
+| `orun_` | Run | One execution of one workflow version. Distinct from Zeus `run_`. |
+| `ni_` | Node instance | One node of one run for one partition. |
+| `oap_` | Approval | An Ogun approval. Distinct from Zeus `ap_`. |
+| `ast_` | Asset | A logical object with versions. |
+| `env_` | Environment | The isolated place a run executes. |
+| `evl_` | Evaluator | Something that scores a run. |
+| `agr_` | Agent run | A recorded agent run. |
+| `edg_` | Edge | An Ogun edge installation; the namespace of the partitions it writes. |
+| `syn_` | Sync session | One edge-to-hub sync session. |
+| `ocl_` | Local credential | A client credential of `ogund`, Ogun's daemon. Distinct from Zeus `cli_`. |
+| `usr_` | Server user | A user of a self-hosted Ogun server. |
+| `wsp_` | Server workspace | A workspace on a self-hosted Ogun server. |
+| `tok_` | API token | An Ogun server API token; always acts as an agent, never as a person. |
+
+A new prefix, Zeus's or Ogun's, requires an entry in one of these tables and must differ from every prefix in both.
 
 Rules:
 

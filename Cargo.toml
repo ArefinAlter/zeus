@@ -124,7 +124,9 @@ hex = "0.4"
 rand = "0.10"
 zeroize = { version = "1.9", features = ["derive"] }
 keyring = "4.2"
-jsonwebtoken = { version = "10.4", default-features = false, features = ["rust_crypto"] }
+# AWS-LC also backs rustls and avoids RustCrypto's vulnerable elliptic-curve dependency.
+# Its RSA verifier requires 2048–8192-bit identity-provider keys.
+jsonwebtoken = { version = "10.4", default-features = false, features = ["aws_lc_rs"] }
 
 # ---- platform and filesystem ----
 directories = "6"
