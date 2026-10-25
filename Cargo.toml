@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-exclude = ["apps/desktop", "apps/client/src-tauri"]
+exclude = ["apps/desktop", "apps/client/src-tauri", "services/pre-alpha/gateway"]
 members = [
     "crates/zeus-api",
     "crates/zeus-daemon",

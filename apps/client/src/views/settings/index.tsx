@@ -8,12 +8,12 @@ import type { IconName } from '../../ui/icons'
 import { About } from '../About'
 import { AppearanceSettings } from './Appearance'
 import { KeybindingSettings } from './Keybindings'
+import { BackendSettings } from './Backend'
 import { ProvidersSettings } from './Providers'
 import {
   AgentSettings,
   BrowserSettings,
   ConnectionSettings,
-  DaemonSettings,
   DownloadsSettings,
   FileTypesSettings,
   GeneralSettings,
@@ -52,7 +52,7 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
   { id: 'agent', label: 'Agent', icon: 'chat', hint: 'Access, tools, instructions' },
   { id: 'storage', label: 'Storage and cleanup', icon: 'archive', hint: 'Retention and cleanup preview' },
   { id: 'security', label: 'Security', icon: 'shield', hint: 'Global stop and fixed rules' },
-  { id: 'daemon', label: 'Daemon', icon: 'server', hint: 'Which zeusd this app uses' },
+  { id: 'daemon', label: 'Backend', icon: 'server', hint: 'Hosted, your own zeusd, or sample data' },
   { id: 'about', label: 'About', icon: 'info', hint: 'Pre-alpha release, what is real' },
 ]
 
@@ -93,7 +93,7 @@ export function Settings({ section }: { section: string }) {
     case 'security':
       return <SecuritySettings />
     case 'daemon':
-      return <DaemonSettings />
+      return <BackendSettings />
     case 'about':
       return <About />
     default:

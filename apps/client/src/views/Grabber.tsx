@@ -11,6 +11,7 @@ import { CATEGORIES } from '../model/categories.ts'
 import { MAX_URLS, nameProblem, packagesByHost } from '../model/links.ts'
 import type { CategoryId } from '../model/types.ts'
 import { fmtBytes } from '../model/units.ts'
+import { HOSTED, LIVE } from '../backend/live'
 import { href } from '../lib/router'
 import { Chip, Empty, Notice, PageHead, Provenance } from '../ui/components'
 import { Icon } from '../ui/icons'
@@ -25,6 +26,18 @@ const SAMPLE = [
   'https://members.example.org/library/handbook.epub',
   'magnet:?xt=urn:btih:0000',
   'ftp://files.example.net/legacy.tar',
+].join('\n')
+
+// The hosted pre-alpha downloads only from its sample hosts; the last addresses show refusals.
+const SAMPLE_HOSTED = [
+  'http://files.example.org/pub/documents/user-guide.pdf',
+  'http://files.example.org/pub/documents/sample-data.csv',
+  'http://files.example.org/pub/documents/user-guide.pdf',
+  'http://files.example.org/pub/media/podcast-episode-12.mp3',
+  'http://files.example.org/slow/big-slow.bin',
+  'http://mirror.example.net/pub/archives/backup-small.7z',
+  'http://files.example.org/gone/old-release.zip',
+  'magnet:?xt=urn:btih:0000',
 ].join('\n')
 
 function checkChip(c: GrabberLink['check']) {
@@ -75,6 +88,8 @@ export function Grabber() {
     setReviewErr(null)
   }
 
+  const liveReview = useStore((s) => (review ? s.reviews.find((r) => r.id === review.id) : undefined))
+  const remote = liveReview?.remote
   const preview = () => {
     const r = grabberPreview(sel)
     if (typeof r === 'string') {
@@ -89,7 +104,7 @@ export function Grabber() {
     if (!review) return
     const r = grabberStart(review.id, queue === 'now' ? null : queue)
     if (!r.ok) return setReviewErr(r.reason)
-    setStarted(r.ids.length)
+    setStarted(r.ids.length || review.links.length)
     setReview(null)
   }
 
@@ -126,7 +141,7 @@ export function Grabber() {
           >
             <Icon name="copy" /> Paste from clipboard
           </button>
-          <button type="button" class="btn small ghost" onClick={() => add(SAMPLE)}>
+          <button type="button" class="btn small ghost" onClick={() => add(HOSTED ? SAMPLE_HOSTED : SAMPLE)}>
             Add sample links
           </button>
           <span class="spacer" />
@@ -318,6 +333,15 @@ export function Grabber() {
                   </tbody>
                 </table>
               </div>
+              {remote ? (
+                remote.state === 'checking' ? (
+                  <Notice kind="info">zeusd is resolving this batch (a dry run: no job is created yet)…</Notice>
+                ) : remote.state === 'refused' ? (
+                  <Notice kind="error">{remote.reason ?? 'zeusd refused this batch.'}</Notice>
+                ) : (
+                  <Notice kind="ok">zeusd accepted the dry run. Starting enqueues exactly this batch, once.</Notice>
+                )
+              ) : null}
               <div class="decide-row split">
                 <button type="button" class="btn" onClick={() => setReview(null)}>
                   Back to the links
@@ -348,7 +372,9 @@ export function Grabber() {
         </Notice>
       ) : null}
       <Provenance>
-        Preview and start match the desktop client's real two-step review against zeusd. Online checks, sizes and packages here are answered from sample data.
+        {LIVE
+          ? `Preview asks zeusd for a dry run through zeus-web-bridge, and Start enqueues exactly that reviewed batch. ${HOSTED ? 'Online checks are HEAD requests from the pre-alpha service to the sample hosts; nothing reaches the internet.' : 'Online checks are dry runs in your zeusd.'}`
+          : "Preview and start match the desktop client's real two-step review against zeusd. Online checks, sizes and packages here are answered from sample data."}
       </Provenance>
     </div>
   )

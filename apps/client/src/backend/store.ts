@@ -17,6 +17,10 @@ import { jobRateCap, startDue, stopDue } from '../model/schedule.ts'
 import type { Approval, ApprovalFacts, ApprovalKind, CategoryId, FileEntry, Job, JobSource, JobState, Queue, Scope, SpeedLimiter } from '../model/types.ts'
 import { fmtBytes } from '../model/units.ts'
 import { CONNECTORS } from './connectors.ts'
+import type { JobMeta, LiveInfo, PendingItem } from './live.ts'
+import { HOSTED, LIVE, clearStored, control as liveControl, hostRefusal, newPendingId, rebuildJobs, refreshFiles, send as liveSend, startLive, subdirOf } from './live.ts'
+import type { SitePreview } from './sitegrab.ts'
+import { api, retryKey, svc } from './remote.ts'
 import { ulid } from './rand.ts'
 import { ARCHIVE, CLAUDE, EDGE, ROOT, UNITS, YOU, fileOfJob, makeJob, makeSegments, sampleIndex, sampleJobs, sampleLimiter, sampleQueues } from './sample.ts'
 import type { Settings } from './settings.ts'
@@ -66,6 +70,8 @@ export interface Review {
   links: GrabberLink[]
   /** Exactly what would be created: destination paths after collision renaming. */
   destinations: { name: string; dir: string; collides: boolean }[]
+  /** Live backend: zeusd's dry-run of this batch, one per destination folder. */
+  remote?: { state: 'checking' | 'ready' | 'refused'; reason?: string; reviews: { reviewId: string; linkIds: string[] }[] }
 }
 
 export interface SiteProject {
@@ -73,6 +79,8 @@ export interface SiteProject {
   name: string
   startUrl: string
   request: SiteRequest
+  /** Live backend: the files the walk over the sample site found, started after approval. */
+  found?: { url: string; name: string; size: number }[]
   created: number
   state: 'awaiting_approval' | 'running' | 'denied' | 'finished'
   files: number
@@ -116,6 +124,10 @@ export interface State {
   toasts: Toast[]
   killSwitch: boolean
   connectorsAdded: string[]
+  /** Live backend only: display facts about zeusd jobs, downloads waiting in queues, and the connection. */
+  jobMeta: Record<string, JobMeta>
+  pending: PendingItem[]
+  live: LiveInfo | null
 }
 
 // ---------------------------------------------------------------- the store
@@ -168,6 +180,21 @@ function init(): State {
     toasts: [],
     killSwitch: false,
     connectorsAdded: ['google-drive'],
+    jobMeta: {},
+    pending: [],
+    live: null,
+  }
+  if (LIVE) {
+    // A real backend starts from nothing but the defaults: no sample jobs, files, requests or projects.
+    s.jobs = []
+    s.files = []
+    s.projects = []
+    s.approvals = []
+    s.connectorsAdded = []
+    s.index = { state: 'current', progress: 1, generation: 0, lastScan: now }
+    s.history = []
+    for (const q of s.queues) q.order = []
+    return s
   }
   s.approvals = sampleApprovals(now, s)
   return s
@@ -185,6 +212,22 @@ function set(patch: Partial<State>): void {
   state = { ...state, ...patch }
   emit()
 }
+
+/** For the live adapter only. */
+export function setState(patch: Partial<State>): void {
+  set(patch)
+}
+
+function meta(ids: string[], f: (m: JobMeta) => JobMeta): void {
+  const next = { ...state.jobMeta }
+  for (const id of ids) next[id] = f(next[id] ?? {})
+  set({ jobMeta: next })
+}
+
+const isPending = (id: string) => id.startsWith('pend_')
+
+/** The download folder as shown: the sandbox's (live) or the sample one. */
+const rootDir = () => (LIVE ? state.settings.saveTo.root : ROOT)
 
 export function subscribe(f: () => void): () => void {
   listeners.add(f)
@@ -241,6 +284,11 @@ function stopSegments(j: Job): Job {
 
 /** Pause: workers stop, every committed byte stays (spec 01 rule 8). Verifying and finalizing cannot be paused. */
 export function pause(ids: string[]): number {
+  if (LIVE) {
+    const real = state.jobs.filter((j) => ids.includes(j.id) && !isPending(j.id) && ['queued', 'probing', 'downloading', 'retry_scheduled', 'awaiting_session'].includes(j.state))
+    void liveControl(real.map((j) => j.id), 'pause')
+    return real.length
+  }
   let n = 0
   set({
     jobs: state.jobs.map((j) => {
@@ -257,6 +305,16 @@ export function resume(ids: string[]): number {
   if (state.killSwitch) {
     toast({ kind: 'warn', title: 'Downloads are stopped', desc: 'Release the global stop first. Releasing restores no permission and no work by itself.', important: true, topic: 'system' })
     return 0
+  }
+  if (LIVE) {
+    const chosen = state.jobs.filter((j) => ids.includes(j.id))
+    const pend = chosen.filter((j) => isPending(j.id)).map((j) => j.id)
+    const paused = chosen.filter((j) => !isPending(j.id) && j.state === 'paused').map((j) => j.id)
+    const failed = chosen.filter((j) => !isPending(j.id) && j.state === 'failed').map((j) => j.id)
+    if (pend.length) void liveSend(pend)
+    if (paused.length) void liveControl(paused, 'resume')
+    if (failed.length) void liveControl(failed, 'retry')
+    return pend.length + paused.length + failed.length
   }
   let n = 0
   set({
@@ -283,6 +341,16 @@ export function resumeAll(): number {
 
 /** Remove from the list. A finished file stays on disk unless `deleteFile`; partial data of an unfinished job is deleted (cancel). */
 export function remove(ids: string[], deleteFile: boolean): number {
+  if (LIVE) {
+    const real = ids.filter((id) => !isPending(id))
+    // zeusd keeps its job records; this client only hides them. Files stay: the gui credential cannot delete files,
+    // and the hosted sandbox removes them after 24 hours.
+    meta(real, (m) => ({ ...m, hidden: true }))
+    set({ pending: state.pending.filter((p) => !ids.includes(p.id)), queues: state.queues.map((q) => ({ ...q, order: q.order.filter((x) => !ids.includes(x)) })) })
+    if (deleteFile && real.length) toast({ kind: 'warn', title: 'Files kept', desc: 'This client cannot delete files: its restricted zeusd credential has no file write permission. Hosted files expire after 24 hours.', important: true, topic: 'system' })
+    rebuildJobs()
+    return ids.length
+  }
   const gone = state.jobs.filter((j) => ids.includes(j.id))
   const files = deleteFile ? state.files.filter((f) => !f.jobId || !ids.includes(f.jobId)) : state.files
   set({
@@ -294,6 +362,13 @@ export function remove(ids: string[], deleteFile: boolean): number {
 }
 
 export function cancel(ids: string[]): void {
+  if (LIVE) {
+    set({ pending: state.pending.filter((p) => !ids.includes(p.id)) })
+    const real = state.jobs.filter((j) => ids.includes(j.id) && !isPending(j.id) && !['completed', 'canceled', 'finalizing'].includes(j.state)).map((j) => j.id)
+    if (real.length) void liveControl(real, 'cancel')
+    else rebuildJobs()
+    return
+  }
   set({
     jobs: state.jobs.map((j) => (ids.includes(j.id) && !['completed', 'canceled', 'finalizing'].includes(j.state) ? note({ ...stopSegments(j), state: 'canceled', done: 0, segments: makeSegments(j.size, j.connections, 0, false) }, 'Canceled; partial data deleted') : j)),
   })
@@ -306,6 +381,14 @@ export function deleteCompleted(): number {
 export function redownload(id: string): void {
   const j = jobById(id)
   if (!j) return
+  if (LIVE) {
+    if (j.queryWithheld) {
+      toast({ kind: 'warn', title: 'Add the link again', desc: "Zeus never shows a link's query string, so it cannot repeat this one. Paste the full link into Add URL.", important: false, topic: 'system' })
+      return
+    }
+    addDownloads([{ url: j.url, queue: null, start: true }])
+    return
+  }
   patchJob(id, (x) => {
     const { sha256: _a, blake3: _b, finished: _f, matchedExpected: _m, quarantined: _q, quarantineReasons: _r, error: _e, ...rest } = x
     return note({ ...rest, state: 'probing', probeUntil: Date.now() + 900, done: 0, segments: makeSegments(x.size, x.connections, 0, true) }, 'Download again: the existing file is kept and the new one is renamed if it collides')
@@ -316,6 +399,11 @@ export function redownload(id: string): void {
 export function refreshAddress(id: string, url?: string): string | null {
   const j = jobById(id)
   if (!j) return 'No such job.'
+  if (LIVE) {
+    if (!url) return 'Asking the browser for a fresh address needs the Zeus extension, which this client does not use. Paste a fresh link instead.'
+    const r = addDownloads([{ url, name: j.name, dir: j.dir, queue: null, start: true }])
+    return r.refused[0] ?? null
+  }
   let host = j.host
   let display = j.url
   let withheld = j.queryWithheld
@@ -340,6 +428,15 @@ export function refreshAddress(id: string, url?: string): string | null {
 }
 
 export function setQueue(ids: string[], queue: string | null): void {
+  if (LIVE) {
+    meta(ids.filter((id) => !isPending(id)), (m) => ({ ...m, queue }))
+    set({
+      pending: state.pending.map((p) => (ids.includes(p.id) ? { ...p, queue } : p)),
+      queues: state.queues.map((q) => ({ ...q, order: q.id === queue ? [...q.order.filter((x) => !ids.includes(x)), ...ids] : q.order.filter((x) => !ids.includes(x)) })),
+    })
+    rebuildJobs()
+    return
+  }
   set({
     jobs: state.jobs.map((j) => (ids.includes(j.id) ? note({ ...j, queue, state: j.state === 'paused' && queue ? 'queued' : j.state }, queue ? `Added to ${queueName(queue)}` : 'Removed from its queue') : j)),
     queues: state.queues.map((q) => ({ ...q, order: q.id === queue ? [...q.order.filter((x) => !ids.includes(x)), ...ids] : q.order.filter((x) => !ids.includes(x)) })),
@@ -347,18 +444,41 @@ export function setQueue(ids: string[], queue: string | null): void {
 }
 
 export function setPriority(ids: string[], priority: Job['priority']): void {
+  if (LIVE) {
+    meta(ids, (m) => ({ ...m, priority }))
+    rebuildJobs()
+    return
+  }
   set({ jobs: state.jobs.map((j) => (ids.includes(j.id) ? { ...j, priority } : j)) })
 }
 
 export function renameJob(id: string, name: string): string | null {
   const problem = nameProblem(name)
   if (problem) return problem
+  if (LIVE) {
+    if (isPending(id)) {
+      set({ pending: state.pending.map((p) => (p.id === id ? { ...p, name } : p)) })
+      rebuildJobs()
+      return null
+    }
+    return "Renaming a file needs file write permission, which this client's restricted zeusd credential does not have. Use zeus files organize on your own machine."
+  }
   patchJob(id, (j) => note({ ...j, name, category: categoryOf(name, state.settings.categories) }, `Renamed to ${name}`))
   set({ files: state.files.map((f) => (f.jobId === id ? { ...f, name } : f)) })
   return null
 }
 
 export function moveJob(id: string, dir: string): string | null {
+  if (LIVE) {
+    if (isPending(id)) {
+      const root = state.settings.saveTo.root
+      if (dir !== root && !dir.startsWith(root + '\\')) return `Choose a folder inside ${root}.`
+      set({ pending: state.pending.map((p) => (p.id === id ? { ...p, dir } : p)) })
+      rebuildJobs()
+      return null
+    }
+    return "Moving a file needs file write permission, which this client's restricted zeusd credential does not have."
+  }
   if (!state.settings.saveTo.writeRoots.some((r) => dir === r || dir.startsWith(r + '\\'))) return 'That folder is outside the download folders Zeus may write to. Add it in Settings, Save to.'
   patchJob(id, (j) => note({ ...j, dir }, `Moved to ${dir}`))
   set({ files: state.files.map((f) => (f.jobId === id ? { ...f, dir } : f)) })
@@ -381,6 +501,7 @@ export interface NewDownload {
 
 /** Adds downloads, refusing what zeusd refuses. Returns the new job ids, or a reason. */
 export function addDownloads(list: NewDownload[]): { ids: string[]; refused: string[] } {
+  if (LIVE) return addLive(list)
   const ids: string[] = []
   const refused: string[] = []
   const now = Date.now()
@@ -416,6 +537,46 @@ export function addDownloads(list: NewDownload[]): { ids: string[]; refused: str
     jobs: [...jobs, ...state.jobs],
     queues: state.queues.map((q) => ({ ...q, order: [...q.order, ...jobs.filter((j) => j.queue === q.id).map((j) => j.id)] })),
   })
+  return { ids, refused }
+}
+
+/** Live backend: downloads wait as pending items until sent to zeusd (at once, or when their queue starts). */
+function addLive(list: NewDownload[]): { ids: string[]; refused: string[] } {
+  const ids: string[] = []
+  const refused: string[] = []
+  const now = Date.now()
+  const items: PendingItem[] = []
+  for (const d of list) {
+    const parsed = intake(d.url)
+    const link = parsed.links[0]
+    if (!link) {
+      refused.push(parsed.refused[0]?.reason ?? `${d.url.slice(0, 60)} is not an http or https address.`)
+      continue
+    }
+    const hostProblem = hostRefusal(link.host)
+    if (hostProblem) {
+      refused.push(hostProblem)
+      continue
+    }
+    if (d.sessionOrigin) {
+      refused.push(`${link.host} needs a site login, which comes only through the Zeus extension. This client has no browser sessions.`)
+      continue
+    }
+    const name = d.name?.trim() || link.name
+    const problem = nameProblem(name)
+    if (problem) {
+      refused.push(`${name}: ${problem}`)
+      continue
+    }
+    const category = categoryOf(name, state.settings.categories)
+    const id = newPendingId()
+    items.push({ id, url: link.url, display: link.display, host: link.host, queryWithheld: link.queryWithheld, name, dir: d.dir ?? defaultDir(category), queue: d.start ? null : d.queue, added: now, source: d.source ?? YOU, size: d.size ?? null, ...(d.project ? { project: d.project } : {}), ...(d.description ? { description: d.description } : {}) })
+    ids.push(id)
+  }
+  set({ pending: [...items, ...state.pending], queues: state.queues.map((q) => ({ ...q, order: [...q.order, ...items.filter((p) => p.queue === q.id).map((p) => p.id)] })) })
+  rebuildJobs()
+  const startNow = items.filter((p) => p.queue === null).map((p) => p.id)
+  if (startNow.length) void liveSend(startNow)
   return { ids, refused }
 }
 
@@ -455,6 +616,13 @@ export function startQueue(id: string, why: 'you' | 'schedule' = 'you'): void {
     return
   }
   const waiting = state.jobs.filter((j) => j.queue === id && (j.state === 'queued' || j.state === 'paused')).length
+  if (LIVE) {
+    const paused = state.jobs.filter((j) => j.queue === id && !isPending(j.id) && j.state === 'paused').map((j) => j.id)
+    if (paused.length) void liveControl(paused, 'resume')
+    set({ queues: state.queues.map((x) => (x.id === id ? { ...x, running: true, lastStarted: Date.now() } : x)) })
+    toast({ kind: '', title: `${q.name} started${why === 'schedule' ? ' on schedule' : ''}`, desc: `${waiting} file${waiting === 1 ? '' : 's'} waiting, ${q.maxConcurrent} at a time; each goes to zeusd when its turn comes`, important: why === 'schedule', topic: 'queue', to: '#/queues' })
+    return
+  }
   set({
     queues: state.queues.map((x) => (x.id === id ? { ...x, running: true, lastStarted: Date.now() } : x)),
     jobs: state.jobs.map((j) => (j.queue === id && j.state === 'paused' ? { ...j, state: 'queued' } : j)),
@@ -465,6 +633,13 @@ export function startQueue(id: string, why: 'you' | 'schedule' = 'you'): void {
 export function stopQueue(id: string, why: 'you' | 'schedule' | 'finished' = 'you'): void {
   const q = state.queues.find((x) => x.id === id)
   if (!q) return
+  if (LIVE) {
+    set({ queues: state.queues.map((x) => (x.id === id ? { ...x, running: false } : x)) })
+    const active = state.jobs.filter((j) => j.queue === id && !isPending(j.id) && ['queued', 'probing', 'downloading', 'retry_scheduled'].includes(j.state)).map((j) => j.id)
+    if (active.length) void liveControl(active, 'pause')
+    if (why !== 'finished') toast({ kind: '', title: `${q.name} stopped${why === 'schedule' ? ' on schedule' : ''}`, desc: active.length ? 'Its active downloads were paused in zeusd; saved bytes stay.' : 'Nothing was running.', important: false, topic: 'queue' })
+    return
+  }
   set({
     queues: state.queues.map((x) => (x.id === id ? { ...x, running: false } : x)),
     jobs: state.jobs.map((j) => (j.queue === id && isActive(j) && j.state !== 'verifying' && j.state !== 'finalizing' ? note(stopSegments({ ...j, state: 'queued' }), `${q.name} stopped; saved bytes kept`) : j)),
@@ -499,6 +674,12 @@ export function addQueue(name: string): string {
 export function deleteQueue(id: string): void {
   const q = state.queues.find((x) => x.id === id)
   if (!q || q.builtin) return
+  if (LIVE) {
+    set({ queues: state.queues.filter((x) => x.id !== id), pending: state.pending.map((p) => (p.queue === id ? { ...p, queue: null } : p)) })
+    meta(Object.keys(state.jobMeta).filter((k) => state.jobMeta[k]?.queue === id), (m) => ({ ...m, queue: null }))
+    rebuildJobs()
+    return
+  }
   set({ queues: state.queues.filter((x) => x.id !== id), jobs: state.jobs.map((j) => (j.queue === id ? { ...j, queue: null, state: j.state === 'queued' ? 'paused' : j.state } : j)) })
 }
 
@@ -522,6 +703,14 @@ export function setLimiter(patch: Partial<SpeedLimiter>): void {
 
 /** The global stop: pauses every transfer and revokes every site permission. Releasing restores neither. */
 export function globalStop(): void {
+  if (LIVE) {
+    // zeusd's own kill switch is an admin (CLI) operation; this client pauses its own downloads instead.
+    set({ killSwitch: true, queues: state.queues.map((q) => ({ ...q, running: false })) })
+    const active = state.jobs.filter((j) => !isPending(j.id) && ['queued', 'probing', 'downloading', 'retry_scheduled'].includes(j.state)).map((j) => j.id)
+    void liveControl(active, 'pause')
+    toast({ kind: 'bad', title: 'Global stop', desc: `${active.length} download${active.length === 1 ? '' : 's'} paused in zeusd; queues stopped. zeusd's own kill switch is in the Zeus CLI (zeus daemon kill-switch).`, important: true, topic: 'system' })
+    return
+  }
   set({
     killSwitch: true,
     jobs: state.jobs.map((j) => (isActive(j) && j.state !== 'finalizing' && j.state !== 'verifying' ? note(stopSegments({ ...j, state: 'paused' }), 'Paused by the global stop') : j.state === 'queued' ? { ...j, state: 'paused' } : j)),
@@ -582,7 +771,11 @@ function forText(files: { size: number | null }[]): string {
 
 export function createApproval(a: Omit<ApprovalInput, 'forText'> & { forText?: string }): Approval {
   const id = ulid('ap', Date.now())
-  const ap = buildApproval(id, 1, { ...a, forText: a.forText ?? forText(a.files) })
+  const ap: Approval = { ...buildApproval(id, 1, { ...a, forText: a.forText ?? forText(a.files) }), ...(LIVE ? { heldBy: 'service' as const } : {}) }
+  if (HOSTED) {
+    const { heldBy: _h, ...wire } = ap
+    svc.createApproval(wire).catch(() => toast({ kind: 'warn', title: 'Request not stored', desc: 'The pre-alpha service did not keep this request; it holds for this window only.', important: false, topic: 'system' }))
+  }
   set({ approvals: [ap, ...state.approvals], jobs: state.jobs.map((j) => (a.jobIds.includes(j.id) ? note({ ...stopSegments(j), state: 'awaiting_approval', approvalId: id }, `Waiting for your approval (${ap.bindCode})`) : j)) })
   const hosts = [...new Set(state.approvals.filter((x) => x.state === 'pending').map((x) => hostOf(x.facts.website)))]
   const n = state.approvals.filter((x) => x.state === 'pending').length
@@ -629,6 +822,7 @@ export type DecideResult = { ok: true } | { ok: false; reason: string }
 
 /** Decides an approval. Reached only from the Approvals page, after the facts, the arming delay and, for a typed-code confirmation, the code. */
 export function decide(id: string, decision: 'approve' | 'deny', scope: Scope | undefined, seenHash: string, armedFor: number): DecideResult {
+  if (LIVE) return decideLive(id, decision, scope, seenHash, armedFor)
   const ap = state.approvals.find((x) => x.id === id)
   if (!ap) return { ok: false, reason: 'No such request.' }
   if (ap.state !== 'pending') return { ok: false, reason: `This request is already ${ap.state}.` }
@@ -680,6 +874,48 @@ export function decide(id: string, decision: 'approve' | 'deny', scope: Scope | 
   return { ok: true }
 }
 
+/**
+ * Live backend. A request zeusd holds is never decided here: zeusd accepts decisions only from a person on its own
+ * trust surfaces (the interactive CLI, the extension popup). Requests the pre-alpha service holds (site-grabber plans
+ * and file moves proposed in this client) are decided here with the same rules, and the service checks them again.
+ */
+function decideLive(id: string, decision: 'approve' | 'deny', scope: Scope | undefined, seenHash: string, armedFor: number): DecideResult {
+  const ap = state.approvals.find((x) => x.id === id)
+  if (!ap) return { ok: false, reason: 'No such request.' }
+  if (ap.heldBy === 'zeusd') return { ok: false, reason: 'zeusd holds this request. Decide it in the Zeus CLI (zeus approvals) or the extension popup; no web page can decide a zeusd approval.' }
+  if (ap.state !== 'pending') return { ok: false, reason: `This request is already ${ap.state}.` }
+  if (ap.requestHash !== seenHash) return { ok: false, reason: `The request changed after you read it (now revision ${ap.facts.revision}). Read the facts again.` }
+  if (decision === 'approve' && armedFor < ARMING_MS) return { ok: false, reason: 'The approve button was pressed before it armed.' }
+  if (decision === 'approve' && ap.facts.allowed_scopes.length && (!scope || !ap.facts.allowed_scopes.includes(scope))) return { ok: false, reason: 'Choose one of the offered scopes.' }
+  const now = Date.now()
+  const decided: Approval = { ...ap, state: decision === 'approve' && scope !== 'never' ? 'approved' : 'denied', decided: { at: now, decision, ...(scope ? { scope } : {}), via: 'Pre-alpha service (this page)' } }
+  const apply = () => {
+    set({ approvals: state.approvals.map((x) => (x.id === id ? decided : x)) })
+    const kind = ap.facts.kind
+    if (kind === 'workflow_plan') {
+      const p = state.projects.find((x) => x.approvalId === id)
+      if (!p) return
+      if (decision === 'approve' && scope !== 'never') {
+        set({ projects: state.projects.map((x) => (x.id === p.id ? { ...x, state: 'running' } : x)) })
+        const files = p.found ?? []
+        const res = addDownloads(files.map((f) => ({ url: f.url, name: f.name, queue: p.queue, start: p.queue === null, source: { kind: 'workflow', label: `Site grabber: ${p.name}` }, size: f.size, project: p.name })))
+        if (res.refused.length) toast({ kind: 'warn', title: `${res.refused.length} file${res.refused.length === 1 ? '' : 's'} refused`, desc: res.refused[0] ?? '', important: false, topic: 'system' })
+      } else set({ projects: state.projects.map((x) => (x.id === p.id ? { ...x, state: 'denied' } : x)) })
+    } else if (kind === 'destructive_op' && decision === 'approve') {
+      toast({ kind: 'warn', title: 'Approved, nothing moved', desc: "Your decision is recorded. Moving files needs zeusd's files.write permission, which this client's restricted credential does not have; zeus files organize does it on your own machine.", important: true, topic: 'system' })
+    }
+  }
+  if (!HOSTED) {
+    apply()
+    return { ok: true }
+  }
+  void svc
+    .decide(id, { decision, ...(scope ? { scope } : {}), seen_hash: seenHash, armed_ms: Math.round(armedFor) })
+    .then(apply)
+    .catch((e: unknown) => toast({ kind: 'bad', title: 'Decision refused', desc: e instanceof Error ? e.message : 'The pre-alpha service refused the decision.', important: true, topic: 'approval' }))
+  return { ok: true }
+}
+
 const pendingMoves = new Map<string, { fileId: number; jobId?: string; toDir: string }[]>()
 
 /** An organize request from the agent's preview: the moves wait for a `destructive_op` approval. */
@@ -688,9 +924,9 @@ export function requestOrganize(moves: { fileId: number; jobId?: string; name: s
     kind: 'destructive_op',
     website: 'local files',
     requester,
-    forText: `move ${moves.length} file${moves.length === 1 ? '' : 's'} inside ${ROOT}`,
-    files: moves.map((m) => ({ name: `${m.name} → ${m.toDir.replace(ROOT, '…')}`, size: null })),
-    destination: ROOT,
+    forText: `move ${moves.length} file${moves.length === 1 ? '' : 's'} inside ${rootDir()}`,
+    files: moves.map((m) => ({ name: `${m.name} → ${m.toDir.replace(rootDir(), '…')}`, size: null })),
+    destination: rootDir(),
     jobIds: [],
     ...(agentSays ? { agentSays } : {}),
   })
@@ -748,6 +984,24 @@ export function grabberAdd(text: string): ReturnType<typeof intake> {
 /** Online check on sample answers: the same address always gives the same answer. Nothing is fetched. */
 export function grabberCheck(ids: string[]): void {
   set({ grabber: state.grabber.map((g) => (ids.includes(g.id) ? { ...g, check: 'checking' } : g)) })
+  if (LIVE) {
+    const links = state.grabber.filter((g) => ids.includes(g.id))
+    const done = (results: Map<string, { check: GrabberLink['check']; size: number | null }>) =>
+      set({ grabber: state.grabber.map((g) => {
+        const r = results.get(g.id)
+        if (!r || g.check !== 'checking') return g
+        return { ...g, check: r.check, size: r.size, selected: r.check === 'offline' ? false : g.selected }
+      }) })
+    if (HOSTED) {
+      void svc
+        .check(links.map((l) => l.url))
+        .then((r) => done(new Map(links.map((l, i) => [l.id, { check: r.items[i]?.check ?? 'offline', size: r.items[i]?.size ?? null }]))))
+        .catch(() => done(new Map(links.map((l) => [l.id, { check: 'unchecked', size: null }]))))
+    } else {
+      void Promise.all(links.map((l) => api.preview([l.url], '').then((r) => ({ check: (r.ready ? 'online' : 'offline') as GrabberLink['check'], size: null }), () => ({ check: 'unchecked' as const, size: null })))).then((rs) => done(new Map(links.map((l, i) => [l.id, rs[i] ?? { check: 'unchecked', size: null }]))))
+    }
+    return
+  }
   setTimeout(() => {
     set({
       grabber: state.grabber.map((g) => {
@@ -795,9 +1049,35 @@ export function grabberPreview(ids: string[]): Review | string {
     taken.add(`${l.dir}\\${name}`.toLowerCase())
     return { name, dir: l.dir, collides }
   })
-  const review: Review = { id: ulid('rv', Date.now()), created: Date.now(), links, destinations }
+  if (LIVE) {
+    for (const l of links) {
+      const problem = hostRefusal(l.host)
+      if (problem) return `${l.host}: ${problem}`
+    }
+  }
+  const review: Review = { id: ulid('rv', Date.now()), created: Date.now(), links, destinations, ...(LIVE ? { remote: { state: 'checking' as const, reviews: [] } } : {}) }
   set({ reviews: [review, ...state.reviews.slice(0, 4)] })
+  if (LIVE) void remotePreview(review)
   return review
+}
+
+/** zeusd resolves the batch without creating jobs; the bridge keeps the exact inputs for ten minutes. */
+async function remotePreview(review: Review): Promise<void> {
+  const groups = new Map<string, GrabberLink[]>()
+  for (const l of review.links) groups.set(l.dir, [...(groups.get(l.dir) ?? []), l])
+  const reviews: { reviewId: string; linkIds: string[] }[] = []
+  const finish = (remote: NonNullable<Review['remote']>) => set({ reviews: state.reviews.map((r) => (r.id === review.id ? { ...r, remote } : r)) })
+  try {
+    for (const [dir, links] of groups) {
+      const r = await api.preview(links.map((l) => l.url), subdirOf(dir))
+      if (r.refused.length) return finish({ state: 'refused', reason: `${links[r.refused[0]?.index ?? 0]?.host ?? ''}: ${r.refused[0]?.reason ?? ''}`, reviews })
+      if (!r.ready || !r.review_id) return finish({ state: 'refused', reason: 'zeusd could not plan this batch. Check the addresses.', reviews })
+      reviews.push({ reviewId: r.review_id, linkIds: links.map((l) => l.id) })
+    }
+    finish({ state: 'ready', reviews })
+  } catch (e) {
+    finish({ state: 'refused', reason: e instanceof Error ? e.message : 'The review failed.', reviews })
+  }
 }
 
 /** Step two: start exactly the reviewed batch. A review older than ten minutes, or one already used, is refused. */
@@ -805,6 +1085,33 @@ export function grabberStart(reviewId: string, queue: string | null): { ok: true
   const r = state.reviews.find((x) => x.id === reviewId)
   if (!r) return { ok: false, reason: 'This review is no longer available. Preview the downloads again.' }
   if (Date.now() - r.created > 10 * MIN) return { ok: false, reason: 'This review expired after ten minutes. Preview the downloads again.' }
+  if (LIVE && queue === null) {
+    if (!r.remote || r.remote.state === 'checking') return { ok: false, reason: 'zeusd is still checking this batch. Start it in a moment.' }
+    if (r.remote.state === 'refused') return { ok: false, reason: r.remote.reason ?? 'zeusd refused this batch.' }
+    const remote = r.remote
+    set({ reviews: state.reviews.filter((x) => x.id !== reviewId), grabber: state.grabber.filter((g) => !r.links.some((l) => l.id === g.id)) })
+    void (async () => {
+      let started = 0
+      for (const rv of remote.reviews) {
+        try {
+          const res = await api.enqueue(rv.reviewId, retryKey())
+          const next = { ...state.jobMeta }
+          res.jobs.forEach((j) => {
+            if (j.job_id) {
+              next[j.job_id] = { queue: null, source: YOU }
+              started++
+            }
+          })
+          set({ jobMeta: next })
+        } catch (e) {
+          toast({ kind: 'bad', title: 'Not started', desc: e instanceof Error ? e.message : 'zeusd did not start this batch.', important: true, topic: 'failure' })
+        }
+      }
+      if (started) toast({ kind: 'ok', title: `${started} download${started === 1 ? '' : 's'} started`, desc: 'Enqueued in zeusd from your reviewed batch.', important: false, topic: 'queue', to: '#/downloads' })
+      void refreshFiles(false)
+    })()
+    return { ok: true, ids: [] }
+  }
   const res = addDownloads(
     r.links.map((l, i) => ({
       url: l.url,
@@ -822,8 +1129,9 @@ export function grabberStart(reviewId: string, queue: string | null): { ok: true
 
 // ---------------------------------------------------------------- site grabber
 
-export function siteRequestRun(req: SiteRequest, name: string, queue: string | null): SiteProject | string {
-  const preview = previewSite(req)
+export function siteRequestRun(req: SiteRequest, name: string, queue: string | null, given?: SitePreview): SiteProject | string {
+  if (LIVE && !given) return 'Preview the walk first.'
+  const preview = given ?? previewSite(req)
   if (!preview.ok) return preview.error ?? 'The preview failed.'
   if (!preview.files.length) return 'Nothing would be fetched with these rules.'
   const id = ulid('proj', Date.now())
@@ -833,10 +1141,10 @@ export function siteRequestRun(req: SiteRequest, name: string, queue: string | n
     requester: { kind: 'human', label: 'You, in Zeus' },
     forText: `${preview.files.length} files, ${fmtBytes(preview.totalBytes)}, ${preview.pages.length} pages, depth ${req.depth}`,
     files: preview.files.slice(0, 20).map((f) => ({ name: f.name, size: f.size })),
-    destination: ROOT,
+    destination: rootDir(),
     jobIds: [],
   })
-  const p: SiteProject = { id, name: name.trim() || preview.host, startUrl: req.startUrl, request: req, created: Date.now(), state: 'awaiting_approval', files: preview.files.length, bytes: preview.totalBytes, approvalId: ap.id, queue }
+  const p: SiteProject = { id, name: name.trim() || preview.host, startUrl: req.startUrl, request: req, ...(LIVE ? { found: preview.files.map((f) => ({ url: f.url, name: f.name, size: f.size })) } : {}), created: Date.now(), state: 'awaiting_approval', files: preview.files.length, bytes: preview.totalBytes, approvalId: ap.id, queue }
   set({ projects: [p, ...state.projects] })
   return p
 }
@@ -845,6 +1153,13 @@ export function siteRequestRun(req: SiteRequest, name: string, queue: string | n
 
 export function rescan(path?: string): void {
   if (state.index.state === 'scanning') return
+  if (LIVE) {
+    set({ index: { ...state.index, state: 'scanning', progress: 0, scanning: path ?? 'your download folder' } })
+    void refreshFiles(true).then(() => {
+      if (state.index.state === 'scanning') set({ index: { ...state.index, state: 'current', progress: 1, lastScan: Date.now() } })
+    })
+    return
+  }
   set({ index: { ...state.index, state: 'scanning', progress: 0, ...(path ? { scanning: path } : { scanning: 'all folders' }) } })
 }
 
@@ -897,6 +1212,10 @@ export function setThreads(f: (t: Thread[]) => Thread[]): void {
 
 /** Starts again from the sample state. */
 export function resetAll(): void {
+  if (LIVE) {
+    void clearStored().finally(() => window.location.reload())
+    return
+  }
   state = init()
   scripted.clear()
   emit()
@@ -945,9 +1264,53 @@ function verifyRate(): number {
   return 420 * MiB
 }
 
+/** Live backend: schedules and queues run here; transfers run in zeusd. */
+function liveTick(now: number, prev: number): void {
+  for (const q of state.queues) {
+    if (!q.running && !state.killSwitch && startDue(q.schedule, prev, now)) startQueue(q.id, 'schedule')
+    else if (q.running && stopDue(q.schedule, q.lastStarted, prev, now)) stopQueue(q.id, 'schedule')
+  }
+  // A running queue sends its waiting downloads to zeusd in order, within its own and the global limit.
+  if (!state.killSwitch && state.live?.loaded) {
+    const active = (j: Job) => !isPending(j.id) && ['queued', 'probing', 'downloading', 'verifying', 'finalizing', 'retry_scheduled'].includes(j.state)
+    let total = state.jobs.filter(active).length + state.pending.filter((p) => p.sending).length
+    for (const q of state.queues) {
+      if (!q.running) continue
+      let inQueue = state.jobs.filter((j) => j.queue === q.id && active(j)).length + state.pending.filter((p) => p.queue === q.id && p.sending).length
+      const waiting = state.pending.filter((p) => p.queue === q.id && !p.sending && !p.failed)
+      const order = [...q.order]
+      waiting.sort((a, b) => (order.indexOf(a.id) + 1 || 1e9) - (order.indexOf(b.id) + 1 || 1e9))
+      const batch: string[] = []
+      for (const p of waiting) {
+        if (inQueue >= q.maxConcurrent || total >= state.settings.downloads.concurrentJobs) break
+        batch.push(p.id)
+        inQueue++
+        total++
+      }
+      if (batch.length) void liveSend(batch)
+      const left = state.pending.some((p) => p.queue === q.id && !p.failed) || state.jobs.some((j) => j.queue === q.id && active(j))
+      if (!left && q.kind !== 'sync' && q.lastStarted && now - q.lastStarted > 3000) {
+        set({ queues: state.queues.map((x) => (x.id === q.id ? { ...x, running: false } : x)) })
+        const action = q.onFinish === 'notify' ? 'Notified you' : q.onFinish === 'stop_limiter' ? 'Turned the speed limiter off' : q.onFinish === 'close_app' ? 'Would close the window (not in this release)' : q.onFinish === 'sleep' ? 'Would put the computer to sleep (not in this release)' : 'Nothing else to do'
+        if (q.onFinish === 'stop_limiter') set({ limiter: { ...state.limiter, enabled: false } })
+        toast({ kind: 'ok', title: `${q.name} finished`, desc: action, important: true, topic: 'queue' })
+      }
+    }
+  }
+  if (state.approvals.some((a) => a.state === 'pending' && a.heldBy !== 'zeusd' && Date.parse(a.facts.expires_at) <= now)) {
+    set({ approvals: state.approvals.map((a) => (a.state === 'pending' && a.heldBy !== 'zeusd' && Date.parse(a.facts.expires_at) <= now ? { ...a, state: 'expired' } : a)) })
+  }
+  state = { ...state, now }
+  emit()
+}
+
 function tick(): void {
   const now = Date.now()
   const prev = state.now
+  if (LIVE) {
+    liveTick(now, prev)
+    return
+  }
   const dt = Math.min(2, (now - prev) / 1000)
   state = { ...state, now }
   scriptedEvents()
@@ -1117,7 +1480,8 @@ let timer: ReturnType<typeof setInterval> | undefined
 
 export function startClock(): void {
   if (timer !== undefined) return
-  timer = setInterval(tick, TICK_MS)
+  if (LIVE) startLive({ get: getState, set, toast, subscribe, defaultDir, queueName })
+  timer = setInterval(tick, LIVE ? 1000 : TICK_MS)
 }
 
 export const SAMPLE_ROOTS = [ROOT, ARCHIVE]

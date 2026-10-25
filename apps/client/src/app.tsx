@@ -6,6 +6,7 @@ import { useEffect, useState } from 'preact/hooks'
 
 import { removeThread } from './backend/agent'
 import type { Toast } from './backend/store'
+import { HOSTED, LIVE } from './backend/live'
 import { dismissToast, getState, globalStop, pauseAll, resumeAll, setLimiter, useStore } from './backend/store'
 import { limiterActive } from './model/schedule.ts'
 import { fmtBytes, fmtRate } from './model/units.ts'
@@ -154,10 +155,35 @@ function StatusBar() {
         <Icon name="gauge" /> {limiter.enabled ? (on ? `limit ${fmtBytes(limiter.limitKiBps * 1024)}/s` : 'limit off-schedule') : 'no limit'}
       </button>
       <span class="hide-narrow">{index.state === 'scanning' ? `indexing ${Math.round(index.progress * 100)} %` : `index current`}</span>
-      <span class="sb-pill" title="This release runs on sample data with no backend">
-        Pre-alpha release · sample data
+      <span class="sb-pill" title={LIVE ? (HOSTED ? 'A real zeusd on the pre-alpha server, in a private sandbox' : 'Your own zeusd through zeus-web-bridge') : 'This release runs on sample data with no backend'}>
+        Pre-alpha release · {LIVE ? (HOSTED ? 'hosted zeusd' : 'your zeusd') : 'sample data'}
       </span>
     </footer>
+  )
+}
+
+/** The sidebar footer: the release label and, on a live backend, whether zeusd answers. */
+function ConnLink() {
+  const live = useStore((s) => s.live)
+  const ok = !LIVE || !!live?.connected
+  const title = !LIVE ? 'This release runs on sample data with no backend' : ok ? `Connected to ${HOSTED ? 'the hosted zeusd' : 'your zeusd'}${live?.daemon ? ` ${live.daemon.daemon_version}` : ''}` : (live?.failure?.message ?? 'Connecting…')
+  return (
+    <a class={`conn ${ok ? 'ok' : 'bad'}`} href={href('settings', LIVE ? 'daemon' : 'about')} title={title}>
+      <span class="dot" />
+      <span class="name">Pre-alpha release</span>
+    </a>
+  )
+}
+
+/** A thin notice while a live backend does not answer. */
+function ConnBanner() {
+  const live = useStore((s) => s.live)
+  if (!LIVE || !live || live.connected) return null
+  return (
+    <div class="notice warn conn-banner" role="status">
+      {live.failure ? live.failure.message : HOSTED ? 'Connecting to the Zeus pre-alpha server…' : 'Connecting to your zeusd…'}{' '}
+      <a href={href('settings', 'daemon')}>Backend settings</a>
+    </div>
   )
 }
 
@@ -464,10 +490,7 @@ export function App() {
               </>
             )}
             <span class="spacer" />
-            <a class="conn ok" href={href('settings', 'about')} title="This release runs on sample data with no backend">
-              <span class="dot" />
-              <span class="name">Pre-alpha release</span>
-            </a>
+            <ConnLink />
           </div>
         </aside>
         <header class="top" {...drag}>
@@ -485,6 +508,7 @@ export function App() {
           {chrome === 'custom' ? <WindowControls /> : null}
         </header>
         <main class={`main ${section === 'agent' ? 'chat' : ''} ${fullBleed ? 'bleed' : ''}`} id="main">
+          <ConnBanner />
           <Page path={route.path} query={route.query} />
         </main>
         {prefs.statusBar ? <StatusBar /> : null}

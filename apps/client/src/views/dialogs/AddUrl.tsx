@@ -3,6 +3,8 @@
 
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks'
 
+import { HOSTED, LIVE } from '../../backend/live'
+import { api, svc } from '../../backend/remote'
 import { addDownloads, defaultDir, sizeFor, useStore } from '../../backend/store'
 import { CATEGORIES, categoryOf } from '../../model/categories.ts'
 import { intake, nameProblem } from '../../model/links.ts'
@@ -27,6 +29,13 @@ export function AddUrl({ initial, onClose }: { initial?: string; onClose: () => 
   const [error, setError] = useState<string | null>(null)
   const input = useRef<HTMLInputElement>(null)
   useEffect(() => input.current?.focus(), [])
+  // Live: what the server answered to a HEAD request (hosted: from the pre-alpha service, sample hosts only).
+  const [answer, setAnswer] = useState<{ check: string; size: number | null; status: number } | null>(null)
+  const [samples, setSamples] = useState<{ url: string; note: string }[]>([])
+  useEffect(() => {
+    if (!HOSTED) return
+    api.fixtures().then((f) => setSamples(f.samples), () => setSamples([]))
+  }, [])
 
   const parsed = useMemo(() => intake(url.trim()), [url])
   const link = parsed.links[0]
@@ -37,6 +46,20 @@ export function AddUrl({ initial, onClose }: { initial?: string; onClose: () => 
     if (!link) return
     setProbing(true)
     setError(null)
+    if (LIVE) {
+      const done = (a: { check: string; size: number | null; status: number } | null) => {
+        setProbing(false)
+        setAnswer(a)
+        setProbed(link.url)
+        setName(link.name)
+        const c = categoryOf(link.name, settings.categories)
+        setCategory(c)
+        setDir(defaultDir(c))
+      }
+      if (HOSTED) svc.check([link.url]).then((r) => done(r.items[0] ?? null), (e: unknown) => (setProbing(false), setError(e instanceof Error ? e.message : 'The check failed.')))
+      else done(null)
+      return
+    }
     setTimeout(() => {
       setProbing(false)
       setProbed(link.url)
@@ -46,8 +69,8 @@ export function AddUrl({ initial, onClose }: { initial?: string; onClose: () => 
       setDir(defaultDir(c))
     }, 450)
   }
-  const login = !!link && /portal\.|library\.|members\./.test(link.host)
-  const size = link ? sizeFor(link.url) : null
+  const login = !LIVE && !!link && /portal\.|library\.|members\./.test(link.host)
+  const size = LIVE ? (answer?.size ?? null) : link ? sizeFor(link.url) : null
   const sha = expected.trim().toLowerCase()
   const shaBad = sha !== '' && !/^[0-9a-f]{64}$/.test(sha)
   const problem = probed ? nameProblem(name) : null
@@ -83,6 +106,21 @@ export function AddUrl({ initial, onClose }: { initial?: string; onClose: () => 
         </span>
       </label>
       {refused ? <p class="field-err">{refused}</p> : null}
+      {HOSTED && !url.trim() && samples.length ? (
+        <div class="stack-tight">
+          <p class="muted small">This server downloads only from its sample hosts. Pick one to try:</p>
+          <div class="rows card-rows">
+            {samples.map((x) => (
+              <button type="button" class="row" onClick={() => (setUrl(x.url), setProbed(null))}>
+                <span class="text">
+                  <span class="title mono small">{x.url.replace(/^http:\/\//, '')}</span>
+                  <span class="desc">{x.note}</span>
+                </span>
+              </button>
+            ))}
+          </div>
+        </div>
+      ) : null}
       {many ? (
         <Notice>
           That is {parsed.links.length} addresses. The link grabber reviews many at once.{' '}
@@ -105,9 +143,17 @@ export function AddUrl({ initial, onClose }: { initial?: string; onClose: () => 
           <div class="probe">
             <Icon name="check" />
             <span>
-              {login ? 'The site answered with a sign-in page: this file needs your login.' : `206 Partial Content · ${fmtBytes(size)} · resumable`}
+              {LIVE
+                ? answer
+                  ? answer.check === 'online'
+                    ? `${answer.status} · ${fmtBytes(size)}`
+                    : `The server answered ${answer.status || 'nothing'}; zeusd will report the same when it tries.`
+                  : 'zeusd probes the address when the download starts.'
+                : login
+                  ? 'The site answered with a sign-in page: this file needs your login.'
+                  : `206 Partial Content · ${fmtBytes(size)} · resumable`}
             </span>
-            {login ? <Chip tone="warn">needs a site login</Chip> : <Chip tone="ok">ranges verified</Chip>}
+            {LIVE ? (answer ? <Chip tone={answer.check === 'online' ? 'ok' : 'bad'}>{answer.check}</Chip> : null) : login ? <Chip tone="warn">needs a site login</Chip> : <Chip tone="ok">ranges verified</Chip>}
           </div>
           {login ? <Notice kind="warn">Zeus will ask for your approval before it uses your login for {link.host}. The session comes from the Zeus extension, in memory only; Zeus never reads your browser's cookie store.</Notice> : null}
           <div class="fields">
@@ -135,10 +181,12 @@ export function AddUrl({ initial, onClose }: { initial?: string; onClose: () => 
               <input value={name} onInput={(e) => setName((e.target as HTMLInputElement).value)} />
             </label>
             {problem ? <p class="field-err wide">{problem}</p> : null}
-            <label class="field wide">
-              Expected SHA-256 <span class="muted">optional</span>
-              <input class="mono" value={expected} placeholder="64 hex digits from the publisher" onInput={(e) => setExpected((e.target as HTMLInputElement).value)} />
-            </label>
+            {LIVE ? null : (
+              <label class="field wide">
+                Expected SHA-256 <span class="muted">optional</span>
+                <input class="mono" value={expected} placeholder="64 hex digits from the publisher" onInput={(e) => setExpected((e.target as HTMLInputElement).value)} />
+              </label>
+            )}
             {shaBad ? <p class="field-err wide">A SHA-256 is 64 hexadecimal digits.</p> : null}
             <label class="field wide">
               Description <span class="muted">optional</span>

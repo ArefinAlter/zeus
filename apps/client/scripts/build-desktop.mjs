@@ -29,13 +29,13 @@ run(win ? 'npm.cmd' : 'npm', ['run', 'build'], { cwd: web, shell: win })
 run('cargo', ['build', '--release', '--locked'], { cwd: shell })
 
 const target = process.env.CARGO_TARGET_DIR ? resolve(process.env.CARGO_TARGET_DIR) : join(shell, 'target')
-const exe = join(target, 'release', win ? 'zeus.exe' : 'zeus')
+const exe = join(target, 'release', win ? 'zeus-client.exe' : 'zeus-client')
 if (!existsSync(exe)) {
   console.error(`expected ${exe}`)
   process.exit(1)
 }
 const out = join(web, 'dist', 'desktop')
 mkdirSync(out, { recursive: true })
-const dest = join(out, win ? 'zeus.exe' : 'zeus')
+const dest = join(out, win ? 'zeus-client.exe' : 'zeus-client')
 copyFileSync(exe, dest)
 console.log(`\nbuilt ${dest} (${(statSync(dest).size / 1024 / 1024).toFixed(1)} MiB)`)

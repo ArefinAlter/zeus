@@ -1492,3 +1492,8 @@ a.ccard {
   font-size: 12.5px;
   color: var(--muted-foreground);
 }
+
+/* Live backend: shown above the page while zeusd does not answer. */
+.conn-banner {
+  margin: 0 0 12px;
+}

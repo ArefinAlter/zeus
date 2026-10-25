@@ -5,6 +5,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks'
 
+import { HOSTED, LIVE } from '../backend/live'
 import { addBookmark, clearHistory, getState, pushHistory, removeBookmark, rescan, toast, useStore } from '../backend/store'
 import { extOf } from '../model/categories.ts'
 import { DEFAULT_OPTIONS, FILTERS, SYNTAX, filterMatch, matches, parseQuery } from '../model/search.ts'
@@ -395,7 +396,7 @@ export function Files({ initialPath }: { initialPath?: string }) {
                     </a>
                   ) : null}
                 </div>
-                <p class="muted small">A preview of the contents needs the file itself. This release indexes sample names, sizes and dates only.</p>
+                <p class="muted small">{LIVE ? 'A preview of the contents needs the file itself; this client indexes names, sizes, dates and the digests zeusd recorded.' : 'A preview of the contents needs the file itself. This release indexes sample names, sizes and dates only.'}</p>
               </>
             ) : (
               <div class="pane-empty">Select a file to see its details.</div>
@@ -403,7 +404,11 @@ export function Files({ initialPath }: { initialPath?: string }) {
           </aside>
         ) : null}
       </div>
-      <Provenance>zeusd has no file index yet (planned: a scoped metadata index of the download folders). This release searches sample metadata in memory; the syntax and its rules are tested.</Provenance>
+      <Provenance>
+        {LIVE
+          ? `zeusd has no file index yet. ${HOSTED ? 'The pre-alpha service indexes the real files of your sandbox folder' : "This client indexes zeusd's file list of your download folder"}; SHA-256, quarantine and the job behind each file come from zeusd. The search syntax and its rules are tested.`
+          : 'zeusd has no file index yet (planned: a scoped metadata index of the download folders). This release searches sample metadata in memory; the syntax and its rules are tested.'}
+      </Provenance>
       {menu ? (
         <ContextMenu
           x={menu.x}

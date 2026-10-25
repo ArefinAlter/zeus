@@ -6,6 +6,7 @@ import { useMemo, useState } from 'preact/hooks'
 
 import type { Connector, ConnectorStatus } from '../backend/connectors'
 import { CONNECTORS, STATUS_LABEL } from '../backend/connectors'
+import { LIVE } from '../backend/live'
 import { toggleConnector, useStore } from '../backend/store'
 import { href } from '../lib/router'
 import { Chip, CodeCopy, Empty, Notice, PageHead, Provenance } from '../ui/components'
@@ -134,7 +135,7 @@ function ConnectorDetail({ c, added }: { c: Connector; added: boolean }) {
             <button type="button" class={`btn ${added ? '' : 'primary'}`} onClick={() => toggleConnector(c.id, !added)}>
               {added ? 'Remove from this list' : 'Add to my destinations'}
             </button>
-            <span class="muted small">In this release the list is sample data; no account is contacted.</span>
+            <span class="muted small">{LIVE ? 'Your choice is stored; no account is contacted in this release.' : 'In this release the list is sample data; no account is contacted.'}</span>
           </div>
         </>
       )}

@@ -5,6 +5,7 @@
 
 import { useState } from 'preact/hooks'
 
+import { HOSTED, LIVE } from '../backend/live'
 import { addQueue, deleteQueue, getState, moveInQueue, queueName, setLimiter, setQueue, startQueue, stopQueue, updateQueue, useStore } from '../backend/store'
 import { describeSchedule, limiterActive, minutesUntil, nextStart, parseHm, stopAfter } from '../model/schedule.ts'
 import type { OnFinish, Queue, Weekday } from '../model/types.ts'
@@ -377,7 +378,10 @@ export function Queues({ queueId, tab }: { queueId?: string; tab?: string }) {
         </div>
       </div>
       <Provenance>
-        zeusd does not schedule queues yet; its documentation lists daemon scheduling as open work. In this release the queues, times and limits run in the app on sample downloads. {q ? `Queue: ${queueName(q.id)}.` : ''}
+        {LIVE
+          ? `zeusd does not schedule queues or limit speed yet. Queues and their schedules are kept by ${HOSTED ? 'the pre-alpha service for this sandbox' : 'this device'} and run while this window is open: a waiting download goes to zeusd when its queue starts it. The limiter's settings are stored, not applied. `
+          : 'zeusd does not schedule queues yet; its documentation lists daemon scheduling as open work. In this release the queues, times and limits run in the app on sample downloads. '}
+        {q ? `Queue: ${queueName(q.id)}.` : ''}
       </Provenance>
     </div>
   )

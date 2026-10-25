@@ -1,0 +1,55 @@
+# zeus-web-bridge: an HTTP bridge process in front of zeusd's single local IPC listener (ADR 0010).
+#
+# It holds the daemon credential and exposes a closed set of typed operations over HTTP, the same ones the restricted
+# desktop client (apps/desktop) offers, with the same `gui.token` permissions and never more. Two modes:
+#
+# * hosted: the pre-alpha web backend. Anonymous visitor sessions (cookie or bearer), each with its own download
+#   folder, job namespace and quotas; only fixture hosts may be downloaded from.
+# * local: one person on their own machine. Binds loopback only and requires the bridge token from its owner-only
+#   token file on every request.
+#
+# This is its own Cargo workspace (ADR 0009 pattern), excluded from the daemon workspace, and lives under
+# services/pre-alpha because it is release tooling for the pre-alpha, not a product crate.
+[workspace]
+resolver = "3"
+members = ["."]
+
+[package]
+name = "zeus-web-bridge"
+description = "HTTP bridge to zeusd for the Zeus pre-alpha client: typed jobs, link review, files, artifacts, approvals listing and workflow reports."
+version = "0.0.1-alpha"
+edition = "2024"
+rust-version = "1.90"
+license = "Apache-2.0"
+repository = "https://github.com/ArefinAlter/zeus"
+authors = ["Zeus contributors"]
+publish = false
+
+[[bin]]
+name = "zeus-web-bridge"
+path = "src/main.rs"
+
+[dependencies]
+zeus-api = { path = "../../../crates/zeus-api" }
+zeus-types = { path = "../../../../zeus-core/crates/zeus-types" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1.53", features = ["rt-multi-thread", "macros", "sync", "time", "net", "fs", "signal"] }
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio", "query"] }
+rand = "0.10"
+anyhow = "1"
+url = "2.5"
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[lints.clippy]
+todo = "deny"
+unimplemented = "deny"
+dbg_macro = "warn"
+
+[profile.release]
+codegen-units = 4
+lto = "thin"
+strip = true

@@ -1,7 +1,8 @@
-//! The Zeus client's desktop shell. The page carries everything: the interface and the scripted backend of this
-//! pre-alpha release. The shell opens one frameless window on the bundled pages, refuses navigation anywhere else,
-//! and grants the page only the window controls of its own title bar. No daemon connection, no file, shell, HTTP or
-//! opener access.
+//! The Zeus client's desktop shell. The page carries everything: the interface and its backend client, which talks
+//! over HTTPS to the hosted pre-alpha, over loopback HTTP to your own zeusd through zeus-web-bridge, or to the offline
+//! sample data, as chosen in Settings, Backend (the CSP in tauri.conf.json allows exactly those). The shell opens one
+//! frameless window on the bundled pages, refuses navigation anywhere else, and grants the page only the window
+//! controls of its own title bar. No daemon connection, no file, shell, HTTP or opener access of its own.
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 

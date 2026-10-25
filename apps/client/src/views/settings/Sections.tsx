@@ -5,6 +5,7 @@
 
 import { useState } from 'preact/hooks'
 
+import { HOSTED, LIVE } from '../../backend/live'
 import { releaseStop, rescan, updateSettings, useStore } from '../../backend/store'
 import { ACCESS_INFO, ACCESS_ORDER, HUMAN_ONLY, NEVER, TOOLS } from '../../model/agentTools.ts'
 import { CATEGORIES, overlaps, parseExtList } from '../../model/categories.ts'
@@ -17,7 +18,7 @@ import { openDialog } from '../../lib/ui'
 import { Chip, CodeCopy, Notice, NumberInput, PageHead, Provenance, Select, SettingRow, SettingsGroup, Switch } from '../../ui/components'
 import { Icon } from '../../ui/icons'
 
-const NOTE = 'Changes apply to this session\'s sample data.'
+const NOTE = LIVE ? (HOSTED ? 'Changes are kept for your sandbox by the pre-alpha service.' : 'Changes are kept on this device.') : 'Changes apply to this session\'s sample data.'
 
 export function GeneralSettings() {
   const g = useStore((s) => s.settings.general)
@@ -280,8 +281,8 @@ export function BrowserSettings() {
     <>
       <PageHead title="Browser integration" sub={NOTE} />
       <SettingsGroup title="The Zeus extension" note="The extension hands over downloads the browser gave up on or that you forward, and supplies site sessions you approve. It is the only path between your browser and Zeus.">
-        <SettingRow title="Status" desc={b.extension === 'connected' ? 'Connected through native messaging (sample state).' : 'Not installed.'}>
-          <Chip tone={b.extension === 'connected' ? 'ok' : 'warn'}>{b.extension === 'connected' ? 'connected' : 'not installed'}</Chip>
+        <SettingRow title="Status" desc={LIVE ? (HOSTED ? 'The hosted pre-alpha uses no browser extension and no browser session.' : 'Install the Zeus extension and zeus-native-host to connect your browser to this zeusd.') : b.extension === 'connected' ? 'Connected through native messaging (sample state).' : 'Not installed.'}>
+          <Chip tone={!LIVE && b.extension === 'connected' ? 'ok' : 'warn'}>{!LIVE && b.extension === 'connected' ? 'connected' : 'not connected'}</Chip>
         </SettingRow>
         {b.browsers.map((br, i) => (
           <SettingRow title={br.name} desc={`Profile: ${br.profile}. Permissions are per profile; a site approved in one profile is not used from another.`}>
@@ -334,7 +335,7 @@ export function SchedulerSettings() {
       <p>
         <a href={href('queues')}>Open the queues and scheduler</a>
       </p>
-      <Provenance>zeusd does not schedule queues yet. These defaults apply to this release's queues.</Provenance>
+      <Provenance>{LIVE ? 'zeusd does not schedule queues yet. These defaults apply to the queues this client runs.' : "zeusd does not schedule queues yet. These defaults apply to this release's queues."}</Provenance>
     </>
   )
 }

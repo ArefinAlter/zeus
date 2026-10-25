@@ -206,7 +206,29 @@ export function setPrefs(patch: Partial<Prefs>): Prefs {
     // The preference holds for this visit only.
   }
   for (const l of listeners) l(current)
+  for (const w of watchers) w(current, false)
   return current
+}
+
+/** Apply preferences kept by the pre-alpha service for this sandbox (hosted build), without writing them back. */
+export function hydratePrefs(stored: unknown): void {
+  if (!stored || typeof stored !== 'object') return
+  current = sanitize({ ...current, ...(stored as Partial<Prefs>) })
+  for (const l of listeners) l(current)
+  for (const w of watchers) w(current, true)
+}
+
+const watchers = new Set<(p: Prefs, hydrated: boolean) => void>()
+
+/** Be told when a person changes a preference (not when stored ones are applied). */
+export function subscribePrefs(f: (p: Prefs) => void): () => void {
+  const w = (p: Prefs, hydrated: boolean) => {
+    if (!hydrated) f(p)
+  }
+  watchers.add(w)
+  return () => {
+    watchers.delete(w)
+  }
 }
 
 export function resetPrefs(): Prefs {

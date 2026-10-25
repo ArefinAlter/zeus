@@ -173,6 +173,8 @@ export interface Approval {
   agentSays?: string
   jobIds: string[]
   decided?: { at: number; decision: 'approve' | 'deny'; scope?: Scope; via: string }
+  /** Live backend: who holds the request. zeusd's are listed here and decided only on zeusd's trust surfaces. */
+  heldBy?: 'zeusd' | 'service'
 }
 
 export type AgentAccess = 'read' | 'download' | 'organize'

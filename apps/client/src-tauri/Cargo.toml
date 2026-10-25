@@ -9,18 +9,18 @@ members = ["."]
 
 [package]
 name = "zeus-client"
-description = "Zeus pre-alpha client: the desktop shell around the shared frontend, on its scripted backend."
-version = "0.1.0"
+description = "Zeus pre-alpha client: the desktop shell around the shared frontend. It talks to the hosted pre-alpha or your own zeusd (through zeus-web-bridge) from the page; the shell itself has no daemon connection."
+version = "0.0.1-alpha"
 edition = "2024"
 rust-version = "1.90"
 license = "Apache-2.0"
 repository = "https://github.com/ArefinAlter/zeus"
 authors = ["Zeus contributors"]
 publish = false
-default-run = "zeus"
+default-run = "zeus-client"
 
 [[bin]]
-name = "zeus"
+name = "zeus-client"
 path = "src/main.rs"
 
 [features]

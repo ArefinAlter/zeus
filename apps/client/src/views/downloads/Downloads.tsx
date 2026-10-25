@@ -4,6 +4,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks'
 
+import { HOSTED, LIVE } from '../../backend/live'
 import { cancel, deleteCompleted, getState, isActive, pause, pauseAll, queueName, redownload, refreshAddress, remove, resume, resumeAll, setPriority, setQueue, startQueue, stopQueue, toast, useStore } from '../../backend/store'
 import { CATEGORIES, categoryLabel } from '../../model/categories.ts'
 import type { Job } from '../../model/types.ts'
@@ -338,7 +339,9 @@ export function Downloads({ view, queue, focus }: { view: string; queue: string 
           ) : null}
         </div>
         <Provenance>
-          The list, its states and the pause, resume, retry and cancel controls follow zeusd's job model; categories, queues and this sample data belong to this release.
+          {LIVE
+            ? `Downloads, their states, sizes, SHA-256 and quarantine come from ${HOSTED ? 'the hosted zeusd' : 'your zeusd'}; pause, resume, retry and cancel go through its own checks. Categories, queues and priorities are kept by ${HOSTED ? 'the pre-alpha service for this sandbox' : 'this device'}.`
+            : "The list, its states and the pause, resume, retry and cancel controls follow zeusd's job model; categories, queues and this sample data belong to this release."}
         </Provenance>
       </div>
       {propsJob ? <Properties job={propsJob} onClose={() => setProps(null)} onMove={() => setMoving(propsJob.id)} /> : null}
@@ -406,9 +409,22 @@ function ConfirmRemove({ ids, onClose }: { ids: string[]; onClose: () => void })
 
 function GrabberProjects() {
   const projects = useStore((s) => s.projects)
-  if (!projects.length) return null
+  const runs = useStore((s) => s.live?.runs ?? null)
+  if (!projects.length && !runs) return null
   return (
     <div class="projects">
+      {runs ? (
+        <div class="project">
+          <Icon name="server" />
+          <span class="pname">Workflow reports from zeusd</span>
+          <span class="spacer" />
+          <span class="muted small">
+            {runs.length
+              ? runs.map((r) => `${r.run_id.slice(0, 12)}… ${r.status}: ${r.files_completed ?? 0}/${r.files_enqueued ?? 0} files, ${r.pages_fetched ?? 0} pages${r.possibly_incomplete ? ', possibly incomplete' : ''}`).join(' · ')
+              : 'No workflow runs in this zeusd. Site-grabber plans here are held by the pre-alpha service and send their files to zeusd as reviewed batches.'}
+          </span>
+        </div>
+      ) : null}
       {projects.map((p) => (
         <div class="project">
           <Icon name="globe" />

@@ -2,10 +2,12 @@
 // read and every file it would fetch, before anything is fetched. Running it is a workflow plan in zeusd terms, so the
 // run waits for your approval with the bind code typed in (spec 07, workflow_plan).
 
-import { useMemo, useState } from 'preact/hooks'
+import { useEffect, useMemo, useState } from 'preact/hooks'
 
 import { siteRequestRun, useStore } from '../../backend/store'
-import type { SiteRequest } from '../../backend/sitegrab'
+import type { SitePreview, SiteRequest } from '../../backend/sitegrab'
+import { HOSTED, LIVE } from '../../backend/live'
+import { svc } from '../../backend/remote'
 import { previewSite } from '../../backend/sitegrab'
 import { parseExtList } from '../../model/categories.ts'
 import { fmtBytes } from '../../model/units.ts'
@@ -27,7 +29,7 @@ export function SiteGrabber({ onClose }: { onClose: () => void }) {
   const [step, setStep] = useState(0)
   const [name, setName] = useState('project_1')
   const [template, setTemplate] = useState('docs')
-  const [startUrl, setStartUrl] = useState('https://docs.example.org/handbook/')
+  const [startUrl, setStartUrl] = useState(HOSTED ? 'http://docs.example.org/' : 'https://docs.example.org/handbook/')
   const [depth, setDepth] = useState(2)
   const [sameHost, setSameHost] = useState(true)
   const [types, setTypes] = useState('pdf epub docx xlsx pptx')
@@ -39,7 +41,29 @@ export function SiteGrabber({ onClose }: { onClose: () => void }) {
   const [error, setError] = useState<string | null>(null)
 
   const req: SiteRequest = { startUrl, depth, sameHostOnly: sameHost, types: parseExtList(types), include: include.split('\n'), exclude: exclude.split('\n'), maxFiles, maxMiB }
-  const preview = useMemo(() => (step === 4 ? previewSite(req) : null), [step, startUrl, depth, sameHost, types, include, exclude, maxFiles, maxMiB])
+  const scripted = useMemo(() => (step === 4 && !LIVE ? previewSite(req) : null), [step, startUrl, depth, sameHost, types, include, exclude, maxFiles, maxMiB])
+  // Live: the pre-alpha service walks the sample site for real (hosted). A local zeusd has no site walk in this client.
+  const [walked, setWalked] = useState<SitePreview | null>(null)
+  const [walking, setWalking] = useState(false)
+  useEffect(() => {
+    if (step !== 4 || !LIVE) return
+    if (!HOSTED) {
+      setWalked({ ok: false, error: 'Site walks run in the hosted pre-alpha service. With a local zeusd, use zeus workflow draft and run in the CLI.', host: '', pages: [], files: [], skipped: [], totalBytes: 0 })
+      return
+    }
+    let alive = true
+    setWalking(true)
+    setWalked(null)
+    svc
+      .sitePreview(req)
+      .then((r) => alive && setWalked(r as SitePreview))
+      .catch((e: unknown) => alive && setWalked({ ok: false, error: e instanceof Error ? e.message : 'The walk failed.', host: '', pages: [], files: [], skipped: [], totalBytes: 0 }))
+      .finally(() => alive && setWalking(false))
+    return () => {
+      alive = false
+    }
+  }, [step, startUrl, depth, sameHost, types, include, exclude, maxFiles, maxMiB])
+  const preview = LIVE ? walked : scripted
   const startOk = (() => {
     try {
       const u = new URL(startUrl)
@@ -50,7 +74,7 @@ export function SiteGrabber({ onClose }: { onClose: () => void }) {
   })()
 
   const run = () => {
-    const p = siteRequestRun(req, name, queue === 'now' ? null : queue)
+    const p = siteRequestRun(req, name, queue === 'now' ? null : queue, LIVE && preview ? preview : undefined)
     if (typeof p === 'string') return setError(p)
     onClose()
     if (p.approvalId) navigate(href('approvals', p.approvalId))
@@ -162,6 +186,7 @@ export function SiteGrabber({ onClose }: { onClose: () => void }) {
           </label>
         </div>
       ) : null}
+      {step === 4 && walking ? <Notice>Walking the sample site…</Notice> : null}
       {step === 4 && preview ? (
         preview.ok ? (
           <div class="stack-tight">
@@ -208,7 +233,11 @@ export function SiteGrabber({ onClose }: { onClose: () => void }) {
                 ))}
               </ul>
             </details>
-            <Notice>This preview is generated from the start address in this release; zeusd samples the real page and validates the plan before a run. The run waits for your approval with the bind code typed in.</Notice>
+            <Notice>
+              {LIVE
+                ? 'The pre-alpha service read these pages from the sample site just now. The run waits for your approval with the bind code typed in; the approved files then go to zeusd as one reviewed batch.'
+                : 'This preview is generated from the start address in this release; zeusd samples the real page and validates the plan before a run. The run waits for your approval with the bind code typed in.'}
+            </Notice>
             {error ? <Notice kind="error">{error}</Notice> : null}
           </div>
         ) : (
