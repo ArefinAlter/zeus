@@ -25,7 +25,12 @@ use crate::home::AppHome;
 pub const CREDENTIAL: &str = "app";
 
 fn read_private(path: &std::path::Path) -> Result<SecretString> {
-    let missing = || Failure::new("engine.not_installed", "The Zeus engine has not been set up yet.");
+    let missing = || {
+        Failure::new(
+            "engine.not_installed",
+            "The Zeus engine has not been set up yet.",
+        )
+    };
     zeus_api::transport::secure_private_file(path).map_err(|_| missing())?;
     let mut data = String::new();
     let read = std::fs::File::open(path)
@@ -44,8 +49,12 @@ fn read_private(path: &std::path::Path) -> Result<SecretString> {
 pub fn zeus_paths(home: &AppHome) -> Result<ZeusPaths> {
     let env: std::collections::HashMap<String, String> = home.zeus_env().into_iter().collect();
     let identity = zeus_api::endpoint::current_user_identity().map_err(|e| Failure::daemon(&e))?;
-    ZeusPaths::resolve(|k| env.get(k).cloned(), directories::BaseDirs::new(), identity)
-        .map_err(|e| Failure::daemon(&e))
+    ZeusPaths::resolve(
+        |k| env.get(k).cloned(),
+        directories::BaseDirs::new(),
+        identity,
+    )
+    .map_err(|e| Failure::daemon(&e))
 }
 
 /// The lazily opened, self-healing connection.
@@ -69,8 +78,9 @@ impl Daemon {
     }
 
     async fn open(&self) -> Result<Arc<IpcClient>> {
-        let secret = IpcSecret::from_file_text(read_private(&self.paths.ipc_secret_file())?.expose())
-            .map_err(|e| Failure::daemon(&e))?;
+        let secret =
+            IpcSecret::from_file_text(read_private(&self.paths.ipc_secret_file())?.expose())
+                .map_err(|e| Failure::daemon(&e))?;
         let credential = ClientCredential::from_file_text(
             read_private(&self.paths.credential_file(CREDENTIAL))?.expose(),
         )
@@ -83,10 +93,13 @@ impl Daemon {
         config.call_timeout = Duration::from_secs(30);
         let client = IpcClient::connect(&self.paths.endpoint(), credential, &secret, config)
             .await
-            .map_err(|_| {
+            .map_err(|e| {
                 Failure::new(
                     "engine.unreachable",
-                    "The Zeus engine is not running or refused the connection.",
+                    format!(
+                        "The Zeus engine is not running or refused the connection ({}).",
+                        e.envelope().code.as_str()
+                    ),
                 )
             })?;
         if client.session().role != ClientRole::Gui
@@ -106,9 +119,24 @@ impl Daemon {
         if let Some(c) = guard.as_ref() {
             return Ok(c.clone());
         }
-        let c = self.open().await?;
-        *guard = Some(c.clone());
-        Ok(c)
+        // A busy pipe or a daemon that is just accepting can refuse once; try a few times before giving up.
+        let mut last = None;
+        for attempt in 0..4 {
+            match self.open().await {
+                Ok(c) => {
+                    *guard = Some(c.clone());
+                    return Ok(c);
+                }
+                Err(f) if f.code == "engine.unreachable" => {
+                    last = Some(f);
+                    tokio::time::sleep(Duration::from_millis(150 * (attempt + 1))).await;
+                }
+                Err(f) => return Err(f),
+            }
+        }
+        Err(last.unwrap_or_else(|| {
+            Failure::new("engine.unreachable", "The Zeus engine did not answer.")
+        }))
     }
 
     /// Forget the connection (the next call reconnects).
@@ -134,7 +162,10 @@ impl Daemon {
                 }
             }
         }
-        Err(Failure::new("engine.unreachable", "The Zeus engine did not answer."))
+        Err(Failure::new(
+            "engine.unreachable",
+            "The Zeus engine did not answer.",
+        ))
     }
 
     /// Every item of a paged list method, up to `max_pages` pages of 100.

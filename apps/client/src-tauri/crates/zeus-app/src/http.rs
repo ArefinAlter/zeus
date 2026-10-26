@@ -25,7 +25,13 @@ struct Shared {
 }
 
 fn cors(headers: &mut HeaderMap, origin: Option<&str>, shared: &Shared) {
-    if let Some(o) = origin.filter(|o| shared.origins.iter().any(|x| x == o))
+    let loopback = |o: &str| {
+        ["http://127.0.0.1:", "http://localhost:"].iter().any(|p| {
+            o.strip_prefix(p)
+                .is_some_and(|port| !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()))
+        })
+    };
+    if let Some(o) = origin.filter(|o| loopback(o) || shared.origins.iter().any(|x| x == o))
         && let Ok(v) = HeaderValue::from_str(o)
     {
         headers.insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, v);
@@ -68,12 +74,29 @@ async fn respond(shared: &Shared, request: Request) -> Response {
         .unwrap_or_default()
         .to_owned();
     if given != shared.token {
-        return fail(StatusCode::UNAUTHORIZED, &Failure::new("app.token_required", "Paste the harness token."));
+        return fail(
+            StatusCode::UNAUTHORIZED,
+            &Failure::new("app.token_required", "Paste the harness token."),
+        );
+    }
+    if request.uri().path() == "/__harness/shutdown" {
+        // Test harness only: stop the engine cleanly (zeusd included), then end the process.
+        shared.app.shutdown().await;
+        tokio::spawn(async {
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            std::process::exit(0);
+        });
+        return axum::Json(json!({"ok": true})).into_response();
     }
     let route = format!("{} {}", request.method(), request.uri().path());
     let bytes = match to_bytes(request.into_body(), 4 * 1024 * 1024).await {
         Ok(b) => b,
-        Err(_) => return fail(StatusCode::PAYLOAD_TOO_LARGE, &Failure::new("app.too_large", "Request too large.")),
+        Err(_) => {
+            return fail(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                &Failure::new("app.too_large", "Request too large."),
+            );
+        }
     };
     let body: Value = if bytes.is_empty() {
         Value::Null
@@ -103,11 +126,22 @@ fn fail(status: StatusCode, f: &Failure) -> Response {
 }
 
 /// Serve `app` on `addr` (loopback only) until the returned future is dropped. Returns the bound address.
-pub async fn serve(app: Arc<App>, addr: SocketAddr, token: String, origins: Vec<String>) -> std::io::Result<SocketAddr> {
+pub async fn serve(
+    app: Arc<App>,
+    addr: SocketAddr,
+    token: String,
+    origins: Vec<String>,
+) -> std::io::Result<SocketAddr> {
     if !addr.ip().is_loopback() {
-        return Err(std::io::Error::other("the harness listens on loopback only"));
+        return Err(std::io::Error::other(
+            "the harness listens on loopback only",
+        ));
     }
-    let shared = Shared { app, token, origins };
+    let shared = Shared {
+        app,
+        token,
+        origins,
+    };
     let router = Router::new().fallback(handle).with_state(shared);
     let listener = tokio::net::TcpListener::bind(addr).await?;
     let bound = listener.local_addr()?;

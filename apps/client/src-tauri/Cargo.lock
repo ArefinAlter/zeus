@@ -5940,6 +5940,92 @@ dependencies = [
 ]
 
 [[package]]
+name = "zeus-app-agent"
+version = "0.0.1-beta"
+dependencies = [
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2 0.11.1",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+ "url",
+ "zeus-api",
+ "zeus-app",
+ "zeus-types",
+]
+
+[[package]]
+name = "zeus-app-ext"
+version = "0.0.1-beta"
+dependencies = [
+ "hex",
+ "rand",
+ "tokio",
+ "zeus-app",
+ "zeus-app-agent",
+ "zeus-app-grab",
+ "zeus-app-index",
+ "zeus-app-integration",
+]
+
+[[package]]
+name = "zeus-app-grab"
+version = "0.0.1-beta"
+dependencies = [
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2 0.11.1",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+ "url",
+ "zeus-api",
+ "zeus-app",
+ "zeus-types",
+]
+
+[[package]]
+name = "zeus-app-index"
+version = "0.0.1-beta"
+dependencies = [
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2 0.11.1",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+ "url",
+ "zeus-api",
+ "zeus-app",
+ "zeus-types",
+]
+
+[[package]]
+name = "zeus-app-integration"
+version = "0.0.1-beta"
+dependencies = [
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2 0.11.1",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+ "url",
+ "zeus-api",
+ "zeus-app",
+ "zeus-types",
+]
+
+[[package]]
 name = "zeus-client"
 version = "0.0.1-beta"
 dependencies = [
@@ -5951,6 +6037,7 @@ dependencies = [
  "tokio",
  "tracing",
  "zeus-app",
+ "zeus-app-ext",
 ]
 
 [[package]]

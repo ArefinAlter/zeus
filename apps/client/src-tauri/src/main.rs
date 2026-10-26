@@ -46,7 +46,11 @@ fn start_engine() -> Result<Arc<App>, Failure> {
         .and_then(|p| p.parent().map(std::path::Path::to_path_buf));
     let home = AppHome::resolve(exe_dir.as_deref())?;
     let bin = bin_dir()?;
-    tauri::async_runtime::block_on(async { App::start(home, bin) })
+    tauri::async_runtime::block_on(async {
+        let app = App::start(home, bin)?;
+        zeus_app_ext::install(&app);
+        Ok(app)
+    })
 }
 
 fn main() {

@@ -26,13 +26,19 @@ async fn probe_one(daemon: &Daemon, url: &str) -> Value {
             Err(f) => return from_failure(url, &f),
         }
     }
-    from_failure(url, &last.unwrap_or_else(|| Failure::new("api.rate_limited", "zeusd is busy.")))
+    from_failure(
+        url,
+        &last.unwrap_or_else(|| Failure::new("api.rate_limited", "zeusd is busy.")),
+    )
 }
 
 fn from_probe(url: &str, view: &Value) -> Value {
     let probe = view.get("probe").cloned().unwrap_or(Value::Null);
     let status = probe.get("status").and_then(Value::as_u64).unwrap_or(0);
-    let requires_session = probe.get("requires_session").and_then(Value::as_bool).unwrap_or(false);
+    let requires_session = probe
+        .get("requires_session")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
     let check = if requires_session {
         "needs_login"
     } else if (200..300).contains(&status) {
@@ -92,7 +98,10 @@ pub async fn check(daemon: Arc<Daemon>, urls: &[String]) -> Result<Value> {
     }
     let mut items = Vec::new();
     for t in tasks {
-        items.push(t.await.unwrap_or_else(|_| json!({"check": "offline", "status": 0})));
+        items.push(
+            t.await
+                .unwrap_or_else(|_| json!({"check": "offline", "status": 0})),
+        );
     }
     Ok(json!({"items": items}))
 }

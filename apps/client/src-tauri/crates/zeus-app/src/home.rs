@@ -15,6 +15,19 @@ use crate::failure::{Failure, Result};
 /// The profile name that keeps this installation's endpoint apart from any other Zeus on the same account.
 pub const PROFILE: &str = "zeus-app";
 
+/// The profile of the installation under `root`. The default installation uses [`PROFILE`]; a contained one (a test
+/// folder, a portable copy) gets its own, so two of them never share an endpoint.
+pub fn profile_for(root: &Path, contained: bool) -> String {
+    if !contained {
+        return PROFILE.into();
+    }
+    use sha2::{Digest, Sha256};
+    let digest = hex::encode(Sha256::digest(
+        root.display().to_string().to_lowercase().as_bytes(),
+    ));
+    format!("{PROFILE}-{}", &digest[..8])
+}
+
 /// The app's folders.
 #[derive(Debug, Clone)]
 pub struct AppHome {
@@ -30,14 +43,23 @@ impl AppHome {
         if let Some(root) = std::env::var_os("ZEUS_APP_HOME").filter(|v| !v.is_empty()) {
             let root = PathBuf::from(root);
             if !root.is_absolute() {
-                return Err(Failure::new("app.home", "ZEUS_APP_HOME must be an absolute path."));
+                return Err(Failure::new(
+                    "app.home",
+                    "ZEUS_APP_HOME must be an absolute path.",
+                ));
             }
-            return Ok(Self { root, contained: true });
+            return Ok(Self {
+                root,
+                contained: true,
+            });
         }
         if let Some(dir) = exe_dir {
             let portable = dir.join("ZeusData");
             if portable.is_dir() {
-                return Ok(Self { root: portable, contained: true });
+                return Ok(Self {
+                    root: portable,
+                    contained: true,
+                });
             }
         }
         let base = directories::BaseDirs::new()
@@ -50,7 +72,10 @@ impl AppHome {
 
     /// An explicit root (tests).
     pub fn at(root: PathBuf) -> Self {
-        Self { root, contained: true }
+        Self {
+            root,
+            contained: true,
+        }
     }
 
     /// The engine's state folder (journal, credentials, IPC secret).
@@ -98,7 +123,10 @@ impl AppHome {
     pub fn zeus_env(&self) -> Vec<(String, String)> {
         let path = |p: PathBuf| p.display().to_string();
         vec![
-            ("ZEUS_PROFILE".into(), PROFILE.into()),
+            (
+                "ZEUS_PROFILE".into(),
+                profile_for(&self.root, self.contained),
+            ),
             ("ZEUS_STATE_DIR".into(), path(self.state_dir())),
             ("ZEUS_CONFIG_DIR".into(), path(self.config_dir())),
             ("ZEUS_RUNTIME_DIR".into(), path(self.run_dir())),
@@ -130,7 +158,18 @@ mod tests {
         let home = AppHome::at(PathBuf::from("/tmp/zeus-home"));
         assert!(home.default_download_root().starts_with("/tmp/zeus-home"));
         let env = home.zeus_env();
-        assert!(env.iter().any(|(k, v)| k == "ZEUS_PROFILE" && v == PROFILE));
-        assert!(env.iter().any(|(k, v)| k == "ZEUS_STATE_DIR" && v.contains("state")));
+        assert!(
+            env.iter()
+                .any(|(k, v)| k == "ZEUS_PROFILE" && v.starts_with(PROFILE) && v.len() <= 32)
+        );
+        assert_ne!(
+            profile_for(std::path::Path::new("/a"), true),
+            profile_for(std::path::Path::new("/b"), true)
+        );
+        assert_eq!(profile_for(std::path::Path::new("/a"), false), PROFILE);
+        assert!(
+            env.iter()
+                .any(|(k, v)| k == "ZEUS_STATE_DIR" && v.contains("state"))
+        );
     }
 }

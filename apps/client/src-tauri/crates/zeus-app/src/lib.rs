@@ -11,8 +11,10 @@
 
 #![forbid(unsafe_code)]
 
+pub mod applog;
 pub mod daemon;
 pub mod engine_config;
+pub mod ext;
 pub mod failure;
 pub mod held;
 pub mod home;
@@ -54,6 +56,10 @@ pub struct App {
     pub reviews: Reviews,
     /// When the app started, in epoch milliseconds.
     pub started_ms: u64,
+    /// What the engine layer refused, for support (`logs/app.log`).
+    pub log: applog::AppLog,
+    /// Modules that serve more routes (file index, grabbers, agent, browser integration).
+    extensions: std::sync::RwLock<Vec<Arc<dyn ext::Extension>>>,
     /// Signalled when the person's queue asked the app to close (the shell exits on it).
     pub quit: tokio::sync::Notify,
 }
@@ -68,6 +74,7 @@ impl App {
         let daemon = Arc::new(Daemon::new(&home)?);
         let supervisor = Supervisor::new(home.clone(), bin_dir, daemon.clone());
         supervisor.start();
+        let home_logs = home.logs_dir().join("app.log");
         let started_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| d.as_millis() as u64);
@@ -80,16 +87,57 @@ impl App {
             supervisor,
             started_ms,
             quit: tokio::sync::Notify::new(),
+            extensions: std::sync::RwLock::new(Vec::new()),
+            log: applog::AppLog::new(home_logs),
         }))
     }
 
     /// Serve one route of the closed table: `"GET /api/v1/jobs"`, `"POST /native/v1/queues/put"`, ...
     pub async fn call(self: &Arc<Self>, route: &str, body: Value) -> Result<Value> {
-        routes::dispatch(self, route, body).await
+        let extensions: Vec<Arc<dyn ext::Extension>> = self
+            .extensions
+            .read()
+            .map(|e| e.clone())
+            .unwrap_or_default();
+        let mut served = None;
+        for extension in extensions {
+            if let Some(reply) = extension.call(self, route, &body).await {
+                served = Some(reply);
+                break;
+            }
+        }
+        let result = match served {
+            Some(r) => r,
+            None => routes::dispatch(self, route, body).await,
+        };
+        if let Err(f) = &result
+            && !f.code.starts_with("engine.starting")
+        {
+            self.log.line(
+                &format!("{route} {}", f.code),
+                &format!("{route} -> {}: {}", f.code, f.message),
+            );
+        }
+        result
     }
 
-    /// Stop the engine cleanly (the app is closing).
+    /// Register a module that serves more routes. Earlier registrations are asked first.
+    pub fn add_extension(&self, extension: Arc<dyn ext::Extension>) {
+        if let Ok(mut list) = self.extensions.write() {
+            list.push(extension);
+        }
+    }
+
+    /// Stop the extensions and then the engine cleanly (the app is closing).
     pub async fn shutdown(&self) {
+        let extensions: Vec<Arc<dyn ext::Extension>> = self
+            .extensions
+            .read()
+            .map(|e| e.clone())
+            .unwrap_or_default();
+        for extension in extensions {
+            extension.shutdown().await;
+        }
         self.supervisor.shutdown().await;
     }
 }

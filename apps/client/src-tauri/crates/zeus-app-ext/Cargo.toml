@@ -1,0 +1,34 @@
+[package]
+name = "zeus-app-ext"
+description = "Registers every extension module of the Zeus app, and the loopback test harness."
+version = "0.0.1-beta"
+edition = "2024"
+rust-version = "1.90"
+license = "Apache-2.0"
+repository = "https://github.com/ArefinAlter/zeus"
+authors = ["Zeus contributors"]
+publish = false
+
+[features]
+default = []
+# The loopback HTTP harness binary for driving the interface in a browser (never shipped).
+http-harness = ["zeus-app/http-harness"]
+
+[[bin]]
+name = "zeus-app-http"
+path = "src/bin/zeus-app-http.rs"
+required-features = ["http-harness"]
+
+[dependencies]
+zeus-app = { path = "../zeus-app" }
+zeus-app-index = { path = "../zeus-app-index" }
+zeus-app-grab = { path = "../zeus-app-grab" }
+zeus-app-agent = { path = "../zeus-app-agent" }
+zeus-app-integration = { path = "../zeus-app-integration" }
+tokio.workspace = true
+rand.workspace = true
+hex.workspace = true
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"

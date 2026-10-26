@@ -92,11 +92,17 @@ pub async fn dispatch(app: &Arc<App>, route: &str, body: Value) -> Result<Value>
         ("GET", ["api", "v1", "approvals"]) => {
             ensure_ready(app)?;
             let items = app.daemon.all("approvals.list", json!({}), 3).await?;
-            Ok(json!({"items": items, "decide": "Decide these in the interactive Zeus CLI (zeus approvals) or the browser extension's popup."}))
+            Ok(
+                json!({"items": items, "decide": "Decide these in the interactive Zeus CLI (zeus approvals) or the browser extension's popup."}),
+            )
         }
         ("GET", ["api", "v1", "runs"]) => {
             ensure_ready(app)?;
-            let items = app.daemon.all("workflows.list", json!({}), 2).await.unwrap_or_default();
+            let items = app
+                .daemon
+                .all("workflows.list", json!({}), 2)
+                .await
+                .unwrap_or_default();
             Ok(json!({"items": items}))
         }
         ("GET", ["api", "v1", "fixtures"]) => Ok(json!({"hosts": [], "samples": []})),
@@ -104,13 +110,19 @@ pub async fn dispatch(app: &Arc<App>, route: &str, body: Value) -> Result<Value>
         ("GET", ["svc", "v1", "state"]) => app.state.all().await,
         ("DELETE", ["svc", "v1", "state"]) => app.state.clear().await,
         ("PUT", ["svc", "v1", "state", slice]) => app.state.put(slice, &body).await,
-        ("GET", ["svc", "v1", "index"]) | ("POST", ["svc", "v1", "index", "rescan"]) => index(app).await,
+        ("GET", ["svc", "v1", "index"]) | ("POST", ["svc", "v1", "index", "rescan"]) => {
+            index(app).await
+        }
         ("POST", ["svc", "v1", "links", "check"]) => {
             ensure_ready(app)?;
             let urls: Vec<String> = body
                 .get("urls")
                 .and_then(Value::as_array)
-                .map(|a| a.iter().filter_map(|u| u.as_str().map(str::to_owned)).collect())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|u| u.as_str().map(str::to_owned))
+                        .collect()
+                })
                 .unwrap_or_default();
             crate::links::check(app.daemon.clone(), &urls).await
         }
@@ -135,7 +147,15 @@ pub async fn dispatch(app: &Arc<App>, route: &str, body: Value) -> Result<Value>
             ensure_ready(app)?;
             app.daemon.raw("queues.list", json!({})).await
         }
-        ("POST", ["native", "v1", "queues", op @ ("put" | "delete" | "control" | "configure")]) => {
+        (
+            "POST",
+            [
+                "native",
+                "v1",
+                "queues",
+                op @ ("put" | "delete" | "control" | "configure"),
+            ],
+        ) => {
             ensure_ready(app)?;
             let mut params = if body.is_object() { body } else { json!({}) };
             if params.get("idempotency_key").is_none() {
@@ -166,7 +186,10 @@ pub async fn dispatch(app: &Arc<App>, route: &str, body: Value) -> Result<Value>
                 _ => Err(Failure::invalid("Unknown action.")),
             }
         }
-        _ => Err(Failure::new("app.unknown_route", "This client asked for something this build does not offer.")),
+        _ => Err(Failure::new(
+            "app.unknown_route",
+            "This client asked for something this build does not offer.",
+        )),
     }?;
     clean_paths(&mut out);
     Ok(out)
@@ -197,7 +220,9 @@ async fn status(app: &Arc<App>) -> Result<Value> {
     let engine = app.supervisor.status();
     if engine.phase != Phase::Ready {
         let f = not_ready(app);
-        return Ok(json!({"daemon": Value::Null, "failure": f, "updated_ms": now_ms(), "engine": engine}));
+        return Ok(
+            json!({"daemon": Value::Null, "failure": f, "updated_ms": now_ms(), "engine": engine}),
+        );
     }
     match app.daemon.raw("daemon.status", json!({})).await {
         Ok(s) => Ok(json!({
@@ -215,7 +240,9 @@ async fn status(app: &Arc<App>) -> Result<Value> {
             "updated_ms": now_ms(),
             "engine": engine,
         })),
-        Err(f) => Ok(json!({"daemon": Value::Null, "failure": f, "updated_ms": now_ms(), "engine": engine})),
+        Err(f) => Ok(
+            json!({"daemon": Value::Null, "failure": f, "updated_ms": now_ms(), "engine": engine}),
+        ),
     }
 }
 
@@ -236,7 +263,10 @@ async fn job(app: &Arc<App>, id: &str) -> Result<Value> {
 
 async fn control(app: &Arc<App>, id: &str, body: &Value) -> Result<Value> {
     ensure_ready(app)?;
-    let action = body.get("action").and_then(Value::as_str).unwrap_or_default();
+    let action = body
+        .get("action")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
     if !["pause", "resume", "cancel", "retry", "reprioritize"].contains(&action) {
         return Err(Failure::invalid("Unknown action."));
     }
@@ -263,10 +293,25 @@ async fn files(app: &Arc<App>) -> Result<Value> {
     for root in &settings.write_roots {
         let list = app
             .daemon
-            .all("files.list", json!({"dir": root, "recursive": true, "include_partial": true}), 20)
+            .all(
+                "files.list",
+                json!({"dir": root, "recursive": true, "include_partial": true}),
+                20,
+            )
             .await;
         match list {
-            Ok(mut v) => items.append(&mut v),
+            Ok(mut v) => {
+                // zeusd reports each file relative to its root; the page works with absolute paths.
+                for item in &mut v {
+                    if let Some(rel) = item.get("path").and_then(Value::as_str).map(str::to_owned) {
+                        let abs = std::path::Path::new(root)
+                            .join(rel.replace('/', std::path::MAIN_SEPARATOR_STR));
+                        item["relpath"] = json!(rel);
+                        item["path"] = json!(display_path(&abs.display().to_string()));
+                    }
+                }
+                items.append(&mut v);
+            }
             Err(f) if f.code == "api.not_found" || f.code == "api.invalid_params" => {}
             Err(f) => return Err(f),
         }
@@ -289,7 +334,9 @@ fn walk(dir: &std::path::Path, depth: usize, rows: &mut Vec<Value>) {
     if depth > 8 || rows.len() > 50_000 {
         return;
     }
-    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
     for entry in entries.flatten() {
         let path = entry.path();
         let Ok(meta) = entry.metadata() else { continue };

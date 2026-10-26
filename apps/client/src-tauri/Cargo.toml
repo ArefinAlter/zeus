@@ -8,7 +8,7 @@
 # the repository root, which excludes `apps/client/src-tauri`.
 [workspace]
 resolver = "3"
-members = [".", "crates/zeus-app"]
+members = [".", "crates/zeus-app", "crates/zeus-app-ext", "crates/zeus-app-index", "crates/zeus-app-grab", "crates/zeus-app-agent", "crates/zeus-app-integration"]
 
 [workspace.dependencies]
 zeus-api = { path = "../../../crates/zeus-api" }
@@ -49,6 +49,7 @@ custom-protocol = ["tauri/custom-protocol"]
 
 [dependencies]
 zeus-app = { path = "crates/zeus-app" }
+zeus-app-ext = { path = "crates/zeus-app-ext" }
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true

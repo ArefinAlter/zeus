@@ -12,8 +12,9 @@ use crate::review::inside;
 
 /// Extensions that run code or install software; they are shown in the folder, never opened.
 const RUNNABLE: &[&str] = &[
-    "exe", "msi", "bat", "cmd", "com", "scr", "ps1", "psm1", "vbs", "vbe", "js", "jse", "wsf", "wsh", "jar", "lnk", "reg", "dll",
-    "appx", "msix", "msp", "cpl", "hta", "sh", "run", "appimage", "deb", "rpm", "desktop", "pkg", "dmg", "app", "apk", "bin",
+    "exe", "msi", "bat", "cmd", "com", "scr", "ps1", "psm1", "vbs", "vbe", "js", "jse", "wsf",
+    "wsh", "jar", "lnk", "reg", "dll", "appx", "msix", "msp", "cpl", "hta", "sh", "run",
+    "appimage", "deb", "rpm", "desktop", "pkg", "dmg", "app", "apk", "bin",
 ];
 
 /// True when opening a file named `name` could run code.
@@ -43,10 +44,16 @@ pub fn open(home: &AppHome, settings: &EngineSettings, path: &str, action: Actio
         || inside(&home.logs_dir().display().to_string(), path)
         || inside(&home.app_dir().display().to_string(), path);
     if !allowed {
-        return Err(Failure::new("app.path_outside", "Zeus opens only files inside its download folders."));
+        return Err(Failure::new(
+            "app.path_outside",
+            "Zeus opens only files inside its download folders.",
+        ));
     }
     if !p.exists() {
-        return Err(Failure::new("app.not_found", "That file or folder no longer exists."));
+        return Err(Failure::new(
+            "app.not_found",
+            "That file or folder no longer exists.",
+        ));
     }
     if action == Action::Open && p.is_file() && runnable(path) {
         return Err(Failure::new(
@@ -80,7 +87,11 @@ fn launch(p: &Path, action: Action) -> Result<()> {
         Action::Reveal if p.is_file() => p.parent().unwrap_or(p),
         _ => p,
     };
-    let program = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
+    let program = if cfg!(target_os = "macos") {
+        "open"
+    } else {
+        "xdg-open"
+    };
     std::process::Command::new(program)
         .arg(target)
         .spawn()
@@ -98,13 +109,24 @@ pub fn sleep() -> Result<()> {
     };
     #[cfg(not(windows))]
     let mut cmd = {
-        let mut c = std::process::Command::new(if cfg!(target_os = "macos") { "pmset" } else { "systemctl" });
-        c.arg(if cfg!(target_os = "macos") { "sleepnow" } else { "suspend" });
+        let mut c = std::process::Command::new(if cfg!(target_os = "macos") {
+            "pmset"
+        } else {
+            "systemctl"
+        });
+        c.arg(if cfg!(target_os = "macos") {
+            "sleepnow"
+        } else {
+            "suspend"
+        });
         c
     };
-    cmd.spawn()
-        .map(|_| ())
-        .map_err(|_| Failure::new("app.sleep", "The computer could not be put to sleep from here."))
+    cmd.spawn().map(|_| ()).map_err(|_| {
+        Failure::new(
+            "app.sleep",
+            "The computer could not be put to sleep from here.",
+        )
+    })
 }
 
 #[cfg(test)]

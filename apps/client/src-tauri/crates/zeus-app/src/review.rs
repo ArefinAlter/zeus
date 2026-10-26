@@ -11,6 +11,8 @@ use std::time::{Duration, Instant};
 use serde_json::{Map, Value, json};
 use tokio::sync::Mutex;
 
+use std::sync::Arc;
+
 use crate::daemon::Daemon;
 use crate::engine_config::EngineSettings;
 use crate::failure::{Failure, Result};
@@ -49,7 +51,10 @@ pub fn inside(root: &str, path: &str) -> bool {
 }
 
 fn valid_key(k: &str) -> bool {
-    !k.is_empty() && k.len() <= 64 && k.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+    !k.is_empty()
+        && k.len() <= 64
+        && k.chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
 }
 
 /// One requested download, as the page sends it.
@@ -65,10 +70,19 @@ fn parse_items(body: &Value, settings: &EngineSettings) -> Result<(Vec<Item>, Ve
         .filter(|d| !d.is_empty())
         .map(str::to_owned)
         .or_else(|| {
-            let sub = body.get("subdir").and_then(Value::as_str).unwrap_or_default().trim().replace('\\', "/");
+            let sub = body
+                .get("subdir")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .trim()
+                .replace('\\', "/");
             let sub = sub.trim_matches('/');
             settings.write_roots.first().map(|r| {
-                if sub.is_empty() { r.clone() } else { Path::new(r).join(sub).display().to_string() }
+                if sub.is_empty() {
+                    r.clone()
+                } else {
+                    Path::new(r).join(sub).display().to_string()
+                }
             })
         });
     let raw: Vec<Value> = match body.get("items").and_then(Value::as_array) {
@@ -79,29 +93,48 @@ fn parse_items(body: &Value, settings: &EngineSettings) -> Result<(Vec<Item>, Ve
             .map(|u| u.iter().map(|x| json!({"url": x})).collect())
             .unwrap_or_default(),
     };
-    let bytes: usize = raw.iter().map(|i| i.get("url").and_then(Value::as_str).map_or(0, str::len)).sum();
+    let bytes: usize = raw
+        .iter()
+        .map(|i| i.get("url").and_then(Value::as_str).map_or(0, str::len))
+        .sum();
     if raw.is_empty() || bytes > MAX_INPUT_BYTES {
-        return Err(Failure::invalid("Use 1 to 50 unique http or https links, at most 64 KiB in total."));
+        return Err(Failure::invalid(
+            "Use 1 to 50 unique http or https links, at most 64 KiB in total.",
+        ));
     }
     let mut seen = HashSet::new();
     let mut items = Vec::new();
     let mut refused = Vec::new();
     for (index, entry) in raw.iter().enumerate() {
-        let input = entry.get("url").and_then(Value::as_str).unwrap_or_default().trim().to_owned();
+        let input = entry
+            .get("url")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .trim()
+            .to_owned();
         let dir = entry
             .get("dir")
             .and_then(Value::as_str)
             .filter(|d| !d.is_empty())
             .map(str::to_owned)
             .or_else(|| default_dir.clone());
-        let filename = entry.get("filename").and_then(Value::as_str).filter(|s| !s.is_empty());
-        if input.is_empty() || !seen.insert((input.clone(), dir.clone(), filename.map(str::to_owned))) {
+        let filename = entry
+            .get("filename")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty());
+        if input.is_empty()
+            || !seen.insert((input.clone(), dir.clone(), filename.map(str::to_owned)))
+        {
             continue;
         }
         let reason = match url::Url::parse(&input) {
             Err(_) => Some("Not a valid address."),
-            Ok(u) if !matches!(u.scheme(), "http" | "https") => Some("Zeus downloads http and https addresses only."),
-            Ok(u) if !u.username().is_empty() || u.password().is_some() => Some("No user name or password in the address."),
+            Ok(u) if !matches!(u.scheme(), "http" | "https") => {
+                Some("Zeus downloads http and https addresses only.")
+            }
+            Ok(u) if !u.username().is_empty() || u.password().is_some() => {
+                Some("No user name or password in the address.")
+            }
             Ok(_) => None,
         };
         if let Some(reason) = reason {
@@ -122,17 +155,30 @@ fn parse_items(body: &Value, settings: &EngineSettings) -> Result<(Vec<Item>, Ve
         if let Some(f) = filename {
             job.insert("filename".into(), json!(f));
         }
-        for key in ["expected_sha256", "expected_size", "overwrite", "priority", "max_connections", "referrer"] {
+        for key in [
+            "expected_sha256",
+            "expected_size",
+            "overwrite",
+            "priority",
+            "max_connections",
+            "referrer",
+        ] {
             if let Some(v) = entry.get(key).filter(|v| !v.is_null()) {
                 job.insert(key.into(), v.clone());
             }
         }
-        if let Some(q) = entry.get("queue").and_then(Value::as_str).filter(|q| !q.is_empty()) {
+        if let Some(q) = entry
+            .get("queue")
+            .and_then(Value::as_str)
+            .filter(|q| !q.is_empty())
+        {
             job.insert("labels".into(), json!({"zeus.queue": q}));
         }
         items.push(Item { index, job });
         if items.len() > MAX_LINKS {
-            return Err(Failure::invalid("Use 1 to 50 unique http or https links, at most 64 KiB in total."));
+            return Err(Failure::invalid(
+                "Use 1 to 50 unique http or https links, at most 64 KiB in total.",
+            ));
         }
     }
     Ok((items, refused))
@@ -140,13 +186,53 @@ fn parse_items(body: &Value, settings: &EngineSettings) -> Result<(Vec<Item>, Ve
 
 impl Reviews {
     /// Resolve a batch without creating anything and keep the exact inputs for ten minutes.
-    pub async fn preview(&self, daemon: &Daemon, settings: &EngineSettings, body: &Value) -> Result<Value> {
-        let (items, refused) = parse_items(body, settings)?;
+    pub async fn preview(
+        &self,
+        daemon: &Arc<Daemon>,
+        settings: &EngineSettings,
+        body: &Value,
+    ) -> Result<Value> {
+        let (mut items, refused) = parse_items(body, settings)?;
         if !refused.is_empty() {
             return Ok(json!({"review_id": null, "ready": false, "items": [], "refused": refused}));
         }
         if items.is_empty() {
-            return Err(Failure::invalid("Use 1 to 50 unique http or https links, at most 64 KiB in total."));
+            return Err(Failure::invalid(
+                "Use 1 to 50 unique http or https links, at most 64 KiB in total.",
+            ));
+        }
+        // What each address really is: its server-given name, size and whether it can be resumed. A name the server
+        // gives (Content-Disposition) is used unless the person chose one, because zeusd fixes the destination name
+        // when the job is created.
+        let wanted: Vec<String> = items
+            .iter()
+            .map(|i| {
+                i.job
+                    .get("url")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned()
+            })
+            .collect();
+        let probes = crate::links::check(daemon.clone(), &wanted).await?;
+        let probes: Vec<Value> = probes
+            .get("items")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        for (item, probe) in items.iter_mut().zip(probes.iter()) {
+            let given = probe
+                .get("name")
+                .and_then(Value::as_str)
+                .filter(|n| !n.is_empty());
+            let from_server =
+                probe.get("name_source").and_then(Value::as_str) == Some("content_disposition");
+            if !item.job.contains_key("filename")
+                && let Some(name) = given
+                && from_server
+            {
+                item.job.insert("filename".into(), json!(name));
+            }
         }
         let jobs: Vec<Value> = items.iter().map(|i| Value::Object(i.job.clone())).collect();
         for item in &items {
@@ -154,20 +240,31 @@ impl Reviews {
                 let _ = std::fs::create_dir_all(d);
             }
         }
-        let result = daemon.raw("jobs.enqueue", json!({"jobs": jobs, "dry_run": true})).await?;
-        let entries = result.get("jobs").and_then(Value::as_array).cloned().unwrap_or_default();
+        let result = daemon
+            .raw("jobs.enqueue", json!({"jobs": jobs, "dry_run": true}))
+            .await?;
+        let entries = result
+            .get("jobs")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
         let mut ready = true;
         let out: Vec<Value> = entries
             .iter()
             .zip(items.iter())
-            .map(|(e, item)| match e.get("plan").filter(|p| !p.is_null()) {
+            .enumerate()
+            .map(|(n, (e, item))| match e.get("plan").filter(|p| !p.is_null()) {
                 Some(plan) => json!({
                     "index": item.index,
                     "url_redacted": plan.get("url_redacted"),
-                    "filename": plan.get("resolved_filename"),
+                    "filename": plan.get("resolved_filename").filter(|v| !v.is_null()).or_else(|| item.job.get("filename")).or_else(|| probes.get(n).and_then(|p| p.get("name"))),
                     "destination": plan.get("dest_path"),
                     "approval_needed": plan.get("approval_needed"),
                     "warnings": plan.get("warnings"),
+                    "size": probes.get(n).and_then(|p| p.get("size")),
+                    "resumable": probes.get(n).and_then(|p| p.get("resumable")),
+                    "content_type": probes.get(n).and_then(|p| p.get("content_type")),
+                    "probe_status": probes.get(n).and_then(|p| p.get("status")),
                 }),
                 None => {
                     ready = false;
@@ -186,33 +283,62 @@ impl Reviews {
         let mut held = self.held.lock().await;
         held.retain(|_, r| r.created.elapsed() <= REVIEW_FOR);
         if held.len() >= 8
-            && let Some(oldest) = held.iter().min_by_key(|(_, r)| r.created).map(|(k, _)| k.clone())
+            && let Some(oldest) = held
+                .iter()
+                .min_by_key(|(_, r)| r.created)
+                .map(|(k, _)| k.clone())
         {
             held.remove(&oldest);
         }
-        held.insert(id.clone(), Review { created: Instant::now(), jobs });
+        held.insert(
+            id.clone(),
+            Review {
+                created: Instant::now(),
+                jobs,
+            },
+        );
         Ok(json!({"review_id": id, "ready": true, "items": out, "refused": []}))
     }
 
     /// Start exactly the reviewed batch, once per retry key.
     pub async fn enqueue(&self, daemon: &Daemon, body: &Value) -> Result<Value> {
-        let key = body.get("idempotency_key").and_then(Value::as_str).unwrap_or_default();
+        let key = body
+            .get("idempotency_key")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
         if !valid_key(key) {
-            return Err(Failure::invalid("The retry key must have 1 to 64 letters, digits, '-', '_' or '.'."));
+            return Err(Failure::invalid(
+                "The retry key must have 1 to 64 letters, digits, '-', '_' or '.'.",
+            ));
         }
-        let review_id = body.get("review_id").and_then(Value::as_str).unwrap_or_default();
+        let review_id = body
+            .get("review_id")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
         let jobs = {
             let held = self.held.lock().await;
             held.get(review_id)
                 .filter(|r| r.created.elapsed() <= REVIEW_FOR)
                 .map(|r| r.jobs.clone())
-                .ok_or_else(|| Failure::new("app.review_expired", "Preview the links again before starting them."))?
+                .ok_or_else(|| {
+                    Failure::new(
+                        "app.review_expired",
+                        "Preview the links again before starting them.",
+                    )
+                })?
         };
         let key: String = format!("app-{key}").chars().take(64).collect();
         let result = daemon
-            .raw("jobs.enqueue", json!({"jobs": jobs, "dry_run": false, "idempotency_key": key}))
+            .raw(
+                "jobs.enqueue",
+                json!({"jobs": jobs, "dry_run": false, "idempotency_key": key}),
+            )
             .await?;
-        let entries = result.get("jobs").and_then(Value::as_array).cloned().unwrap_or_default();
+        let entries = result
+            .get("jobs")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
         let out: Vec<Value> = entries
             .iter()
             .map(|e| {
@@ -228,7 +354,9 @@ impl Reviews {
         if out.iter().all(|e| e["job_id"].is_string()) {
             self.held.lock().await.remove(review_id);
         }
-        Ok(json!({"replayed": result.get("replayed").and_then(Value::as_bool).unwrap_or(false), "jobs": out}))
+        Ok(
+            json!({"replayed": result.get("replayed").and_then(Value::as_bool).unwrap_or(false), "jobs": out}),
+        )
     }
 }
 
@@ -238,7 +366,11 @@ mod tests {
 
     fn settings() -> EngineSettings {
         EngineSettings {
-            write_roots: vec![if cfg!(windows) { "C:\\dl".into() } else { "/dl".into() }],
+            write_roots: vec![if cfg!(windows) {
+                "C:\\dl".into()
+            } else {
+                "/dl".into()
+            }],
             ..EngineSettings::default()
         }
     }

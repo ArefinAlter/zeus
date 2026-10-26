@@ -86,8 +86,12 @@ impl StateStore {
         let mut first_seen: Option<u64> = None;
         for name in SLICES {
             let path = self.path(name);
-            let Ok(bytes) = std::fs::read(&path) else { continue };
-            let Ok(value) = serde_json::from_slice::<Value>(&bytes) else { continue };
+            let Ok(bytes) = std::fs::read(&path) else {
+                continue;
+            };
+            let Ok(value) = serde_json::from_slice::<Value>(&bytes) else {
+                continue;
+            };
             let updated = std::fs::metadata(&path)
                 .and_then(|m| m.modified())
                 .ok()
@@ -102,11 +106,17 @@ impl StateStore {
     /// Store one slice.
     pub async fn put(&self, slice: &str, value: &Value) -> Result<Value> {
         if !SLICES.contains(&slice) {
-            return Err(Failure::new("app.unknown_slice", "That setting is not stored here."));
+            return Err(Failure::new(
+                "app.unknown_slice",
+                "That setting is not stored here.",
+            ));
         }
         let text = serde_json::to_string(value)?;
         if text.len() > MAX_SLICE {
-            return Err(Failure::new("app.too_large", "That list is too large to store."));
+            return Err(Failure::new(
+                "app.too_large",
+                "That list is too large to store.",
+            ));
         }
         if looks_secret(&text) {
             return Err(Failure::new(
@@ -145,7 +155,9 @@ mod tests {
         assert!(looks_secret("{\"key\":\"sk-abcdefghijklmnop1234\"}"));
         assert!(looks_secret("x ZEUS-CANARY-1"));
         assert!(looks_secret("AIzaSyA1234567890abcdefghij"));
-        assert!(!looks_secret("{\"name\":\"task-list\",\"sk\":\"sk-short\"}"));
+        assert!(!looks_secret(
+            "{\"name\":\"task-list\",\"sk\":\"sk-short\"}"
+        ));
         assert!(!looks_secret("risk-assessment-report-final-version"));
     }
 
@@ -157,8 +169,18 @@ mod tests {
         let all = store.all().await.unwrap();
         assert_eq!(all["slices"]["settings"]["value"]["a"], 1);
         assert!(store.put("evil", &json!(1)).await.is_err());
-        assert!(store.put("settings", &json!({"k": "sk-abcdefghijklmnop1234"})).await.is_err());
+        assert!(
+            store
+                .put("settings", &json!({"k": "sk-abcdefghijklmnop1234"}))
+                .await
+                .is_err()
+        );
         store.clear().await.unwrap();
-        assert!(store.all().await.unwrap()["slices"].as_object().unwrap().is_empty());
+        assert!(
+            store.all().await.unwrap()["slices"]
+                .as_object()
+                .unwrap()
+                .is_empty()
+        );
     }
 }

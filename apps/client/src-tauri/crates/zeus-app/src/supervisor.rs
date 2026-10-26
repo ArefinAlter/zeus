@@ -83,7 +83,12 @@ pub fn bin_dir() -> Result<PathBuf> {
     std::env::current_exe()
         .ok()
         .and_then(|p| p.parent().map(Path::to_path_buf))
-        .ok_or_else(|| Failure::new("engine.not_installed", "Cannot find the folder Zeus is installed in."))
+        .ok_or_else(|| {
+            Failure::new(
+                "engine.not_installed",
+                "Cannot find the folder Zeus is installed in.",
+            )
+        })
 }
 
 /// Supervises one `zeusd`.
@@ -111,7 +116,10 @@ fn tool(bin_dir: &Path, name: &str, home: &AppHome) -> Command {
 impl Supervisor {
     /// A supervisor for the installation under `home`, with its programs in `bin_dir`.
     pub fn new(home: AppHome, bin_dir: PathBuf, daemon: Arc<Daemon>) -> Arc<Self> {
-        let (status, _) = watch::channel(EngineStatus::new(Phase::Starting, "Starting the Zeus engine"));
+        let (status, _) = watch::channel(EngineStatus::new(
+            Phase::Starting,
+            "Starting the Zeus engine",
+        ));
         Arc::new(Self {
             home,
             bin_dir,
@@ -169,7 +177,10 @@ impl Supervisor {
                         self.graceful_stop().await;
                     }
                     self.status.send_modify(|s| s.restarts += 1);
-                    self.set(Phase::Restarting, "The Zeus engine stopped; starting it again");
+                    self.set(
+                        Phase::Restarting,
+                        "The Zeus engine stopped; starting it again",
+                    );
                 }
                 Err(failure) => {
                     tracing::warn!(code = %failure.code, "the engine did not start: {}", failure.message);
@@ -229,32 +240,54 @@ impl Supervisor {
             .raw("daemon.status", serde_json::json!({}))
             .await
             .ok()
-            .and_then(|v| v.pointer("/daemon/version").and_then(|x| x.as_str().map(str::to_owned)))
+            .and_then(|v| {
+                v.pointer("/daemon/version")
+                    .and_then(|x| x.as_str().map(str::to_owned))
+            })
     }
 
     /// `zeusd init`: idempotent; creates the secret, the credentials and the program pins.
     async fn init(&self) -> Result<()> {
-        let needed = !self.home.state_dir().join("credentials").join("app.token").exists()
+        let needed = !self
+            .home
+            .state_dir()
+            .join("credentials")
+            .join("app.token")
+            .exists()
             || !self.home.state_dir().join("trusted-programs.json").exists();
         if !needed {
             return Ok(());
         }
         let out = tokio::time::timeout(
             Duration::from_secs(60),
-            tool(&self.bin_dir, "zeusd", &self.home).arg("init").output(),
+            tool(&self.bin_dir, "zeusd", &self.home)
+                .arg("init")
+                .output(),
         )
         .await
         .map_err(|_| Failure::new("engine.init", "Setting up the Zeus engine took too long."))?
         .map_err(|e| {
             Failure::new(
                 "engine.not_installed",
-                format!("The Zeus engine program could not be started ({}). Reinstall Zeus.", e.kind()),
+                format!(
+                    "The Zeus engine program could not be started ({}). Reinstall Zeus.",
+                    e.kind()
+                ),
             )
         })?;
         if !out.status.success() {
             let text = String::from_utf8_lossy(&out.stderr);
-            let tail: String = text.lines().last().unwrap_or("").chars().take(300).collect();
-            return Err(Failure::new("engine.init", format!("Setting up the Zeus engine failed: {tail}")));
+            let tail: String = text
+                .lines()
+                .last()
+                .unwrap_or("")
+                .chars()
+                .take(300)
+                .collect();
+            return Err(Failure::new(
+                "engine.init",
+                format!("Setting up the Zeus engine failed: {tail}"),
+            ));
         }
         Ok(())
     }
@@ -264,15 +297,23 @@ impl Supervisor {
         if std::fs::metadata(&log_path).is_ok_and(|m| m.len() > 5 * 1024 * 1024) {
             let _ = std::fs::rename(&log_path, self.home.logs_dir().join("zeusd.log.1"));
         }
-        let log = std::fs::OpenOptions::new().create(true).append(true).open(&log_path)?;
+        let log = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log_path)?;
         let err = log.try_clone()?;
         let mut cmd = tool(&self.bin_dir, "zeusd", &self.home);
-        cmd.arg("run").stdout(Stdio::from(log)).stderr(Stdio::from(err));
+        cmd.arg("run")
+            .stdout(Stdio::from(log))
+            .stderr(Stdio::from(err));
         cmd.kill_on_drop(false);
         let child = cmd.spawn().map_err(|e| {
             Failure::new(
                 "engine.not_installed",
-                format!("The Zeus engine program could not be started ({}). Reinstall Zeus.", e.kind()),
+                format!(
+                    "The Zeus engine program could not be started ({}). Reinstall Zeus.",
+                    e.kind()
+                ),
             )
         })?;
         let pid = child.id();
@@ -292,7 +333,10 @@ impl Supervisor {
             {
                 return Err(Failure::new(
                     "engine.exited",
-                    format!("The Zeus engine stopped right after starting ({status}). See {}.", self.home.logs_dir().join("zeusd.log").display()),
+                    format!(
+                        "The Zeus engine stopped right after starting ({status}). See {}.",
+                        self.home.logs_dir().join("zeusd.log").display()
+                    ),
                 ));
             }
             if self.daemon.alive().await {
@@ -303,7 +347,10 @@ impl Supervisor {
             }
             tokio::time::sleep(Duration::from_millis(300)).await;
         }
-        Err(Failure::new("engine.timeout", "The Zeus engine did not answer within a minute."))
+        Err(Failure::new(
+            "engine.timeout",
+            "The Zeus engine did not answer within a minute.",
+        ))
     }
 
     /// Returns when the daemon is gone or a restart is requested.
@@ -349,7 +396,9 @@ impl Supervisor {
     async fn graceful_stop(&self) {
         let _ = tokio::time::timeout(
             Duration::from_secs(12),
-            tool(&self.bin_dir, "zeus", &self.home).args(["daemon", "stop"]).output(),
+            tool(&self.bin_dir, "zeus", &self.home)
+                .args(["daemon", "stop"])
+                .output(),
         )
         .await;
         let started = Instant::now();

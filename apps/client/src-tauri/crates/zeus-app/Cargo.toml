@@ -14,11 +14,6 @@ default = []
 # A loopback HTTP front of the route table, used to test the interface in an ordinary browser (never shipped enabled).
 http-harness = ["dep:axum"]
 
-[[bin]]
-name = "zeus-app-http"
-path = "src/bin/zeus-app-http.rs"
-required-features = ["http-harness"]
-
 [dependencies]
 axum = { workspace = true, optional = true }
 zeus-api.workspace = true

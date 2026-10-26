@@ -178,7 +178,11 @@ mod tests {
     use super::*;
 
     fn root() -> String {
-        if cfg!(windows) { "C:\\dl".into() } else { "/dl".into() }
+        if cfg!(windows) {
+            "C:\\dl".into()
+        } else {
+            "/dl".into()
+        }
     }
 
     #[test]
