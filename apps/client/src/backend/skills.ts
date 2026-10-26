@@ -27,9 +27,10 @@ export function defaultSkills(): Skill[] {
       summary: 'Find the files a page links to, check them, and propose one reviewed batch.',
       triggers: ['from this page', 'all the pdfs', 'everything linked', 'batch from'],
       instructions: [
-        'Sample the page once with zeus_workflow (action sample); never follow more than one page deep unless asked.',
+        'Ask zeus_workflow to plan from the page address (request action plan, start_urls with that address, a goal that names the file types wanted); never go more than one page deep unless asked.',
+        'If the daemon cannot draft a plan, say so plainly and suggest the Link grabber or the Site grabber; do not invent links.',
         'Probe at most three of the links with zeus_probe to confirm size and type.',
-        'Propose the batch as a card the person reviews. Do not enqueue it yourself.',
+        'List what you found in your reply and ask which to start. Do not enqueue more than the person asked for.',
         'Say how many links you skipped and why.',
       ].join('\n'),
       tools: ['zeus_workflow', 'zeus_probe', 'zeus_status'],
@@ -43,7 +44,7 @@ export function defaultSkills(): Skill[] {
       summary: 'Preview moving files into folders by type, then ask for a review.',
       triggers: ['organise', 'organize', 'tidy', 'sort my downloads'],
       instructions: [
-        'List files with zeus_files_list, then preview the rules with zeus_files (dry_run true).',
+        'List files with zeus_files_list, then preview the rules with zeus_files (request action organize, dry_run true).',
         'Show every move as before and after. Never request the operation without the preview.',
         'Quarantined files stay where they are.',
       ].join('\n'),

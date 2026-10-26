@@ -26,7 +26,7 @@ export type AgentItem =
   | { kind: 'assistant'; id: string; text: string; streaming?: boolean }
   | { kind: 'tool'; id: string; tool: string; action?: string; input: unknown; output?: unknown; state: 'running' | 'ok' | 'denied' | 'error'; summary: string; ms?: number }
   | { kind: 'card'; id: string; card: Card }
-  | { kind: 'notice'; id: string; text: string; tone: 'info' | 'warn' }
+  | { kind: 'notice'; id: string; text: string; tone: 'info' | 'warn'; link?: { label: string; to: string } }
 
 export interface Thread {
   id: string
@@ -38,6 +38,11 @@ export interface Thread {
   items: AgentItem[]
   /** The skill in use, when a request matched one. */
   skill?: string
+  /** The desktop app's agent: the ladder entry (provider id) and model this thread uses. */
+  provider?: string
+  model?: string
+  /** What this thread has used so far, as the engine's ledger reports it. */
+  usage?: { input_tokens: number; output_tokens: number; usd: number; calls: number }
 }
 
 let seq = 1

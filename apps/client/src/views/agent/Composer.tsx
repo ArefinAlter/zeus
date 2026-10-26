@@ -3,11 +3,13 @@
 
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks'
 
+import { NATIVE } from '../../backend/live'
 import { ACCESS_INFO, ACCESS_ORDER } from '../../model/agentTools.ts'
 import type { AgentAccess } from '../../model/types.ts'
 import { Icon } from '../../ui/icons'
 import type { IconName } from '../../ui/icons'
 import { Popover } from '../../ui/Popover'
+import { ModelPicker } from './ModelPicker'
 
 const drafts = new Map<string, string>()
 
@@ -23,7 +25,7 @@ const COMMANDS: { name: string; hint: string; text: string }[] = [
   { name: 'approve', hint: 'Ask the agent to approve (it cannot)', text: 'Approve the portal request for me' },
 ]
 
-export function Composer({ draftKey, busy, access, onAccess, onSend, onStop, placeholder }: { draftKey: string; busy: boolean; access: AgentAccess; onAccess: (a: AgentAccess) => void; onSend: (text: string) => void; onStop: () => void; placeholder?: string }) {
+export function Composer({ draftKey, busy, access, onAccess, onSend, onStop, placeholder, providerId, onProvider }: { draftKey: string; busy: boolean; access: AgentAccess; onAccess: (a: AgentAccess) => void; onSend: (text: string) => void; onStop: () => void; placeholder?: string; providerId?: string | undefined; onProvider?: (providerId: string) => void }) {
   const [text, setText] = useState(drafts.get(draftKey) ?? '')
   const [menu, setMenu] = useState<string | null>(null)
   const [sel, setSel] = useState(0)
@@ -115,6 +117,9 @@ export function Composer({ draftKey, busy, access, onAccess, onSend, onStop, pla
           </div>
         ) : null}
         <div class="cmp-bar">
+          {NATIVE ? (
+            <ModelPicker providerId={providerId} onPick={(id) => onProvider?.(id)} />
+          ) : (
           <Popover label="Model: Zeus agent, prepared answers" title="This release answers from a script; no model is called" trigger={<><Icon name="sparkle" /> <span class="cbl">Zeus agent · prepared</span> <Icon name="chevron" /></>}>
             {(close) => (
               <>
@@ -130,6 +135,7 @@ export function Composer({ draftKey, busy, access, onAccess, onSend, onStop, pla
               </>
             )}
           </Popover>
+          )}
           <span class="vsep" />
           <Popover label={`Access: ${ACCESS_INFO[access].label}`} trigger={<><Icon name={accessIcon} /> <span class="cbl">{ACCESS_INFO[access].label}</span> <Icon name="chevron" /></>}>
             {(close) => (
@@ -157,7 +163,7 @@ export function Composer({ draftKey, busy, access, onAccess, onSend, onStop, pla
           )}
         </div>
       </div>
-      <div class="cmp-note">The agent's words are not checked by Zeus. It cannot approve a request.</div>
+      <div class="cmp-note">{NATIVE ? "A model you chose answers, with your own key; Zeus does not check its words. It cannot approve a request." : "The agent's words are not checked by Zeus. It cannot approve a request."}</div>
     </div>
   )
 }

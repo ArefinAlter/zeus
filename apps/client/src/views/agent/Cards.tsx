@@ -14,6 +14,7 @@ import { Chip, Notice, Progress, StateLabel } from '../../ui/components'
 import type { IconName } from '../../ui/icons'
 import { Icon } from '../../ui/icons'
 import { jobPercent } from '../downloads/columns'
+import { ApprovalCommand } from './Command'
 
 function Shell({ icon, title, chips, children, foot }: { icon: IconName; title: string; chips?: preact.ComponentChildren; children?: preact.ComponentChildren; foot?: preact.ComponentChildren }) {
   return (
@@ -107,7 +108,7 @@ function BatchCard({ card, threadId, itemId }: { card: Extract<Card, { type: 'ba
 function ApprovalsCard({ ids }: { ids: string[] }) {
   const approvals = useStore((s) => s.approvals.filter((a) => ids.includes(a.id)))
   return (
-    <Shell icon="seal" title="Waiting for you" chips={<Chip tone="warn">{approvals.filter((a) => a.state === 'pending').length} pending</Chip>} foot={<span class="muted small">Decided only by you, on the Approvals page, the extension popup or a terminal. Nothing in this conversation can decide one.</span>}>
+    <Shell icon="seal" title="Waiting for you" chips={<Chip tone="warn">{approvals.filter((a) => a.state === 'pending').length} pending</Chip>} foot={<><span class="muted small">Decided only by you, in the extension popup or at a terminal. Nothing in this conversation can decide one.</span><ApprovalCommand /></>}>
       <ul class="arows">
         {approvals.map((a) => (
           <li>
