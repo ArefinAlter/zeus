@@ -23,6 +23,7 @@ import { Palette } from './ui/Palette'
 import { WindowControls } from './ui/WindowControls'
 import { Agent, DetailsToggle } from './views/Agent'
 import { ApprovalDetail, Approvals } from './views/Approvals'
+import { Connect } from './views/Connect'
 import { Connectors } from './views/Connectors'
 import { AddUrl } from './views/dialogs/AddUrl'
 import { SiteGrabber } from './views/dialogs/SiteGrabber'
@@ -41,6 +42,7 @@ const TITLES: Record<string, string> = {
   agent: 'Agent',
   skills: 'Skills',
   approvals: 'Approvals',
+  connect: 'Connect',
   connectors: 'Connectors',
   settings: 'Settings',
   about: 'About',
@@ -64,6 +66,8 @@ function Page({ path, query }: { path: string[]; query: URLSearchParams }) {
       return <Skills {...(a ? { id: a } : {})} />
     case 'approvals':
       return a ? <ApprovalDetail id={a} key={a} /> : <Approvals {...(query.get('state') ? { state: query.get('state') as string } : {})} />
+    case 'connect':
+      return <Connect />
     case 'connectors':
       return <Connectors {...(a ? { id: a } : {})} />
     case 'settings':
