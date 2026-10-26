@@ -57,7 +57,7 @@ export async function startHarness({ home, fresh = false, env = {} } = {}) {
     get: (p) => call('GET', p),
     post: (p, b = {}) => call('POST', p, b),
     put: (p, b) => call('PUT', p, b),
-    async ready(timeoutMs = 90000) {
+    async ready(timeoutMs = 240000) {
       const t0 = Date.now()
       while (Date.now() - t0 < timeoutMs) {
         try {

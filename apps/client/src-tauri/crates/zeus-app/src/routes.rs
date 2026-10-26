@@ -143,6 +143,11 @@ pub async fn dispatch(app: &Arc<App>, route: &str, body: Value) -> Result<Value>
             engine_config::save(&app.home, &settings)?;
             Ok(json!({"ok": true, "restart_needed": true}))
         }
+        ("GET", ["native", "v1", "shell"]) => Ok(app.shell.view()),
+        ("PUT", ["native", "v1", "shell"]) => app.shell.put(&body),
+        ("POST", ["native", "v1", "shell", "notify"]) => app.shell.notify(&body),
+        ("POST", ["native", "v1", "shell", "tooltip"]) => Ok(app.shell.tooltip(&body)),
+        ("GET", ["native", "v1", "update"]) => crate::shell::check_update().await,
         ("GET", ["native", "v1", "queues"]) => {
             ensure_ready(app)?;
             app.daemon.raw("queues.list", json!({})).await

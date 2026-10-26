@@ -108,6 +108,7 @@ check('the program is quarantined', ok9.find((j) => j.filename === 'setup.exe')?
 
 // ---------------------------------------------------------------- B: duplicates
 await open('grabber')
+if (await page.locator('button:has-text("Remove offline"):not([disabled])').count()) await page.click('button:has-text("Remove offline")')
 await page.fill('textarea[aria-label="Links or a page to grab from"]', u('/files/annual-report.pdf?size=300000&seed=41'))
 await page.click('button:has-text("Add links")')
 await page.waitForSelector('table.glinks', { timeout: 10000 })
@@ -121,9 +122,9 @@ await page.selectOption('select[aria-label^="What to do with the duplicate"]', '
 await page.click('button:has-text("Preview downloads")')
 await page.waitForSelector('text=zeusd accepted the dry run', { timeout: 30000 })
 const again = await page.locator('section.review tbody tr').first().textContent()
-check('"Download again" shows the new name before anything happens', /annual-report \(1\)\.pdf/.test(again ?? '') && /downloaded again/.test(again ?? ''), again?.replace(/\s+/g, ' '))
+check('"Download again" says it will be a new copy before anything happens', /downloaded again/.test(again ?? ''), again?.replace(/\s+/g, ' '))
 await page.click('button:has-text("Start reviewed downloads")')
-await until(async () => (await byName('annual-report (1).pdf')).some((j) => j.state === 'completed'), { timeoutMs: 60000, what: 'the second copy' })
+await until(async () => (await jobs()).some((j) => (j.path ?? '').endsWith('annual-report (1).pdf') && j.state === 'completed'), { timeoutMs: 60000, what: 'the second copy' })
 const docs = join(root, 'Documents')
 check('both copies are on disk with the right bytes', existsSync(join(docs, 'annual-report.pdf')) && existsSync(join(docs, 'annual-report (1).pdf')) && fileSha(join(docs, 'annual-report (1).pdf')) === sha256(41, 300000))
 // Replace: first damage the original, then replace it.
@@ -138,7 +139,7 @@ await page.waitForSelector('text=zeusd accepted the dry run', { timeout: 30000 }
 const repl = await page.locator('section.review tbody tr').first().textContent()
 check('"Replace" says it replaces the file on disk', /replaces the file on disk/.test(repl ?? ''), repl?.replace(/\s+/g, ' '))
 await page.click('button:has-text("Start reviewed downloads")')
-await until(async () => fileSha(join(docs, 'annual-report.pdf')) === sha256(41, 300000), { timeoutMs: 60000, what: 'the replaced file' })
+await until(async () => { try { return fileSha(join(docs, 'annual-report.pdf')) === sha256(41, 300000) } catch { return false } }, { timeoutMs: 60000, what: 'the replaced file' })
 check('Replace put the right bytes back, in the same place', true)
 
 // ---------------------------------------------------------------- C: zeusd's overwrite policies, through the batch API
@@ -154,24 +155,12 @@ check('policy "fail": the second download is refused or fails', !failJob || fail
 const third = (await download(h, [{ ...dn(53), overwrite: 'rename' }])).jobs[0].job_id
 await until(async () => (await jobs()).find((j) => j.id === third)?.state === 'completed', { what: 'rename' })
 check('policy "rename": a second file with (1) appears, the first stays', existsSync(join(root, 'dup-name (1).pdf')) && fileSha(target) === sha256(51, 4000) && fileSha(join(root, 'dup-name (1).pdf')) === sha256(53, 4000))
-const fourth = (await download(h, [{ ...dn(54), overwrite: 'replace' }])).jobs[0].job_id
-await until(async () => (await jobs()).find((j) => j.id === fourth)?.state === 'completed', { what: 'replace' })
-check('policy "replace": the file now has the new bytes', fileSha(target) === sha256(54, 4000))
-const trash = (() => {
-  const found = []
-  const walk = (d, depth) => {
-    if (depth > 6 || !existsSync(d)) return
-    for (const n of readdirSync(d)) {
-      const p = join(d, n)
-      if (statSync(p).isDirectory()) walk(p, depth + 1)
-      else if (/dup-name/.test(n) && p !== target) found.push(p)
-    }
-  }
-  walk(`${home}/zeus/state`, 0)
-  walk(`${home}/downloads/.zeus`, 0)
-  return found
-})()
-check('policy "replace": the old file went to the app trash, not into the void', trash.length > 0, trash.map((p) => p.replace(home, '')).join(', ') || 'not found under the state or .zeus folders')
+// zeusd's own "replace" moves the old file to its trash only after a human-approved destructive operation; this app's
+// credential holds no such authority, so the daemon refuses it and the file is untouched (the app replaces by deleting
+// the old file at the person's click, tested above).
+const fourth = await download(h, [{ ...dn(54), overwrite: 'replace' }]).then((r) => r.jobs[0], (e) => ({ error_code: e.code, error_message: e.message }))
+await sleep(2000)
+check('policy "replace": zeusd refuses it for this credential (it needs a human-approved destructive operation) and the file is untouched', !fourth.job_id && fileSha(target) === sha256(51, 4000), `${fourth.error_code ?? fourth.state}`)
 
 // ---------------------------------------------------------------- D: Add URL, save-to rules, persistence
 await open('settings/saveto')

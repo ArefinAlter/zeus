@@ -1251,7 +1251,7 @@ async function remotePreview(review: Review): Promise<void> {
     const finish = (remote: NonNullable<Review['remote']>) => set({ reviews: state.reviews.map((r) => (r.id === review.id ? { ...r, remote } : r)) })
     try {
       const batch = review.overwrite ?? state.settings.downloads.duplicates
-      const r = await api.previewItems(review.links.map((l) => ({ url: l.url, dir: l.dir, ...(l.check === 'online' || l.name !== fileNameFromUrl(l.url) ? { filename: l.name } : {}), ...(l.expectedSha256 ? { expected_sha256: l.expectedSha256 } : {}), overwrite: overwriteFor(l.dupeChoice, batch) })))
+      const r = await api.previewItems(review.links.map((l) => ({ url: l.url, dir: l.dir, ...(l.check === 'online' || l.name !== fileNameFromUrl(l.url) ? { filename: l.name } : {}), ...(l.expectedSha256 ? { expected_sha256: l.expectedSha256 } : {}), overwrite: nativeOverwrite(overwriteFor(l.dupeChoice, batch)) })))
       const plan = r.items as PlanRow[]
       if (r.refused.length) return finish({ state: 'refused', reason: `${review.links[r.refused[0]?.index ?? 0]?.host ?? ''}: ${r.refused[0]?.reason ?? ''}`, reviews: [], plan })
       if (!r.ready || !r.review_id) return finish({ state: 'refused', reason: r.items.find((i) => i.error_message)?.error_message ?? 'zeusd could not plan this batch. Check the addresses.', reviews: [], plan })
@@ -1279,6 +1279,11 @@ async function remotePreview(review: Review): Promise<void> {
 }
 
 /** Step two: start exactly the reviewed batch. A review older than ten minutes, or one already used, is refused. */
+/** zeusd's "replace" needs a terminal-approved destructive operation; the app replaces by deleting first, then renaming. */
+function nativeOverwrite(o: 'rename' | 'fail' | 'replace'): 'rename' | 'fail' | 'replace' {
+  return NATIVE && o === 'replace' ? 'rename' : o
+}
+
 export function grabberStart(reviewId: string, queue: string | null): { ok: true; ids: string[] } | { ok: false; reason: string } {
   const r = state.reviews.find((x) => x.id === reviewId)
   if (!r) return { ok: false, reason: 'This review is no longer available. Preview the downloads again.' }
@@ -1290,6 +1295,23 @@ export function grabberStart(reviewId: string, queue: string | null): { ok: true
     set({ reviews: state.reviews.filter((x) => x.id !== reviewId), grabber: state.grabber.filter((g) => !r.links.some((l) => l.id === g.id)) })
     void (async () => {
       let started = 0
+      // zeusd's own "replace" needs a terminal-approved destructive operation, so a person's "Replace the old file" is
+      // done by this app at the person's click: the old file goes to the recycle bin, then the name is free.
+      const replacing = NATIVE ? r.links.filter((l) => l.dupe && l.dupeChoice === 'replace') : []
+      if (replacing.length) {
+        const paths = replacing
+          .map((l) => state.jobs.find((j) => j.id === l.dupe?.id))
+          .filter((j): j is Job => !!j && j.state === 'completed')
+          .map((j) => joinPath(j.dir, j.name))
+        if (paths.length) {
+          try {
+            const gone = await filesApi.remove(paths)
+            if (gone.failed.length) toast({ kind: 'warn', title: 'Old file not removed', desc: `${gone.failed.length} old file${gone.failed.length === 1 ? '' : 's'} could not be moved to the recycle bin; the new copy gets a new name.`, important: true, topic: 'system' })
+          } catch (e) {
+            toast({ kind: 'warn', title: 'Old file not removed', desc: e instanceof Error ? e.message : 'The old file stays and the new copy gets a new name.', important: true, topic: 'system' })
+          }
+        }
+      }
       for (const rv of remote.reviews) {
         try {
           const res = await api.enqueue(rv.reviewId, retryKey(), NATIVE ? queue : null)
@@ -1322,7 +1344,7 @@ export function grabberStart(reviewId: string, queue: string | null): { ok: true
       start: queue === null,
       size: l.size,
       ...(l.expectedSha256 ? { expectedSha256: l.expectedSha256 } : {}),
-      overwrite: overwriteFor(l.dupeChoice, r.overwrite ?? state.settings.downloads.duplicates),
+      overwrite: nativeOverwrite(overwriteFor(l.dupeChoice, r.overwrite ?? state.settings.downloads.duplicates)),
       ...(l.check === 'needs_login' ? { sessionOrigin: new URL(l.url).origin } : {}),
     })),
   )

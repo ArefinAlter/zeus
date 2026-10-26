@@ -6,6 +6,7 @@
 import { useState } from 'preact/hooks'
 
 import { NATIVE, HOSTED, LIVE, applyEngineSettings } from '../../backend/live'
+import { shellApi } from '../../backend/shell'
 import { defaultDir, releaseStop, rescan, toast, updateSettings, useStore } from '../../backend/store'
 import { ACCESS_INFO, ACCESS_ORDER, HUMAN_ONLY, NEVER, TOOLS } from '../../model/agentTools.ts'
 import { CATEGORIES, defaultMap, overlaps, parseExtList } from '../../model/categories.ts'
@@ -24,10 +25,35 @@ import { NativeIndexSettings } from './IndexNative'
 
 const NOTE = LIVE ? (HOSTED ? 'Changes are kept for your sandbox by the pre-alpha service.' : 'Changes are kept on this device.') : 'Changes apply to this session\'s sample data.'
 
+/** The desktop app's own window behaviour (start at sign-in, the notification-area icon, closing to it). */
+function useShell() {
+  const g = useStore((s) => s.settings.general)
+  const [note, setNote] = useState<string | null>(null)
+  const [update, setUpdate] = useState<string | null>(null)
+  const [checking, setChecking] = useState(false)
+  const save = (patch: Partial<typeof g>) => {
+    updateSettings('general', patch)
+    const next = { ...g, ...patch }
+    void shellApi
+      .put({ launch_at_login: next.launchAtLogin, start_minimized: next.startMinimized, show_tray: next.showTray, close_to_tray: next.closeToTray, check_updates_weekly: next.checkUpdates === 'weekly' })
+      .then((v) => setNote(v.note ?? null), (e: unknown) => setNote(e instanceof Error ? e.message : 'The change was not applied.'))
+  }
+  const check = () => {
+    setChecking(true)
+    setUpdate(null)
+    void shellApi
+      .update()
+      .then((u) => setUpdate(u.newer ? `A newer release is out: ${u.latest}.${u.url ? ` ${u.url}` : ''}` : `You have the latest release (${u.current}).`), (e: unknown) => setUpdate(e instanceof Error ? e.message : 'The check failed.'))
+      .finally(() => setChecking(false))
+  }
+  return { g, note, update, checking, save, check }
+}
+
 export function GeneralSettings() {
   const g = useStore((s) => s.settings.general)
   const p = usePrefs()
-  const set = (patch: Partial<typeof g>) => updateSettings('general', patch)
+  const shell = useShell()
+  const set = (patch: Partial<typeof g>) => (NATIVE ? shell.save(patch) : updateSettings('general', patch))
   return (
     <>
       <PageHead title="General" sub={NOTE} />
@@ -35,19 +61,20 @@ export function GeneralSettings() {
         <SettingRow title="Start page" desc="The page the app opens on.">
           <Select label="Start page" value={p.startPage} onChange={(v) => setPrefs({ startPage: v })} options={[['downloads', 'Downloads'], ['agent', 'Agent'], ['files', 'Files'], ['grabber', 'Link grabber'], ['queues', 'Queues']]} />
         </SettingRow>
-        <SettingRow title="Launch at sign-in" desc="Start Zeus when you sign in to your computer." planned>
+        <SettingRow title="Launch at sign-in" desc="Start Zeus when you sign in to your computer." planned={!NATIVE}>
           <Switch label="Launch at sign-in" checked={g.launchAtLogin} onChange={(v) => set({ launchAtLogin: v })} />
         </SettingRow>
-        <SettingRow title="Start minimized" planned>
+        <SettingRow title="Start minimized" desc="Starts with the window hidden in the notification area (or minimized when the icon is off)." planned={!NATIVE}>
           <Switch label="Start minimized" checked={g.startMinimized} onChange={(v) => set({ startMinimized: v })} />
         </SettingRow>
-        <SettingRow title="Icon in the notification area" desc="Shows speed and lets you pause everything from the tray." planned>
+        <SettingRow title="Icon in the notification area" desc={NATIVE ? 'Click it to open Zeus; its menu has Show and Quit. The tooltip shows the speed.' : 'Shows speed and lets you pause everything from the tray.'} planned={!NATIVE}>
           <Switch label="Icon in the notification area" checked={g.showTray} onChange={(v) => set({ showTray: v })} />
         </SettingRow>
-        <SettingRow title="Closing the window keeps downloads running" desc="zeusd runs separately from this window, so closing it never stops a transfer.">
+        <SettingRow title={NATIVE ? 'Closing the window hides it to the notification area' : 'Closing the window keeps downloads running'} desc={NATIVE ? 'Downloads and queues keep running. Quit from the icon\'s menu (or turn this off) to stop Zeus and its engine.' : 'zeusd runs separately from this window, so closing it never stops a transfer.'}>
           <Switch label="Closing keeps downloads running" checked={g.closeToTray} onChange={(v) => set({ closeToTray: v })} />
         </SettingRow>
       </SettingsGroup>
+      {NATIVE && shell.note ? <Notice kind="warn">{shell.note}</Notice> : null}
       <SettingsGroup title="Behaviour">
         <SettingRow title="Ask before removing downloads" desc="Removing an unfinished download deletes its partial data.">
           <Switch label="Ask before removing" checked={p.confirmRemove} onChange={(v) => setPrefs({ confirmRemove: v })} />
@@ -58,12 +85,18 @@ export function GeneralSettings() {
         <SettingRow title="Time format">
           <Select label="Time format" value={g.timeFormat} onChange={(v) => set({ timeFormat: v })} options={[['24h', '24-hour'], ['12h', '12-hour']]} />
         </SettingRow>
-        <SettingRow title="Language" planned>
-          <Select label="Language" value={g.language} onChange={(v) => set({ language: v })} options={[['English', 'English']]} />
+        <SettingRow title="Language" desc="English only in this release." fixed>
+          <Chip>English</Chip>
         </SettingRow>
-        <SettingRow title="Check for updates" desc="No telemetry. A check would only ask for the latest version number." planned>
+        <SettingRow title="Check for updates" desc={NATIVE ? 'Asks GitHub for the latest release name and nothing else (no identifier, no telemetry). Never by default; weekly checks run in the background while Zeus is open.' : 'No telemetry. A check would only ask for the latest version number.'} planned={!NATIVE}>
           <Select label="Check for updates" value={g.checkUpdates} onChange={(v) => set({ checkUpdates: v })} options={[['never', 'Never'], ['weekly', 'Weekly']]} />
+          {NATIVE ? (
+            <button type="button" class="btn small" disabled={shell.checking} onClick={shell.check}>
+              {shell.checking ? 'Checking…' : 'Check now'}
+            </button>
+          ) : null}
         </SettingRow>
+        {NATIVE && shell.update ? <Notice>{shell.update}</Notice> : null}
       </SettingsGroup>
     </>
   )

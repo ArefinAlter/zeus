@@ -91,6 +91,39 @@ pub fn bin_dir() -> Result<PathBuf> {
         })
 }
 
+/// An AppImage mounts itself at a new path on every launch, so the programs inside it have no stable address: the
+/// engine's trusted-program pins, the browser's native-messaging manifest and an AI assistant's configuration would all
+/// name a path that is gone next time. For such a launch the programs are copied once to `<home>/bin` and used from
+/// there. Every other install keeps its programs where the installer put them.
+pub fn stage_if_ephemeral(home: &AppHome, dir: PathBuf) -> Result<PathBuf> {
+    let text = dir.display().to_string();
+    if std::env::var_os("APPIMAGE").is_none() && !text.contains("/.mount_") {
+        return Ok(dir);
+    }
+    let target = home.root.join("bin");
+    std::fs::create_dir_all(&target)?;
+    for name in ["zeusd", "zeus", "zeus-native-host"] {
+        let from = program(&dir, name);
+        let to = program(&target, name);
+        if !from.exists() {
+            continue;
+        }
+        let same = std::fs::metadata(&to).is_ok_and(|t| std::fs::metadata(&from).is_ok_and(|f| f.len() == t.len()))
+            && std::fs::read(&from).ok().zip(std::fs::read(&to).ok()).is_some_and(|(a, b)| a == b);
+        if !same {
+            let tmp = target.join(format!(".{name}.tmp"));
+            std::fs::copy(&from, &tmp)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755))?;
+            }
+            std::fs::rename(&tmp, &to)?;
+        }
+    }
+    Ok(target)
+}
+
 /// Supervises one `zeusd`.
 pub struct Supervisor {
     home: AppHome,
@@ -327,7 +360,7 @@ impl Supervisor {
 
     async fn wait_ready(&self) -> Result<()> {
         let started = Instant::now();
-        while started.elapsed() < Duration::from_secs(60) {
+        while started.elapsed() < Duration::from_secs(120) {
             if let Some(child) = self.child.lock().await.as_mut()
                 && let Ok(Some(status)) = child.try_wait()
             {
@@ -349,7 +382,7 @@ impl Supervisor {
         }
         Err(Failure::new(
             "engine.timeout",
-            "The Zeus engine did not answer within a minute.",
+            "The Zeus engine did not answer within two minutes.",
         ))
     }
 

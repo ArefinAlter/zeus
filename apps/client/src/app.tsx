@@ -7,6 +7,7 @@ import { useEffect, useState } from 'preact/hooks'
 import { removeThread } from './backend/agent'
 import type { Toast } from './backend/store'
 import { HOSTED, LIVE, NATIVE } from './backend/live'
+import { inQuietHours, shellApi } from './backend/shell'
 import { dismissToast, getState, globalStop, pauseAll, resumeAll, setLimiter, useStore } from './backend/store'
 import { limiterActive } from './model/schedule.ts'
 import { fmtBytes, fmtRate } from './model/units.ts'
@@ -102,6 +103,10 @@ function Toasts() {
       if (seen.has(t.id)) continue
       seen.add(t.id)
       if (t.sound && prefs.sounds && visible.includes(t)) chime(t.sound)
+      // Away from the window, the same notices go to the system's notification area (never the agent's words or links).
+      if (NATIVE && visible.includes(t) && (document.hidden || !document.hasFocus()) && !(notif.quietEnabled && inQuietHours(notif.quietFrom, notif.quietTo))) {
+        void shellApi.notify(t.title, t.desc ?? '').catch(() => undefined)
+      }
       setTimeout(() => dismissToast(t.id), t.kind === 'warn' || t.kind === 'bad' ? 9000 : 6000)
     }
   }, [toasts])
@@ -252,6 +257,7 @@ export function App() {
   const speed = active.reduce((n, j) => n + j.rate, 0)
   useEffect(() => {
     document.title = prefs.titleSpeed && active.length ? `${fmtRate(speed)} · ${active.length} active · Zeus` : 'Zeus'
+    if (NATIVE) void shellApi.tooltip(active.length ? `Zeus · ${fmtRate(speed)} · ${active.length} active` : 'Zeus · idle').catch(() => undefined)
   }, [prefs.titleSpeed, active.length, Math.round(speed / 65536)])
 
   useEffect(() => {

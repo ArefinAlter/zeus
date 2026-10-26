@@ -19,6 +19,7 @@ import { categoryOf } from '../model/categories.ts'
 import { bindCode } from '../model/approvals.ts'
 import { getPrefs, hydratePrefs, subscribePrefs } from '../lib/prefs.ts'
 import { baseOf, joinPath, parentOf, setSep } from '../lib/paths.ts'
+import { shellApi } from './shell.ts'
 import type { EngineInfo, EngineSettings, NativeItem, QueuesList, RemoteApproval, RemoteArtifact, RemoteFile, RemoteJob, RemoteRun, SessionInfo } from './remote.ts'
 import { RemoteError, api, backend, native, retryKey, session, svc } from './remote.ts'
 import type { Settings } from './settings.ts'
@@ -612,6 +613,24 @@ export function daemonQueues(): QueuesList | null {
   return lastQueues
 }
 
+/** The weekly check for a newer release, when the person turned it on: once a week at most, remembered on this device. */
+async function weeklyUpdateCheck(): Promise<void> {
+  const KEY = 'zeus.update.lastcheck.v1'
+  try {
+    const last = Number(window.localStorage.getItem(KEY) ?? 0)
+    if (Date.now() - last < 7 * 86_400_000) return
+    window.localStorage.setItem(KEY, String(Date.now()))
+  } catch {
+    // Without storage the check runs once per start.
+  }
+  try {
+    const u = await shellApi.update()
+    if (u.newer) S.toast({ kind: '', title: `A newer Zeus is out: ${u.latest}`, desc: u.url ?? 'See the releases page on GitHub.', important: true, topic: 'system' })
+  } catch {
+    // Quiet: the person can check by hand in Settings.
+  }
+}
+
 let engineBusy = false
 async function pollEngine(): Promise<void> {
   if (!NATIVE || engineBusy) return
@@ -876,7 +895,7 @@ async function sendNative(items: PendingItem[]): Promise<void> {
       ...(p.nameChosen ? { filename: p.name } : {}),
       ...(p.expectedSha256 ? { expected_sha256: p.expectedSha256 } : {}),
       ...(p.queue ? { queue: p.queue } : {}),
-      overwrite: p.overwrite ?? ({ rename: 'rename', fail: 'fail', replace: 'replace' } as const)[S.get().settings.downloads.duplicates],
+      overwrite: p.overwrite === 'replace' ? 'rename' : (p.overwrite ?? ({ rename: 'rename', fail: 'fail', replace: 'rename' } as const)[S.get().settings.downloads.duplicates]),
       max_connections: S.get().settings.downloads.connectionsPerJob,
     }))
     const pv = await api.previewItems(batch)
@@ -1060,6 +1079,14 @@ export function startLive(hooks: StoreHooks): void {
       if (NATIVE) {
         appliedEngine = engineKey(engineSettingsFrom(S.get().settings))
         watchEngineSettings()
+        void shellApi.get().then(
+          (v) => {
+            const st = S.get()
+            S.set({ settings: { ...st.settings, general: { ...st.settings.general, launchAtLogin: v.settings.launch_at_login, startMinimized: v.settings.start_minimized, showTray: v.settings.show_tray, closeToTray: v.settings.close_to_tray, checkUpdates: v.settings.check_updates_weekly ? 'weekly' : 'never' } } })
+            if (v.settings.check_updates_weekly) void weeklyUpdateCheck()
+          },
+          () => undefined,
+        )
         // The index's own configuration (folders, exclusions) lives in the engine's app folder and wins over a stored copy.
         try {
           const wire = await filesApi.config()

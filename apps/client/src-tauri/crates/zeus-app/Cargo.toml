@@ -15,6 +15,7 @@ default = []
 http-harness = ["dep:axum"]
 
 [dependencies]
+reqwest = { workspace = true, features = ["json"] }
 axum = { workspace = true, optional = true }
 zeus-api.workspace = true
 zeus-types.workspace = true

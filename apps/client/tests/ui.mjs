@@ -42,7 +42,7 @@ export async function openUi(h, { width = 1360, height = 880, theme } = {}) {
   const page = await context.newPage()
   const errors = []
   page.on('pageerror', (e) => errors.push(String(e)))
-  page.on('console', (m) => m.type() === 'error' && errors.push(m.text()))
+  page.on('console', (m) => m.type() === 'error' && errors.push(`${m.text()} ${m.location()?.url ?? ''}`))
   await page.goto(`http://127.0.0.1:${site.port}/index.html?harness=${encodeURIComponent(h.url)}&token=${h.token}`)
   await page.waitForSelector('.statusbar', { timeout: 30000 })
   return {

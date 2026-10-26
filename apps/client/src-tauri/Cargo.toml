@@ -55,8 +55,10 @@ serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 tracing.workspace = true
-tauri = { version = "~2.11", default-features = false, features = ["wry", "compression", "common-controls-v6", "x11", "dbus"] }
+tauri = { version = "~2.11", default-features = false, features = ["wry", "compression", "common-controls-v6", "x11", "dbus", "tray-icon"] }
 tauri-plugin-single-instance = "2"
+tauri-plugin-autostart = "2"
+tauri-plugin-notification = "2"
 
 [build-dependencies]
 tauri-build = { version = "~2.6", default-features = false, features = ["config-json"] }

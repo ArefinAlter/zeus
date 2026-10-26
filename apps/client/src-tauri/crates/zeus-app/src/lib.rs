@@ -22,6 +22,7 @@ pub mod links;
 pub mod osopen;
 pub mod review;
 pub mod routes;
+pub mod shell;
 pub mod state;
 pub mod supervisor;
 
@@ -52,6 +53,8 @@ pub struct App {
     pub state: StateStore,
     /// Requests the app itself holds (site-grabber plans, file moves).
     pub held: Held,
+    /// Start at sign-in, the notification-area icon, notifications.
+    pub shell: shell::Shell,
     /// Link reviews waiting to be started.
     pub reviews: Reviews,
     /// When the app started, in epoch milliseconds.
@@ -81,6 +84,7 @@ impl App {
         Ok(Arc::new(Self {
             state: StateStore::new(&home),
             held: Held::new(&home),
+            shell: shell::Shell::new(&home),
             reviews: Reviews::default(),
             home,
             daemon,
