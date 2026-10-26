@@ -25,6 +25,7 @@ hex = "0.4"
 directories = "6"
 toml = "1.1"
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio"] }
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "http2", "system-proxy"] }
 
 [package]
 name = "zeus-client"
