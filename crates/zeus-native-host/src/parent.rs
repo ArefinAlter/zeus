@@ -18,8 +18,41 @@ struct Process {
 
 #[derive(Clone, Debug)]
 struct Registration {
+    name: &'static str,
     firefox: bool,
     image: PathBuf,
+}
+
+/// A browser installation the host accepts as a launcher on this computer.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RecognizedInstall {
+    /// `chrome`, `edge`, `brave`, `chromium` or `firefox` (the spelling of the install commands).
+    pub name: &'static str,
+    /// True for Firefox, whose manifests use add-on ids.
+    pub firefox: bool,
+    /// The browser executable.
+    pub image: PathBuf,
+}
+
+/// The browser installs this host would accept as the parent of a connection, so a status page can say which
+/// browsers can carry Zeus decisions before anyone clicks. Per-user and portable installs are not listed: they fail
+/// closed (see the module documentation).
+pub fn recognized_installs() -> Vec<RecognizedInstall> {
+    #[cfg(any(target_os = "linux", windows))]
+    {
+        platform::registered()
+            .into_iter()
+            .map(|r| RecognizedInstall {
+                name: r.name,
+                firefox: r.firefox,
+                image: r.image,
+            })
+            .collect()
+    }
+    #[cfg(not(any(target_os = "linux", windows)))]
+    {
+        Vec::new()
+    }
 }
 
 fn same_path(a: &Path, b: &Path) -> bool {
@@ -114,25 +147,37 @@ mod platform {
         Some(path)
     }
 
+    pub(super) fn registered() -> Vec<Registration> {
+        [
+            ("chrome", false, "/opt/google/chrome/chrome"),
+            ("chrome", false, "/opt/google/chrome-beta/chrome"),
+            ("chromium", false, "/usr/lib/chromium/chromium"),
+            (
+                "chromium",
+                false,
+                "/usr/lib/chromium-browser/chromium-browser",
+            ),
+            ("edge", false, "/opt/microsoft/msedge/msedge"),
+            ("brave", false, "/opt/brave.com/brave/brave"),
+            ("firefox", true, "/usr/lib/firefox/firefox"),
+            ("firefox", true, "/usr/lib/firefox/firefox-bin"),
+            ("firefox", true, "/usr/lib/firefox-esr/firefox-esr"),
+        ]
+        .into_iter()
+        .filter_map(|(name, firefox, path)| {
+            trusted_install(path).map(|image| Registration {
+                name,
+                firefox,
+                image,
+            })
+        })
+        .collect()
+    }
+
     pub(super) fn verify(browser: BrowserName) -> Option<bool> {
         let host = identity(std::process::id())?;
         let parent = identity(host.parent)?;
-        let registered: Vec<_> = [
-            (false, "/opt/google/chrome/chrome"),
-            (false, "/opt/google/chrome-beta/chrome"),
-            (false, "/usr/lib/chromium/chromium"),
-            (false, "/usr/lib/chromium-browser/chromium-browser"),
-            (false, "/opt/microsoft/msedge/msedge"),
-            (false, "/opt/brave.com/brave/brave"),
-            (true, "/usr/lib/firefox/firefox"),
-            (true, "/usr/lib/firefox/firefox-bin"),
-            (true, "/usr/lib/firefox-esr/firefox-esr"),
-        ]
-        .into_iter()
-        .filter_map(|(firefox, path)| {
-            trusted_install(path).map(|image| Registration { firefox, image })
-        })
-        .collect();
+        let registered = registered();
         // Reparenting while collecting evidence invalidates this attestation.
         let fresh = identity(host.pid)?;
         Some(
@@ -248,18 +293,22 @@ mod platform {
             .ok()
     }
 
+    pub(super) fn registered() -> Vec<Registration> {
+        registrations()
+    }
+
     fn registrations() -> Vec<Registration> {
         let mut output = Vec::new();
         // HKCU App Paths can be rewritten by any process running as this user. It cannot
         // attest a browser parent for human decisions. Per-user browser installs fail closed.
         for hive in [HKEY_LOCAL_MACHINE] {
             for view in [KEY_WOW64_64KEY, KEY_WOW64_32KEY] {
-                for (name, firefox) in [
-                    ("chrome.exe", false),
-                    ("msedge.exe", false),
-                    ("brave.exe", false),
-                    ("chromium.exe", false),
-                    ("firefox.exe", true),
+                for (short, name, firefox) in [
+                    ("chrome", "chrome.exe", false),
+                    ("edge", "msedge.exe", false),
+                    ("brave", "brave.exe", false),
+                    ("chromium", "chromium.exe", false),
+                    ("firefox", "firefox.exe", true),
                 ] {
                     let key =
                         format!("SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths\\{name}");
@@ -275,7 +324,11 @@ mod platform {
                         continue;
                     }
                     if let Ok(image) = std::fs::canonicalize(path) {
-                        output.push(Registration { firefox, image });
+                        output.push(Registration {
+                            name: short,
+                            firefox,
+                            image,
+                        });
                     }
                 }
             }
@@ -322,10 +375,12 @@ mod tests {
     fn registered() -> Vec<Registration> {
         vec![
             Registration {
+                name: "chrome",
                 firefox: false,
                 image: "/installed/chrome.exe".into(),
             },
             Registration {
+                name: "firefox",
                 firefox: true,
                 image: "/installed/firefox.exe".into(),
             },
@@ -435,6 +490,15 @@ mod tests {
             None
         ));
     }
+    #[test]
+    fn recognized_installs_name_only_known_browsers() {
+        for install in recognized_installs() {
+            assert!(["chrome", "edge", "brave", "chromium", "firefox"].contains(&install.name));
+            assert_eq!(install.firefox, install.name == "firefox");
+            assert!(install.image.is_absolute());
+        }
+    }
+
     #[test]
     fn test_runner_is_not_a_verified_browser_launch() {
         assert!(!verify(BrowserName::Chrome));

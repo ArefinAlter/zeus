@@ -1255,6 +1255,7 @@ fn native_host(
             extension_ids,
             dev_extension_ids,
             host_path,
+            allow_list_dir,
         } => {
             if extension_ids.is_empty() && dev_extension_ids.is_empty() {
                 return Err(ApiError::invalid_params(
@@ -1269,6 +1270,7 @@ fn native_host(
                 home,
                 state_dir: paths.state_dir.clone(),
                 os: Os::current(),
+                allow_list_dir: allow_list_dir.as_ref().map(PathBuf::from),
             };
             let steps =
                 install::plan(&request).map_err(|e| ApiError::invalid_params(e.to_string()))?;
@@ -1298,6 +1300,7 @@ fn native_host(
                 home,
                 state_dir: paths.state_dir.clone(),
                 os: Os::current(),
+                allow_list_dir: None,
             };
             let steps = install::plan_uninstall(&request);
             let text = describe_steps(&steps);

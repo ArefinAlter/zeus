@@ -279,6 +279,23 @@ pub struct InstallRequest {
     pub state_dir: PathBuf,
     /// The OS.
     pub os: Os,
+    /// Where the host's allow-list is written. `None`: next to `host_exe`, where the host looks first. A launcher
+    /// script (the desktop app registers one so the browser-started host finds the app's own installation) sets
+    /// this to the installation's state directory, which the host reads when no file sits beside it.
+    pub allow_list_dir: Option<PathBuf>,
+}
+
+impl InstallRequest {
+    fn allow_list_path(&self) -> Result<PathBuf, HostError> {
+        match &self.allow_list_dir {
+            Some(dir) => Ok(dir.join(allowlist::FILE_NAME)),
+            None => self
+                .host_exe
+                .parent()
+                .map(|dir| dir.join(allowlist::FILE_NAME))
+                .ok_or_else(|| HostError::Install("host path has no directory".into())),
+        }
+    }
 }
 
 fn ids_for(browser: Browser, all: &[String]) -> Vec<String> {
@@ -321,12 +338,8 @@ pub fn plan(request: &InstallRequest) -> Result<Vec<Step>, HostError> {
         extensions: request.extension_ids.clone(),
         dev_extensions: request.dev_extension_ids.clone(),
     };
-    let dir = request
-        .host_exe
-        .parent()
-        .ok_or_else(|| HostError::Install("host path has no directory".into()))?;
     steps.push(Step::WriteFile {
-        path: dir.join(allowlist::FILE_NAME),
+        path: request.allow_list_path()?,
         contents: serde_json::to_string_pretty(&list).unwrap_or_default() + "\n",
     });
     Ok(steps)
@@ -346,10 +359,8 @@ pub fn plan_uninstall(request: &InstallRequest) -> Vec<Step> {
             }
         }
     }
-    if let Some(dir) = request.host_exe.parent() {
-        steps.push(Step::RemoveFile {
-            path: dir.join(allowlist::FILE_NAME),
-        });
+    if let Ok(path) = request.allow_list_path() {
+        steps.push(Step::RemoveFile { path });
     }
     steps
 }
@@ -446,6 +457,7 @@ mod tests {
             home: PathBuf::from("/home/ada"),
             state_dir: PathBuf::from("/state"),
             os,
+            allow_list_dir: None,
         }
     }
 
@@ -524,6 +536,37 @@ mod tests {
     }
 
     #[test]
+    fn linux_registers_every_browser_in_the_users_own_configuration_folder() {
+        let home = Path::new("/home/ada");
+        let state = Path::new("/state");
+        for (browser, dir) in [
+            (
+                Browser::Chrome,
+                ".config/google-chrome/NativeMessagingHosts",
+            ),
+            (Browser::Chromium, ".config/chromium/NativeMessagingHosts"),
+            (Browser::Edge, ".config/microsoft-edge/NativeMessagingHosts"),
+            (
+                Browser::Brave,
+                ".config/BraveSoftware/Brave-Browser/NativeMessagingHosts",
+            ),
+            (Browser::Firefox, ".mozilla/native-messaging-hosts"),
+        ] {
+            let ManifestLocation::File(path) = manifest_location(browser, Os::Linux, home, state)
+            else {
+                panic!("{browser:?} needs a manifest file on Linux");
+            };
+            assert_eq!(
+                path,
+                home.join(dir).join("dev.zeus.native_host.json"),
+                "{browser:?}"
+            );
+            // Never system-wide: every location is below the user's home.
+            assert!(path.starts_with(home));
+        }
+    }
+
+    #[test]
     fn ids_are_routed_to_the_right_browser_family() {
         let steps = plan(&request(Os::Linux, &[Browser::Chrome, Browser::Firefox])).unwrap();
         let manifests: Vec<_> = steps
@@ -578,6 +621,26 @@ mod tests {
         let list: AllowList = serde_json::from_str(&list_text).unwrap();
         assert!(list.extensions.is_empty());
         assert_eq!(list.dev_extensions, [CHROME_ID]);
+    }
+
+    #[test]
+    fn the_allow_list_can_live_in_the_state_directory_for_a_launcher_script() {
+        let mut req = request(Os::Linux, &[Browser::Chrome]);
+        req.allow_list_dir = Some(PathBuf::from("/state"));
+        let written: Vec<PathBuf> = plan(&req)
+            .unwrap()
+            .into_iter()
+            .filter_map(|s| match s {
+                Step::WriteFile { path, .. } if path.ends_with(allowlist::FILE_NAME) => Some(path),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            written,
+            [PathBuf::from("/state").join(allowlist::FILE_NAME)]
+        );
+        let removed = plan_uninstall(&req);
+        assert!(removed.iter().any(|s| matches!(s, Step::RemoveFile { path } if path == &PathBuf::from("/state").join(allowlist::FILE_NAME))));
     }
 
     #[test]

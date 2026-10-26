@@ -15,10 +15,7 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    let list_path = std::env::current_exe()
-        .ok()
-        .and_then(|exe| exe.parent().map(|dir| dir.join(allowlist::FILE_NAME)));
-    let allowed = list_path
+    let allowed = allowlist::locate()
         .as_deref()
         .map(AllowList::load)
         .transpose()

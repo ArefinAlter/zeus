@@ -278,9 +278,14 @@ pub enum NativeHostCommand {
         /// Development extension id to pin (repeatable). The host logs a warning on every start.
         #[arg(long = "dev-extension-id")]
         dev_extension_ids: Vec<String>,
-        /// Path of the zeus-native-host executable. Default: next to this program.
+        /// Path of the zeus-native-host executable (or of a launcher script that starts it). Default: next to this
+        /// program.
         #[arg(long)]
         host_path: Option<String>,
+        /// Folder for the host's allow-list file. Default: next to the host executable. The host also reads
+        /// `allowed-extensions.json` from the Zeus state directory when no file sits beside it.
+        #[arg(long)]
+        allow_list_dir: Option<String>,
     },
     /// Remove the registrations.
     Uninstall {
