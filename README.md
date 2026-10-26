@@ -4,7 +4,7 @@
 
 Your agents can find it. Zeus makes sure they actually get it: verified, filed and accounted for. It works with your real browser, never reads your cookie database, and keeps a tamper-evident record of what it did.
 
-> **Status: pre-alpha, implementation in progress.** The daemon, transfer engine, native relay, MCP stdio server, terminal interfaces, restricted desktop client, public-page workflow runner and model adapters have executable implementations and hermetic tests. Real browser/GUI acceptance, cross-platform release validation and several roadmap capabilities remain unfinished. There is no public release or frozen API. See the [implementation and remaining-work ledger](docs/IMPLEMENTATION_STATUS.md).
+> **Status: pre-alpha, implementation in progress.** The daemon, transfer engine, native relay, MCP stdio server, terminal interfaces, restricted desktop client, public-page workflow runner and model adapters have executable implementations and hermetic tests. Real browser/GUI acceptance, cross-platform release validation and several roadmap capabilities remain unfinished. There is no frozen API. A first pre-alpha, [release 0.0.1a](https://github.com/ArefinAlter/zeus/releases/tag/v0.0.1a) (unsigned builds for Windows x64 and Linux x64), can be tried in the browser at <https://zeus.103.191.50.32.sslip.io> or downloaded from the [Zeus website](https://zeus-site-bay.vercel.app/get-started/). See the [implementation and remaining-work ledger](docs/IMPLEMENTATION_STATUS.md).
 
 Zeus combines familiar download queues, resumable transfers and a link inbox with explicit agent plans, human approvals and per-run budgets. The [download workspace design](docs/design/download-workspace.md) includes a runnable visual prototype; its queue and agent controls are simulations until connected to the daemon.
 
@@ -47,7 +47,7 @@ One daemon owns all state; everything else is a client of its local JSON-RPC API
 | **zeus** (this one) | Daemon `zeusd`, CLI `zeus` with TUI, MCP server, native-messaging host, workflow engine, LLM provider ladder, optional A2A bridge, specs. |
 | [zeus-core](https://github.com/ArefinAlter/zeus-core) | The embeddable engine library (`zeus-types`, `zeus-control`, `zeus-fs`, `zeus-verify`, `zeus-journal`, `zeus-session`, `zeus-http`, `zeus-engine`, `zeus-artifact`). |
 | [zeus-extension](https://github.com/ArefinAlter/zeus-extension) | Manifest V3 browser extension (Chrome and Edge first, Firefox build target). |
-| [zeus-site](https://github.com/ArefinAlter/zeus-site) | Static marketing site and a clearly labeled interactive product preview using sample state. |
+| zeus-site (private repository) | Static marketing site, live at <https://zeus-site-bay.vercel.app>, with a clearly labeled interactive product preview using sample state. |
 
 Clone them **side by side**: this workspace refers to `../zeus-core`.
 
@@ -80,7 +80,7 @@ zeus-workspace/
 
 Requirements: a recent stable Rust toolchain (MSRV 1.90), the three repositories side by side.
 
-Building requires access to `zeus-core`, which is currently a private repository. When reviewing coordinated changes, check out the companion core revision identified in the pull request; this workspace uses sibling path dependencies, including `zeus-artifact`.
+Building needs a checkout of the public `zeus-core` repository next to this one. When reviewing coordinated changes, check out the companion core revision identified in the pull request; this workspace uses sibling path dependencies, including `zeus-artifact`.
 
 ```sh
 git clone https://github.com/ArefinAlter/zeus.git

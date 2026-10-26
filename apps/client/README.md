@@ -60,8 +60,11 @@ npm run build && npx tauri build --bundles deb,appimage  # Linux packages
 
 ## Website copy
 
+The Zeus website no longer serves a static copy: `/client/` there redirects to the hosted pre-alpha. The script below
+stays for an offline static copy of the scripted build in any site checkout:
+
 ```sh
-npm run build:site && node scripts/publish-site.mjs ../../../zeus-site   # writes zeus-site/public/client/
+npm run build:site && node scripts/publish-site.mjs <path to a site checkout>   # writes <site>/public/client/
 ```
 
 The copy is marked `noindex`, keeps preferences for the visit only, holds any provider key typed into Settings in
