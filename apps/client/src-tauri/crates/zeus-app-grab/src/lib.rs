@@ -79,8 +79,14 @@ impl Module {
 }
 
 /// `jobs.verify` through the app's credential, shaped for the page.
+///
+/// zeusd reports a file whose bytes no longer match as an `integrity.hash_mismatch` error: against the published
+/// hash the person gave, or against the record it made when the download finished. The page wants the facts either
+/// way, so each case is answered as a result: `matches_expected: false` when the file still matches its record, and
+/// `matches_recorded: false` (with no digests, which zeusd does not return) when the file itself has changed.
 async fn verify(app: &Arc<App>, job_id: &str, body: &Value) -> Result<Value> {
     let mut params = json!({"job_id": job_id});
+    let mut expected = false;
     if let Some(h) = body
         .get("expected_sha256")
         .and_then(Value::as_str)
@@ -91,8 +97,31 @@ async fn verify(app: &Arc<App>, job_id: &str, body: &Value) -> Result<Value> {
             return Err(Failure::invalid("A SHA-256 is 64 hexadecimal digits."));
         }
         params["expected_sha256"] = json!(h);
+        expected = true;
     }
-    app.daemon.raw("jobs.verify", params).await
+    let changed = || {
+        json!({"matches_recorded": false, "matches_expected": null, "sha256": null, "blake3": null})
+    };
+    match app.daemon.raw("jobs.verify", params).await {
+        Err(f) if f.code == "integrity.hash_mismatch" => {
+            if !expected {
+                return Ok(changed());
+            }
+            match app
+                .daemon
+                .raw("jobs.verify", json!({"job_id": job_id}))
+                .await
+            {
+                Ok(mut v) => {
+                    v["matches_expected"] = json!(false);
+                    Ok(v)
+                }
+                Err(f2) if f2.code == "integrity.hash_mismatch" => Ok(changed()),
+                Err(f2) => Err(f2),
+            }
+        }
+        other => other,
+    }
 }
 
 impl Extension for Module {

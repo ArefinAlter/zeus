@@ -334,7 +334,7 @@ export const api = {
   /** Native: a batch with per-item folder, name, expected hash, queue and priority. */
   previewItems: (items: NativeItem[]) => request<PreviewResult>('/api/v1/links/preview', 'POST', { items }),
   job: (id: string) => request<JobDetail>(`/api/v1/jobs/${encodeURIComponent(id)}`),
-  enqueue: (review_id: string, idempotency_key: string) => request<EnqueueResult>('/api/v1/links/enqueue', 'POST', { review_id, idempotency_key }),
+  enqueue: (review_id: string, idempotency_key: string, queue?: string | null) => request<EnqueueResult>('/api/v1/links/enqueue', 'POST', { review_id, idempotency_key, ...(queue ? { queue } : {}) }),
   control: (id: string, action: 'pause' | 'resume' | 'cancel' | 'retry', idempotency_key: string) => request<{ replayed: boolean; job_id: string; state: string }>(`/api/v1/jobs/${encodeURIComponent(id)}/control`, 'POST', { action, idempotency_key }),
   files: () => request<{ items: RemoteFile[] }>('/api/v1/files'),
   artifacts: () => request<{ items: RemoteArtifact[] }>('/api/v1/artifacts'),

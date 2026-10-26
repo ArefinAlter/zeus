@@ -327,6 +327,20 @@ impl Reviews {
                     )
                 })?
         };
+        // A queue chosen after the review labels every job of the batch; the daemon holds them for that queue.
+        let mut jobs = jobs;
+        if let Some(queue) = body.get("queue").and_then(Value::as_str).filter(|q| !q.is_empty()) {
+            let valid = queue.len() <= 32
+                && queue
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_');
+            if !valid {
+                return Err(Failure::invalid("That is not a queue name."));
+            }
+            for job in &mut jobs {
+                job["labels"] = json!({"zeus.queue": queue});
+            }
+        }
         let key: String = format!("app-{key}").chars().take(64).collect();
         let result = daemon
             .raw(

@@ -359,16 +359,26 @@ pub fn plain_http_allowed(base: &url::Url) -> bool {
     match base.host() {
         Some(url::Host::Ipv4(ip)) => ip.is_loopback() || ip.is_private() || ip.is_link_local(),
         Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
-        Some(url::Host::Domain(d)) => d == "localhost" || d.ends_with(".local") || d.ends_with(".localhost"),
+        Some(url::Host::Domain(d)) => {
+            d == "localhost" || d.ends_with(".local") || d.ends_with(".localhost")
+        }
         None => false,
     }
 }
 
 /// Check a base URL: https, or http to a loopback or private-network address. Returns the parsed URL.
 pub fn check_base_url(raw: &str) -> Result<url::Url, ProviderError> {
-    let parsed = url::Url::parse(raw.trim())
-        .map_err(|_| ProviderError::new(ErrorKind::BadRequest, "The base URL is not a valid address."))?;
-    if !parsed.username().is_empty() || parsed.password().is_some() || parsed.query().is_some() || parsed.fragment().is_some() {
+    let parsed = url::Url::parse(raw.trim()).map_err(|_| {
+        ProviderError::new(
+            ErrorKind::BadRequest,
+            "The base URL is not a valid address.",
+        )
+    })?;
+    if !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || parsed.query().is_some()
+        || parsed.fragment().is_some()
+    {
         return Err(ProviderError::new(
             ErrorKind::BadRequest,
             "The base URL must not contain a user name, a password or a query string.",
@@ -416,24 +426,58 @@ pub async fn chat(
         req
     };
     let (built, parser): (http::Built, Box<dyn http::Parser>) = match target.kind.wire() {
-        Wire::Anthropic => (anthropic::build(target, key, effective), Box::new(anthropic::AnthropicParser::new())),
-        Wire::Gemini => (gemini::build(target, key, effective), Box::new(gemini::GeminiParser::new())),
-        Wire::OpenaiChat => (openai::build(target, key, effective), Box::new(openai::OpenaiParser::new())),
+        Wire::Anthropic => (
+            anthropic::build(target, key, effective),
+            Box::new(anthropic::AnthropicParser::new()),
+        ),
+        Wire::Gemini => (
+            gemini::build(target, key, effective),
+            Box::new(gemini::GeminiParser::new()),
+        ),
+        Wire::OpenaiChat => (
+            openai::build(target, key, effective),
+            Box::new(openai::OpenaiParser::new()),
+        ),
     };
     let estimate = estimate_tokens(&effective.system)
-        + effective.messages.iter().map(|m| match m {
-            Msg::User(t) => estimate_tokens(t),
-            Msg::Assistant { text, calls, .. } => estimate_tokens(text) + calls.iter().map(|c| estimate_tokens(&c.args.to_string())).sum::<u64>(),
-            Msg::ToolResult { content, .. } => estimate_tokens(content),
-        }).sum::<u64>()
-        + effective.tools.iter().map(|t| estimate_tokens(&t.schema.to_string()) + estimate_tokens(&t.description)).sum::<u64>();
-    let (outcome, rate) = http.stream(&built, parser, sink, cancel, key, estimate).await?;
-    let outcome = if json_mode { jsonproto::convert(outcome, &req.tools) } else { outcome };
+        + effective
+            .messages
+            .iter()
+            .map(|m| match m {
+                Msg::User(t) => estimate_tokens(t),
+                Msg::Assistant { text, calls, .. } => {
+                    estimate_tokens(text)
+                        + calls
+                            .iter()
+                            .map(|c| estimate_tokens(&c.args.to_string()))
+                            .sum::<u64>()
+                }
+                Msg::ToolResult { content, .. } => estimate_tokens(content),
+            })
+            .sum::<u64>()
+        + effective
+            .tools
+            .iter()
+            .map(|t| estimate_tokens(&t.schema.to_string()) + estimate_tokens(&t.description))
+            .sum::<u64>();
+    let (outcome, rate) = http
+        .stream(&built, parser, sink, cancel, key, estimate)
+        .await?;
+    let outcome = if json_mode {
+        jsonproto::convert(outcome, &req.tools)
+    } else {
+        outcome
+    };
     Ok((outcome, rate))
 }
 
 /// Ask the provider which models it offers (ids only).
-pub async fn list_models(http: &http::Http, target: &Target, key: Option<&ApiKey>, cancel: &tokio_util::sync::CancellationToken) -> Result<Vec<String>, ProviderError> {
+pub async fn list_models(
+    http: &http::Http,
+    target: &Target,
+    key: Option<&ApiKey>,
+    cancel: &tokio_util::sync::CancellationToken,
+) -> Result<Vec<String>, ProviderError> {
     let (built, read): (http::Built, fn(&Value) -> Vec<String>) = match target.kind.wire() {
         Wire::Anthropic => (anthropic::models_request(target, key), openai::model_ids),
         Wire::Gemini => (gemini::models_request(target, key), gemini::model_ids),
@@ -470,7 +514,16 @@ mod tests {
     fn kinds_map_to_the_three_wire_formats() {
         assert_eq!(Kind::Anthropic.wire(), Wire::Anthropic);
         assert_eq!(Kind::Google.wire(), Wire::Gemini);
-        for k in [Kind::Openai, Kind::Mistral, Kind::Deepseek, Kind::Qwen, Kind::Kimi, Kind::Glm, Kind::Ollama, Kind::OpenaiCompatible] {
+        for k in [
+            Kind::Openai,
+            Kind::Mistral,
+            Kind::Deepseek,
+            Kind::Qwen,
+            Kind::Kimi,
+            Kind::Glm,
+            Kind::Ollama,
+            Kind::OpenaiCompatible,
+        ] {
             assert_eq!(k.wire(), Wire::OpenaiChat);
         }
     }

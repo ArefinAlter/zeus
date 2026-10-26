@@ -12,7 +12,10 @@ use std::collections::BTreeMap;
 use serde_json::{Value, json};
 
 use super::http::{Built, Parser};
-use super::{ApiKey, ChatRequest, ErrorKind, Msg, Outcome, ProviderError, Stop, Target, ToolCall, Usage, estimate_tokens};
+use super::{
+    ApiKey, ChatRequest, ErrorKind, Msg, Outcome, ProviderError, Stop, Target, ToolCall, Usage,
+    estimate_tokens,
+};
 
 /// The API version header value.
 pub const VERSION: &str = "2023-06-01";
@@ -27,7 +30,12 @@ fn messages(req: &ChatRequest) -> Vec<Value> {
     };
     for m in &req.messages {
         match m {
-            Msg::ToolResult { call_id, content, is_error, .. } => {
+            Msg::ToolResult {
+                call_id,
+                content,
+                is_error,
+                ..
+            } => {
                 pending.push(json!({"type": "tool_result", "tool_use_id": call_id, "content": content, "is_error": is_error}));
             }
             Msg::User(t) => {
@@ -41,7 +49,9 @@ fn messages(req: &ChatRequest) -> Vec<Value> {
                     blocks.push(json!({"type": "text", "text": text}));
                 }
                 for c in calls {
-                    blocks.push(json!({"type": "tool_use", "id": c.id, "name": c.name, "input": c.args}));
+                    blocks.push(
+                        json!({"type": "tool_use", "id": c.id, "name": c.name, "input": c.args}),
+                    );
                 }
                 if blocks.is_empty() {
                     blocks.push(json!({"type": "text", "text": "(no answer)"}));
@@ -74,7 +84,14 @@ pub fn build(target: &Target, key: Option<&ApiKey>, req: &ChatRequest) -> Built 
     if let Some(k) = key {
         headers.push(("x-api-key".to_owned(), k.expose().to_owned()));
     }
-    Built { url: format!("{}/v1/messages", target.base_url.trim().trim_end_matches('/')), headers, body }
+    Built {
+        url: format!(
+            "{}/v1/messages",
+            target.base_url.trim().trim_end_matches('/')
+        ),
+        headers,
+        body,
+    }
 }
 
 /// The request for the models list.
@@ -83,12 +100,23 @@ pub fn models_request(target: &Target, key: Option<&ApiKey>) -> Built {
     if let Some(k) = key {
         headers.push(("x-api-key".to_owned(), k.expose().to_owned()));
     }
-    Built { url: format!("{}/v1/models?limit=100", target.base_url.trim().trim_end_matches('/')), headers, body: Value::Null }
+    Built {
+        url: format!(
+            "{}/v1/models?limit=100",
+            target.base_url.trim().trim_end_matches('/')
+        ),
+        headers,
+        body: Value::Null,
+    }
 }
 
 enum Block {
     Text,
-    Tool { id: String, name: String, json: String },
+    Tool {
+        id: String,
+        name: String,
+        json: String,
+    },
     Ignored,
 }
 
@@ -121,17 +149,37 @@ fn error_kind(t: &str) -> ErrorKind {
 }
 
 impl Parser for AnthropicParser {
-    fn event(&mut self, name: Option<&str>, data: &str, sink: &mut (dyn FnMut(&str) + Send)) -> Result<(), ProviderError> {
+    fn event(
+        &mut self,
+        name: Option<&str>,
+        data: &str,
+        sink: &mut (dyn FnMut(&str) + Send),
+    ) -> Result<(), ProviderError> {
         if data.trim().is_empty() {
             return Ok(());
         }
-        let v: Value = serde_json::from_str(data).map_err(|_| ProviderError::new(ErrorKind::Protocol, "The provider sent an event Zeus could not read."))?;
-        let kind = v.get("type").and_then(Value::as_str).or(name).unwrap_or_default();
+        let v: Value = serde_json::from_str(data).map_err(|_| {
+            ProviderError::new(
+                ErrorKind::Protocol,
+                "The provider sent an event Zeus could not read.",
+            )
+        })?;
+        let kind = v
+            .get("type")
+            .and_then(Value::as_str)
+            .or(name)
+            .unwrap_or_default();
         match kind {
             "message_start" => {
                 let u = v.pointer("/message/usage");
-                let n = |k: &str| u.and_then(|u| u.get(k)).and_then(Value::as_u64).unwrap_or(0);
-                self.input = n("input_tokens") + n("cache_creation_input_tokens") + n("cache_read_input_tokens");
+                let n = |k: &str| {
+                    u.and_then(|u| u.get(k))
+                        .and_then(Value::as_u64)
+                        .unwrap_or(0)
+                };
+                self.input = n("input_tokens")
+                    + n("cache_creation_input_tokens")
+                    + n("cache_read_input_tokens");
                 self.output = n("output_tokens");
                 self.got_usage = true;
             }
@@ -149,8 +197,16 @@ impl Parser for AnthropicParser {
                         Block::Text
                     }
                     Some("tool_use") => Block::Tool {
-                        id: b.get("id").and_then(Value::as_str).unwrap_or_default().to_owned(),
-                        name: b.get("name").and_then(Value::as_str).unwrap_or_default().to_owned(),
+                        id: b
+                            .get("id")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .to_owned(),
+                        name: b
+                            .get("name")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .to_owned(),
                         json: String::new(),
                     },
                     _ => Block::Ignored,
@@ -192,9 +248,21 @@ impl Parser for AnthropicParser {
                 }
             }
             "error" => {
-                let t = v.pointer("/error/type").and_then(Value::as_str).unwrap_or_default();
-                let m = v.pointer("/error/message").and_then(Value::as_str).unwrap_or("The provider reported an error.");
-                return Err(ProviderError::new(error_kind(t), format!("The provider reported an error mid-answer: {}", m.chars().take(300).collect::<String>())));
+                let t = v
+                    .pointer("/error/type")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let m = v
+                    .pointer("/error/message")
+                    .and_then(Value::as_str)
+                    .unwrap_or("The provider reported an error.");
+                return Err(ProviderError::new(
+                    error_kind(t),
+                    format!(
+                        "The provider reported an error mid-answer: {}",
+                        m.chars().take(300).collect::<String>()
+                    ),
+                ));
             }
             _ => {}
         }
@@ -213,10 +281,22 @@ impl Parser for AnthropicParser {
                 } else {
                     match serde_json::from_str::<Value>(&json) {
                         Ok(v) if v.is_object() => (v, None),
-                        _ => (json!({}), Some("The arguments were not a JSON object.".to_owned())),
+                        _ => (
+                            json!({}),
+                            Some("The arguments were not a JSON object.".to_owned()),
+                        ),
                     }
                 };
-                calls.push(ToolCall { id: if id.is_empty() { format!("call_{}", n + 1) } else { id }, name, args, args_error });
+                calls.push(ToolCall {
+                    id: if id.is_empty() {
+                        format!("call_{}", n + 1)
+                    } else {
+                        id
+                    },
+                    name,
+                    args,
+                    args_error,
+                });
             }
         }
         let stop = match self.stop.as_deref() {
@@ -226,15 +306,33 @@ impl Parser for AnthropicParser {
             Some("end_turn" | "stop_sequence") => Stop::End,
             Some(_) => Stop::Other,
             None => {
-                if calls.is_empty() { Stop::End } else { Stop::ToolUse }
+                if calls.is_empty() {
+                    Stop::End
+                } else {
+                    Stop::ToolUse
+                }
             }
         };
         let usage = if self.got_usage {
-            Usage { input: self.input, output: self.output, estimated: false }
+            Usage {
+                input: self.input,
+                output: self.output,
+                estimated: false,
+            }
         } else {
-            Usage { input: estimated_input, output: estimate_tokens(&self.text), estimated: true }
+            Usage {
+                input: estimated_input,
+                output: estimate_tokens(&self.text),
+                estimated: true,
+            }
         };
-        Ok(Outcome { text: self.text, calls, raw: None, usage, stop })
+        Ok(Outcome {
+            text: self.text,
+            calls,
+            raw: None,
+            usage,
+            stop,
+        })
     }
 }
 
@@ -272,12 +370,23 @@ mod tests {
         assert_eq!(o.stop, Stop::ToolUse);
         assert_eq!(o.calls[0].id, "toolu_1");
         assert_eq!(o.calls[0].args["url"], "https://e.org/a");
-        assert_eq!(o.usage, Usage { input: 472, output: 89, estimated: false });
+        assert_eq!(
+            o.usage,
+            Usage {
+                input: 472,
+                output: 89,
+                estimated: false
+            }
+        );
     }
 
     #[test]
     fn an_overloaded_error_event_is_an_error() {
-        let e = feed(&[("error", r#"{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}"#)]).unwrap_err();
+        let e = feed(&[(
+            "error",
+            r#"{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}"#,
+        )])
+        .unwrap_err();
         assert_eq!(e.kind, ErrorKind::Overloaded);
     }
 
@@ -288,19 +397,66 @@ mod tests {
             system: "sys".into(),
             messages: vec![
                 Msg::User("go".into()),
-                Msg::Assistant { text: "ok".into(), calls: vec![ToolCall { id: "a".into(), name: "zeus_status".into(), args: json!({}), args_error: None }, ToolCall { id: "b".into(), name: "zeus_probe".into(), args: json!({}), args_error: None }], raw: None },
-                Msg::ToolResult { call_id: "a".into(), name: "zeus_status".into(), content: "r1".into(), is_error: false },
-                Msg::ToolResult { call_id: "b".into(), name: "zeus_probe".into(), content: "r2".into(), is_error: true },
+                Msg::Assistant {
+                    text: "ok".into(),
+                    calls: vec![
+                        ToolCall {
+                            id: "a".into(),
+                            name: "zeus_status".into(),
+                            args: json!({}),
+                            args_error: None,
+                        },
+                        ToolCall {
+                            id: "b".into(),
+                            name: "zeus_probe".into(),
+                            args: json!({}),
+                            args_error: None,
+                        },
+                    ],
+                    raw: None,
+                },
+                Msg::ToolResult {
+                    call_id: "a".into(),
+                    name: "zeus_status".into(),
+                    content: "r1".into(),
+                    is_error: false,
+                },
+                Msg::ToolResult {
+                    call_id: "b".into(),
+                    name: "zeus_probe".into(),
+                    content: "r2".into(),
+                    is_error: true,
+                },
                 Msg::User("thanks".into()),
             ],
-            tools: vec![ToolSpec { name: "zeus_status".into(), description: "d".into(), schema: json!({"type": "object"}) }],
+            tools: vec![ToolSpec {
+                name: "zeus_status".into(),
+                description: "d".into(),
+                schema: json!({"type": "object"}),
+            }],
             max_tokens: 100,
         };
         let key = ApiKey::new("sk-ant-test-0000".into());
-        let b = build(&Target { kind: Kind::Anthropic, base_url: "https://api.anthropic.com".into(), json_tools: false }, Some(&key), &req);
+        let b = build(
+            &Target {
+                kind: Kind::Anthropic,
+                base_url: "https://api.anthropic.com".into(),
+                json_tools: false,
+            },
+            Some(&key),
+            &req,
+        );
         assert_eq!(b.url, "https://api.anthropic.com/v1/messages");
-        assert!(b.headers.iter().any(|(k, v)| k == "x-api-key" && v == "sk-ant-test-0000"));
-        assert!(b.headers.iter().any(|(k, v)| k == "anthropic-version" && v == VERSION));
+        assert!(
+            b.headers
+                .iter()
+                .any(|(k, v)| k == "x-api-key" && v == "sk-ant-test-0000")
+        );
+        assert!(
+            b.headers
+                .iter()
+                .any(|(k, v)| k == "anthropic-version" && v == VERSION)
+        );
         let m = b.body["messages"].as_array().unwrap();
         assert_eq!(m.len(), 4);
         assert_eq!(m[2]["content"].as_array().unwrap().len(), 2);

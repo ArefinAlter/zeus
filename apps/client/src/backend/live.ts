@@ -23,6 +23,8 @@ import type { EngineInfo, EngineSettings, NativeItem, QueuesList, RemoteApproval
 import { RemoteError, api, backend, native, retryKey, session, svc } from './remote.ts'
 import type { Settings } from './settings.ts'
 import { ulid } from './rand.ts'
+import type { IndexDelta, IndexRow } from './files.ts'
+import { filesApi, indexFromWire, nudgeIndexSync, startIndexSync } from './files.ts'
 
 export const LIVE = backend().kind !== 'scripted'
 export const HOSTED = backend().kind === 'hosted'
@@ -58,6 +60,8 @@ export interface PendingItem {
   description?: string
   /** Native: a hash the finished file must match. */
   expectedSha256?: string
+  /** Native: zeusd's policy for a name that exists. */
+  overwrite?: 'rename' | 'fail' | 'replace'
   /** Native: the name the person typed, as opposed to the one the server gives. */
   nameChosen?: boolean
   /** Set when sending it failed; the row shows as failed with this reason. */
@@ -162,6 +166,12 @@ const queueOfJob = new Map<string, string>()
 const heldJobs = new Set<string>()
 let remoteFiles: RemoteFile[] = []
 let indexFiles: { path: string; size: number; mtime: number; is_dir: boolean }[] = []
+/** Native: the engine's index, kept current by deltas, and the ids that keep a selected row selected. */
+const indexMap = new Map<string, IndexRow>()
+let indexReady = false
+const fileIds = new Map<string, number>()
+let nextFileId = 1
+let fileJobIds = new Set<string>()
 const lastState = new Map<string, string>()
 
 function toJob(r: RemoteJob, prev: Job | undefined): Job {
@@ -176,6 +186,7 @@ function toJob(r: RemoteJob, prev: Job | undefined): Job {
   const art = s.live?.artifacts.find((a) => a.job_id === r.id)
   const active = ['probing', 'downloading', 'verifying', 'finalizing'].includes(state)
   const events = prev?.events ?? [{ t: Date.parse(r.created_at), text: 'Enqueued in zeusd' }]
+  const gone = NATIVE && state === 'completed' && indexReady && !!r.path && !indexMap.has(r.path) && !fileJobIds.has(r.id)
   const job: Job = {
     id: r.id,
     name,
@@ -196,6 +207,7 @@ function toJob(r: RemoteJob, prev: Job | undefined): Job {
     connections: s.settings.downloads.connectionsPerJob,
     resumable: 'unknown',
     priority: meta.priority ?? 'normal',
+    ...(gone ? { missing: true } : {}),
     ...(r.sha256 ? { sha256: r.sha256 } : {}),
     ...(art?.blake3 ? { blake3: art.blake3 } : {}),
     ...(r.quarantined ? { quarantined: true, quarantineReasons: ['zeusd quarantine'] } : {}),
@@ -264,7 +276,69 @@ export function rebuildJobs(): void {
   if (finished.some((f) => f.state === 'completed')) void refreshFiles(true)
 }
 
+/** Native: the file list from the engine's index, with what zeusd knows about each file. */
+function rebuildNativeFiles(): void {
+  const facts = new Map<string, { job_id?: string; sha256?: string; quarantined?: boolean }>()
+  for (const j of remoteJobs.values()) if (j.path) facts.set(j.path, { job_id: j.id, ...(j.sha256 ? { sha256: j.sha256 } : {}), quarantined: j.quarantined })
+  for (const f of remoteFiles) {
+    if (f.partial) continue
+    const prev = facts.get(f.path)
+    facts.set(f.path, { ...(f.job_id ?? prev?.job_id ? { job_id: (f.job_id ?? prev?.job_id) as string } : {}), ...(f.sha256 ?? prev?.sha256 ? { sha256: (f.sha256 ?? prev?.sha256) as string } : {}), quarantined: !!(f.quarantined || prev?.quarantined) })
+  }
+  const out: FileEntry[] = []
+  for (const [path, r] of indexMap) {
+    if (path.endsWith('.zpart')) continue
+    let id = fileIds.get(path)
+    if (id === undefined) {
+      id = nextFileId++
+      fileIds.set(path, id)
+    }
+    const f = facts.get(path)
+    const url = f?.job_id ? remoteJobs.get(f.job_id)?.url_redacted : undefined
+    out.push({
+      id,
+      name: baseOf(path),
+      dir: parentOf(path),
+      isFolder: r.is_dir,
+      size: r.is_dir ? 0 : r.size,
+      modified: r.mtime,
+      ...(f?.sha256 ? { sha256: f.sha256 } : {}),
+      ...(f?.job_id ? { jobId: f.job_id } : {}),
+      ...(f?.quarantined ? { quarantined: true } : {}),
+      ...(url ? { host: hostOf(url) } : {}),
+    })
+  }
+  if (fileIds.size > indexMap.size * 2 + 5000) for (const p of [...fileIds.keys()]) if (!indexMap.has(p)) fileIds.delete(p)
+  S.set({ files: out })
+}
+
+/** Native: apply what changed in the engine's index (or all of it) and show its state. */
+export function applyIndexDelta(d: IndexDelta): void {
+  let changed = false
+  if (d.reset) {
+    indexMap.clear()
+    for (const f of d.files) indexMap.set(f.path, f)
+    changed = true
+  } else {
+    for (const u of d.upserts) indexMap.set(u.path, u)
+    for (const p of d.removes) indexMap.delete(p)
+    changed = d.upserts.length > 0 || d.removes.length > 0
+  }
+  const firstTime = !indexReady && d.state === 'current'
+  if (d.state === 'current') indexReady = true
+  const s = S.get()
+  const prev = s.index
+  const next = { state: d.state, progress: d.progress, generation: d.generation, lastScan: d.last_scan ?? prev.lastScan, scanning: d.scanning, entries: d.entries, watcher: d.watcher, capped: d.capped, verifying: d.verifying }
+  if (JSON.stringify(prev) !== JSON.stringify(next)) S.set({ index: next })
+  if (changed || (firstTime && s.files.length === 0)) rebuildNativeFiles()
+  if (changed || firstTime) rebuildJobs()
+}
+
 function rebuildFiles(): void {
+  if (NATIVE) {
+    rebuildNativeFiles()
+    return
+  }
   const byPath = new Map(remoteFiles.map((f) => [f.path, f]))
   const out: FileEntry[] = []
   let id = 1
@@ -369,8 +443,11 @@ export async function refreshFiles(withIndex = false): Promise<void> {
   if (filesBusy) return
   filesBusy = true
   try {
-    const [f, ix] = await Promise.all([api.files(), withIndex && SVC ? svc.rescan() : Promise.resolve(null)])
+    const [f, ix] = await Promise.all([api.files(), withIndex && SVC && !NATIVE ? svc.rescan() : Promise.resolve(null)])
     remoteFiles = f.items
+    fileJobIds = new Set(f.items.map((x) => x.job_id).filter((x): x is string => !!x))
+    // In the app the engine's watcher keeps the index current; a finished download only needs a quick look.
+    if (NATIVE && withIndex) nudgeIndexSync()
     if (ix) {
       indexFiles = ix.files
       S.set({ index: { state: 'current', progress: 1, generation: ix.generation, lastScan: ix.last_scan ?? Date.now() } })
@@ -799,7 +876,7 @@ async function sendNative(items: PendingItem[]): Promise<void> {
       ...(p.nameChosen ? { filename: p.name } : {}),
       ...(p.expectedSha256 ? { expected_sha256: p.expectedSha256 } : {}),
       ...(p.queue ? { queue: p.queue } : {}),
-      overwrite: ({ rename: 'rename', fail: 'fail', replace: 'replace' } as const)[S.get().settings.downloads.duplicates],
+      overwrite: p.overwrite ?? ({ rename: 'rename', fail: 'fail', replace: 'replace' } as const)[S.get().settings.downloads.duplicates],
       max_connections: S.get().settings.downloads.connectionsPerJob,
     }))
     const pv = await api.previewItems(batch)
@@ -983,9 +1060,19 @@ export function startLive(hooks: StoreHooks): void {
       if (NATIVE) {
         appliedEngine = engineKey(engineSettingsFrom(S.get().settings))
         watchEngineSettings()
+        // The index's own configuration (folders, exclusions) lives in the engine's app folder and wins over a stored copy.
+        try {
+          const wire = await filesApi.config()
+          const here = S.get()
+          S.set({ settings: { ...here.settings, index: indexFromWire(wire, here.settings.index) } })
+        } catch {
+          // The Settings page asks again.
+        }
       }
       for (const n of SLICES) saved.set(n, sliceRef(n))
-      if (SVC) {
+      if (NATIVE) {
+        startIndexSync({ apply: applyIndexDelta, hidden: () => document.hidden })
+      } else if (SVC) {
         try {
           const ix = await svc.index()
           indexFiles = ix.files

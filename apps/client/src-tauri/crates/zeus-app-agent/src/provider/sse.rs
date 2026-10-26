@@ -35,7 +35,9 @@ impl Splitter {
         self.buf.extend_from_slice(bytes);
         let mut out = Vec::new();
         loop {
-            let Some((end, skip)) = find_boundary(&self.buf) else { break };
+            let Some((end, skip)) = find_boundary(&self.buf) else {
+                break;
+            };
             let block: Vec<u8> = self.buf.drain(..end + skip).take(end).collect();
             if let Some(event) = parse_block(&block) {
                 out.push(event);
@@ -106,7 +108,13 @@ mod tests {
         assert!(s.feed(b"event: a\ndata: {\"x\"").is_empty());
         let got = s.feed(b":1}\n\ndata: two\r\n\r\n: comment\n\ndata: l1\ndata: l2\n\n");
         assert_eq!(got.len(), 3);
-        assert_eq!(got[0], Event { name: Some("a".into()), data: "{\"x\":1}".into() });
+        assert_eq!(
+            got[0],
+            Event {
+                name: Some("a".into()),
+                data: "{\"x\":1}".into()
+            }
+        );
         assert_eq!(got[1].data, "two");
         assert_eq!(got[2].data, "l1\nl2");
     }

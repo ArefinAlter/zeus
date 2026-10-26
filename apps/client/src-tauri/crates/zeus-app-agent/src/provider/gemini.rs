@@ -12,7 +12,10 @@
 use serde_json::{Map, Value, json};
 
 use super::http::{Built, Parser};
-use super::{ApiKey, ChatRequest, ErrorKind, Kind, Msg, Outcome, ProviderError, RawTurn, Stop, Target, ToolCall, Usage, estimate_tokens};
+use super::{
+    ApiKey, ChatRequest, ErrorKind, Kind, Msg, Outcome, ProviderError, RawTurn, Stop, Target,
+    ToolCall, Usage, estimate_tokens,
+};
 
 /// Reduce a JSON Schema to the OpenAPI subset Gemini accepts.
 pub fn sanitize_schema(schema: &Value) -> Value {
@@ -21,7 +24,14 @@ pub fn sanitize_schema(schema: &Value) -> Value {
             let mut out = Map::new();
             if let Some(c) = o.get("const") {
                 out.insert("enum".into(), json!([c]));
-                out.insert("type".into(), json!(match c { Value::Number(_) => "number", Value::Bool(_) => "boolean", _ => "string" }));
+                out.insert(
+                    "type".into(),
+                    json!(match c {
+                        Value::Number(_) => "number",
+                        Value::Bool(_) => "boolean",
+                        _ => "string",
+                    }),
+                );
             }
             for (k, v) in o {
                 match k.as_str() {
@@ -39,7 +49,8 @@ pub fn sanitize_schema(schema: &Value) -> Value {
                             out.insert("type".into(), v.clone());
                         }
                     }
-                    "description" | "enum" | "format" | "required" | "minItems" | "maxItems" | "minimum" | "maximum" | "nullable" => {
+                    "description" | "enum" | "format" | "required" | "minItems" | "maxItems"
+                    | "minimum" | "maximum" | "nullable" => {
                         out.insert(k.clone(), v.clone());
                     }
                     "items" => {
@@ -47,13 +58,19 @@ pub fn sanitize_schema(schema: &Value) -> Value {
                     }
                     "properties" => {
                         if let Value::Object(props) = v {
-                            let cleaned: Map<String, Value> = props.iter().map(|(n, s)| (n.clone(), sanitize_schema(s))).collect();
+                            let cleaned: Map<String, Value> = props
+                                .iter()
+                                .map(|(n, s)| (n.clone(), sanitize_schema(s)))
+                                .collect();
                             out.insert("properties".into(), Value::Object(cleaned));
                         }
                     }
                     "anyOf" | "oneOf" => {
                         if let Value::Array(branches) = v {
-                            let live: Vec<&Value> = branches.iter().filter(|b| b.get("type") != Some(&json!("null"))).collect();
+                            let live: Vec<&Value> = branches
+                                .iter()
+                                .filter(|b| b.get("type") != Some(&json!("null")))
+                                .collect();
                             let has_null = live.len() != branches.len();
                             if live.len() == 1 {
                                 if let Value::Object(only) = sanitize_schema(live[0]) {
@@ -62,7 +79,10 @@ pub fn sanitize_schema(schema: &Value) -> Value {
                                     }
                                 }
                             } else if !live.is_empty() {
-                                out.insert("anyOf".into(), Value::Array(live.iter().map(|b| sanitize_schema(b)).collect()));
+                                out.insert(
+                                    "anyOf".into(),
+                                    Value::Array(live.iter().map(|b| sanitize_schema(b)).collect()),
+                                );
                             }
                             if has_null {
                                 out.insert("nullable".into(), json!(true));
@@ -73,11 +93,20 @@ pub fn sanitize_schema(schema: &Value) -> Value {
                 }
             }
             // An object with no declared properties cannot be described to Gemini: pass it as a JSON string.
-            if out.get("type") == Some(&json!("object")) && out.get("properties").is_none_or(|p| p.as_object().is_none_or(Map::is_empty)) {
-                let desc = out.get("description").and_then(Value::as_str).unwrap_or("").to_owned();
+            if out.get("type") == Some(&json!("object"))
+                && out
+                    .get("properties")
+                    .is_none_or(|p| p.as_object().is_none_or(Map::is_empty))
+            {
+                let desc = out
+                    .get("description")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_owned();
                 return json!({"type": "string", "description": format!("{desc} Pass a JSON object encoded as a string.").trim().to_owned()});
             }
-            if out.get("type").is_none() && out.get("anyOf").is_none() && out.get("enum").is_none() {
+            if out.get("type").is_none() && out.get("anyOf").is_none() && out.get("enum").is_none()
+            {
                 out.insert("type".into(), json!("string"));
             }
             Value::Object(out)
@@ -107,7 +136,12 @@ fn contents(req: &ChatRequest) -> Vec<Value> {
     };
     for m in &req.messages {
         match m {
-            Msg::ToolResult { name, content, is_error, .. } => {
+            Msg::ToolResult {
+                name,
+                content,
+                is_error,
+                ..
+            } => {
                 pending.push(json!({"functionResponse": {"name": name, "response": response_object(content, *is_error)}}));
             }
             Msg::User(t) => {
@@ -117,7 +151,10 @@ fn contents(req: &ChatRequest) -> Vec<Value> {
             Msg::Assistant { text, calls, raw } => {
                 flush(&mut out, &mut pending);
                 let parts = match raw {
-                    Some(RawTurn { kind: Kind::Google, value }) if value.as_array().is_some_and(|a| !a.is_empty()) => value.clone(),
+                    Some(RawTurn {
+                        kind: Kind::Google,
+                        value,
+                    }) if value.as_array().is_some_and(|a| !a.is_empty()) => value.clone(),
                     _ => {
                         let mut parts: Vec<Value> = Vec::new();
                         if !text.is_empty() {
@@ -151,11 +188,22 @@ pub fn build(target: &Target, key: Option<&ApiKey>, req: &ChatRequest) -> Built 
     if !req.tools.is_empty() {
         body["tools"] = json!([{"functionDeclarations": req.tools.iter().map(|t| json!({"name": t.name, "description": t.description, "parameters": sanitize_schema(&t.schema)})).collect::<Vec<_>>()}]);
     }
-    let mut headers = vec![("content-type".to_owned(), "application/json".to_owned()), ("accept".to_owned(), "text/event-stream".to_owned())];
+    let mut headers = vec![
+        ("content-type".to_owned(), "application/json".to_owned()),
+        ("accept".to_owned(), "text/event-stream".to_owned()),
+    ];
     if let Some(k) = key {
         headers.push(("x-goog-api-key".to_owned(), k.expose().to_owned()));
     }
-    Built { url: format!("{}/models/{}:streamGenerateContent?alt=sse", target.base_url.trim().trim_end_matches('/'), model), headers, body }
+    Built {
+        url: format!(
+            "{}/models/{}:streamGenerateContent?alt=sse",
+            target.base_url.trim().trim_end_matches('/'),
+            model
+        ),
+        headers,
+        body,
+    }
 }
 
 /// The request for the models list.
@@ -164,7 +212,14 @@ pub fn models_request(target: &Target, key: Option<&ApiKey>) -> Built {
     if let Some(k) = key {
         headers.push(("x-goog-api-key".to_owned(), k.expose().to_owned()));
     }
-    Built { url: format!("{}/models?pageSize=200", target.base_url.trim().trim_end_matches('/')), headers, body: Value::Null }
+    Built {
+        url: format!(
+            "{}/models?pageSize=200",
+            target.base_url.trim().trim_end_matches('/')
+        ),
+        headers,
+        body: Value::Null,
+    }
 }
 
 /// Read ids from a models answer (`models[].name` is `models/<id>`; only models that can `generateContent`).
@@ -174,8 +229,16 @@ pub fn model_ids(v: &Value) -> Vec<String> {
         .and_then(Value::as_array)
         .map(|a| {
             a.iter()
-                .filter(|m| m.get("supportedGenerationMethods").and_then(Value::as_array).is_none_or(|s| s.iter().any(|x| x == "generateContent")))
-                .filter_map(|m| m.get("name").and_then(Value::as_str).map(|n| n.trim_start_matches("models/").to_owned()))
+                .filter(|m| {
+                    m.get("supportedGenerationMethods")
+                        .and_then(Value::as_array)
+                        .is_none_or(|s| s.iter().any(|x| x == "generateContent"))
+                })
+                .filter_map(|m| {
+                    m.get("name")
+                        .and_then(Value::as_str)
+                        .map(|n| n.trim_start_matches("models/").to_owned())
+                })
                 .collect()
         })
         .unwrap_or_default();
@@ -202,9 +265,16 @@ impl GeminiParser {
         Self::default()
     }
 
-    fn apply(&mut self, v: &Value, sink: &mut (dyn FnMut(&str) + Send)) -> Result<(), ProviderError> {
+    fn apply(
+        &mut self,
+        v: &Value,
+        sink: &mut (dyn FnMut(&str) + Send),
+    ) -> Result<(), ProviderError> {
         if let Some(e) = v.get("error").filter(|e| !e.is_null()) {
-            let m = e.get("message").and_then(Value::as_str).unwrap_or("The provider reported an error.");
+            let m = e
+                .get("message")
+                .and_then(Value::as_str)
+                .unwrap_or("The provider reported an error.");
             let status = e.get("status").and_then(Value::as_str).unwrap_or_default();
             let kind = match status {
                 "UNAUTHENTICATED" | "PERMISSION_DENIED" => ErrorKind::Auth,
@@ -213,10 +283,22 @@ impl GeminiParser {
                 "INVALID_ARGUMENT" | "NOT_FOUND" | "FAILED_PRECONDITION" => ErrorKind::BadRequest,
                 _ => ErrorKind::Server,
             };
-            return Err(ProviderError::new(kind, format!("The provider reported an error: {}", m.chars().take(300).collect::<String>())));
+            return Err(ProviderError::new(
+                kind,
+                format!(
+                    "The provider reported an error: {}",
+                    m.chars().take(300).collect::<String>()
+                ),
+            ));
         }
-        if let Some(b) = v.pointer("/promptFeedback/blockReason").and_then(Value::as_str) {
-            return Err(ProviderError::new(ErrorKind::BadRequest, format!("The provider blocked the request ({b}).")));
+        if let Some(b) = v
+            .pointer("/promptFeedback/blockReason")
+            .and_then(Value::as_str)
+        {
+            return Err(ProviderError::new(
+                ErrorKind::BadRequest,
+                format!("The provider blocked the request ({b})."),
+            ));
         }
         if let Some(u) = v.get("usageMetadata") {
             let n = |k: &str| u.get(k).and_then(Value::as_u64).unwrap_or(0);
@@ -224,7 +306,9 @@ impl GeminiParser {
             self.output = n("candidatesTokenCount") + n("thoughtsTokenCount");
             self.got_usage = true;
         }
-        let Some(cand) = v.pointer("/candidates/0") else { return Ok(()) };
+        let Some(cand) = v.pointer("/candidates/0") else {
+            return Ok(());
+        };
         if let Some(parts) = cand.pointer("/content/parts").and_then(Value::as_array) {
             for p in parts {
                 self.parts.push(p.clone());
@@ -237,14 +321,33 @@ impl GeminiParser {
                     sink(t);
                 }
                 if let Some(fc) = p.get("functionCall") {
-                    let name = fc.get("name").and_then(Value::as_str).unwrap_or_default().to_owned();
+                    let name = fc
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_owned();
                     if name.is_empty() {
                         continue;
                     }
-                    let id = fc.get("id").and_then(Value::as_str).map_or_else(|| format!("call_{}", self.calls.len() + 1), str::to_owned);
+                    let id = fc
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .map_or_else(|| format!("call_{}", self.calls.len() + 1), str::to_owned);
                     let args = fc.get("args").cloned().unwrap_or_else(|| json!({}));
-                    let (args, args_error) = if args.is_object() { (args, None) } else { (json!({}), Some("The arguments were not a JSON object.".to_owned())) };
-                    self.calls.push(ToolCall { id, name, args, args_error });
+                    let (args, args_error) = if args.is_object() {
+                        (args, None)
+                    } else {
+                        (
+                            json!({}),
+                            Some("The arguments were not a JSON object.".to_owned()),
+                        )
+                    };
+                    self.calls.push(ToolCall {
+                        id,
+                        name,
+                        args,
+                        args_error,
+                    });
                 }
             }
         }
@@ -256,16 +359,30 @@ impl GeminiParser {
 }
 
 impl Parser for GeminiParser {
-    fn event(&mut self, _name: Option<&str>, data: &str, sink: &mut (dyn FnMut(&str) + Send)) -> Result<(), ProviderError> {
+    fn event(
+        &mut self,
+        _name: Option<&str>,
+        data: &str,
+        sink: &mut (dyn FnMut(&str) + Send),
+    ) -> Result<(), ProviderError> {
         let data = data.trim();
         if data.is_empty() || data == "[DONE]" {
             return Ok(());
         }
-        let v: Value = serde_json::from_str(data).map_err(|_| ProviderError::new(ErrorKind::Protocol, "The provider sent a chunk Zeus could not read."))?;
+        let v: Value = serde_json::from_str(data).map_err(|_| {
+            ProviderError::new(
+                ErrorKind::Protocol,
+                "The provider sent a chunk Zeus could not read.",
+            )
+        })?;
         self.apply(&v, sink)
     }
 
-    fn whole(&mut self, body: &Value, sink: &mut (dyn FnMut(&str) + Send)) -> Result<(), ProviderError> {
+    fn whole(
+        &mut self,
+        body: &Value,
+        sink: &mut (dyn FnMut(&str) + Send),
+    ) -> Result<(), ProviderError> {
         if let Some(list) = body.as_array() {
             for v in list {
                 self.apply(v, sink)?;
@@ -279,21 +396,51 @@ impl Parser for GeminiParser {
     fn finish(self: Box<Self>, estimated_input: u64) -> Result<Outcome, ProviderError> {
         let stop = match self.finish.as_deref() {
             Some("MAX_TOKENS") => Stop::Length,
-            Some("SAFETY" | "RECITATION" | "BLOCKLIST" | "PROHIBITED_CONTENT" | "SPII" | "IMAGE_SAFETY") => Stop::Filtered,
+            Some(
+                "SAFETY" | "RECITATION" | "BLOCKLIST" | "PROHIBITED_CONTENT" | "SPII"
+                | "IMAGE_SAFETY",
+            ) => Stop::Filtered,
             Some("STOP") | None => {
-                if self.calls.is_empty() { Stop::End } else { Stop::ToolUse }
+                if self.calls.is_empty() {
+                    Stop::End
+                } else {
+                    Stop::ToolUse
+                }
             }
             Some(_) => Stop::Other,
         };
-        let stop = if !self.calls.is_empty() && stop == Stop::End { Stop::ToolUse } else { stop };
-        let usage = if self.got_usage {
-            Usage { input: self.input, output: self.output, estimated: false }
+        let stop = if !self.calls.is_empty() && stop == Stop::End {
+            Stop::ToolUse
         } else {
-            Usage { input: estimated_input, output: estimate_tokens(&self.text), estimated: true }
+            stop
         };
-        let Self { text, parts, calls, .. } = *self;
-        let raw = (!parts.is_empty()).then(|| RawTurn { kind: Kind::Google, value: Value::Array(parts) });
-        Ok(Outcome { text, calls, raw, usage, stop })
+        let usage = if self.got_usage {
+            Usage {
+                input: self.input,
+                output: self.output,
+                estimated: false,
+            }
+        } else {
+            Usage {
+                input: estimated_input,
+                output: estimate_tokens(&self.text),
+                estimated: true,
+            }
+        };
+        let Self {
+            text, parts, calls, ..
+        } = *self;
+        let raw = (!parts.is_empty()).then(|| RawTurn {
+            kind: Kind::Google,
+            value: Value::Array(parts),
+        });
+        Ok(Outcome {
+            text,
+            calls,
+            raw,
+            usage,
+            stop,
+        })
     }
 }
 
@@ -317,14 +464,25 @@ mod tests {
         });
         let out = sanitize_schema(&s);
         let text = out.to_string();
-        for banned in ["additionalProperties", "pattern", "minLength", "maxLength", "uniqueItems", "oneOf", "const"] {
+        for banned in [
+            "additionalProperties",
+            "pattern",
+            "minLength",
+            "maxLength",
+            "uniqueItems",
+            "oneOf",
+            "const",
+        ] {
             assert!(!text.contains(banned), "{banned} in {text}");
         }
         assert_eq!(out["properties"]["mode"]["enum"][0], "organize");
         assert_eq!(out["properties"]["rules"]["type"], "string");
         assert_eq!(out["properties"]["since"]["type"], "string");
         assert_eq!(out["properties"]["since"]["nullable"], true);
-        assert_eq!(out["properties"]["pick"]["anyOf"].as_array().unwrap().len(), 2);
+        assert_eq!(
+            out["properties"]["pick"]["anyOf"].as_array().unwrap().len(),
+            2
+        );
         assert_eq!(out["required"][0], "url");
     }
 
@@ -332,13 +490,25 @@ mod tests {
     fn function_calls_text_and_usage_stream_in() {
         let mut p = Box::new(GeminiParser::new());
         let mut streamed = String::new();
-        p.event(None, r#"{"candidates":[{"content":{"role":"model","parts":[{"text":"Checking"}]}}]}"#, &mut |t| streamed.push_str(t)).unwrap();
+        p.event(
+            None,
+            r#"{"candidates":[{"content":{"role":"model","parts":[{"text":"Checking"}]}}]}"#,
+            &mut |t| streamed.push_str(t),
+        )
+        .unwrap();
         p.event(None, r#"{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"zeus_probe","args":{"url":"https://e.org/a"}},"thoughtSignature":"SIG"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":40,"candidatesTokenCount":9,"thoughtsTokenCount":6}}"#, &mut |t| streamed.push_str(t)).unwrap();
         let o = p.finish(1).unwrap();
         assert_eq!(streamed, "Checking");
         assert_eq!(o.stop, Stop::ToolUse);
         assert_eq!(o.calls[0].args["url"], "https://e.org/a");
-        assert_eq!(o.usage, Usage { input: 40, output: 15, estimated: false });
+        assert_eq!(
+            o.usage,
+            Usage {
+                input: 40,
+                output: 15,
+                estimated: false
+            }
+        );
         // The raw turn keeps the signature for replay.
         let raw = o.raw.unwrap();
         assert_eq!(raw.value[1]["thoughtSignature"], "SIG");
@@ -349,7 +519,13 @@ mod tests {
         let mut p = GeminiParser::new();
         let e = p.event(None, r#"{"error":{"code":429,"message":"Quota exceeded","status":"RESOURCE_EXHAUSTED"}}"#, &mut |_| ()).unwrap_err();
         assert_eq!(e.kind, ErrorKind::RateLimited);
-        let e = p.event(None, r#"{"promptFeedback":{"blockReason":"SAFETY"}}"#, &mut |_| ()).unwrap_err();
+        let e = p
+            .event(
+                None,
+                r#"{"promptFeedback":{"blockReason":"SAFETY"}}"#,
+                &mut |_| (),
+            )
+            .unwrap_err();
         assert_eq!(e.kind, ErrorKind::BadRequest);
     }
 
@@ -360,20 +536,63 @@ mod tests {
             system: "sys".into(),
             messages: vec![
                 Msg::User("hi".into()),
-                Msg::Assistant { text: String::new(), calls: vec![ToolCall { id: "call_1".into(), name: "zeus_status".into(), args: json!({}), args_error: None }], raw: Some(RawTurn { kind: Kind::Google, value: json!([{"functionCall": {"name": "zeus_status", "args": {}}, "thoughtSignature": "SIG"}]) }) },
-                Msg::ToolResult { call_id: "call_1".into(), name: "zeus_status".into(), content: "{\"jobs\":[]}".into(), is_error: false },
+                Msg::Assistant {
+                    text: String::new(),
+                    calls: vec![ToolCall {
+                        id: "call_1".into(),
+                        name: "zeus_status".into(),
+                        args: json!({}),
+                        args_error: None,
+                    }],
+                    raw: Some(RawTurn {
+                        kind: Kind::Google,
+                        value: json!([{"functionCall": {"name": "zeus_status", "args": {}}, "thoughtSignature": "SIG"}]),
+                    }),
+                },
+                Msg::ToolResult {
+                    call_id: "call_1".into(),
+                    name: "zeus_status".into(),
+                    content: "{\"jobs\":[]}".into(),
+                    is_error: false,
+                },
             ],
-            tools: vec![ToolSpec { name: "zeus_status".into(), description: "d".into(), schema: json!({"type": "object", "properties": {"limit": {"type": "integer"}}}) }],
+            tools: vec![ToolSpec {
+                name: "zeus_status".into(),
+                description: "d".into(),
+                schema: json!({"type": "object", "properties": {"limit": {"type": "integer"}}}),
+            }],
             max_tokens: 256,
         };
         let key = ApiKey::new("AIzaTestKey000000000000".into());
-        let b = build(&Target { kind: Kind::Google, base_url: "https://generativelanguage.googleapis.com/v1beta".into(), json_tools: false }, Some(&key), &req);
-        assert_eq!(b.url, "https://generativelanguage.googleapis.com/v1beta/models/gemini-x:streamGenerateContent?alt=sse");
+        let b = build(
+            &Target {
+                kind: Kind::Google,
+                base_url: "https://generativelanguage.googleapis.com/v1beta".into(),
+                json_tools: false,
+            },
+            Some(&key),
+            &req,
+        );
+        assert_eq!(
+            b.url,
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-x:streamGenerateContent?alt=sse"
+        );
         assert!(!b.url.contains("AIza"));
-        assert!(b.headers.iter().any(|(k, v)| k == "x-goog-api-key" && v == "AIzaTestKey000000000000"));
+        assert!(
+            b.headers
+                .iter()
+                .any(|(k, v)| k == "x-goog-api-key" && v == "AIzaTestKey000000000000")
+        );
         assert_eq!(b.body["contents"][1]["parts"][0]["thoughtSignature"], "SIG");
-        assert_eq!(b.body["contents"][2]["parts"][0]["functionResponse"]["response"]["result"]["jobs"], json!([]));
+        assert_eq!(
+            b.body["contents"][2]["parts"][0]["functionResponse"]["response"]["result"]["jobs"],
+            json!([])
+        );
         assert_eq!(b.body["generationConfig"]["maxOutputTokens"], 256);
-        assert!(b.body["tools"][0]["functionDeclarations"][0]["parameters"].get("additionalProperties").is_none());
+        assert!(
+            b.body["tools"][0]["functionDeclarations"][0]["parameters"]
+                .get("additionalProperties")
+                .is_none()
+        );
     }
 }

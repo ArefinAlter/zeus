@@ -2,12 +2,12 @@
 // read and every file it would fetch, before anything is fetched. Running it is a workflow plan in zeusd terms, so the
 // run waits for your approval with the bind code typed in (spec 07, workflow_plan).
 
-import { useEffect, useMemo, useState } from 'preact/hooks'
+import { useEffect, useMemo, useRef, useState } from 'preact/hooks'
 
 import { siteRequestRun, useStore } from '../../backend/store'
 import type { SitePreview, SiteRequest } from '../../backend/sitegrab'
-import { HOSTED, LIVE } from '../../backend/live'
-import { svc } from '../../backend/remote'
+import { HOSTED, LIVE, NATIVE, SVC } from '../../backend/live'
+import { call, svc } from '../../backend/remote'
 import { previewSite } from '../../backend/sitegrab'
 import { parseExtList } from '../../model/categories.ts'
 import { fmtBytes } from '../../model/units.ts'
@@ -29,7 +29,9 @@ export function SiteGrabber({ onClose }: { onClose: () => void }) {
   const [step, setStep] = useState(0)
   const [name, setName] = useState('project_1')
   const [template, setTemplate] = useState('docs')
-  const [startUrl, setStartUrl] = useState(HOSTED ? 'http://docs.example.org/' : 'https://docs.example.org/handbook/')
+  const [startUrl, setStartUrl] = useState(NATIVE ? '' : HOSTED ? 'http://docs.example.org/' : 'https://docs.example.org/handbook/')
+  const [delayMs, setDelayMs] = useState(1000)
+  const walkId = useRef('')
   const [depth, setDepth] = useState(2)
   const [sameHost, setSameHost] = useState(true)
   const [types, setTypes] = useState('pdf epub docx xlsx pptx')
@@ -37,32 +39,38 @@ export function SiteGrabber({ onClose }: { onClose: () => void }) {
   const [exclude, setExclude] = useState('*/blog/*\n*draft*')
   const [maxFiles, setMaxFiles] = useState(50)
   const [maxMiB, setMaxMiB] = useState(2048)
-  const [queue, setQueue] = useState<string>('main')
+  const startNow = useStore((s) => s.settings.downloads.startImmediately)
+  const defaultQueue = useStore((s) => s.settings.scheduler.defaultQueue)
+  const [queue, setQueue] = useState<string>(NATIVE && startNow ? 'now' : NATIVE ? defaultQueue : 'main')
   const [error, setError] = useState<string | null>(null)
 
-  const req: SiteRequest = { startUrl, depth, sameHostOnly: sameHost, types: parseExtList(types), include: include.split('\n'), exclude: exclude.split('\n'), maxFiles, maxMiB }
+  const req: SiteRequest = { startUrl, depth, sameHostOnly: sameHost, types: parseExtList(types), include: include.split('\n'), exclude: exclude.split('\n'), maxFiles, maxMiB, ...(NATIVE ? { delayMs } : {}) }
   const scripted = useMemo(() => (step === 4 && !LIVE ? previewSite(req) : null), [step, startUrl, depth, sameHost, types, include, exclude, maxFiles, maxMiB])
   // Live: the pre-alpha service walks the sample site for real (hosted). A local zeusd has no site walk in this client.
   const [walked, setWalked] = useState<SitePreview | null>(null)
   const [walking, setWalking] = useState(false)
   useEffect(() => {
     if (step !== 4 || !LIVE) return
-    if (!HOSTED) {
-      setWalked({ ok: false, error: 'Site walks run in the hosted pre-alpha service. With a local zeusd, use zeus workflow draft and run in the CLI.', host: '', pages: [], files: [], skipped: [], totalBytes: 0 })
+    if (!SVC) {
+      setWalked({ ok: false, error: 'Site walks run in the hosted pre-alpha service or in the desktop app. With a local zeusd behind a bridge, use zeus workflow draft and run in the CLI.', host: '', pages: [], files: [], skipped: [], totalBytes: 0 })
       return
     }
     let alive = true
+    const id = `w${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`
+    walkId.current = id
     setWalking(true)
     setWalked(null)
     svc
-      .sitePreview(req)
+      .sitePreview(NATIVE ? { ...req, walkId: id } : req)
       .then((r) => alive && setWalked(r as SitePreview))
       .catch((e: unknown) => alive && setWalked({ ok: false, error: e instanceof Error ? e.message : 'The walk failed.', host: '', pages: [], files: [], skipped: [], totalBytes: 0 }))
       .finally(() => alive && setWalking(false))
     return () => {
       alive = false
+      // Leaving the step, or the dialog, stops a walk that is still reading pages.
+      if (NATIVE) void call('POST', '/native/v1/sitegrab/cancel', { walkId: id }).catch(() => undefined)
     }
-  }, [step, startUrl, depth, sameHost, types, include, exclude, maxFiles, maxMiB])
+  }, [step, startUrl, depth, sameHost, types, include, exclude, maxFiles, maxMiB, delayMs])
   const preview = LIVE ? walked : scripted
   const startOk = (() => {
     try {
@@ -117,10 +125,10 @@ export function SiteGrabber({ onClose }: { onClose: () => void }) {
           </label>
           <label class="field wide">
             Start page
-            <input class="mono" value={startUrl} onInput={(e) => setStartUrl((e.target as HTMLInputElement).value)} />
+            <input class="mono" value={startUrl} placeholder={NATIVE ? 'https://example.org/downloads/' : undefined} onInput={(e) => setStartUrl((e.target as HTMLInputElement).value)} />
           </label>
           {!startOk && startUrl ? <p class="field-err wide">An http or https address without a user name or password.</p> : null}
-          <Notice>Logged-in pages are not walked here. A page that needs your login goes through the Zeus extension, after you approve the site.</Notice>
+          <Notice>Logged-in pages are not walked here. A page that needs your login goes through the Zeus extension, after you approve the site.{NATIVE ? ' The walk reads the site\'s robots.txt first and keeps to it, identifies itself as Zeus, and spaces its requests.' : ''}</Notice>
         </div>
       ) : null}
       {step === 1 ? (
@@ -137,12 +145,23 @@ export function SiteGrabber({ onClose }: { onClose: () => void }) {
           <div class="row">
             <div class="text">
               <div class="title">Stay on this site</div>
-              <div class="desc">Links to other hosts are counted and listed as skipped, never followed.</div>
+              <div class="desc">{NATIVE ? 'Links to other hosts are counted and listed as skipped. Untick it to let the walk follow links to up to five hosts (each one\'s robots.txt and pace are kept).' : 'Links to other hosts are counted and listed as skipped, never followed.'}</div>
             </div>
             <div class="control">
               <Switch label="Stay on this site" checked={sameHost} onChange={setSameHost} />
             </div>
           </div>
+          {NATIVE ? (
+            <div class="row">
+              <div class="text">
+                <div class="title">Pause between requests</div>
+                <div class="desc">To one host. At least 250 ms (four a second), and never faster than the site asks for in its robots.txt (Crawl-delay).</div>
+              </div>
+              <div class="control">
+                <NumberInput label="Pause between requests" value={delayMs} min={250} max={10000} onChange={setDelayMs} unit="ms" />
+              </div>
+            </div>
+          ) : null}
           <div class="row">
             <div class="text">
               <div class="title">Limits</div>
@@ -186,7 +205,7 @@ export function SiteGrabber({ onClose }: { onClose: () => void }) {
           </label>
         </div>
       ) : null}
-      {step === 4 && walking ? <Notice>Walking the sample site…</Notice> : null}
+      {step === 4 && walking ? <Notice>{NATIVE ? 'Walking the site, politely: robots.txt first, then one request at a time with a pause between them. A deep walk takes a minute or more.' : 'Walking the sample site…'}</Notice> : null}
       {step === 4 && preview ? (
         preview.ok ? (
           <div class="stack-tight">
@@ -194,8 +213,14 @@ export function SiteGrabber({ onClose }: { onClose: () => void }) {
               <Icon name="eye" />
               <span>
                 Would read <strong>{preview.pages.length} pages</strong> and fetch <strong>{preview.files.length} files</strong>, {fmtBytes(preview.totalBytes)} in all.
+                {preview.unknownSizes ? ` ${preview.unknownSizes} file${preview.unknownSizes === 1 ? '' : 's'} did not give a size.` : ''}
               </span>
             </div>
+            {NATIVE && preview.robots ? (
+              <p class="muted small">
+                {preview.robots.found ? `robots.txt read: ${preview.robots.rules} rule${preview.robots.rules === 1 ? '' : 's'} for Zeus${preview.robots.crawl_delay_ms ? `, a crawl delay of ${preview.robots.crawl_delay_ms / 1000} s kept` : ''}.` : 'The site has no robots.txt.'} {preview.requests} requests in {Math.round((preview.elapsedMs ?? 0) / 1000)} s.
+              </p>
+            ) : null}
             <div class="table-wrap short">
               <table>
                 <thead>
@@ -234,7 +259,9 @@ export function SiteGrabber({ onClose }: { onClose: () => void }) {
               </ul>
             </details>
             <Notice>
-              {LIVE
+              {NATIVE
+                ? 'This app read these pages from your computer just now, keeping to the site\'s robots.txt. Nothing is downloaded yet. The run waits for your approval, held by this app, with the bind code typed in; the approved files then go to zeusd as one batch.'
+                : LIVE
                 ? 'The pre-alpha service read these pages from the sample site just now. The run waits for your approval with the bind code typed in; the approved files then go to zeusd as one reviewed batch.'
                 : 'This preview is generated from the start address in this release; zeusd samples the real page and validates the plan before a run. The run waits for your approval with the bind code typed in.'}
             </Notice>

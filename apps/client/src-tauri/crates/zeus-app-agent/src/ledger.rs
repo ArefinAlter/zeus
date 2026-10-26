@@ -64,7 +64,10 @@ impl CapRefusal {
         if self.cap_usd <= 0.0 {
             format!("No model call was made: {what} is zero. Raise it in Settings, Providers.")
         } else {
-            format!("No model call was made: {what} of ${:.2} would be passed (${:.2} spent). Raise it in Settings, Providers.", self.cap_usd, self.spent_usd)
+            format!(
+                "No model call was made: {what} of ${:.2} would be passed (${:.2} spent). Raise it in Settings, Providers.",
+                self.cap_usd, self.spent_usd
+            )
         }
     }
 }
@@ -98,7 +101,9 @@ fn micro_from_usd(v: f64) -> u64 {
 }
 
 fn now_ms() -> u64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64)
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as u64)
 }
 
 /// The cost of a usage at the given prices, in micro-dollars.
@@ -110,8 +115,14 @@ impl Ledger {
     /// The ledger under `home`.
     pub fn new(home: &AppHome) -> Self {
         let path = home.app_dir().join("agent").join("ledger.json");
-        let data = std::fs::read(&path).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
-        Self { path, data: Mutex::new(data) }
+        let data = std::fs::read(&path)
+            .ok()
+            .and_then(|b| serde_json::from_slice(&b).ok())
+            .unwrap_or_default();
+        Self {
+            path,
+            data: Mutex::new(data),
+        }
     }
 
     fn save(&self, data: &Data) {
@@ -129,7 +140,12 @@ impl Ledger {
             t.micro_usd += micro;
             t.calls += 1;
         };
-        add(d.days.entry(day_key(now_ms())).or_default().entry(provider.to_owned()).or_default());
+        add(d
+            .days
+            .entry(day_key(now_ms()))
+            .or_default()
+            .entry(provider.to_owned())
+            .or_default());
         add(d.threads.entry(thread.to_owned()).or_default());
         while d.days.len() > 400 {
             if let Some(k) = d.days.keys().next().cloned() {
@@ -146,7 +162,11 @@ impl Ledger {
 
     /// Totals of a thread.
     pub fn thread(&self, id: &str) -> Totals {
-        self.data.lock().ok().and_then(|d| d.threads.get(id).copied()).unwrap_or_default()
+        self.data
+            .lock()
+            .ok()
+            .and_then(|d| d.threads.get(id).copied())
+            .unwrap_or_default()
     }
 
     /// Forget a thread's totals (the thread was deleted).
@@ -171,7 +191,9 @@ impl Ledger {
     }
 
     fn sum(&self, keep: impl Fn(&str, &str) -> bool) -> Totals {
-        let Ok(d) = self.data.lock() else { return Totals::default() };
+        let Ok(d) = self.data.lock() else {
+            return Totals::default();
+        };
         let mut t = Totals::default();
         for (day, per) in &d.days {
             for (p, v) in per {
@@ -187,24 +209,50 @@ impl Ledger {
     }
 
     /// Check the caps before a call. `estimated_input` is the prompt's token estimate.
-    pub fn check(&self, config: &AgentConfig, provider: &ProviderCfg, thread: &str, estimated_input: u64) -> Result<(), CapRefusal> {
+    pub fn check(
+        &self,
+        config: &AgentConfig,
+        provider: &ProviderCfg,
+        thread: &str,
+        estimated_input: u64,
+    ) -> Result<(), CapRefusal> {
         let (pi, po) = config.prices(provider);
-        let est = cost_micro(Usage { input: estimated_input, output: 0, estimated: true }, pi, po);
+        let est = cost_micro(
+            Usage {
+                input: estimated_input,
+                output: 0,
+                estimated: true,
+            },
+            pi,
+            po,
+        );
         let _ = po;
         let month = self.month(&provider.id).micro_usd;
         let cap_p = micro_from_usd(provider.monthly_cap_usd);
         if provider.monthly_cap_usd <= 0.0 || month + est > cap_p {
-            return Err(CapRefusal { scope: "provider", cap_usd: provider.monthly_cap_usd, spent_usd: usd(month) });
+            return Err(CapRefusal {
+                scope: "provider",
+                cap_usd: provider.monthly_cap_usd,
+                spent_usd: usd(month),
+            });
         }
         let day = self.today().micro_usd;
         let cap_d = micro_from_usd(config.daily_cap_usd);
         if config.daily_cap_usd <= 0.0 || day + est > cap_d {
-            return Err(CapRefusal { scope: "daily", cap_usd: config.daily_cap_usd, spent_usd: usd(day) });
+            return Err(CapRefusal {
+                scope: "daily",
+                cap_usd: config.daily_cap_usd,
+                spent_usd: usd(day),
+            });
         }
         let thread_spent = self.thread(thread).micro_usd;
         let cap_t = micro_from_usd(config.thread_cap_usd);
         if config.thread_cap_usd <= 0.0 || thread_spent + est > cap_t {
-            return Err(CapRefusal { scope: "thread", cap_usd: config.thread_cap_usd, spent_usd: usd(thread_spent) });
+            return Err(CapRefusal {
+                scope: "thread",
+                cap_usd: config.thread_cap_usd,
+                spent_usd: usd(thread_spent),
+            });
         }
         Ok(())
     }
@@ -235,8 +283,30 @@ mod tests {
 
     #[test]
     fn costs_use_micro_dollars_per_token_at_a_per_million_rate() {
-        assert_eq!(cost_micro(Usage { input: 1_000_000, output: 0, estimated: false }, 3.0, 15.0), 3_000_000);
-        assert_eq!(cost_micro(Usage { input: 1000, output: 100, estimated: false }, 3.0, 15.0), 4_500);
+        assert_eq!(
+            cost_micro(
+                Usage {
+                    input: 1_000_000,
+                    output: 0,
+                    estimated: false
+                },
+                3.0,
+                15.0
+            ),
+            3_000_000
+        );
+        assert_eq!(
+            cost_micro(
+                Usage {
+                    input: 1000,
+                    output: 100,
+                    estimated: false
+                },
+                3.0,
+                15.0
+            ),
+            4_500
+        );
     }
 
     #[test]
@@ -247,13 +317,24 @@ mod tests {
         config.providers[0].monthly_cap_usd = 0.01;
         let p = config.providers[0].clone();
         assert!(ledger.check(&config, &p, "t1", 100).is_ok());
-        ledger.charge(&p.id, "t1", Usage { input: 1000, output: 400, estimated: false }, 9_000);
+        ledger.charge(
+            &p.id,
+            "t1",
+            Usage {
+                input: 1000,
+                output: 400,
+                estimated: false,
+            },
+            9_000,
+        );
         let r = ledger.check(&config, &p, "t1", 2000).unwrap_err();
         assert_eq!(r.scope, "provider");
         assert!(r.message().contains("monthly cap"));
         let mut zero = config.clone();
         zero.providers[0].monthly_cap_usd = 0.0;
-        let r = ledger.check(&zero, &zero.providers[0].clone(), "t2", 1).unwrap_err();
+        let r = ledger
+            .check(&zero, &zero.providers[0].clone(), "t2", 1)
+            .unwrap_err();
         assert!(r.message().contains("is zero"));
         // The ledger survives a restart.
         let again = Ledger::new(&AppHome::at(dir.path().to_path_buf()));
@@ -268,9 +349,15 @@ mod tests {
         let mut config = AgentConfig::default();
         let p = config.providers[1].clone();
         ledger.charge(&p.id, "t", Usage::default(), 1_900_000);
-        assert_eq!(ledger.check(&config, &p, "t", 100_000).unwrap_err().scope, "thread");
+        assert_eq!(
+            ledger.check(&config, &p, "t", 100_000).unwrap_err().scope,
+            "thread"
+        );
         config.thread_cap_usd = 100.0;
         config.daily_cap_usd = 1.0;
-        assert_eq!(ledger.check(&config, &p, "t", 10).unwrap_err().scope, "daily");
+        assert_eq!(
+            ledger.check(&config, &p, "t", 10).unwrap_err().scope,
+            "daily"
+        );
     }
 }

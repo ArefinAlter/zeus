@@ -12,6 +12,7 @@
 //   /gone/<name>                              410
 //   /missing/<name>                           404
 //   /busy/<name>?size=N&fails=K&after=S       503 with Retry-After: S for the first K requests, then the file
+//   /dropped/<name>?size=N&cut=F             no ranges or validators; the first request loses its connection after fraction F (a browser download that cannot resume)
 //   /flaky/<name>?size=N&cut=F                closes the connection after fraction F of the body, the first time only
 //   /hash/<name>?size=N&seed=S                the SHA-256 of that file, as text
 //   /log                                      JSON list of the requests seen (method, path, range)
@@ -71,6 +72,7 @@ export function startFixtures(port = 0) {
   const seen = []
   const busy = new Map()
   const flaked = new Set()
+  const droppedSeen = new Set()
   const siteHits = []
   const server = createServer(async (req, res) => {
     const url = new URL(req.url ?? '/', 'http://x')
@@ -82,9 +84,31 @@ export function startFixtures(port = 0) {
     const seed = Number(q('seed', 1))
     const kind = parts[0]
 
+    if (url.pathname === '/robots.txt') {
+      // The crawlable site's robots.txt: one private area, and a crawl delay of one second.
+      res.writeHead(200, { 'content-type': 'text/plain' })
+      return res.end(['# fixture', 'User-agent: *', 'Disallow: /site/private/', 'Crawl-delay: 1', ''].join('\n'))
+    }
     if (kind === 'log') {
       res.writeHead(200, { 'content-type': 'application/json' })
       return res.end(JSON.stringify(seen))
+    }
+    if (kind === 'dropped') {
+      // A browser's download that cannot be resumed: no validators, no ranges, and the first request loses its
+      // connection after a fraction of the body. Later requests (Zeus's own) get the whole file.
+      const key = url.pathname + url.search
+      const first = !droppedSeen.has(key)
+      droppedSeen.add(key)
+      res.writeHead(200, { 'content-type': 'application/octet-stream', 'content-length': String(size), 'content-disposition': `attachment; filename="${decodeURIComponent(parts[parts.length - 1] ?? 'file.bin')}"` })
+      if (req.method === 'HEAD') return res.end()
+      const stop = first ? Math.floor(size * Number(q('cut', 0.4))) : size
+      let aborted = false
+      req.on('close', () => (aborted = true))
+      for (let p = 0; p < stop && !aborted; p += 256 * 1024) {
+        if (!res.write(bytes(seed, p, Math.min(stop, p + 256 * 1024)))) await new Promise((r) => res.once('drain', r))
+        await sleep(20)
+      }
+      return first ? res.destroy() : res.end()
     }
     if (kind === 'hash') {
       res.writeHead(200, { 'content-type': 'text/plain' })
@@ -188,7 +212,8 @@ export function startFixtures(port = 0) {
 // ---------------------------------------------------------------- the crawlable site (scenario: site grabber)
 
 const PAGES = {
-  '/site/': { title: 'Handbook', links: ['/site/guide/', '/site/files/report.pdf', '/site/files/data.zip', '/site/blog/', 'https://elsewhere.example.org/x.zip', '/site/private/secret.pdf'] },
+  '/site/': { title: 'Handbook', links: ['/site/guide/', '/site/files/report.pdf', '/site/files/data.zip', '/site/blog/', 'https://elsewhere.example.org/x.zip', '/site/private/secret.pdf', '/site/loop/', '/site/missing/', '/site/get', '/site/files/report.pdf#top'] },
+  '/site/loop/': { title: 'Loop', links: ['/site/loop/', '/site/', '/site/loop/?again=1'] },
   '/site/guide/': { title: 'Guide', links: ['/site/', '/site/guide/chapter1/', '/site/files/guide.pdf', '/site/files/notes.txt'] },
   '/site/guide/chapter1/': { title: 'Chapter 1', links: ['/site/guide/', '/site/files/chapter1.pdf', '/site/guide/chapter1/deep/'] },
   '/site/guide/chapter1/deep/': { title: 'Deep', links: ['/site/files/deep.zip'] },
@@ -196,18 +221,32 @@ const PAGES = {
   '/site/blog/post1/': { title: 'Post', links: ['/site/files/post.png'] },
 }
 
+/** The deterministic size and seed of a file of the crawlable site (so a test can compute its SHA-256). */
+export function siteFile(name) {
+  return { size: 20_000 + name.length * 1111, seed: [...name].reduce((n, c) => n + c.charCodeAt(0), 0) }
+}
+
 function site(req, res, url, hits) {
-  hits.push({ path: url.pathname, t: Date.now(), ua: req.headers['user-agent'] ?? '' })
-  if (url.pathname === '/site/robots.txt') {
-    res.writeHead(200, { 'content-type': 'text/plain' })
-    return res.end('User-agent: *\nDisallow: /site/private/\nCrawl-delay: 1\n')
+  hits.push({ method: req.method, path: url.pathname, t: Date.now(), ua: req.headers['user-agent'] ?? '' })
+  if (url.pathname === '/site/get') {
+    // A link without an extension that is not a page: a PDF.
+    res.writeHead(200, { 'content-type': 'application/pdf', 'content-length': '13' })
+    return res.end('%PDF-1.4 fake')
   }
   if (url.pathname.startsWith('/site/files/')) {
-    const name = url.pathname.split('/').pop() ?? 'f'
-    const size = 20_000 + (name.length * 1111)
-    const seed = [...name].reduce((n, c) => n + c.charCodeAt(0), 0)
-    res.writeHead(200, { 'content-type': name.endsWith('.png') ? 'image/png' : 'application/octet-stream', 'content-length': String(size), 'accept-ranges': 'bytes' })
-    return res.end(req.method === 'HEAD' ? undefined : bytes(seed, 0, size))
+    const name = decodeURIComponent(url.pathname.split('/').pop() ?? 'f')
+    const { size, seed } = siteFile(name)
+    const range = parseRange(req.headers.range, size)
+    if (range === 'unsatisfiable') {
+      res.writeHead(416, { 'content-range': `bytes */${size}` })
+      return res.end()
+    }
+    const start = range ? range.start : 0
+    const end = range ? range.end + 1 : size
+    const headers = { 'content-type': name.endsWith('.png') ? 'image/png' : 'application/octet-stream', 'content-length': String(end - start), 'accept-ranges': 'bytes', etag: `"site-${name}-${size}"`, 'last-modified': 'Mon, 05 Oct 2026 08:00:00 GMT' }
+    if (range) headers['content-range'] = `bytes ${range.start}-${range.end}/${size}`
+    res.writeHead(range ? 206 : 200, headers)
+    return res.end(req.method === 'HEAD' ? undefined : bytes(seed, start, end))
   }
   const page = PAGES[url.pathname]
   if (!page) {

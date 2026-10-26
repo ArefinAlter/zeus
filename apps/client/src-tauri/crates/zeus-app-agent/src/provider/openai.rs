@@ -12,12 +12,17 @@ use std::collections::BTreeMap;
 use serde_json::{Value, json};
 
 use super::http::{Built, Parser};
-use super::{ApiKey, ChatRequest, ErrorKind, Kind, Msg, Outcome, ProviderError, Stop, Target, ToolCall, Usage, estimate_tokens};
+use super::{
+    ApiKey, ChatRequest, ErrorKind, Kind, Msg, Outcome, ProviderError, Stop, Target, ToolCall,
+    Usage, estimate_tokens,
+};
 
 /// The chat completions URL for a base URL.
 pub fn chat_url(kind: Kind, base: &str) -> String {
     let base = base.trim().trim_end_matches('/');
-    if kind == Kind::Ollama && url::Url::parse(base).is_ok_and(|u| u.path() == "/" || u.path().is_empty()) {
+    if kind == Kind::Ollama
+        && url::Url::parse(base).is_ok_and(|u| u.path() == "/" || u.path().is_empty())
+    {
         return format!("{base}/v1/chat/completions");
     }
     format!("{base}/chat/completions")
@@ -26,7 +31,9 @@ pub fn chat_url(kind: Kind, base: &str) -> String {
 /// The models URL for a base URL.
 pub fn models_url(kind: Kind, base: &str) -> String {
     let base = base.trim().trim_end_matches('/');
-    if kind == Kind::Ollama && url::Url::parse(base).is_ok_and(|u| u.path() == "/" || u.path().is_empty()) {
+    if kind == Kind::Ollama
+        && url::Url::parse(base).is_ok_and(|u| u.path() == "/" || u.path().is_empty())
+    {
         return format!("{base}/v1/models");
     }
     format!("{base}/models")
@@ -49,7 +56,9 @@ fn messages(req: &ChatRequest) -> Vec<Value> {
                 }
                 out.push(v);
             }
-            Msg::ToolResult { call_id, content, .. } => out.push(json!({"role": "tool", "tool_call_id": call_id, "content": content})),
+            Msg::ToolResult {
+                call_id, content, ..
+            } => out.push(json!({"role": "tool", "tool_call_id": call_id, "content": content})),
         }
     }
     out
@@ -62,7 +71,11 @@ pub fn build(target: &Target, key: Option<&ApiKey>, req: &ChatRequest) -> Built 
         "messages": messages(req),
         "stream": true,
     });
-    let limit = if target.kind.uses_completion_tokens() { "max_completion_tokens" } else { "max_tokens" };
+    let limit = if target.kind.uses_completion_tokens() {
+        "max_completion_tokens"
+    } else {
+        "max_tokens"
+    };
     body[limit] = json!(req.max_tokens);
     if target.kind.asks_for_usage() {
         body["stream_options"] = json!({"include_usage": true});
@@ -75,11 +88,18 @@ pub fn build(target: &Target, key: Option<&ApiKey>, req: &ChatRequest) -> Built 
                 .collect(),
         );
     }
-    let mut headers = vec![("content-type".to_owned(), "application/json".to_owned()), ("accept".to_owned(), "text/event-stream".to_owned())];
+    let mut headers = vec![
+        ("content-type".to_owned(), "application/json".to_owned()),
+        ("accept".to_owned(), "text/event-stream".to_owned()),
+    ];
     if let Some(k) = key {
         headers.push(("authorization".to_owned(), format!("Bearer {}", k.expose())));
     }
-    Built { url: chat_url(target.kind, &target.base_url), headers, body }
+    Built {
+        url: chat_url(target.kind, &target.base_url),
+        headers,
+        body,
+    }
 }
 
 /// The request for the models list.
@@ -88,7 +108,11 @@ pub fn models_request(target: &Target, key: Option<&ApiKey>) -> Built {
     if let Some(k) = key {
         headers.push(("authorization".to_owned(), format!("Bearer {}", k.expose())));
     }
-    Built { url: models_url(target.kind, &target.base_url), headers, body: Value::Null }
+    Built {
+        url: models_url(target.kind, &target.base_url),
+        headers,
+        body: Value::Null,
+    }
 }
 
 /// Read ids from a models answer (`data[].id`, or Ollama's `models[].name`).
@@ -97,7 +121,16 @@ pub fn model_ids(v: &Value) -> Vec<String> {
         .get("data")
         .or_else(|| v.get("models"))
         .and_then(Value::as_array)
-        .map(|a| a.iter().filter_map(|m| m.get("id").or_else(|| m.get("name")).and_then(Value::as_str).map(str::to_owned)).collect())
+        .map(|a| {
+            a.iter()
+                .filter_map(|m| {
+                    m.get("id")
+                        .or_else(|| m.get("name"))
+                        .and_then(Value::as_str)
+                        .map(str::to_owned)
+                })
+                .collect()
+        })
         .unwrap_or_default();
     ids.sort();
     ids.dedup();
@@ -128,34 +161,56 @@ impl OpenaiParser {
     }
 
     fn usage_of(v: &Value) -> Option<Usage> {
-        let u = v.get("usage").filter(|u| !u.is_null()).or_else(|| v.pointer("/choices/0/usage").filter(|u| !u.is_null()))?;
+        let u = v
+            .get("usage")
+            .filter(|u| !u.is_null())
+            .or_else(|| v.pointer("/choices/0/usage").filter(|u| !u.is_null()))?;
         Some(Usage {
             input: u.get("prompt_tokens").and_then(Value::as_u64).unwrap_or(0),
-            output: u.get("completion_tokens").and_then(Value::as_u64).unwrap_or(0),
+            output: u
+                .get("completion_tokens")
+                .and_then(Value::as_u64)
+                .unwrap_or(0),
             estimated: false,
         })
     }
 
     fn error_of(v: &Value) -> Option<ProviderError> {
         let e = v.get("error").filter(|e| !e.is_null())?;
-        let message = e.get("message").and_then(Value::as_str).or_else(|| e.as_str()).unwrap_or("The provider reported an error.");
+        let message = e
+            .get("message")
+            .and_then(Value::as_str)
+            .or_else(|| e.as_str())
+            .unwrap_or("The provider reported an error.");
         let kind = match e.get("type").and_then(Value::as_str).unwrap_or_default() {
             t if t.contains("auth") || t.contains("permission") => ErrorKind::Auth,
             t if t.contains("rate") || t.contains("quota") => ErrorKind::RateLimited,
             t if t.contains("overload") || t.contains("server") => ErrorKind::Overloaded,
             _ => ErrorKind::Server,
         };
-        Some(ProviderError::new(kind, format!("The provider reported an error mid-answer: {}", message.chars().take(300).collect::<String>())))
+        Some(ProviderError::new(
+            kind,
+            format!(
+                "The provider reported an error mid-answer: {}",
+                message.chars().take(300).collect::<String>()
+            ),
+        ))
     }
 
-    fn apply(&mut self, v: &Value, sink: &mut (dyn FnMut(&str) + Send)) -> Result<(), ProviderError> {
+    fn apply(
+        &mut self,
+        v: &Value,
+        sink: &mut (dyn FnMut(&str) + Send),
+    ) -> Result<(), ProviderError> {
         if let Some(e) = Self::error_of(v) {
             return Err(e);
         }
         if let Some(u) = Self::usage_of(v) {
             self.usage = Some(u);
         }
-        let Some(choice) = v.pointer("/choices/0") else { return Ok(()) };
+        let Some(choice) = v.pointer("/choices/0") else {
+            return Ok(());
+        };
         let delta = choice.get("delta").or_else(|| choice.get("message"));
         if let Some(delta) = delta {
             if let Some(t) = delta.get("content").and_then(Value::as_str)
@@ -166,10 +221,15 @@ impl OpenaiParser {
             }
             if let Some(list) = delta.get("tool_calls").and_then(Value::as_array) {
                 for tc in list {
-                    let id = tc.get("id").and_then(Value::as_str).filter(|s| !s.is_empty());
+                    let id = tc
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .filter(|s| !s.is_empty());
                     let idx = match tc.get("index").and_then(Value::as_u64) {
                         Some(i) => i as usize,
-                        None => match id.and_then(|id| self.calls.iter().find(|(_, p)| p.id == id).map(|(i, _)| *i)) {
+                        None => match id.and_then(|id| {
+                            self.calls.iter().find(|(_, p)| p.id == id).map(|(i, _)| *i)
+                        }) {
                             Some(i) => i,
                             None if id.is_some() => self.calls.len(),
                             None => self.calls.keys().next_back().copied().unwrap_or(0),
@@ -202,7 +262,12 @@ impl OpenaiParser {
 }
 
 impl Parser for OpenaiParser {
-    fn event(&mut self, _name: Option<&str>, data: &str, sink: &mut (dyn FnMut(&str) + Send)) -> Result<(), ProviderError> {
+    fn event(
+        &mut self,
+        _name: Option<&str>,
+        data: &str,
+        sink: &mut (dyn FnMut(&str) + Send),
+    ) -> Result<(), ProviderError> {
         let data = data.trim();
         if data.is_empty() {
             return Ok(());
@@ -211,11 +276,20 @@ impl Parser for OpenaiParser {
             self.done = true;
             return Ok(());
         }
-        let v: Value = serde_json::from_str(data).map_err(|_| ProviderError::new(ErrorKind::Protocol, "The provider sent a chunk Zeus could not read."))?;
+        let v: Value = serde_json::from_str(data).map_err(|_| {
+            ProviderError::new(
+                ErrorKind::Protocol,
+                "The provider sent a chunk Zeus could not read.",
+            )
+        })?;
         self.apply(&v, sink)
     }
 
-    fn whole(&mut self, body: &Value, sink: &mut (dyn FnMut(&str) + Send)) -> Result<(), ProviderError> {
+    fn whole(
+        &mut self,
+        body: &Value,
+        sink: &mut (dyn FnMut(&str) + Send),
+    ) -> Result<(), ProviderError> {
         self.apply(body, sink)?;
         self.done = true;
         Ok(())
@@ -227,32 +301,58 @@ impl Parser for OpenaiParser {
             if p.name.is_empty() {
                 continue;
             }
-            let id = if p.id.is_empty() { format!("call_{}", n + 1) } else { p.id };
+            let id = if p.id.is_empty() {
+                format!("call_{}", n + 1)
+            } else {
+                p.id
+            };
             let (args, args_error) = if p.args.trim().is_empty() {
                 (json!({}), None)
             } else {
                 match serde_json::from_str::<Value>(&p.args) {
                     Ok(v) if v.is_object() => (v, None),
-                    _ => (json!({}), Some("The arguments were not a JSON object.".to_owned())),
+                    _ => (
+                        json!({}),
+                        Some("The arguments were not a JSON object.".to_owned()),
+                    ),
                 }
             };
-            calls.push(ToolCall { id, name: p.name, args, args_error });
+            calls.push(ToolCall {
+                id,
+                name: p.name,
+                args,
+                args_error,
+            });
         }
         let stop = match self.finish.as_deref() {
             Some("tool_calls" | "function_call") => Stop::ToolUse,
             Some("length") => Stop::Length,
             Some("content_filter") => Stop::Filtered,
             Some("stop") | None => {
-                if calls.is_empty() { Stop::End } else { Stop::ToolUse }
+                if calls.is_empty() {
+                    Stop::End
+                } else {
+                    Stop::ToolUse
+                }
             }
             Some(_) => Stop::Other,
         };
         let usage = self.usage.unwrap_or_else(|| Usage {
             input: estimated_input,
-            output: estimate_tokens(&self.text) + calls.iter().map(|c| estimate_tokens(&c.args.to_string())).sum::<u64>(),
+            output: estimate_tokens(&self.text)
+                + calls
+                    .iter()
+                    .map(|c| estimate_tokens(&c.args.to_string()))
+                    .sum::<u64>(),
             estimated: true,
         });
-        Ok(Outcome { text: self.text, calls, raw: None, usage, stop })
+        Ok(Outcome {
+            text: self.text,
+            calls,
+            raw: None,
+            usage,
+            stop,
+        })
     }
 }
 
@@ -282,7 +382,14 @@ mod tests {
         ]);
         assert_eq!(o.text, "Hello");
         assert_eq!(o.stop, Stop::End);
-        assert_eq!(o.usage, Usage { input: 12, output: 3, estimated: false });
+        assert_eq!(
+            o.usage,
+            Usage {
+                input: 12,
+                output: 3,
+                estimated: false
+            }
+        );
     }
 
     #[test]
@@ -302,26 +409,39 @@ mod tests {
 
     #[test]
     fn a_whole_call_in_one_chunk_without_an_index_works() {
-        let o = run(&[r#"{"choices":[{"delta":{"tool_calls":[{"id":"x1","function":{"name":"zeus_status","arguments":"{\"limit\":5}"}}]},"finish_reason":"tool_calls"}]}"#]);
+        let o = run(&[
+            r#"{"choices":[{"delta":{"tool_calls":[{"id":"x1","function":{"name":"zeus_status","arguments":"{\"limit\":5}"}}]},"finish_reason":"tool_calls"}]}"#,
+        ]);
         assert_eq!(o.calls[0].args["limit"], 5);
     }
 
     #[test]
     fn broken_arguments_become_a_refusal_not_a_crash() {
-        let o = run(&[r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"a","function":{"name":"zeus_status","arguments":"{\"limit\":"}}]},"finish_reason":"tool_calls"}]}"#]);
+        let o = run(&[
+            r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"a","function":{"name":"zeus_status","arguments":"{\"limit\":"}}]},"finish_reason":"tool_calls"}]}"#,
+        ]);
         assert!(o.calls[0].args_error.is_some());
     }
 
     #[test]
     fn reasoning_deltas_are_not_shown() {
-        let o = run(&[r#"{"choices":[{"delta":{"reasoning_content":"thinking...","content":null}}]}"#, r#"{"choices":[{"delta":{"content":"Done"},"finish_reason":"stop"}]}"#]);
+        let o = run(&[
+            r#"{"choices":[{"delta":{"reasoning_content":"thinking...","content":null}}]}"#,
+            r#"{"choices":[{"delta":{"content":"Done"},"finish_reason":"stop"}]}"#,
+        ]);
         assert_eq!(o.text, "Done");
     }
 
     #[test]
     fn a_mid_stream_error_object_is_an_error() {
         let mut p = OpenaiParser::new();
-        let e = p.event(None, r#"{"error":{"message":"The server is overloaded","type":"server_error"}}"#, &mut |_| ()).unwrap_err();
+        let e = p
+            .event(
+                None,
+                r#"{"error":{"message":"The server is overloaded","type":"server_error"}}"#,
+                &mut |_| (),
+            )
+            .unwrap_err();
         assert!(e.message.contains("overloaded"));
     }
 
@@ -332,33 +452,89 @@ mod tests {
             system: "sys".into(),
             messages: vec![
                 Msg::User("hi".into()),
-                Msg::Assistant { text: String::new(), calls: vec![ToolCall { id: "c1".into(), name: "zeus_status".into(), args: json!({"limit": 1}), args_error: None }], raw: None },
-                Msg::ToolResult { call_id: "c1".into(), name: "zeus_status".into(), content: "{}".into(), is_error: false },
+                Msg::Assistant {
+                    text: String::new(),
+                    calls: vec![ToolCall {
+                        id: "c1".into(),
+                        name: "zeus_status".into(),
+                        args: json!({"limit": 1}),
+                        args_error: None,
+                    }],
+                    raw: None,
+                },
+                Msg::ToolResult {
+                    call_id: "c1".into(),
+                    name: "zeus_status".into(),
+                    content: "{}".into(),
+                    is_error: false,
+                },
             ],
-            tools: vec![ToolSpec { name: "zeus_status".into(), description: "d".into(), schema: json!({"type": "object"}) }],
+            tools: vec![ToolSpec {
+                name: "zeus_status".into(),
+                description: "d".into(),
+                schema: json!({"type": "object"}),
+            }],
             max_tokens: 512,
         };
         let key = ApiKey::new("sk-test-key-123456".into());
-        let openai = build(&Target { kind: Kind::Openai, base_url: "https://api.openai.com/v1".into(), json_tools: false }, Some(&key), &req);
+        let openai = build(
+            &Target {
+                kind: Kind::Openai,
+                base_url: "https://api.openai.com/v1".into(),
+                json_tools: false,
+            },
+            Some(&key),
+            &req,
+        );
         assert_eq!(openai.url, "https://api.openai.com/v1/chat/completions");
         assert_eq!(openai.body["max_completion_tokens"], 512);
         assert!(openai.body.get("max_tokens").is_none());
         assert_eq!(openai.body["stream_options"]["include_usage"], true);
-        assert_eq!(openai.body["messages"][2]["tool_calls"][0]["function"]["arguments"], "{\"limit\":1}");
+        assert_eq!(
+            openai.body["messages"][2]["tool_calls"][0]["function"]["arguments"],
+            "{\"limit\":1}"
+        );
         assert_eq!(openai.body["messages"][3]["role"], "tool");
-        assert!(openai.headers.iter().any(|(k, v)| k == "authorization" && v == "Bearer sk-test-key-123456"));
+        assert!(
+            openai
+                .headers
+                .iter()
+                .any(|(k, v)| k == "authorization" && v == "Bearer sk-test-key-123456")
+        );
         assert!(!openai.body.to_string().contains("sk-test-key"));
-        let mistral = build(&Target { kind: Kind::Mistral, base_url: "https://api.mistral.ai/v1".into(), json_tools: false }, Some(&key), &req);
+        let mistral = build(
+            &Target {
+                kind: Kind::Mistral,
+                base_url: "https://api.mistral.ai/v1".into(),
+                json_tools: false,
+            },
+            Some(&key),
+            &req,
+        );
         assert_eq!(mistral.body["max_tokens"], 512);
         assert!(mistral.body.get("stream_options").is_none());
-        let ollama = build(&Target { kind: Kind::Ollama, base_url: "http://127.0.0.1:11434".into(), json_tools: false }, None, &req);
+        let ollama = build(
+            &Target {
+                kind: Kind::Ollama,
+                base_url: "http://127.0.0.1:11434".into(),
+                json_tools: false,
+            },
+            None,
+            &req,
+        );
         assert_eq!(ollama.url, "http://127.0.0.1:11434/v1/chat/completions");
         assert!(!ollama.headers.iter().any(|(k, _)| k == "authorization"));
     }
 
     #[test]
     fn model_lists_read_ids_and_names() {
-        assert_eq!(model_ids(&json!({"data": [{"id": "b"}, {"id": "a"}]})), ["a", "b"]);
-        assert_eq!(model_ids(&json!({"models": [{"name": "llama3"}]})), ["llama3"]);
+        assert_eq!(
+            model_ids(&json!({"data": [{"id": "b"}, {"id": "a"}]})),
+            ["a", "b"]
+        );
+        assert_eq!(
+            model_ids(&json!({"models": [{"name": "llama3"}]})),
+            ["llama3"]
+        );
     }
 }

@@ -49,7 +49,13 @@ pub struct AgentSettings {
 
 impl Default for AgentSettings {
     fn default() -> Self {
-        Self { tools_enabled: TABLE.iter().map(|(n, _, _)| (*n).to_owned()).collect(), max_turn_tools: 12, max_batch: 50, metadata_only: true, instructions: String::new() }
+        Self {
+            tools_enabled: TABLE.iter().map(|(n, _, _)| (*n).to_owned()).collect(),
+            max_turn_tools: 12,
+            max_batch: 50,
+            metadata_only: true,
+            instructions: String::new(),
+        }
     }
 }
 
@@ -107,12 +113,17 @@ pub struct EventLog {
 
 impl EventLog {
     fn new() -> Self {
-        Self { events: Mutex::new(Vec::new()), done: AtomicBool::new(false) }
+        Self {
+            events: Mutex::new(Vec::new()),
+            done: AtomicBool::new(false),
+        }
     }
 
     /// Append an event; returns its number.
     pub fn push(&self, mut ev: Value) -> u64 {
-        let Ok(mut list) = self.events.lock() else { return 0 };
+        let Ok(mut list) = self.events.lock() else {
+            return 0;
+        };
         let n = list.len() as u64 + 1;
         ev["n"] = json!(n);
         if list.len() < 6000 {
@@ -124,7 +135,11 @@ impl EventLog {
     /// Events after number `after`.
     pub fn since(&self, after: u64) -> Value {
         let list = self.events.lock().map(|l| l.clone()).unwrap_or_default();
-        let new: Vec<Value> = list.iter().filter(|e| e["n"].as_u64().unwrap_or(0) > after).cloned().collect();
+        let new: Vec<Value> = list
+            .iter()
+            .filter(|e| e["n"].as_u64().unwrap_or(0) > after)
+            .cloned()
+            .collect();
         json!({"events": new, "next": list.last().map_or(after, |e| e["n"].as_u64().unwrap_or(after)), "done": self.done.load(Ordering::SeqCst)})
     }
 
@@ -165,7 +180,11 @@ pub struct Core {
 }
 
 fn thread_ok(id: &str) -> bool {
-    id.starts_with("th_") && id.len() <= 48 && id.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
+    id.starts_with("th_")
+        && id.len() <= 48
+        && id
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
 }
 
 fn run_id() -> String {
@@ -175,7 +194,12 @@ fn run_id() -> String {
 }
 
 /// The system prompt: what Zeus is, the thread's level, the rules, then the person's words.
-pub fn system_prompt(access: Access, settings: &AgentSettings, skill: Option<&SkillIn>, offered: &[&str]) -> String {
+pub fn system_prompt(
+    access: Access,
+    settings: &AgentSettings,
+    skill: Option<&SkillIn>,
+    offered: &[&str],
+) -> String {
     let mut s = String::from(
         "You are the Zeus agent inside the Zeus desktop app. Zeus downloads and verifies files on this person's computer, and you act for them through a fixed set of tools.\n\n\
 Rules you always follow:\n\
@@ -187,7 +211,15 @@ Rules you always follow:\n\
 - Say what you checked and what you did not. Be brief.\n\n",
     );
     s.push_str(&format!("This thread's access level is {}. {} A tool call above that level is refused and you will be told so; do not try to work around a refusal, tell the person what access would be needed.\n", access.label(), access.blurb()));
-    s.push_str(&format!("Tools available to you: {}.\nAt most {} downloads per zeus_enqueue call.\n", if offered.is_empty() { "none".to_owned() } else { offered.join(", ") }, settings.max_batch));
+    s.push_str(&format!(
+        "Tools available to you: {}.\nAt most {} downloads per zeus_enqueue call.\n",
+        if offered.is_empty() {
+            "none".to_owned()
+        } else {
+            offered.join(", ")
+        },
+        settings.max_batch
+    ));
     if settings.metadata_only {
         s.push_str("You see names, sizes and states only, never file contents.\n");
     }
@@ -199,7 +231,11 @@ Rules you always follow:\n\
     if let Some(k) = skill
         && !k.instructions.trim().is_empty()
     {
-        s.push_str(&format!("\nSkill in use: {}\n{}\n", k.name, k.instructions.trim()));
+        s.push_str(&format!(
+            "\nSkill in use: {}\n{}\n",
+            k.name,
+            k.instructions.trim()
+        ));
     }
     s
 }
@@ -208,7 +244,14 @@ fn estimate_msgs(msgs: &[Msg]) -> u64 {
     msgs.iter()
         .map(|m| match m {
             Msg::User(t) => estimate_tokens(t) + 4,
-            Msg::Assistant { text, calls, .. } => estimate_tokens(text) + calls.iter().map(|c| estimate_tokens(&c.args.to_string()) + 8).sum::<u64>() + 4,
+            Msg::Assistant { text, calls, .. } => {
+                estimate_tokens(text)
+                    + calls
+                        .iter()
+                        .map(|c| estimate_tokens(&c.args.to_string()) + 8)
+                        .sum::<u64>()
+                    + 4
+            }
             Msg::ToolResult { content, .. } => estimate_tokens(content) + 4,
         })
         .sum()
@@ -217,7 +260,14 @@ fn estimate_msgs(msgs: &[Msg]) -> u64 {
 /// Cut the oldest whole turns (from a user message to the next one) until the transcript fits.
 pub fn trim_transcript(msgs: &mut Vec<Msg>) {
     while estimate_msgs(msgs) > MAX_CONTEXT_TOKENS {
-        let Some(next_user) = msgs.iter().skip(1).position(|m| matches!(m, Msg::User(_))).map(|i| i + 1) else { break };
+        let Some(next_user) = msgs
+            .iter()
+            .skip(1)
+            .position(|m| matches!(m, Msg::User(_)))
+            .map(|i| i + 1)
+        else {
+            break;
+        };
         msgs.drain(..next_user);
     }
 }
@@ -244,7 +294,10 @@ impl Core {
 
     /// The model transcript of a thread.
     pub fn transcript(&self, thread: &str) -> Vec<Msg> {
-        std::fs::read(self.transcript_path(thread)).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+        std::fs::read(self.transcript_path(thread))
+            .ok()
+            .and_then(|b| serde_json::from_slice(&b).ok())
+            .unwrap_or_default()
     }
 
     fn save_transcript(&self, thread: &str, msgs: &[Msg]) {
@@ -272,12 +325,34 @@ impl Core {
     }
 
     /// The prompt and tools for a message, without sending anything: what would leave this computer.
-    pub fn assemble(&self, config: &AgentConfig, provider: &ProviderCfg, body: &SendBody, transcript: &[Msg], pending_user: Option<&str>) -> (ChatRequest, Policy) {
+    pub fn assemble(
+        &self,
+        config: &AgentConfig,
+        provider: &ProviderCfg,
+        body: &SendBody,
+        transcript: &[Msg],
+        pending_user: Option<&str>,
+    ) -> (ChatRequest, Policy) {
         let access = Access::parse(&body.access).unwrap_or(Access::Read);
         let policy = Policy {
             access,
-            enabled: body.settings.tools_enabled.iter().filter(|t| TABLE.iter().any(|(n, _, _)| n == t)).cloned().collect(),
-            skill_tools: body.skill.as_ref().map(|k| (k.name.clone(), k.tools.iter().filter(|t| TABLE.iter().any(|(n, _, _)| n == t)).cloned().collect())),
+            enabled: body
+                .settings
+                .tools_enabled
+                .iter()
+                .filter(|t| TABLE.iter().any(|(n, _, _)| n == t))
+                .cloned()
+                .collect(),
+            skill_tools: body.skill.as_ref().map(|k| {
+                (
+                    k.name.clone(),
+                    k.tools
+                        .iter()
+                        .filter(|t| TABLE.iter().any(|(n, _, _)| n == t))
+                        .cloned()
+                        .collect(),
+                )
+            }),
             max_batch: body.settings.max_batch.clamp(1, 50),
         };
         let offered = policy.offered();
@@ -286,7 +361,11 @@ impl Core {
             messages.push(Msg::User(t.to_owned()));
         }
         trim_transcript(&mut messages);
-        let model = body.model.clone().filter(|m| !m.trim().is_empty()).unwrap_or_else(|| provider.model.clone());
+        let model = body
+            .model
+            .clone()
+            .filter(|m| !m.trim().is_empty())
+            .unwrap_or_else(|| provider.model.clone());
         let req = ChatRequest {
             model,
             system: system_prompt(access, &body.settings, body.skill.as_ref(), &offered),
@@ -298,25 +377,68 @@ impl Core {
     }
 
     /// Why a call cannot be made right now, as `(code, sentence)`.
-    pub fn blocker(&self, config: &AgentConfig, provider: &ProviderCfg, model: &str) -> Option<(&'static str, String)> {
+    pub fn blocker(
+        &self,
+        config: &AgentConfig,
+        provider: &ProviderCfg,
+        model: &str,
+    ) -> Option<(&'static str, String)> {
         if config.offline {
-            return Some(("offline", "Offline is on in Settings, Providers: no model is called, local ones included.".into()));
+            return Some((
+                "offline",
+                "Offline is on in Settings, Providers: no model is called, local ones included."
+                    .into(),
+            ));
         }
         if !provider.enabled {
-            return Some(("disabled", format!("{} is switched off in Settings, Providers.", provider.name)));
+            return Some((
+                "disabled",
+                format!("{} is switched off in Settings, Providers.", provider.name),
+            ));
         }
         if model.trim().is_empty() {
-            return Some(("needs_model", format!("{} has no model id yet. Type one in Settings, Providers.", provider.name)));
+            return Some((
+                "needs_model",
+                format!(
+                    "{} has no model id yet. Type one in Settings, Providers.",
+                    provider.name
+                ),
+            ));
         }
         if !provider.consent {
-            return Some(("needs_consent", format!("You have not allowed Zeus to send threads to {}. Review what would be sent and allow it first.", provider.name)));
+            return Some((
+                "needs_consent",
+                format!(
+                    "You have not allowed Zeus to send threads to {}. Review what would be sent and allow it first.",
+                    provider.name
+                ),
+            ));
         }
         if provider.kind.needs_key() {
             match self.keys.get(&provider.id) {
                 Ok(Some(_)) => {}
-                Ok(None) => return Some(("needs_key", format!("{} needs an API key. Add it in Settings, Providers.", provider.name))),
-                Err(KeyError::Locked) => return Some(("needs_unlock", "The key file is locked. Enter its passphrase in Settings, Providers.".into())),
-                Err(KeyError::NotInitialized) => return Some(("needs_unlock", "Set a passphrase for the key file in Settings, Providers.".into())),
+                Ok(None) => {
+                    return Some((
+                        "needs_key",
+                        format!(
+                            "{} needs an API key. Add it in Settings, Providers.",
+                            provider.name
+                        ),
+                    ));
+                }
+                Err(KeyError::Locked) => {
+                    return Some((
+                        "needs_unlock",
+                        "The key file is locked. Enter its passphrase in Settings, Providers."
+                            .into(),
+                    ));
+                }
+                Err(KeyError::NotInitialized) => {
+                    return Some((
+                        "needs_unlock",
+                        "Set a passphrase for the key file in Settings, Providers.".into(),
+                    ));
+                }
                 Err(e) => return Some(("needs_key", e.to_string())),
             }
         }
@@ -330,28 +452,47 @@ impl Core {
         }
         let config = self.config.load();
         let Some(provider) = config.provider(&body.provider_id).cloned() else {
-            return Err(Failure::new("agent.no_provider", "Choose a provider in Settings, Providers."));
+            return Err(Failure::new(
+                "agent.no_provider",
+                "Choose a provider in Settings, Providers.",
+            ));
         };
         let text = body.text.clone().unwrap_or_default();
         if !body.regenerate && text.trim().is_empty() {
             return Err(Failure::invalid("Write a message first."));
         }
         if text.chars().count() > 20_000 {
-            return Err(Failure::invalid("That message is too long (20,000 characters at most)."));
+            return Err(Failure::invalid(
+                "That message is too long (20,000 characters at most).",
+            ));
         }
         let id = run_id();
         {
-            let mut active = self.active.lock().map_err(|_| Failure::new("agent.busy", "The agent is busy."))?;
+            let mut active = self
+                .active
+                .lock()
+                .map_err(|_| Failure::new("agent.busy", "The agent is busy."))?;
             if active.contains_key(&body.thread_id) {
-                return Err(Failure::new("agent.busy", "The agent is still answering in this thread. Stop it first."));
+                return Err(Failure::new(
+                    "agent.busy",
+                    "The agent is still answering in this thread. Stop it first.",
+                ));
             }
             active.insert(body.thread_id.clone(), id.clone());
         }
-        let handle = Arc::new(RunHandle { id: id.clone(), thread_id: body.thread_id.clone(), cancel: CancellationToken::new(), log: Arc::new(EventLog::new()) });
+        let handle = Arc::new(RunHandle {
+            id: id.clone(),
+            thread_id: body.thread_id.clone(),
+            cancel: CancellationToken::new(),
+            log: Arc::new(EventLog::new()),
+        });
         if let Ok(mut runs) = self.runs.lock() {
             runs.insert(id.clone(), handle.clone());
             while runs.len() > 24 {
-                let finished: Option<String> = runs.iter().find(|(_, r)| r.log.done.load(Ordering::SeqCst)).map(|(k, _)| k.clone());
+                let finished: Option<String> = runs
+                    .iter()
+                    .find(|(_, r)| r.log.done.load(Ordering::SeqCst))
+                    .map(|(k, _)| k.clone());
                 match finished {
                     Some(k) => {
                         runs.remove(&k);
@@ -364,7 +505,9 @@ impl Core {
         tokio::spawn(async move {
             let outcome = core.drive(&handle, &body, config, provider).await;
             let (reason, message) = outcome;
-            handle.log.push(json!({"type": "done", "reason": reason, "message": message}));
+            handle
+                .log
+                .push(json!({"type": "done", "reason": reason, "message": message}));
             handle.log.finish();
             if let Ok(mut a) = core.active.lock() {
                 a.remove(&body.thread_id);
@@ -374,10 +517,17 @@ impl Core {
     }
 
     fn notice(h: &RunHandle, text: impl Into<String>, tone: &str, code: &str) {
-        h.log.push(json!({"type": "notice", "text": text.into(), "tone": tone, "code": code}));
+        h.log
+            .push(json!({"type": "notice", "text": text.into(), "tone": tone, "code": code}));
     }
 
-    async fn drive(self: &Arc<Self>, h: &Arc<RunHandle>, body: &SendBody, config: AgentConfig, mut provider: ProviderCfg) -> (&'static str, Option<String>) {
+    async fn drive(
+        self: &Arc<Self>,
+        h: &Arc<RunHandle>,
+        body: &SendBody,
+        config: AgentConfig,
+        mut provider: ProviderCfg,
+    ) -> (&'static str, Option<String>) {
         let mut transcript = self.transcript(&body.thread_id);
         if body.regenerate {
             match transcript.iter().rposition(|m| matches!(m, Msg::User(_))) {
@@ -388,7 +538,11 @@ impl Core {
             transcript.push(Msg::User(body.text.clone().unwrap_or_default()));
         }
         self.save_transcript(&body.thread_id, &transcript);
-        let model = body.model.clone().filter(|m| !m.trim().is_empty()).unwrap_or_else(|| provider.model.clone());
+        let model = body
+            .model
+            .clone()
+            .filter(|m| !m.trim().is_empty())
+            .unwrap_or_else(|| provider.model.clone());
         let (_, policy) = self.assemble(&config, &provider, body, &[], None);
         let mut tools_used = 0usize;
         for round in 0..MAX_MODEL_CALLS {
@@ -418,7 +572,13 @@ impl Core {
             };
             let (mut req, _) = self.assemble(&config, &provider, body, &transcript, None);
             req.model = model.clone();
-            let est = estimate_msgs(&req.messages) + estimate_tokens(&req.system) + req.tools.iter().map(|t| estimate_tokens(&t.schema.to_string())).sum::<u64>();
+            let est = estimate_msgs(&req.messages)
+                + estimate_tokens(&req.system)
+                + req
+                    .tools
+                    .iter()
+                    .map(|t| estimate_tokens(&t.schema.to_string()))
+                    .sum::<u64>();
             if let Err(cap) = self.ledger.check(&config, &provider, &body.thread_id, est) {
                 let text = cap.message();
                 Self::notice(h, text.clone(), "warn", "cap");
@@ -443,7 +603,15 @@ impl Core {
                     log.push(json!({"type": "assistant_delta", "id": aid_c, "text": chunk}));
                 }
             };
-            let mut result = provider::chat(&self.http, &target, key.as_ref(), &req, &mut sink, &h.cancel).await;
+            let mut result = provider::chat(
+                &self.http,
+                &target,
+                key.as_ref(),
+                &req,
+                &mut sink,
+                &h.cancel,
+            )
+            .await;
             // A model that cannot call tools: retry once with the JSON protocol.
             if let Err(e) = &result
                 && e.kind == ErrorKind::BadRequest
@@ -454,17 +622,34 @@ impl Core {
                     m.contains("tool") || m.contains("function")
                 }
             {
-                Self::notice(h, "This model does not accept tool calls, so Zeus describes the tools in the prompt and reads a JSON reply instead.", "info", "json_tools");
+                Self::notice(
+                    h,
+                    "This model does not accept tool calls, so Zeus describes the tools in the prompt and reads a JSON reply instead.",
+                    "info",
+                    "json_tools",
+                );
                 provider.tools_mode = ToolsMode::Json;
                 let mut json_target = target.clone();
                 json_target.json_tools = true;
-                result = provider::chat(&self.http, &json_target, key.as_ref(), &req, &mut sink, &h.cancel).await;
+                result = provider::chat(
+                    &self.http,
+                    &json_target,
+                    key.as_ref(),
+                    &req,
+                    &mut sink,
+                    &h.cancel,
+                )
+                .await;
             }
             drop(sink);
-            let (pending, started) = shared.lock().map(|mut s| (std::mem::take(&mut s.0), s.2)).unwrap_or_default();
+            let (pending, started) = shared
+                .lock()
+                .map(|mut s| (std::mem::take(&mut s.0), s.2))
+                .unwrap_or_default();
             let flush = |text: String| {
                 if !text.is_empty() {
-                    h.log.push(json!({"type": "assistant_delta", "id": aid, "text": text}));
+                    h.log
+                        .push(json!({"type": "assistant_delta", "id": aid, "text": text}));
                 }
             };
             flush(pending);
@@ -491,7 +676,8 @@ impl Core {
                 Ok((outcome, rate)) => {
                     let (pi, po) = config.prices(&provider);
                     let micro = cost_micro(outcome.usage, pi, po);
-                    self.ledger.charge(&provider.id, &body.thread_id, outcome.usage, micro);
+                    self.ledger
+                        .charge(&provider.id, &body.thread_id, outcome.usage, micro);
                     let t = self.ledger.thread(&body.thread_id);
                     h.log.push(json!({
                         "type": "usage",
@@ -504,18 +690,34 @@ impl Core {
                     }));
                     if !outcome.text.is_empty() && !started {
                         h.log.push(json!({"type": "assistant_start", "id": aid}));
-                        h.log.push(json!({"type": "assistant_delta", "id": aid, "text": outcome.text}));
+                        h.log.push(
+                            json!({"type": "assistant_delta", "id": aid, "text": outcome.text}),
+                        );
                     }
                     if !outcome.text.is_empty() {
                         h.log.push(json!({"type": "assistant_end", "id": aid}));
                     }
-                    transcript.push(Msg::Assistant { text: outcome.text.clone(), calls: outcome.calls.clone(), raw: outcome.raw.clone() });
+                    transcript.push(Msg::Assistant {
+                        text: outcome.text.clone(),
+                        calls: outcome.calls.clone(),
+                        raw: outcome.raw.clone(),
+                    });
                     self.save_transcript(&body.thread_id, &transcript);
                     if outcome.stop == Stop::Length {
-                        Self::notice(h, "The answer was cut at the output limit. Ask it to continue if you need the rest.", "info", "length");
+                        Self::notice(
+                            h,
+                            "The answer was cut at the output limit. Ask it to continue if you need the rest.",
+                            "info",
+                            "length",
+                        );
                     }
                     if outcome.stop == Stop::Filtered {
-                        Self::notice(h, "The provider's safety system stopped this answer.", "warn", "filtered");
+                        Self::notice(
+                            h,
+                            "The provider's safety system stopped this answer.",
+                            "warn",
+                            "filtered",
+                        );
                     }
                     if outcome.calls.is_empty() {
                         return ("end", None);
@@ -523,7 +725,12 @@ impl Core {
                     for (n, call) in outcome.calls.iter().enumerate() {
                         if h.cancel.is_cancelled() {
                             for rest in &outcome.calls[n..] {
-                                transcript.push(Msg::ToolResult { call_id: rest.id.clone(), name: rest.name.clone(), content: "ERROR. Stopped by the person before this ran.".into(), is_error: true });
+                                transcript.push(Msg::ToolResult {
+                                    call_id: rest.id.clone(),
+                                    name: rest.name.clone(),
+                                    content: "ERROR. Stopped by the person before this ran.".into(),
+                                    is_error: true,
+                                });
                             }
                             self.save_transcript(&body.thread_id, &transcript);
                             Self::notice(h, "Stopped by you.", "info", "stopped");
@@ -531,36 +738,64 @@ impl Core {
                         }
                         tools_used += 1;
                         let over = tools_used > body.settings.max_turn_tools.max(1);
-                        let result = self.run_tool(h, &policy, call, over, body.settings.metadata_only).await;
+                        let result = self
+                            .run_tool(h, &policy, call, over, body.settings.metadata_only)
+                            .await;
                         transcript.push(result);
                     }
                     self.save_transcript(&body.thread_id, &transcript);
                 }
             }
         }
-        let text = "The agent stopped after several rounds of tool calls. Ask again to continue.".to_owned();
+        let text = "The agent stopped after several rounds of tool calls. Ask again to continue."
+            .to_owned();
         Self::notice(h, text.clone(), "info", "rounds");
         ("limit", Some(text))
     }
 
-    async fn run_tool(&self, h: &Arc<RunHandle>, policy: &Policy, call: &ToolCall, over_limit: bool, metadata_only: bool) -> Msg {
-        let item = format!("{}-{}", h.id, call.id.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_').collect::<String>());
+    async fn run_tool(
+        &self,
+        h: &Arc<RunHandle>,
+        policy: &Policy,
+        call: &ToolCall,
+        over_limit: bool,
+        metadata_only: bool,
+    ) -> Msg {
+        let item = format!(
+            "{}-{}",
+            h.id,
+            call.id
+                .chars()
+                .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+                .collect::<String>()
+        );
         let action = crate::tools::action_of(&call.args);
         h.log.push(json!({"type": "tool_start", "id": item, "tool": call.name, "action": action, "input": crate::tools::trim_value(&call.args, 600, 30)}));
         let refuse = |reason: String| {
             h.log.push(json!({"type": "tool_end", "id": item, "state": "denied", "summary": format!("refused: {reason}"), "ms": 0}));
-            Msg::ToolResult { call_id: call.id.clone(), name: call.name.clone(), content: format!("REFUSED: {reason}. This call was not made."), is_error: true }
+            Msg::ToolResult {
+                call_id: call.id.clone(),
+                name: call.name.clone(),
+                content: format!("REFUSED: {reason}. This call was not made."),
+                is_error: true,
+            }
         };
         if let Some(e) = &call.args_error {
             return refuse(format!("the arguments were not valid ({e})"));
         }
         if over_limit {
-            return refuse("the tool call limit for one reply in Settings, Agent was reached".into());
+            return refuse(
+                "the tool call limit for one reply in Settings, Agent was reached".into(),
+            );
         }
         if let Err(reason) = policy.check(&call.name, &call.args) {
             return refuse(reason);
         }
-        let idem: String = format!("agent-{}-{}", &h.id[4..], call.id).chars().filter(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.')).take(120).collect();
+        let idem: String = format!("agent-{}-{}", &h.id[4..], call.id)
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+            .take(120)
+            .collect();
         let t0 = Instant::now();
         let res = tokio::select! {
             biased;
@@ -577,15 +812,30 @@ impl Core {
                 let state = if is_error { "error" } else { "ok" };
                 h.log.push(json!({"type": "tool_end", "id": item, "state": state, "summary": crate::tools::summary(&call.name, &structured, is_error), "output": shown, "ms": ms}));
                 if !is_error {
-                    for (k, card) in crate::tools::cards(&call.name, &call.args, &structured).into_iter().enumerate() {
-                        h.log.push(json!({"type": "card", "id": format!("{item}-c{k}"), "card": card}));
+                    for (k, card) in crate::tools::cards(&call.name, &call.args, &structured)
+                        .into_iter()
+                        .enumerate()
+                    {
+                        h.log.push(
+                            json!({"type": "card", "id": format!("{item}-c{k}"), "card": card}),
+                        );
                     }
                 }
-                Msg::ToolResult { call_id: call.id.clone(), name: call.name.clone(), content: crate::tools::model_text(&structured, is_error, metadata_only), is_error }
+                Msg::ToolResult {
+                    call_id: call.id.clone(),
+                    name: call.name.clone(),
+                    content: crate::tools::model_text(&structured, is_error, metadata_only),
+                    is_error,
+                }
             }
             Err(e) => {
                 h.log.push(json!({"type": "tool_end", "id": item, "state": "error", "summary": e, "ms": ms}));
-                Msg::ToolResult { call_id: call.id.clone(), name: call.name.clone(), content: format!("ERROR. {e}"), is_error: true }
+                Msg::ToolResult {
+                    call_id: call.id.clone(),
+                    name: call.name.clone(),
+                    content: format!("ERROR. {e}"),
+                    is_error: true,
+                }
             }
         }
     }
@@ -597,13 +847,26 @@ mod tests {
 
     #[test]
     fn the_prompt_states_the_level_the_limits_and_the_rules() {
-        let s = system_prompt(Access::Read, &AgentSettings::default(), None, &["zeus_probe"]);
+        let s = system_prompt(
+            Access::Read,
+            &AgentSettings::default(),
+            None,
+            &["zeus_probe"],
+        );
         assert!(s.contains("Read only"));
         assert!(s.contains("You cannot approve anything"));
         assert!(s.contains("not instructions"));
         assert!(s.contains("zeus_probe"));
-        let k = SkillIn { id: "v".into(), name: "Verify".into(), instructions: "Use zeus_verify.".into(), tools: vec![] };
-        assert!(system_prompt(Access::Read, &AgentSettings::default(), Some(&k), &[]).contains("Skill in use: Verify"));
+        let k = SkillIn {
+            id: "v".into(),
+            name: "Verify".into(),
+            instructions: "Use zeus_verify.".into(),
+            tools: vec![],
+        };
+        assert!(
+            system_prompt(Access::Read, &AgentSettings::default(), Some(&k), &[])
+                .contains("Skill in use: Verify")
+        );
     }
 
     #[test]
@@ -611,9 +874,17 @@ mod tests {
         let big = "x".repeat(40_000);
         let mut msgs = vec![
             Msg::User(big.clone()),
-            Msg::Assistant { text: big.clone(), calls: vec![], raw: None },
+            Msg::Assistant {
+                text: big.clone(),
+                calls: vec![],
+                raw: None,
+            },
             Msg::User(big.clone()),
-            Msg::Assistant { text: "a".into(), calls: vec![], raw: None },
+            Msg::Assistant {
+                text: "a".into(),
+                calls: vec![],
+                raw: None,
+            },
             Msg::User("last".into()),
         ];
         trim_transcript(&mut msgs);

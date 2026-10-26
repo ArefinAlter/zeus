@@ -76,10 +76,17 @@ impl ProviderCfg {
     pub fn target(&self) -> std::result::Result<Target, ProviderError> {
         let base = self.base();
         if base.is_empty() {
-            return Err(ProviderError::new(ErrorKind::BadRequest, "This provider has no base URL yet."));
+            return Err(ProviderError::new(
+                ErrorKind::BadRequest,
+                "This provider has no base URL yet.",
+            ));
         }
         check_base_url(&base)?;
-        Ok(Target { kind: self.kind, base_url: base, json_tools: self.tools_mode == ToolsMode::Json })
+        Ok(Target {
+            kind: self.kind,
+            base_url: base,
+            json_tools: self.tools_mode == ToolsMode::Json,
+        })
     }
 
     /// Whether the endpoint is on this computer or this network (no data leaves it).
@@ -148,7 +155,12 @@ impl Default for AgentConfig {
         ollama.price_in_per_mtok = Some(0.0);
         ollama.price_out_per_mtok = Some(0.0);
         Self {
-            providers: vec![p("p-anthropic", Kind::Anthropic), p("p-openai", Kind::Openai), p("p-google", Kind::Google), ollama],
+            providers: vec![
+                p("p-anthropic", Kind::Anthropic),
+                p("p-openai", Kind::Openai),
+                p("p-google", Kind::Google),
+                ollama,
+            ],
             offline: false,
             daily_cap_usd: default_daily(),
             thread_cap_usd: default_thread(),
@@ -167,7 +179,12 @@ impl AgentConfig {
 
     /// Prices (input, output) in US dollars per million tokens for a provider.
     pub fn prices(&self, p: &ProviderCfg) -> (f64, f64) {
-        (p.price_in_per_mtok.unwrap_or(self.default_price_in_per_mtok), p.price_out_per_mtok.unwrap_or(self.default_price_out_per_mtok))
+        (
+            p.price_in_per_mtok
+                .unwrap_or(self.default_price_in_per_mtok),
+            p.price_out_per_mtok
+                .unwrap_or(self.default_price_out_per_mtok),
+        )
     }
 
     /// Check the shape and bounds of a configuration the page sent.
@@ -177,29 +194,56 @@ impl AgentConfig {
         }
         let mut seen = std::collections::BTreeSet::new();
         for p in &self.providers {
-            let ok_id = !p.id.is_empty() && p.id.len() <= 40 && p.id.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_');
+            let ok_id = !p.id.is_empty()
+                && p.id.len() <= 40
+                && p.id
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_');
             if !ok_id || !seen.insert(p.id.clone()) {
-                return Err(Failure::invalid("Provider ids must be unique and use lowercase letters, digits, - and _."));
+                return Err(Failure::invalid(
+                    "Provider ids must be unique and use lowercase letters, digits, - and _.",
+                ));
             }
-            if p.name.chars().count() > 60 || p.model.chars().count() > 120 || p.model.chars().any(char::is_control) {
-                return Err(Failure::invalid("A provider name or model id is too long or has control characters."));
+            if p.name.chars().count() > 60
+                || p.model.chars().count() > 120
+                || p.model.chars().any(char::is_control)
+            {
+                return Err(Failure::invalid(
+                    "A provider name or model id is too long or has control characters.",
+                ));
             }
             if !p.base_url.trim().is_empty() {
-                check_base_url(&p.base_url).map_err(|e| Failure::invalid(format!("{}: {}", p.name, e.message)))?;
+                check_base_url(&p.base_url)
+                    .map_err(|e| Failure::invalid(format!("{}: {}", p.name, e.message)))?;
             }
-            for v in [p.monthly_cap_usd, p.price_in_per_mtok.unwrap_or(0.0), p.price_out_per_mtok.unwrap_or(0.0)] {
+            for v in [
+                p.monthly_cap_usd,
+                p.price_in_per_mtok.unwrap_or(0.0),
+                p.price_out_per_mtok.unwrap_or(0.0),
+            ] {
                 if !v.is_finite() || !(0.0..=100_000.0).contains(&v) {
-                    return Err(Failure::invalid("Caps and prices must be numbers from 0 to 100000."));
+                    return Err(Failure::invalid(
+                        "Caps and prices must be numbers from 0 to 100000.",
+                    ));
                 }
             }
         }
-        for v in [self.daily_cap_usd, self.thread_cap_usd, self.default_price_in_per_mtok, self.default_price_out_per_mtok] {
+        for v in [
+            self.daily_cap_usd,
+            self.thread_cap_usd,
+            self.default_price_in_per_mtok,
+            self.default_price_out_per_mtok,
+        ] {
             if !v.is_finite() || !(0.0..=100_000.0).contains(&v) {
-                return Err(Failure::invalid("Caps and prices must be numbers from 0 to 100000."));
+                return Err(Failure::invalid(
+                    "Caps and prices must be numbers from 0 to 100000.",
+                ));
             }
         }
         if !(64..=16_384).contains(&self.max_tokens) {
-            return Err(Failure::invalid("The output limit must be between 64 and 16384 tokens."));
+            return Err(Failure::invalid(
+                "The output limit must be between 64 and 16384 tokens.",
+            ));
         }
         Ok(())
     }
@@ -213,12 +257,17 @@ pub struct ConfigStore {
 impl ConfigStore {
     /// The store under `home`.
     pub fn new(home: &AppHome) -> Self {
-        Self { path: home.app_dir().join("agent").join("config.json") }
+        Self {
+            path: home.app_dir().join("agent").join("config.json"),
+        }
     }
 
     /// Load the configuration, or the defaults.
     pub fn load(&self) -> AgentConfig {
-        std::fs::read(&self.path).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+        std::fs::read(&self.path)
+            .ok()
+            .and_then(|b| serde_json::from_slice(&b).ok())
+            .unwrap_or_default()
     }
 
     /// Validate and save.

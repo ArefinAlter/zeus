@@ -312,8 +312,54 @@ export function parseQuery(q: string, opts: SearchOptions = DEFAULT_OPTIONS, now
   return { ok: true, query: groups }
 }
 
+/** The separator a folder path uses: a backslash for Windows and sample paths, a slash for Unix paths. */
+function sepOf(dir: string): string {
+  if (dir.includes('\\') || /^[A-Za-z]:/.test(dir)) return '\\'
+  return dir.startsWith('/') ? '/' : '\\'
+}
+
 function fullPath(e: Searchable): string {
-  return e.dir ? `${e.dir}\\${e.name}` : e.name
+  return e.dir ? `${e.dir}${sepOf(e.dir)}${e.name}` : e.name
+}
+
+/** The parts of `name` the non-negated text and regular-expression terms of `q` matched, as merged [start, end) ranges. */
+export function highlightRanges(q: Query, name: string): [number, number][] {
+  const found: [number, number][] = []
+  const lower = name.toLowerCase()
+  for (const group of q) {
+    for (const t of group) {
+      if (t.neg) continue
+      if (t.kind === 'text' && !t.path) {
+        const hay = t.matchCase ? name : lower
+        const needle = t.matchCase ? t.value : t.value.toLowerCase()
+        if (!needle) continue
+        let i = hay.indexOf(needle)
+        while (i !== -1) {
+          found.push([i, i + needle.length])
+          i = hay.indexOf(needle, i + needle.length)
+        }
+      } else if (t.kind === 'regex' && !t.path) {
+        const re = new RegExp(t.re.source, t.re.flags.includes('g') ? t.re.flags : `${t.re.flags}g`)
+        let m: RegExpExecArray | null
+        let guard = 0
+        while ((m = re.exec(name)) && guard++ < 50) {
+          if (m[0].length === 0) {
+            re.lastIndex++
+            continue
+          }
+          found.push([m.index, m.index + m[0].length])
+        }
+      }
+    }
+  }
+  found.sort((a, b) => a[0] - b[0] || a[1] - b[1])
+  const merged: [number, number][] = []
+  for (const r of found) {
+    const last = merged[merged.length - 1]
+    if (last && r[0] <= last[1]) last[1] = Math.max(last[1], r[1])
+    else merged.push([r[0], r[1]])
+  }
+  return merged
 }
 
 function wordMatch(hay: string, needle: string): boolean {

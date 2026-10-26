@@ -6,32 +6,17 @@ import { useEffect, useMemo, useRef, useState } from 'preact/hooks'
 import { HOSTED, LIVE, NATIVE, SVC } from '../../backend/live'
 import type { LinkCheck } from '../../backend/remote'
 import { api, svc } from '../../backend/remote'
-import { addDownloads, defaultDir, sizeFor, useStore } from '../../backend/store'
+import { addDownloads, defaultDir, duplicateOf, rememberFolder, sizeFor, useStore } from '../../backend/store'
 import { CATEGORIES, categoryOf } from '../../model/categories.ts'
+import type { DupeChoice } from '../../model/grab.ts'
+import { checkNote, folderProblem, overwriteFor } from '../../model/grab.ts'
+import { SEP, joinPath } from '../../lib/paths.ts'
 import { intake, nameProblem } from '../../model/links.ts'
 import type { CategoryId } from '../../model/types.ts'
 import { fmtBytes } from '../../model/units.ts'
 import { href, navigate } from '../../lib/router'
 import { Chip, Dialog, Notice } from '../../ui/components'
 import { Icon } from '../../ui/icons'
-
-/** What an offline answer means for a person. */
-function offlineText(a: LinkCheck): string {
-  switch (a.status) {
-    case 403:
-      return 'The server refused the file (403). A signed link that expired looks like this: get a fresh link from the site.'
-    case 404:
-      return 'The server has no such file (404). Check the address.'
-    case 410:
-      return 'The file was removed from the server (410). Nothing to retry.'
-    case 429:
-      return 'The server says too many requests (429). Try again later.'
-    case 503:
-      return 'The server is busy (503) and asked Zeus to wait. Zeus retries on its own once the download starts.'
-    default:
-      return a.error_message ? `${a.error_message}` : `The server answered ${a.status || 'nothing'}; zeusd will report the same when it tries.`
-  }
-}
 
 export function AddUrl({ initial, onClose }: { initial?: string; onClose: () => void }) {
   const queues = useStore((s) => s.queues.filter((q) => q.kind === 'download'))
@@ -46,6 +31,12 @@ export function AddUrl({ initial, onClose }: { initial?: string; onClose: () => 
   const [expected, setExpected] = useState('')
   const [queue, setQueue] = useState(settings.scheduler.defaultQueue)
   const [error, setError] = useState<string | null>(null)
+  // The folder was typed (or confirmed) by the person: a name or category change leaves it alone.
+  const [dirEdited, setDirEdited] = useState(false)
+  const [categoryEdited, setCategoryEdited] = useState(false)
+  // "Ask where to save each download" (Settings, Save to): the folder must be confirmed before a download starts.
+  const [confirmed, setConfirmed] = useState(false)
+  const [dupeChoice, setDupeChoice] = useState<DupeChoice>('skip')
   const input = useRef<HTMLInputElement>(null)
   useEffect(() => input.current?.focus(), [])
   // Live: what the server answered to a HEAD request (hosted: from the pre-alpha service, sample hosts only).
@@ -58,6 +49,11 @@ export function AddUrl({ initial, onClose }: { initial?: string; onClose: () => 
 
   const parsed = useMemo(() => intake(url.trim()), [url])
   const link = parsed.links[0]
+  const dupe = LIVE && link ? duplicateOf(link.url) : undefined
+  const roots = settings.saveTo.writeRoots
+  const ci = SEP() === '\\' || !NATIVE
+  const dirProblem = NATIVE && probed ? folderProblem(dir, roots, ci) : null
+  const mustConfirm = NATIVE && settings.saveTo.askEachTime && !confirmed
   const refused = !link && url.trim() ? (parsed.refused[0]?.reason ?? 'Enter an http or https address.') : null
   const many = parsed.links.length > 1
 
@@ -75,6 +71,10 @@ export function AddUrl({ initial, onClose }: { initial?: string; onClose: () => 
         const c = categoryOf(found, settings.categories)
         setCategory(c)
         setDir(defaultDir(c))
+        setDirEdited(false)
+        setCategoryEdited(false)
+        setConfirmed(false)
+        setDupeChoice('skip')
       }
       if (SVC) svc.check([link.url]).then((r) => done(r.items[0] ?? null), (e: unknown) => (setProbing(false), setError(e instanceof Error ? e.message : 'The check failed.')))
       else done(null)
@@ -94,11 +94,13 @@ export function AddUrl({ initial, onClose }: { initial?: string; onClose: () => 
   const sha = expected.trim().toLowerCase()
   const shaBad = sha !== '' && !/^[0-9a-f]{64}$/.test(sha)
   const problem = probed ? nameProblem(name) : null
+  const blocked = !!problem || shaBad || !!dirProblem || mustConfirm || (!!dupe && dupeChoice === 'skip')
 
   const add = (start: boolean) => {
     if (!link) return
-    const res = addDownloads([{ url: link.url, name, dir, queue: start ? null : queue, start, ...(desc.trim() ? { description: desc.trim() } : {}), ...(sha && !shaBad ? { expectedSha256: sha } : {}), ...(login ? { sessionOrigin: new URL(link.url).origin } : {}) }])
+    const res = addDownloads([{ url: link.url, name, dir, queue: start ? null : queue, start, ...(desc.trim() ? { description: desc.trim() } : {}), ...(sha && !shaBad ? { expectedSha256: sha } : {}), ...(login ? { sessionOrigin: new URL(link.url).origin } : {}), ...(NATIVE ? { overwrite: overwriteFor(dupe ? dupeChoice : undefined, settings.downloads.duplicates) } : {}) }])
     if (res.refused.length) return setError(res.refused[0] ?? 'Refused.')
+    if (NATIVE) rememberFolder(category, dir)
     onClose()
   }
 
@@ -169,7 +171,7 @@ export function AddUrl({ initial, onClose }: { initial?: string; onClose: () => 
                     ? `${answer.status} · ${size === null ? 'size unknown' : fmtBytes(size)}${answer.redirects ? ` · ${answer.redirects} redirect${answer.redirects === 1 ? '' : 's'}` : ''}${answer.content_type ? ` · ${answer.content_type.split(';')[0]}` : ''}`
                     : answer.check === 'needs_login'
                       ? 'The server wants a sign-in. Zeus lends a browser login only through the extension, after you approve.'
-                      : offlineText(answer)
+                      : checkNote(answer)
                   : 'zeusd probes the address when the download starts.'
                 : login
                   ? 'The site answered with a sign-in page: this file needs your login.'
@@ -183,6 +185,16 @@ export function AddUrl({ initial, onClose }: { initial?: string; onClose: () => 
               {answer.name && answer.name_source === 'content_disposition' ? ' The file name comes from the server (Content-Disposition).' : ''}
             </p>
           ) : null}
+          {dupe ? (
+            <Notice kind="warn">
+              This file is {dupe.where}, as {dupe.name}.{' '}
+              <select aria-label="What to do with the duplicate" value={dupeChoice} onChange={(e) => setDupeChoice((e.target as HTMLSelectElement).value as DupeChoice)}>
+                <option value="skip">Skip it</option>
+                <option value="again">Download again, keep both</option>
+                <option value="replace">Replace the file on disk (the old one goes to the trash)</option>
+              </select>
+            </Notice>
+          ) : null}
           {login ? <Notice kind="warn">Zeus will ask for your approval before it uses your login for {link.host}. The session comes from the Zeus extension, in memory only; Zeus never reads your browser's cookie store.</Notice> : null}
           <div class="fields">
             <label class="field">
@@ -192,7 +204,8 @@ export function AddUrl({ initial, onClose }: { initial?: string; onClose: () => 
                 onChange={(e) => {
                   const c = (e.target as HTMLSelectElement).value as CategoryId
                   setCategory(c)
-                  setDir(defaultDir(c))
+                  setCategoryEdited(true)
+                  if (!dirEdited) setDir(defaultDir(c))
                 }}
               >
                 {CATEGORIES.map((c) => (
@@ -202,13 +215,51 @@ export function AddUrl({ initial, onClose }: { initial?: string; onClose: () => 
             </label>
             <label class="field">
               Folder
-              <input class="mono" value={dir} onInput={(e) => setDir((e.target as HTMLInputElement).value)} />
+              <input
+                class={`mono ${dirProblem ? 'bad' : ''}`}
+                list="add-url-folders"
+                value={dir}
+                onInput={(e) => {
+                  setDir((e.target as HTMLInputElement).value)
+                  setDirEdited(true)
+                  setConfirmed(true)
+                }}
+              />
+              <datalist id="add-url-folders">
+                {[...roots, ...CATEGORIES.filter((c) => c.id !== 'general').flatMap((c) => roots.slice(0, 1).map((r) => joinPath(r, c.folder)))].map((d) => (
+                  <option value={d} />
+                ))}
+              </datalist>
             </label>
             <label class="field wide">
               Save as
-              <input value={name} onInput={(e) => setName((e.target as HTMLInputElement).value)} />
+              <input
+                value={name}
+                onInput={(e) => {
+                  const v = (e.target as HTMLInputElement).value
+                  setName(v)
+                  if (!categoryEdited) {
+                    const c = categoryOf(v, settings.categories)
+                    if (c !== category) {
+                      setCategory(c)
+                      if (!dirEdited) setDir(defaultDir(c))
+                    }
+                  }
+                }}
+              />
             </label>
             {problem ? <p class="field-err wide">{problem}</p> : null}
+            {dirProblem ? <p class="field-err wide">{dirProblem}</p> : null}
+            {mustConfirm ? (
+              <p class="wide">
+                <Notice kind="info">
+                  You asked Zeus to ask where each download is saved. It will be saved in <span class="mono">{dir}</span>.{' '}
+                  <button type="button" class="btn small" disabled={!!dirProblem} onClick={() => setConfirmed(true)}>
+                    Save here
+                  </button>
+                </Notice>
+              </p>
+            ) : null}
             {LIVE && !NATIVE ? null : (
               <label class="field wide">
                 Expected SHA-256 <span class="muted">optional, the hash the publisher gives</span>
@@ -229,11 +280,11 @@ export function AddUrl({ initial, onClose }: { initial?: string; onClose: () => 
                   <option value={q.id}>{q.name}</option>
                 ))}
               </select>
-              <button type="button" class="btn" disabled={!!problem || shaBad} onClick={() => add(false)}>
+              <button type="button" class="btn" disabled={blocked} onClick={() => add(false)}>
                 Download later
               </button>
             </span>
-            <button type="button" class="btn primary" disabled={!!problem || shaBad} onClick={() => add(true)}>
+            <button type="button" class="btn primary" disabled={blocked} onClick={() => add(true)}>
               <Icon name="download" /> Start download
             </button>
           </div>

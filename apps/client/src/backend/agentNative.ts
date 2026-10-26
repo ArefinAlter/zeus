@@ -112,6 +112,7 @@ export const agentApi = {
   events: (runId: string, after: number) => call<{ events: AgentEvent[]; next: number; done: boolean }>('POST', `${B}/runs/${encodeURIComponent(runId)}/events`, { after }),
   stop: (runId: string) => call<{ stopped: boolean }>('POST', `${B}/runs/${encodeURIComponent(runId)}/stop`, {}),
   deleteThread: (id: string) => call<{ ok: boolean }>('DELETE', `${B}/threads/${encodeURIComponent(id)}`),
+  approvals: (ids: string[]) => call<{ items: Record<string, unknown>[] }>('POST', `${B}/approvals`, { ids }),
   usage: (threadId?: string) => call<{ today: { usd: number; input_tokens: number; output_tokens: number; calls: number }; thread: { usd: number; input_tokens: number; output_tokens: number; calls: number } | null; thread_cap_usd: number; daily_cap_usd: number }>('POST', `${B}/usage`, threadId ? { thread_id: threadId } : {}),
 }
 

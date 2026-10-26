@@ -45,7 +45,9 @@ pub enum KeyError {
     #[error("The key file is locked. Enter its passphrase first.")]
     Locked,
     /// No key file exists yet.
-    #[error("Set a passphrase first: this computer has no credential store, so keys go to an encrypted file.")]
+    #[error(
+        "Set a passphrase first: this computer has no credential store, so keys go to an encrypted file."
+    )]
     NotInitialized,
     /// The passphrase did not open the file.
     #[error("That passphrase does not open the key file.")]
@@ -110,7 +112,9 @@ const CHECK_TEXT: &[u8] = b"zeus-keys-ok";
 impl KeyStore {
     /// The store for `home`. `ZEUS_KEYSTORE=file` or `os` forces a backend (tests, headless installs).
     pub fn new(home: &AppHome) -> Self {
-        let digest = hex::encode(Sha256::digest(home.root.display().to_string().to_lowercase().as_bytes()));
+        let digest = hex::encode(Sha256::digest(
+            home.root.display().to_string().to_lowercase().as_bytes(),
+        ));
         let forced = match std::env::var("ZEUS_KEYSTORE").as_deref() {
             Ok("file") => Some(Backend::File),
             Ok("os") => Some(Backend::Os),
@@ -143,7 +147,10 @@ impl KeyStore {
         if let Some(b) = self.forced {
             return b;
         }
-        let mut guard = self.probed.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut guard = self
+            .probed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(b) = *guard {
             return b;
         }
@@ -153,7 +160,11 @@ impl KeyStore {
                 e.set_password("zeus-probe")?;
                 let ok = e.get_password().is_ok_and(|p| p == "zeus-probe");
                 let _ = e.delete_credential();
-                if ok { Ok(()) } else { Err(keyring::Error::NoEntry) }
+                if ok {
+                    Ok(())
+                } else {
+                    Err(keyring::Error::NoEntry)
+                }
             })
             .is_ok();
         let b = if works { Backend::Os } else { Backend::File };
@@ -173,7 +184,14 @@ impl KeyStore {
 
     // ------------------------------------------------------------ the file backend
 
-    fn derive(&self, passphrase: &str, salt: &[u8], m: u32, t: u32, p: u32) -> Result<Zeroizing<[u8; 32]>, KeyError> {
+    fn derive(
+        &self,
+        passphrase: &str,
+        salt: &[u8],
+        m: u32,
+        t: u32,
+        p: u32,
+    ) -> Result<Zeroizing<[u8; 32]>, KeyError> {
         let params = Params::new(m, t, p, Some(32)).map_err(|_| KeyError::Corrupt)?;
         let mut out = Zeroizing::new([0u8; 32]);
         Argon2::new(Algorithm::Argon2id, Version::V0x13, params)
@@ -187,9 +205,18 @@ impl KeyStore {
         let mut nonce = [0u8; 12];
         rand::fill(&mut nonce[..]);
         let ct = cipher
-            .encrypt(Nonce::from_slice(&nonce), Payload { msg: plain, aad: aad.as_bytes() })
+            .encrypt(
+                Nonce::from_slice(&nonce),
+                Payload {
+                    msg: plain,
+                    aad: aad.as_bytes(),
+                },
+            )
             .map_err(|_| KeyError::Corrupt)?;
-        Ok(Sealed { nonce: B64.encode(nonce), ct: B64.encode(ct) })
+        Ok(Sealed {
+            nonce: B64.encode(nonce),
+            ct: B64.encode(ct),
+        })
     }
 
     fn open(key: &[u8; 32], aad: &str, sealed: &Sealed) -> Result<Zeroizing<Vec<u8>>, KeyError> {
@@ -200,7 +227,13 @@ impl KeyStore {
             return Err(KeyError::Corrupt);
         }
         cipher
-            .decrypt(Nonce::from_slice(&nonce), Payload { msg: &ct, aad: aad.as_bytes() })
+            .decrypt(
+                Nonce::from_slice(&nonce),
+                Payload {
+                    msg: &ct,
+                    aad: aad.as_bytes(),
+                },
+            )
             .map(Zeroizing::new)
             .map_err(|_| KeyError::WrongPassphrase)
     }
@@ -226,7 +259,13 @@ impl KeyStore {
         let key = self.derive(passphrase, &salt, m, t, p)?;
         let file = FileFormat {
             v: 1,
-            kdf: Kdf { alg: "argon2id".into(), m, t, p, salt: B64.encode(salt) },
+            kdf: Kdf {
+                alg: "argon2id".into(),
+                m,
+                t,
+                p,
+                salt: B64.encode(salt),
+            },
             check: Self::seal(&key, "check", CHECK_TEXT)?,
             entries: Default::default(),
         };
@@ -280,7 +319,8 @@ impl KeyStore {
             Backend::File => {
                 let k = self.file_key()?;
                 let mut file = self.read_file()?;
-                file.entries.insert(id.to_owned(), Self::seal(&k, id, key.as_bytes())?);
+                file.entries
+                    .insert(id.to_owned(), Self::seal(&k, id, key.as_bytes())?);
                 self.write_file(&file)?;
             }
         }
@@ -290,7 +330,10 @@ impl KeyStore {
     /// The key of provider `id`, if stored.
     pub fn get(&self, id: &str) -> Result<Option<ApiKey>, KeyError> {
         match self.backend() {
-            Backend::Os => match keyring::Entry::new(SERVICE, &self.account(id)).map_err(|_| KeyError::Unavailable)?.get_password() {
+            Backend::Os => match keyring::Entry::new(SERVICE, &self.account(id))
+                .map_err(|_| KeyError::Unavailable)?
+                .get_password()
+            {
                 Ok(p) => Ok(Some(ApiKey::new(p))),
                 Err(keyring::Error::NoEntry) => Ok(None),
                 Err(_) => Err(KeyError::Unavailable),
@@ -305,7 +348,9 @@ impl KeyStore {
                     None => Ok(None),
                     Some(s) => {
                         let plain = Self::open(&k, id, s)?;
-                        Ok(Some(ApiKey::new(String::from_utf8(plain.to_vec()).map_err(|_| KeyError::Corrupt)?)))
+                        Ok(Some(ApiKey::new(
+                            String::from_utf8(plain.to_vec()).map_err(|_| KeyError::Corrupt)?,
+                        )))
                     }
                 }
             }
@@ -328,7 +373,10 @@ impl KeyStore {
     /// Remove the key of provider `id`.
     pub fn delete(&self, id: &str) -> Result<(), KeyError> {
         match self.backend() {
-            Backend::Os => match keyring::Entry::new(SERVICE, &self.account(id)).map_err(|_| KeyError::Unavailable)?.delete_credential() {
+            Backend::Os => match keyring::Entry::new(SERVICE, &self.account(id))
+                .map_err(|_| KeyError::Unavailable)?
+                .delete_credential()
+            {
                 Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
                 Err(_) => Err(KeyError::Unavailable),
             },
@@ -362,19 +410,32 @@ mod tests {
         let store = KeyStore::file_for_tests(&home);
         assert_eq!(store.get("p1").unwrap().is_none(), true);
         assert_eq!(store.set("p1", "k").unwrap_err(), KeyError::NotInitialized);
-        assert_eq!(store.initialize("short").unwrap_err(), KeyError::WeakPassphrase);
+        assert_eq!(
+            store.initialize("short").unwrap_err(),
+            KeyError::WeakPassphrase
+        );
         store.initialize("correct horse battery").unwrap();
         let last4 = store.set("p1", "ZEUS-CANARY-secret-1234").unwrap();
         assert_eq!(last4, "1234");
-        assert_eq!(store.get("p1").unwrap().unwrap().expose(), "ZEUS-CANARY-secret-1234");
+        assert_eq!(
+            store.get("p1").unwrap().unwrap().expose(),
+            "ZEUS-CANARY-secret-1234"
+        );
         // The file holds no plaintext key and no passphrase.
         let raw = std::fs::read_to_string(dir.path().join("app/agent/keys.enc.json")).unwrap();
-        assert!(!raw.contains("ZEUS-CANARY") && !raw.contains("secret") && !raw.contains("correct horse"));
+        assert!(
+            !raw.contains("ZEUS-CANARY")
+                && !raw.contains("secret")
+                && !raw.contains("correct horse")
+        );
         // A new process: locked until the passphrase is given.
         let again = KeyStore::file_for_tests(&home);
         assert_eq!(again.get("p1").unwrap_err(), KeyError::Locked);
         assert_eq!(again.peek("p1"), (true, None));
-        assert_eq!(again.unlock("wrong passphrase").unwrap_err(), KeyError::WrongPassphrase);
+        assert_eq!(
+            again.unlock("wrong passphrase").unwrap_err(),
+            KeyError::WrongPassphrase
+        );
         again.unlock("correct horse battery").unwrap();
         assert_eq!(again.get("p1").unwrap().unwrap().last4(), "1234");
         again.delete("p1").unwrap();
@@ -408,7 +469,10 @@ mod tests {
             return;
         }
         store.set("test-provider", "ZEUS-CANARY-os-9876").unwrap();
-        assert_eq!(store.get("test-provider").unwrap().unwrap().expose(), "ZEUS-CANARY-os-9876");
+        assert_eq!(
+            store.get("test-provider").unwrap().unwrap().expose(),
+            "ZEUS-CANARY-os-9876"
+        );
         store.delete("test-provider").unwrap();
         assert!(store.get("test-provider").unwrap().is_none());
     }

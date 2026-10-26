@@ -33,7 +33,8 @@ export function serveDir(dir) {
 }
 
 export async function openUi(h, { width = 1360, height = 880, theme } = {}) {
-  const dir = join(here, '..', 'dist', 'harness')
+  // ZEUS_UI_DIR lets parallel runs serve their own build (vite build --mode harness --outDir dist/<name>).
+  const dir = process.env.ZEUS_UI_DIR ?? join(here, '..', 'dist', 'harness')
   if (!existsSync(join(dir, 'index.html'))) throw new Error('build the interface first: npm run build:harness')
   const site = await serveDir(dir)
   const browser = await chromium.launch({ headless: true })

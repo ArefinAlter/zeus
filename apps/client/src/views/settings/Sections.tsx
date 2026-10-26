@@ -5,11 +5,13 @@
 
 import { useState } from 'preact/hooks'
 
-import { HOSTED, LIVE } from '../../backend/live'
-import { releaseStop, rescan, updateSettings, useStore } from '../../backend/store'
+import { NATIVE, HOSTED, LIVE, applyEngineSettings } from '../../backend/live'
+import { defaultDir, releaseStop, rescan, toast, updateSettings, useStore } from '../../backend/store'
 import { ACCESS_INFO, ACCESS_ORDER, HUMAN_ONLY, NEVER, TOOLS } from '../../model/agentTools.ts'
-import { CATEGORIES, overlaps, parseExtList } from '../../model/categories.ts'
-import type { AgentAccess } from '../../model/types.ts'
+import { CATEGORIES, defaultMap, overlaps, parseExtList } from '../../model/categories.ts'
+import { folderProblem, insideRoot } from '../../model/grab.ts'
+import { SEP, isAbsolute, joinPath } from '../../lib/paths.ts'
+import type { AgentAccess, CategoryId } from '../../model/types.ts'
 import { fmtBytes, fmtWhen } from '../../model/units.ts'
 import { setPrefs, usePrefs } from '../../lib/prefs'
 import type { Notifications } from '../../lib/prefs'
@@ -17,6 +19,8 @@ import { href } from '../../lib/router'
 import { openDialog } from '../../lib/ui'
 import { Chip, CodeCopy, Notice, NumberInput, PageHead, Provenance, Select, SettingRow, SettingsGroup, Switch } from '../../ui/components'
 import { Icon } from '../../ui/icons'
+import { BrowserIntegrationSettings } from '../integration/BrowserSettings'
+import { NativeIndexSettings } from './IndexNative'
 
 const NOTE = LIVE ? (HOSTED ? 'Changes are kept for your sandbox by the pre-alpha service.' : 'Changes are kept on this device.') : 'Changes apply to this session\'s sample data.'
 
@@ -67,14 +71,16 @@ export function GeneralSettings() {
 
 export function FileTypesSettings() {
   const map = useStore((s) => s.settings.categories)
+  const saveTo = useStore((s) => s.settings.saveTo)
   const [text, setText] = useState<Record<string, string>>(() => Object.fromEntries(Object.entries(map).map(([k, v]) => [k, v.join(' ')])))
   const clash = overlaps(map)
+  const folderOf = (id: CategoryId) => (NATIVE ? defaultDir(id) : `…${SEP()}${CATEGORIES.find((c) => c.id === id)?.folder ?? ''}`)
   return (
     <>
       <PageHead title="File types and categories" sub="Which extensions belong to which category; a category decides the folder a download saves to." />
-      <SettingsGroup title="Categories" note="An extension can belong to one category only. Unknown types go to General.">
+      <SettingsGroup title="Categories" note="An extension can belong to one category only. Unknown types go to General. The set of categories is fixed in this release; the extensions in each are yours to change.">
         {CATEGORIES.filter((c) => c.id !== 'general').map((c) => (
-          <SettingRow title={c.label} desc={`Saves to …\\${c.folder}`} stack>
+          <SettingRow title={c.label} desc={`Saves to ${folderOf(c.id)}`} stack>
             <input
               class="mono"
               aria-label={`${c.label} extensions`}
@@ -84,51 +90,126 @@ export function FileTypesSettings() {
             />
           </SettingRow>
         ))}
+        <SettingRow title="Back to the defaults" desc="Restores the extension lists Zeus ships with. Folders you chose in Save to stay.">
+          <button
+            type="button"
+            class="btn small"
+            onClick={() => {
+              const d = defaultMap()
+              updateSettings('categories', d)
+              setText(Object.fromEntries(Object.entries(d).map(([k, v]) => [k, v.join(' ')])))
+            }}
+          >
+            Restore defaults
+          </button>
+        </SettingRow>
       </SettingsGroup>
       {clash.length ? <Notice kind="warn">{clash.map((c) => `.${c.ext} is in ${c.categories.join(' and ')}`).join('; ')}. Remove it from one of them.</Notice> : null}
-      <Provenance>zeusd saves into its download folders without categories; categories belong to this client.</Provenance>
+      {NATIVE && !saveTo.perCategory ? <Notice>"A folder per category" is off in Save to, so every category saves to the default folder unless it has a folder of its own there.</Notice> : null}
+      <Provenance>zeusd saves into its download folders without categories; categories and these rules belong to this app and decide the folder each download is sent to.</Provenance>
     </>
   )
 }
 
 export function SaveToSettings() {
   const s = useStore((st) => st.settings.saveTo)
+  const dirty = useStore((st) => !!st.live?.engineDirty)
   const set = (patch: Partial<typeof s>) => updateSettings('saveTo', patch)
   const [root, setRoot] = useState('')
+  const [busy, setBusy] = useState(false)
+  const ci = SEP() === '\\' || !NATIVE
+  const rootProblem = root.trim() && NATIVE ? (!isAbsolute(root.trim()) ? 'Use a full folder path.' : s.writeRoots.some((r) => insideRoot(r, root.trim(), ci) && insideRoot(root.trim(), r, ci)) ? 'That folder is already one of them.' : null) : null
+  const dirs = s.categoryDirs ?? {}
+  const last = s.lastDirs ?? {}
+  const setCategoryDir = (id: string, value: string) => {
+    const next = { ...dirs }
+    if (value.trim()) next[id] = value.trim()
+    else delete next[id]
+    set({ categoryDirs: next })
+  }
+  const changeDefault = (value: string) => {
+    const v = value.trim()
+    if (!NATIVE) return set({ root: v })
+    if (!v) return
+    // The default folder is the first folder zeusd may write to.
+    set({ root: v, writeRoots: [v, ...s.writeRoots.slice(1).filter((r) => r !== v)] })
+  }
   return (
     <>
       <PageHead title="Save to" sub={NOTE} />
+      {NATIVE && dirty ? (
+        <Notice kind="warn">
+          The download folders changed. zeusd reads them when it starts, so they take effect after the engine restarts; downloads in progress resume.{' '}
+          <button
+            type="button"
+            class="btn small primary"
+            disabled={busy}
+            onClick={() => {
+              setBusy(true)
+              applyEngineSettings().then(
+                () => toast({ kind: 'ok', title: 'Download folders applied', desc: 'zeusd restarted with the new folders.', important: false, topic: 'system' }),
+                (e: unknown) => toast({ kind: 'bad', title: 'Not applied', desc: e instanceof Error ? e.message : 'The folders were refused.', important: true, topic: 'system' }),
+              ).finally(() => setBusy(false))
+            }}
+          >
+            Apply and restart the engine
+          </button>
+        </Notice>
+      ) : null}
       <SettingsGroup title="Folders">
         <SettingRow title="Default folder" zeusd="write_roots[0]">
-          <input class="mono wideinput" aria-label="Default folder" value={s.root} onChange={(e) => set({ root: (e.target as HTMLInputElement).value })} />
+          <input class="mono wideinput" aria-label="Default folder" value={s.root} onChange={(e) => changeDefault((e.target as HTMLInputElement).value)} />
         </SettingRow>
-        <SettingRow title="A folder per category" desc="Documents go to …\Documents, videos to …\Video, and so on.">
+        <SettingRow title="A folder per category" desc="Documents go to …\Documents, videos to …\Video, and so on, under the default folder. A folder of its own for a category (below) wins.">
           <Switch label="A folder per category" checked={s.perCategory} onChange={(v) => set({ perCategory: v })} />
         </SettingRow>
-        <SettingRow title="Folder for partial files" desc="zeusd keeps partial data beside the final file as .zpart and renames it atomically when verified.">
-          <input class="mono wideinput" aria-label="Folder for partial files" value={s.tempDir} disabled />
+        <SettingRow title="Partial files" desc="zeusd keeps unfinished data beside the final file as <name>.zpart and renames it atomically when the file is verified; its records are in the .zeus folder of each download folder.">
+          <Chip tone="info">beside each file</Chip>
         </SettingRow>
-        <SettingRow title="Ask where to save each download">
+        <SettingRow title="Ask where to save each download" desc="Add URL asks you to confirm the folder before it starts. Links from the link grabber and the site grabber show their folder in the review.">
           <Switch label="Ask each time" checked={s.askEachTime} onChange={(v) => set({ askEachTime: v })} />
         </SettingRow>
-        <SettingRow title="Remember the last folder used for a category">
-          <Switch label="Remember the last folder" checked={s.rememberLast} onChange={(v) => set({ rememberLast: v })} />
+        <SettingRow title="Remember the last folder used for a category" desc="When you save a type of file somewhere else once, the next one of that type goes there too.">
+          <Switch label="Remember the last folder" checked={s.rememberLast} onChange={(v) => set({ rememberLast: v, ...(v ? {} : { lastDirs: {} }) })} />
         </SettingRow>
       </SettingsGroup>
-      <SettingsGroup title="Folders Zeus may write to" note="Zeus writes only inside these folders, whatever a page, a file name or an agent asks. Adding one is a change of policy that zeusd accepts only from you, at a terminal.">
-        {s.writeRoots.map((r) => (
-          <SettingRow title={<span class="mono">{r}</span>}>
-            <button type="button" class="btn small ghost" disabled={s.writeRoots.length < 2} onClick={() => set({ writeRoots: s.writeRoots.filter((x) => x !== r) })}>
+      <SettingsGroup title="A folder for each category" note="Leave empty for the default subfolder. A folder must be inside a download folder; one outside is ignored.">
+        {CATEGORIES.filter((c) => c.id !== 'general').map((c) => {
+          const v = dirs[c.id] ?? ''
+          const problem = v && NATIVE ? folderProblem(v, s.writeRoots, ci) : null
+          return (
+            <SettingRow title={c.label} desc={problem ?? (last[c.id] && s.rememberLast ? `Last used: ${last[c.id]}` : undefined)} stack>
+              <input
+                class={`mono ${problem ? 'bad' : ''}`}
+                aria-label={`Folder for ${c.label}`}
+                placeholder={NATIVE ? defaultDirFor(c.id, s, ci) : `…${SEP()}${c.folder}`}
+                value={v}
+                onChange={(e) => setCategoryDir(c.id, (e.target as HTMLInputElement).value)}
+              />
+              {last[c.id] && s.rememberLast ? (
+                <button type="button" class="btn small ghost" onClick={() => set({ lastDirs: Object.fromEntries(Object.entries(last).filter(([k]) => k !== c.id)) })}>
+                  Forget the last folder
+                </button>
+              ) : null}
+            </SettingRow>
+          )
+        })}
+      </SettingsGroup>
+      <SettingsGroup title="Folders Zeus may write to" note="Zeus writes only inside these folders, whatever a page, a file name or an agent asks. The folders are written to zeusd's configuration, which this app does for you when you apply them; an agent or another program cannot change them.">
+        {s.writeRoots.map((r, i) => (
+          <SettingRow title={<span class="mono">{r}</span>} desc={i === 0 ? 'The default folder' : undefined}>
+            <button type="button" class="btn small ghost" disabled={s.writeRoots.length < 2 || i === 0} onClick={() => set({ writeRoots: s.writeRoots.filter((x) => x !== r) })}>
               Remove
             </button>
           </SettingRow>
         ))}
         <div class="row">
           <div class="text">
-            <input class="mono" aria-label="New folder" placeholder="F:\\Media\\Zeus" value={root} onInput={(e) => setRoot((e.target as HTMLInputElement).value)} />
+            <input class={`mono ${rootProblem ? 'bad' : ''}`} aria-label="New folder" placeholder={SEP() === '/' ? '/mnt/media/Zeus' : 'F:\\Media\\Zeus'} value={root} onInput={(e) => setRoot((e.target as HTMLInputElement).value)} />
+            {rootProblem ? <p class="field-err">{rootProblem}</p> : null}
           </div>
           <div class="control">
-            <button type="button" class="btn small" disabled={!/^[A-Za-z]:\\|^\\\\|^\//.test(root.trim())} onClick={() => (set({ writeRoots: [...s.writeRoots, root.trim()] }), setRoot(''))}>
+            <button type="button" class="btn small" disabled={!/^[A-Za-z]:\\|^\\\\|^\//.test(root.trim()) || !!rootProblem} onClick={() => (set({ writeRoots: [...s.writeRoots, root.trim()] }), setRoot(''))}>
               <Icon name="plus" /> Add folder
             </button>
           </div>
@@ -136,6 +217,11 @@ export function SaveToSettings() {
       </SettingsGroup>
     </>
   )
+}
+
+function defaultDirFor(id: CategoryId, s: { root: string; perCategory: boolean }, _ci: boolean): string {
+  const sub = CATEGORIES.find((c) => c.id === id)?.folder
+  return s.perCategory && sub ? joinPath(s.root, sub) : s.root
 }
 
 export function DownloadsSettings() {
@@ -185,7 +271,7 @@ export function DownloadsSettings() {
         <SettingRow title="Checksums" desc="Every finished file is hashed with SHA-256 and BLAKE3 and gets a provenance receipt; this is not optional." fixed>
           <Chip tone="ok">SHA-256 and BLAKE3</Chip>
         </SettingRow>
-        <SettingRow title="Start downloads at once" desc="Off: new downloads go to the default queue.">
+        <SettingRow title="Start downloads at once" desc="Off: the link grabber and the site grabber preselect the default queue instead of Start now. Add URL always has both buttons.">
           <Switch label="Start at once" checked={d.startImmediately} onChange={(v) => set({ startImmediately: v })} />
         </SettingRow>
         <SettingRow title="Show a dialog when a download finishes" desc="A notification states what finished; it never asks for a decision.">
@@ -275,6 +361,7 @@ export function SiteLoginsSettings() {
 }
 
 export function BrowserSettings() {
+  if (NATIVE) return <BrowserIntegrationSettings />
   const b = useStore((s) => s.settings.browser)
   const set = (patch: Partial<typeof b>) => updateSettings('browser', patch)
   return (
@@ -401,7 +488,12 @@ export function NotificationSettings() {
   )
 }
 
+/** The desktop app's Search and index page reads and writes the engine's own index configuration. */
 export function IndexSettings() {
+  return NATIVE ? <NativeIndexSettings /> : <SampleIndexSettings />
+}
+
+function SampleIndexSettings() {
   const ix = useStore((s) => s.settings.index)
   const state = useStore((s) => s.index)
   const files = useStore((s) => s.files.length)
@@ -495,9 +587,15 @@ export function AgentSettings() {
         <SettingRow title="Tool calls per reply">
           <NumberInput label="Tool calls per reply" value={a.maxTurnTools} min={1} max={50} onChange={(v) => set({ maxTurnTools: v })} />
         </SettingRow>
-        <SettingRow title="Models see metadata only" desc="Names, sizes and states; never file contents or full addresses." fixed>
-          <Chip tone="info">metadata only</Chip>
-        </SettingRow>
+        {NATIVE ? (
+          <SettingRow title="Trim what the model sees" desc="Tool results are cut to names, sizes and states, with long text shortened. Zeus never reads file contents for a model either way, and addresses lose their query strings.">
+            <Switch label="Trim tool results" checked={a.metadataOnly} onChange={(v) => set({ metadataOnly: v })} />
+          </SettingRow>
+        ) : (
+          <SettingRow title="Models see metadata only" desc="Names, sizes and states; never file contents or full addresses." fixed>
+            <Chip tone="info">metadata only</Chip>
+          </SettingRow>
+        )}
       </SettingsGroup>
       <SettingsGroup title="Instructions" note="Added to every thread. They can narrow what the agent does, never widen it.">
         <div class="row stack">

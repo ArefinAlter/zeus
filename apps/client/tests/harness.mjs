@@ -8,7 +8,7 @@
 
 import { spawn } from 'node:child_process'
 import { existsSync, mkdirSync, rmSync } from 'node:fs'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 
 export const BUILD = process.env.ZEUS_CLIENT_TARGET ?? 'A:\\zeus-build-cache\\zeus-client'
 export const BIN = process.env.ZEUS_BIN_DIR ?? 'A:\\zeus-build-cache\\zeus\\debug'
@@ -18,6 +18,7 @@ export const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 export async function startHarness({ home, fresh = false, env = {} } = {}) {
   if (!home) throw new Error('home is required')
   if (fresh && existsSync(home)) rmSync(home, { recursive: true, force: true })
+  home = resolve(home) // native separators, so paths the app reports compare equal to ones a script builds
   mkdirSync(home, { recursive: true })
   const exe = join(BUILD, 'debug', process.platform === 'win32' ? 'zeus-app-http.exe' : 'zeus-app-http')
   const child = spawn(exe, [], {

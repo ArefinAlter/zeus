@@ -54,6 +54,15 @@ const reg = (args) => {
   }
 }
 
+// The app's own credential sees only approvals it requested (spec 05 7.5), so approvals raised by the browser are
+// listed with the person's command line: `zeus approvals list`, the read-only part of the human trust surface.
+let engineCfg = null
+const cli = (args) => JSON.parse(execFileSync(engineCfg.command, [...args, '--json'], { env: { ...process.env, ...engineCfg.env }, encoding: 'utf8', windowsHide: true }))
+const waiting = () => {
+  const out = cli(['approvals', 'list'])
+  return Array.isArray(out) ? out : (out.items ?? out.approvals ?? [])
+}
+
 if (process.platform !== 'win32') {
   console.log('SCENARIO 8: NOT RUN (this script drives Edge on Windows; the Linux registration is covered by unit tests)')
   process.exit(0)
@@ -75,6 +84,7 @@ let context
 let installed = false
 try {
   await h.ready()
+  engineCfg = await h.get('/native/v1/mcp/config')
 
   // ---- 1. packaging and install, as the page does it: plan, consent, install
   const status0 = await h.get('/native/v1/integration')
@@ -109,7 +119,7 @@ try {
   context = await chromium.launchPersistentContext(profile, {
     channel: 'msedge',
     headless: false,
-    acceptDownloads: false,
+    acceptDownloads: true,
     args: [`--disable-extensions-except=${ext}`, `--load-extension=${ext}`, '--disable-features=DisableLoadExtensionCommandLineSwitch', '--no-first-run', '--no-default-browser-check'],
   })
   const worker = context.serviceWorkers()[0] ?? (await context.waitForEvent('serviceworker', { timeout: 20000 }))
@@ -142,15 +152,17 @@ try {
   check('the browser\'s own download is interrupted and cannot be resumed', !!interrupted && interrupted.canResume === false, interrupted ? `${interrupted.error}, ${interrupted.bytesReceived} bytes` : '')
   const job = await until(async () => (await h.get('/api/v1/jobs')).items.find((j) => j.source_kind === 'browser_handoff') ?? false, { timeoutMs: 30000, what: 'the handoff job' }).catch(() => null)
   check('the extension offers it and the engine creates a job from the browser', !!job, job ? `${job.id} ${job.state}` : '')
-  const approval = await until(async () => (await h.get('/api/v1/approvals')).items.find((a) => a.state === 'pending' && a.kind === 'handoff') ?? false, { timeoutMs: 20000, what: 'a pending handoff approval' }).catch(() => null)
-  check('an approval of kind handoff is pending and visible to the app', !!approval, approval?.id)
+  const approval = await until(async () => waiting().find((a) => (a.kind ?? a.facts?.kind) === 'handoff') ?? false, { timeoutMs: 20000, what: 'a pending handoff approval' }).catch(() => null)
+  check('an approval of kind handoff is pending, listed by the command line a person uses', !!approval, approval?.id)
+  const counted = (await h.get('/api/v1/status')).daemon?.pending_approvals
+  check('the status shows that requests are waiting for a person', counted >= 1, `${counted} pending`)
   await sleep(4000)
-  const waiting = (await h.get('/api/v1/jobs')).items.find((j) => j.id === job?.id)
-  check('with no decision nothing downloads: the job waits and no bytes were fetched', !!waiting && ['awaiting_approval', 'awaiting_session'].includes(waiting.state) && waiting.bytes_done === 0, `${waiting?.state}, ${waiting?.bytes_done} bytes`)
+  const held = (await h.get('/api/v1/jobs')).items.find((j) => j.id === job?.id)
+  check('with no decision nothing downloads: the job waits and no bytes were fetched', !!held && ['awaiting_approval', 'awaiting_session'].includes(held.state) && held.bytes_done === 0, `${held?.state}, ${held?.bytes_done} bytes`)
   const requestsBefore = fx.log.filter((r) => r.path.startsWith('/dropped/')).length
   const route = await h.post(`/svc/v1/approvals/${approval?.id ?? 'ap_x'}/decide`, { decision: 'approve', scope: 'once', seen_hash: 'x', armed_ms: 900 }).catch((e) => e.code ?? e.message)
-  const stillPending = (await h.get('/api/v1/approvals')).items.find((a) => a.id === approval?.id)
-  check('the app\'s own routes cannot decide it', typeof route === 'string' && stillPending?.state === 'pending', String(route))
+  const stillPending = waiting().find((a) => a.id === approval?.id)
+  check('no route of the app can decide it', typeof route === 'string' && !!stillPending, String(route))
 
   // ---- 4. the decision, in the extension popup (test automation standing in for a person)
   const popup = await context.newPage()
@@ -159,17 +171,20 @@ try {
   await popup.screenshot({ path: `${evidence}/s08-popup-pending.png` })
   const buttons = await popup.locator('button.btn').allTextContents()
   console.log('popup buttons:', JSON.stringify(buttons))
-  // The first approve button is the least-lasting scope offered ("once" before "site").
-  const approve = popup.locator('button.btn[data-style="primary"]').first()
+  // The least-lasting scope the popup offers: "Allow once".
+  const approve = popup.locator('button.btn:has-text("Allow once")').first()
   await sleep(1000)
   await approve.click()
+  await sleep(2500)
+  console.log('popup after the click:', (await popup.locator('body').innerText()).split(String.fromCharCode(10)).join(' | ').slice(0, 500))
+  await popup.screenshot({ path: `${evidence}/s08-popup-clicked.png` })
   // ---- 5. the job runs and completes
   const done = await until(async () => {
     const j = (await h.get('/api/v1/jobs')).items.find((x) => x.id === job.id)
     return j && ['completed', 'failed', 'canceled'].includes(j.state) ? j : false
   }, { timeoutMs: 90000, everyMs: 700, what: 'the handoff job to settle' }).catch(() => null)
-  const after = (await h.get('/api/v1/approvals')).items.find((a) => a.id === approval?.id)
-  check('the approval was decided through the extension popup', after?.state === 'approved', after?.state)
+  const after = waiting().find((a) => a.id === approval?.id)
+  check('the approval left the waiting list after the popup decision', !after, after ? 'still waiting' : 'decided')
   check('the job completes in the engine after the decision', done?.state === 'completed', `${done?.state} ${done?.last_error?.code ?? ''}`)
   check('the file has the server\'s bytes (SHA-256 and size)', done?.sha256 === sha256(seed, size) && statSync(done.path).size === size, done?.sha256?.slice(0, 16))
   check('Zeus fetched it itself, after the decision', fx.log.filter((r) => r.path.startsWith('/dropped/')).length > requestsBefore)

@@ -14,6 +14,8 @@ import { href } from '../../lib/router'
 import { Chip, CopyButton, Dialog, Notice, SegmentBar, StateLabel } from '../../ui/components'
 import { Icon, categoryIcon } from '../../ui/icons'
 import { jobEta, jobPercent, statusDetail } from './columns'
+import { Verification } from './Verification'
+import { NATIVE } from '../../backend/live'
 
 function Fact({ k, children }: { k: string; children: preact.ComponentChildren }) {
   return (
@@ -159,6 +161,9 @@ export function Properties({ job: j, onClose, onMove }: { job: Job; onClose: () 
           </dl>
         </section>
 
+        {NATIVE ? (
+          <Verification key={j.id} job={j} />
+        ) : (
         <section class="dsec">
           <h3>Checksum and verification</h3>
           {j.state === 'completed' ? (
@@ -180,6 +185,7 @@ export function Properties({ job: j, onClose, onMove }: { job: Job; onClose: () 
             <p class="muted small">Hashes are computed when every byte is committed. {j.expectedSha256 ? 'An expected SHA-256 is set; a mismatch fails the job instead of completing it.' : ''}</p>
           )}
         </section>
+        )}
 
         <section class="dsec">
           <h3>History</h3>

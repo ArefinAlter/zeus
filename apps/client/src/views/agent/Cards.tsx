@@ -2,11 +2,15 @@
 // consequences. Its buttons are pressed by the person and named for what they do. A card of approvals has no decide
 // button: it links to the Approvals page, where the facts come first.
 
-import { useState } from 'preact/hooks'
+import { useEffect, useState } from 'preact/hooks'
 
 import { batchStart, batchToGrabber, cloudCard, organizeCard, retryCard } from '../../backend/agent'
+import { agentApi } from '../../backend/agentNative'
+import { NATIVE, approvalFromDaemon } from '../../backend/live'
+import type { RemoteApproval } from '../../backend/remote'
 import { useStore } from '../../backend/store'
 import type { Card } from '../../backend/threads'
+import type { Approval } from '../../model/types.ts'
 import { KIND_LABEL } from '../../model/approvals.ts'
 import { fmtBytes, fmtPercent, fmtRate } from '../../model/units.ts'
 import { href } from '../../lib/router'
@@ -106,17 +110,42 @@ function BatchCard({ card, threadId, itemId }: { card: Extract<Card, { type: 'ba
 }
 
 function ApprovalsCard({ ids }: { ids: string[] }) {
-  const approvals = useStore((s) => s.approvals.filter((a) => ids.includes(a.id)))
+  const stored = useStore((s) => s.approvals.filter((a) => ids.includes(a.id)))
+  // An agent sees only the approvals it raised, so the desktop app's agent reads its own through its own connection.
+  const [own, setOwn] = useState<Approval[]>([])
+  useEffect(() => {
+    if (!NATIVE) return undefined
+    let alive = true
+    const load = () =>
+      agentApi.approvals(ids).then(
+        (r) => alive && setOwn(r.items.map((a) => approvalFromDaemon(a as unknown as RemoteApproval))),
+        () => undefined,
+      )
+    void load()
+    const t = setInterval(load, 4000)
+    return () => {
+      alive = false
+      clearInterval(t)
+    }
+  }, [ids.join(',')])
+  const approvals = [...stored, ...own.filter((o) => !stored.some((s) => s.id === o.id))]
   return (
     <Shell icon="seal" title="Waiting for you" chips={<Chip tone="warn">{approvals.filter((a) => a.state === 'pending').length} pending</Chip>} foot={<><span class="muted small">Decided only by you, in the extension popup or at a terminal. Nothing in this conversation can decide one.</span><ApprovalCommand /></>}>
       <ul class="arows">
         {approvals.map((a) => (
           <li>
-            <a href={href('approvals', a.id)}>
-              <Chip tone="accent">{KIND_LABEL[a.facts.kind]}</Chip> <strong>{a.facts.website.replace(/^https?:\/\//, '')}</strong> <span class="mono">{a.bindCode}</span>
-            </a>
+            {stored.some((x) => x.id === a.id) ? (
+              <a href={href('approvals', a.id)}>
+                <Chip tone="accent">{KIND_LABEL[a.facts.kind]}</Chip> <strong>{a.facts.website.replace(/^https?:\/\//, '')}</strong> <span class="mono">{a.bindCode}</span>
+              </a>
+            ) : (
+              <span>
+                <Chip tone="accent">{KIND_LABEL[a.facts.kind]}</Chip> <strong>{a.facts.website.replace(/^https?:\/\//, '')}</strong> <span class="mono">{a.bindCode}</span>
+              </span>
+            )}
             <span class="muted small">
-              {a.facts.for} · <StateLabel state={a.state} />
+              {a.facts.kind === 'session_grant' ? '' : `${a.facts.for} · `}
+              <StateLabel state={a.state} />
             </span>
           </li>
         ))}

@@ -30,10 +30,22 @@ pub struct Built {
 /// An incremental reader of one provider's stream.
 pub trait Parser: Send {
     /// Handle one SSE event; text deltas go to `sink`.
-    fn event(&mut self, name: Option<&str>, data: &str, sink: &mut (dyn FnMut(&str) + Send)) -> Result<(), ProviderError>;
+    fn event(
+        &mut self,
+        name: Option<&str>,
+        data: &str,
+        sink: &mut (dyn FnMut(&str) + Send),
+    ) -> Result<(), ProviderError>;
     /// Handle a whole non-streamed JSON answer (some compatible servers ignore `stream`).
-    fn whole(&mut self, _body: &Value, _sink: &mut (dyn FnMut(&str) + Send)) -> Result<(), ProviderError> {
-        Err(ProviderError::new(ErrorKind::Protocol, "The provider did not stream its answer."))
+    fn whole(
+        &mut self,
+        _body: &Value,
+        _sink: &mut (dyn FnMut(&str) + Send),
+    ) -> Result<(), ProviderError> {
+        Err(ProviderError::new(
+            ErrorKind::Protocol,
+            "The provider did not stream its answer.",
+        ))
     }
     /// The finished outcome. `estimated_input` fills in usage when the provider sent none.
     fn finish(self: Box<Self>, estimated_input: u64) -> Result<Outcome, ProviderError>;
@@ -52,10 +64,20 @@ pub struct RateInfo {
 
 impl RateInfo {
     fn from(h: &HeaderMap) -> Self {
-        let get = |names: &[&str]| names.iter().find_map(|n| h.get(*n).and_then(|v| v.to_str().ok()).map(str::to_owned));
+        let get = |names: &[&str]| {
+            names
+                .iter()
+                .find_map(|n| h.get(*n).and_then(|v| v.to_str().ok()).map(str::to_owned))
+        };
         Self {
-            remaining_requests: get(&["x-ratelimit-remaining-requests", "anthropic-ratelimit-requests-remaining"]),
-            remaining_tokens: get(&["x-ratelimit-remaining-tokens", "anthropic-ratelimit-tokens-remaining"]),
+            remaining_requests: get(&[
+                "x-ratelimit-remaining-requests",
+                "anthropic-ratelimit-requests-remaining",
+            ]),
+            remaining_tokens: get(&[
+                "x-ratelimit-remaining-tokens",
+                "anthropic-ratelimit-tokens-remaining",
+            ]),
             retry_after_s: get(&["retry-after"]).and_then(|v| v.trim().parse::<u64>().ok()),
         }
     }
@@ -104,8 +126,12 @@ pub struct Http {
 fn headers_of(built: &Built) -> Result<HeaderMap, ProviderError> {
     let mut map = HeaderMap::new();
     for (k, v) in &built.headers {
-        let name = HeaderName::from_bytes(k.as_bytes()).map_err(|_| ProviderError::new(ErrorKind::BadRequest, "A request header is not valid."))?;
-        let mut value = HeaderValue::from_str(v).map_err(|_| ProviderError::new(ErrorKind::BadRequest, "A request header is not valid."))?;
+        let name = HeaderName::from_bytes(k.as_bytes()).map_err(|_| {
+            ProviderError::new(ErrorKind::BadRequest, "A request header is not valid.")
+        })?;
+        let mut value = HeaderValue::from_str(v).map_err(|_| {
+            ProviderError::new(ErrorKind::BadRequest, "A request header is not valid.")
+        })?;
         if name.as_str().contains("key") || name == reqwest::header::AUTHORIZATION {
             value.set_sensitive(true);
         }
@@ -128,10 +154,15 @@ pub fn error_from(status: u16, body: &str, rate: &RateInfo, key: Option<&str>) -
     let detail = serde_json::from_str::<Value>(body)
         .ok()
         .and_then(|v| {
-            [v.pointer("/error/message"), v.pointer("/message"), v.pointer("/error"), v.pointer("/detail")]
-                .into_iter()
-                .flatten()
-                .find_map(|x| x.as_str().map(str::to_owned))
+            [
+                v.pointer("/error/message"),
+                v.pointer("/message"),
+                v.pointer("/error"),
+                v.pointer("/detail"),
+            ]
+            .into_iter()
+            .flatten()
+            .find_map(|x| x.as_str().map(str::to_owned))
         })
         .unwrap_or_else(|| body.chars().take(200).collect());
     let lead = match kind {
@@ -143,7 +174,14 @@ pub fn error_from(status: u16, body: &str, rate: &RateInfo, key: Option<&str>) -
         ErrorKind::Timeout => "The provider timed out",
         _ => "The provider refused the request",
     };
-    let mut message = format!("{lead} ({status}){}", if detail.trim().is_empty() { String::new() } else { format!(": {}", detail.trim()) });
+    let mut message = format!(
+        "{lead} ({status}){}",
+        if detail.trim().is_empty() {
+            String::new()
+        } else {
+            format!(": {}", detail.trim())
+        }
+    );
     if let Some(r) = &rate.remaining_requests {
         message.push_str(&format!(" Requests left in the window: {r}."));
     }
@@ -200,7 +238,10 @@ impl Http {
         let request = if method_get {
             self.client.get(&built.url).headers(headers)
         } else {
-            self.client.post(&built.url).headers(headers).json(&built.body)
+            self.client
+                .post(&built.url)
+                .headers(headers)
+                .json(&built.body)
         };
         let response = tokio::select! {
             biased;
@@ -208,13 +249,28 @@ impl Http {
             r = request.send() => r,
         };
         response.map_err(|e| {
-            let kind = if e.is_timeout() { ErrorKind::Timeout } else { ErrorKind::Network };
-            let what = if e.is_connect() { "Could not connect to the provider" } else if e.is_timeout() { "The provider did not answer in time" } else { "The connection to the provider failed" };
+            let kind = if e.is_timeout() {
+                ErrorKind::Timeout
+            } else {
+                ErrorKind::Network
+            };
+            let what = if e.is_connect() {
+                "Could not connect to the provider"
+            } else if e.is_timeout() {
+                "The provider did not answer in time"
+            } else {
+                "The connection to the provider failed"
+            };
             ProviderError::new(kind, scrub(&format!("{what}."), key))
         })
     }
 
-    async fn read_error(&self, response: reqwest::Response, key: Option<&str>, cancel: &CancellationToken) -> ProviderError {
+    async fn read_error(
+        &self,
+        response: reqwest::Response,
+        key: Option<&str>,
+        cancel: &CancellationToken,
+    ) -> ProviderError {
         let status = response.status().as_u16();
         let rate = RateInfo::from(response.headers());
         let mut body = Vec::new();
@@ -238,11 +294,18 @@ impl Http {
         error_from(status, &String::from_utf8_lossy(&body), &rate, key)
     }
 
-    async fn wait(&self, error: &ProviderError, attempt: u32, cancel: &CancellationToken) -> Result<(), ProviderError> {
+    async fn wait(
+        &self,
+        error: &ProviderError,
+        attempt: u32,
+        cancel: &CancellationToken,
+    ) -> Result<(), ProviderError> {
         let backoff = self.limits.backoff.saturating_mul(1 << attempt.min(6));
         let wait = error
             .retry_after_s
-            .map_or(backoff, |s| Duration::from_secs(s).min(self.limits.max_wait))
+            .map_or(backoff, |s| {
+                Duration::from_secs(s).min(self.limits.max_wait)
+            })
             .min(self.limits.max_wait);
         tokio::select! {
             biased;
@@ -295,14 +358,27 @@ impl Http {
                 r = tokio::time::timeout(self.limits.idle, response.chunk()) => r,
             };
             let chunk = match next {
-                Err(_) => return Err(ProviderError::new(ErrorKind::Timeout, "The provider stopped sending the answer.")),
-                Ok(Err(_)) => return Err(ProviderError::new(ErrorKind::Network, "The connection to the provider dropped while it was answering.")),
+                Err(_) => {
+                    return Err(ProviderError::new(
+                        ErrorKind::Timeout,
+                        "The provider stopped sending the answer.",
+                    ));
+                }
+                Ok(Err(_)) => {
+                    return Err(ProviderError::new(
+                        ErrorKind::Network,
+                        "The connection to the provider dropped while it was answering.",
+                    ));
+                }
                 Ok(Ok(None)) => break,
                 Ok(Ok(Some(c))) => c,
             };
             total += chunk.len();
             if total > self.limits.max_stream_bytes {
-                return Err(ProviderError::new(ErrorKind::TooLarge, "The provider's answer is larger than Zeus accepts (8 MiB). It was cut off."));
+                return Err(ProviderError::new(
+                    ErrorKind::TooLarge,
+                    "The provider's answer is larger than Zeus accepts (8 MiB). It was cut off.",
+                ));
             }
             if is_stream {
                 for ev in splitter.feed(&chunk) {
@@ -317,7 +393,12 @@ impl Http {
                 parser.event(ev.name.as_deref(), &ev.data, sink)?;
             }
         } else {
-            let v: Value = serde_json::from_slice(&whole).map_err(|_| ProviderError::new(ErrorKind::Protocol, "The provider's answer was not in the expected format."))?;
+            let v: Value = serde_json::from_slice(&whole).map_err(|_| {
+                ProviderError::new(
+                    ErrorKind::Protocol,
+                    "The provider's answer was not in the expected format.",
+                )
+            })?;
             parser.whole(&v, sink)?;
         }
         let outcome = parser.finish(estimated_input)?;
@@ -325,7 +406,12 @@ impl Http {
     }
 
     /// A small GET returning JSON (model lists).
-    pub async fn get_json(&self, built: &Built, cancel: &CancellationToken, key: Option<&ApiKey>) -> Result<Value, ProviderError> {
+    pub async fn get_json(
+        &self,
+        built: &Built,
+        cancel: &CancellationToken,
+        key: Option<&ApiKey>,
+    ) -> Result<Value, ProviderError> {
         let key_text = key.map(ApiKey::expose);
         let mut attempt = 0;
         loop {
@@ -336,11 +422,24 @@ impl Http {
                         () = cancel.cancelled() => return Err(ProviderError::new(ErrorKind::Cancelled, "Stopped.")),
                         r = r.bytes() => r,
                     };
-                    let bytes = bytes.map_err(|_| ProviderError::new(ErrorKind::Network, "The connection to the provider dropped."))?;
+                    let bytes = bytes.map_err(|_| {
+                        ProviderError::new(
+                            ErrorKind::Network,
+                            "The connection to the provider dropped.",
+                        )
+                    })?;
                     if bytes.len() > 2 * 1024 * 1024 {
-                        return Err(ProviderError::new(ErrorKind::TooLarge, "The provider's list is too large."));
+                        return Err(ProviderError::new(
+                            ErrorKind::TooLarge,
+                            "The provider's list is too large.",
+                        ));
                     }
-                    return serde_json::from_slice(&bytes).map_err(|_| ProviderError::new(ErrorKind::Protocol, "The provider's answer was not in the expected format."));
+                    return serde_json::from_slice(&bytes).map_err(|_| {
+                        ProviderError::new(
+                            ErrorKind::Protocol,
+                            "The provider's answer was not in the expected format.",
+                        )
+                    });
                 }
                 Ok(r) => self.read_error(r, key_text, cancel).await,
                 Err(e) => e,
@@ -367,8 +466,17 @@ mod tests {
 
     #[test]
     fn error_messages_carry_the_status_the_detail_and_never_the_key() {
-        let rate = RateInfo { remaining_requests: Some("0".into()), remaining_tokens: None, retry_after_s: Some(7) };
-        let e = error_from(429, "{\"error\":{\"message\":\"Rate limit reached for key ZEUS-CANARY-abcdef\"}}", &rate, Some("ZEUS-CANARY-abcdef"));
+        let rate = RateInfo {
+            remaining_requests: Some("0".into()),
+            remaining_tokens: None,
+            retry_after_s: Some(7),
+        };
+        let e = error_from(
+            429,
+            "{\"error\":{\"message\":\"Rate limit reached for key ZEUS-CANARY-abcdef\"}}",
+            &rate,
+            Some("ZEUS-CANARY-abcdef"),
+        );
         assert_eq!(e.kind, ErrorKind::RateLimited);
         assert_eq!(e.retry_after_s, Some(7));
         assert!(e.message.contains("429") && e.message.contains("7 s"));

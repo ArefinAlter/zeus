@@ -21,6 +21,9 @@ tracing.workspace = true
 url.workspace = true
 hex.workspace = true
 sha2.workspace = true
+notify = { version = "8", default-features = false }
+base64 = "0.23"
+trash = "5"
 
 [dev-dependencies]
 tempfile = "3.27"

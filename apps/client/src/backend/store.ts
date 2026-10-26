@@ -22,7 +22,10 @@ import { HOSTED, LIVE, NATIVE, SVC, clearStored, configureLimiter, control as li
 import type { SitePreview } from './sitegrab.ts'
 import { api, retryKey, svc } from './remote.ts'
 import { ulid } from './rand.ts'
-import { isInside, joinPath } from '../lib/paths.ts'
+import { filesApi, nudgeIndexSync } from './files.ts'
+import { isInside, joinPath, SEP } from '../lib/paths.ts'
+import type { DupeChoice, Existing, Overwrite } from '../model/grab.ts'
+import { checkNote, duplicateWhere, findDuplicate, folderFor, overwriteFor } from '../model/grab.ts'
 import { ARCHIVE, CLAUDE, EDGE, ROOT, UNITS, YOU, fileOfJob, makeJob, makeSegments, sampleIndex, sampleJobs, sampleLimiter, sampleQueues } from './sample.ts'
 import type { Settings } from './settings.ts'
 import { defaultSettings } from './settings.ts'
@@ -64,6 +67,31 @@ export interface GrabberLink {
   selected: boolean
   /** Package name; defaults to the host. */
   pkg: string
+  /** What the online check learned, in a sentence for the row. */
+  note?: string
+  /** HTTP status of the online check. */
+  status?: number
+  resumable?: 'verified' | 'unsupported' | 'unknown' | null
+  /** The hash the publisher gives; zeusd refuses the file if the bytes differ. */
+  expectedSha256?: string
+  /** The folder was typed by the person: a category or name change leaves it alone. */
+  dirEdited?: boolean
+  /** The same file is already downloaded, queued or running. */
+  dupe?: { id: string; state: string; name: string; where: string }
+  dupeChoice?: DupeChoice
+}
+
+/** One row of zeusd's dry run for a reviewed batch. */
+export interface PlanRow {
+  index: number
+  filename?: string | null
+  destination?: string | null
+  warnings?: string[] | null
+  size?: number | null
+  resumable?: string | null
+  approval_needed?: boolean
+  error_code?: string | null
+  error_message?: string | null
 }
 
 export interface Review {
@@ -73,7 +101,11 @@ export interface Review {
   /** Exactly what would be created: destination paths after collision renaming. */
   destinations: { name: string; dir: string; collides: boolean }[]
   /** Live backend: zeusd's dry-run of this batch, one per destination folder. */
-  remote?: { state: 'checking' | 'ready' | 'refused'; reason?: string; reviews: { reviewId: string; linkIds: string[] }[] }
+  remote?: { state: 'checking' | 'ready' | 'refused'; reason?: string; reviews: { reviewId: string; linkIds: string[] }[]; plan?: PlanRow[] }
+  /** The overwrite policy chosen for the batch (a duplicate's own choice wins for its row). */
+  overwrite?: Overwrite
+  /** Links left out of the review: duplicates the person chose to skip. */
+  skippedDuplicates?: number
 }
 
 export interface SiteProject {
@@ -104,6 +136,11 @@ export interface IndexState {
   generation: number
   lastScan: number
   scanning?: string
+  /** Native: entries in the engine's index, whether the watcher follows changes, the cap, the start-up check. */
+  entries?: number
+  watcher?: boolean
+  capped?: boolean
+  verifying?: boolean
 }
 
 export interface State {
@@ -356,7 +393,18 @@ export function remove(ids: string[], deleteFile: boolean): number {
     // and the hosted sandbox removes them after 24 hours.
     meta(real, (m) => ({ ...m, hidden: true }))
     set({ pending: state.pending.filter((p) => !ids.includes(p.id)), queues: state.queues.map((q) => ({ ...q, order: q.order.filter((x) => !ids.includes(x)) })) })
-    if (deleteFile && real.length) toast({ kind: 'warn', title: 'Files kept', desc: 'This client cannot delete files: its restricted zeusd credential has no file write permission. Hosted files expire after 24 hours.', important: true, topic: 'system' })
+    if (NATIVE && deleteFile && real.length) {
+      const paths = state.files.filter((f) => f.jobId && real.includes(f.jobId) && !f.isFolder).map((f) => joinPath(f.dir, f.name))
+      if (paths.length) {
+        void filesApi.remove(paths, false).then(
+          (r) => {
+            toast({ kind: r.failed.length ? 'warn' : 'ok', title: r.failed.length ? 'Some files were not deleted' : 'Files moved to the Recycle Bin', desc: r.failed[0]?.message ?? `${r.trashed.length + r.deleted.length} file${paths.length === 1 ? '' : 's'}`, important: !!r.failed.length, topic: 'system' })
+            nudgeIndexSync()
+          },
+          (e: unknown) => toast({ kind: 'warn', title: 'Files kept', desc: e instanceof Error ? e.message : 'The files could not be deleted.', important: true, topic: 'system' }),
+        )
+      }
+    } else if (deleteFile && real.length) toast({ kind: 'warn', title: 'Files kept', desc: 'This client cannot delete files: its restricted zeusd credential has no file write permission. Hosted files expire after 24 hours.', important: true, topic: 'system' })
     rebuildJobs()
     return ids.length
   }
@@ -481,6 +529,18 @@ export function renameJob(id: string, name: string): string | null {
       rebuildJobs()
       return null
     }
+    if (NATIVE) {
+      const f = state.files.find((x) => x.jobId === id && !x.isFolder)
+      if (!f) return 'That file is not in the download folders (it was moved or removed).'
+      void filesApi.rename(joinPath(f.dir, f.name), name).then(
+        () => {
+          toast({ kind: 'ok', title: 'Renamed', desc: name, important: false, topic: 'system' })
+          nudgeIndexSync()
+        },
+        (e: unknown) => toast({ kind: 'warn', title: 'Not renamed', desc: e instanceof Error ? e.message : '', important: true, topic: 'system' }),
+      )
+      return null
+    }
     return "Renaming a file needs file write permission, which this client's restricted zeusd credential does not have. Use zeus files organize on your own machine."
   }
   patchJob(id, (j) => note({ ...j, name, category: categoryOf(name, state.settings.categories) }, `Renamed to ${name}`))
@@ -495,6 +555,18 @@ export function moveJob(id: string, dir: string): string | null {
       if (dir !== root && !dir.startsWith(root + '\\')) return `Choose a folder inside ${root}.`
       set({ pending: state.pending.map((p) => (p.id === id ? { ...p, dir } : p)) })
       rebuildJobs()
+      return null
+    }
+    if (NATIVE) {
+      const f = state.files.find((x) => x.jobId === id && !x.isFolder)
+      if (!f) return 'That file is not in the download folders (it was moved or removed).'
+      void filesApi.move(joinPath(f.dir, f.name), dir).then(
+        () => {
+          toast({ kind: 'ok', title: 'Moved', desc: dir, important: false, topic: 'system' })
+          nudgeIndexSync()
+        },
+        (e: unknown) => toast({ kind: 'warn', title: 'Not moved', desc: e instanceof Error ? e.message : '', important: true, topic: 'system' }),
+      )
       return null
     }
     return "Moving a file needs file write permission, which this client's restricted zeusd credential does not have."
@@ -517,6 +589,8 @@ export interface NewDownload {
   project?: string
   description?: string
   sessionOrigin?: string
+  /** zeusd's policy for a name that exists (the person's duplicate choice, or the batch default). */
+  overwrite?: Overwrite
 }
 
 /** Adds downloads, refusing what zeusd refuses. Returns the new job ids, or a reason. */
@@ -590,7 +664,7 @@ function addLive(list: NewDownload[]): { ids: string[]; refused: string[] } {
     }
     const category = categoryOf(name, state.settings.categories)
     const id = newPendingId()
-    items.push({ id, url: link.url, display: link.display, host: link.host, queryWithheld: link.queryWithheld, name, dir: d.dir ?? defaultDir(category), queue: d.start ? null : d.queue, added: now, source: d.source ?? YOU, size: d.size ?? null, ...(d.project ? { project: d.project } : {}), ...(d.description ? { description: d.description } : {}), ...(d.expectedSha256 ? { expectedSha256: d.expectedSha256 } : {}), ...(d.name?.trim() && d.name.trim() !== link.name ? { nameChosen: true } : {}) })
+    items.push({ id, url: link.url, display: link.display, host: link.host, queryWithheld: link.queryWithheld, name, dir: d.dir ?? defaultDir(category), queue: d.start ? null : d.queue, added: now, source: d.source ?? YOU, size: d.size ?? null, ...(d.project ? { project: d.project } : {}), ...(d.description ? { description: d.description } : {}), ...(d.expectedSha256 ? { expectedSha256: d.expectedSha256 } : {}), ...(d.name?.trim() && d.name.trim() !== link.name ? { nameChosen: true } : {}), ...(d.overwrite ? { overwrite: d.overwrite } : {}) })
     ids.push(id)
   }
   set({ pending: [...items, ...state.pending], queues: state.queues.map((q) => ({ ...q, order: [...q.order, ...items.filter((p) => p.queue === q.id).map((p) => p.id)] })) })
@@ -603,9 +677,37 @@ function addLive(list: NewDownload[]): { ids: string[]; refused: string[] } {
 
 export function defaultDir(category: CategoryId): string {
   const s = state.settings.saveTo
+  if (NATIVE) return folderFor(category, s, joinPath, SEP() === '\\')
   if (!s.perCategory || category === 'general') return s.root
   const folder = { compressed: 'Compressed', documents: 'Documents', music: 'Music', programs: 'Programs', video: 'Video', pictures: 'Pictures' }[category]
   return joinPath(s.root, folder)
+}
+
+/** Remember the folder a download of `category` went to, when the person asked Zeus to remember it. */
+export function rememberFolder(category: CategoryId, dir: string): void {
+  const s = state.settings.saveTo
+  if (!s.rememberLast || !dir || (s.lastDirs ?? {})[category] === dir) return
+  if (dir === defaultDirWithout(category)) return
+  updateSettings('saveTo', { lastDirs: { ...(s.lastDirs ?? {}), [category]: dir } })
+}
+
+function defaultDirWithout(category: CategoryId): string {
+  const s = state.settings.saveTo
+  return folderFor(category, { ...s, lastDirs: {}, rememberLast: false }, joinPath, SEP() === '\\')
+}
+
+/** The downloads and waiting items a new link might duplicate. */
+export function existingDownloads(): Existing[] {
+  return [
+    ...state.jobs.filter((j) => !isPending(j.id)).map((j) => ({ id: j.id, url: j.url, name: j.name, state: j.state })),
+    ...state.pending.filter((p) => !p.failed).map((p) => ({ id: p.id, url: p.display, name: p.name, state: 'pending' })),
+  ]
+}
+
+/** The duplicate of `url` among existing downloads, in the shape a grabber row keeps. */
+export function duplicateOf(url: string): GrabberLink['dupe'] | undefined {
+  const d = findDuplicate(url, existingDownloads())
+  return d ? { id: d.id, state: d.state, name: d.name, where: duplicateWhere(d) } : undefined
 }
 
 function hashString(s: string): number {
@@ -939,7 +1041,7 @@ function decideLive(id: string, decision: 'approve' | 'deny', scope: Scope | und
   if (decision === 'approve' && armedFor < ARMING_MS) return { ok: false, reason: 'The approve button was pressed before it armed.' }
   if (decision === 'approve' && ap.facts.allowed_scopes.length && (!scope || !ap.facts.allowed_scopes.includes(scope))) return { ok: false, reason: 'Choose one of the offered scopes.' }
   const now = Date.now()
-  const decided: Approval = { ...ap, state: decision === 'approve' && scope !== 'never' ? 'approved' : 'denied', decided: { at: now, decision, ...(scope ? { scope } : {}), via: 'Pre-alpha service (this page)' } }
+  const decided: Approval = { ...ap, state: decision === 'approve' && scope !== 'never' ? 'approved' : 'denied', decided: { at: now, decision, ...(scope ? { scope } : {}), via: NATIVE ? 'Zeus app (this window)' : 'Pre-alpha service (this page)' } }
   const apply = () => {
     set({ approvals: state.approvals.map((x) => (x.id === id ? decided : x)) })
     const kind = ap.facts.kind
@@ -1025,7 +1127,8 @@ export function grabberAdd(text: string): ReturnType<typeof intake> {
     .filter((l) => !existing.has(l.url))
     .map((l) => {
       const category = categoryOf(l.name, state.settings.categories)
-      return { id: `gl${hashString(l.url).toString(36)}`, url: l.url, display: l.display, host: l.host, queryWithheld: l.queryWithheld, name: l.name, check: 'unchecked', size: null, type: extOf(l.name) || 'page', category, dir: defaultDir(category), selected: true, pkg: l.host }
+      const dupe = duplicateOf(l.url)
+      return { id: `gl${hashString(l.url).toString(36)}`, url: l.url, display: l.display, host: l.host, queryWithheld: l.queryWithheld, name: l.name, check: 'unchecked' as const, size: null, type: extOf(l.name) || 'page', category, dir: defaultDir(category), selected: !dupe, pkg: l.host, ...(dupe ? { dupe, dupeChoice: 'skip' as const } : {}) }
     })
   const dup = r.links.length - fresh.length
   set({ grabber: [...state.grabber, ...fresh].slice(0, 50) })
@@ -1037,17 +1140,33 @@ export function grabberCheck(ids: string[]): void {
   set({ grabber: state.grabber.map((g) => (ids.includes(g.id) ? { ...g, check: 'checking' } : g)) })
   if (LIVE) {
     const links = state.grabber.filter((g) => ids.includes(g.id))
-    const done = (results: Map<string, { check: GrabberLink['check']; size: number | null; name?: string | null }>) =>
+    const done = (results: Map<string, { check: GrabberLink['check']; size: number | null; name?: string | null; note?: string; status?: number; resumable?: GrabberLink['resumable'] }>) =>
       set({ grabber: state.grabber.map((g) => {
         const r = results.get(g.id)
         if (!r || g.check !== 'checking') return g
-        return { ...g, check: r.check, size: r.size, ...(r.name ? { name: r.name, type: extOf(r.name) || g.type } : {}), selected: r.check === 'offline' ? false : g.selected }
+        const named = r.name && r.name !== g.name ? r.name : null
+        const category = named ? categoryOf(named, state.settings.categories) : g.category
+        // A name the server gives can change the category, and with it the folder, unless the folder was typed.
+        const dir = named && !g.dirEdited ? defaultDir(category) : g.dir
+        const bad = r.check === 'offline' || (NATIVE && r.check === 'needs_login')
+        return { ...g, check: r.check, size: r.size, ...(named ? { name: named, type: extOf(named) || g.type, category, dir } : {}), ...(r.note !== undefined ? { note: r.note } : {}), ...(r.status !== undefined ? { status: r.status } : {}), ...(r.resumable !== undefined ? { resumable: r.resumable } : {}), selected: bad ? false : g.selected }
       }) })
     if (SVC) {
-      void svc
-        .check(links.map((l) => l.url))
-        .then((r) => done(new Map(links.map((l, i) => [l.id, { check: r.items[i]?.check ?? 'offline', size: r.items[i]?.size ?? null, name: r.items[i]?.name ?? null }]))))
-        .catch(() => done(new Map(links.map((l) => [l.id, { check: 'unchecked', size: null }]))))
+      // Rows answer in groups of six, so a long list shows progress instead of waiting for the last link.
+      void (async () => {
+        for (let at = 0; at < links.length; at += 6) {
+          const group = links.slice(at, at + 6)
+          try {
+            const r = await svc.check(group.map((l) => l.url))
+            done(new Map(group.map((l, i) => {
+              const a = r.items[i]
+              return [l.id, a ? { check: a.check, size: a.size ?? null, name: a.name ?? null, note: checkNote(a), status: a.status, resumable: a.resumable ?? null } : { check: 'unchecked' as const, size: null }]
+            })))
+          } catch {
+            done(new Map(group.map((l) => [l.id, { check: 'unchecked' as const, size: null, note: 'The check did not answer. Try again.' }])))
+          }
+        }
+      })()
     } else {
       void Promise.all(links.map((l) => api.preview([l.url], '').then((r) => ({ check: (r.ready ? 'online' : 'offline') as GrabberLink['check'], size: null }), () => ({ check: 'unchecked' as const, size: null })))).then((rs) => done(new Map(links.map((l, i) => [l.id, rs[i] ?? { check: 'unchecked', size: null }]))))
     }
@@ -1079,9 +1198,13 @@ export function grabberRemove(ids: string[]): void {
 }
 
 /** Step one of the real review flow: resolve destinations without creating jobs. The review is kept for ten minutes. */
-export function grabberPreview(ids: string[]): Review | string {
-  const links = state.grabber.filter((g) => ids.includes(g.id) && g.check !== 'offline')
-  if (!links.length) return 'Select at least one link that is not offline.'
+export function grabberPreview(ids: string[], opts: { overwrite?: Overwrite } = {}): Review | string {
+  // Duplicates are looked up again now: a download may have finished since the link was added.
+  const fresh = state.grabber.map((g) => (ids.includes(g.id) ? { ...g, dupe: duplicateOf(g.url) } : g))
+  const chosen = fresh.filter((g) => ids.includes(g.id) && g.check !== 'offline')
+  const skipped = chosen.filter((g) => g.dupe && (g.dupeChoice ?? 'skip') === 'skip').length
+  const links = chosen.filter((g) => !(g.dupe && (g.dupeChoice ?? 'skip') === 'skip'))
+  if (!links.length) return skipped ? 'Every selected link is already downloaded and set to be skipped. Choose Download again or Replace for the ones you want.' : 'Select at least one link that is not offline.'
   for (const l of links) {
     const p = nameProblem(l.name)
     if (p) return `${l.name}: ${p}`
@@ -1106,10 +1229,20 @@ export function grabberPreview(ids: string[]): Review | string {
       if (problem) return `${l.host}: ${problem}`
     }
   }
-  const review: Review = { id: ulid('rv', Date.now()), created: Date.now(), links, destinations, ...(LIVE ? { remote: { state: 'checking' as const, reviews: [] } } : {}) }
+  const review: Review = { id: ulid('rv', Date.now()), created: Date.now(), links, destinations, overwrite: opts.overwrite ?? state.settings.downloads.duplicates, skippedDuplicates: skipped, ...(LIVE ? { remote: { state: 'checking' as const, reviews: [] } } : {}) }
   set({ reviews: [review, ...state.reviews.slice(0, 4)] })
   if (LIVE) void remotePreview(review)
   return review
+}
+
+function fileNameFromUrl(url: string): string {
+  try {
+    const u = new URL(url)
+    const seg = u.pathname.split('/').filter(Boolean).pop() ?? u.hostname
+    return decodeURIComponent(seg)
+  } catch {
+    return url
+  }
 }
 
 /** zeusd resolves the batch without creating jobs; the bridge keeps the exact inputs for ten minutes. */
@@ -1117,10 +1250,12 @@ async function remotePreview(review: Review): Promise<void> {
   if (NATIVE) {
     const finish = (remote: NonNullable<Review['remote']>) => set({ reviews: state.reviews.map((r) => (r.id === review.id ? { ...r, remote } : r)) })
     try {
-      const r = await api.previewItems(review.links.map((l) => ({ url: l.url, dir: l.dir, ...(l.check === 'online' ? { filename: l.name } : {}), overwrite: ({ rename: 'rename', fail: 'fail', replace: 'replace' } as const)[state.settings.downloads.duplicates] })))
-      if (r.refused.length) return finish({ state: 'refused', reason: `${review.links[r.refused[0]?.index ?? 0]?.host ?? ''}: ${r.refused[0]?.reason ?? ''}`, reviews: [] })
-      if (!r.ready || !r.review_id) return finish({ state: 'refused', reason: r.items.find((i) => i.error_message)?.error_message ?? 'zeusd could not plan this batch. Check the addresses.', reviews: [] })
-      finish({ state: 'ready', reviews: [{ reviewId: r.review_id, linkIds: review.links.map((l) => l.id) }] })
+      const batch = review.overwrite ?? state.settings.downloads.duplicates
+      const r = await api.previewItems(review.links.map((l) => ({ url: l.url, dir: l.dir, ...(l.check === 'online' || l.name !== fileNameFromUrl(l.url) ? { filename: l.name } : {}), ...(l.expectedSha256 ? { expected_sha256: l.expectedSha256 } : {}), overwrite: overwriteFor(l.dupeChoice, batch) })))
+      const plan = r.items as PlanRow[]
+      if (r.refused.length) return finish({ state: 'refused', reason: `${review.links[r.refused[0]?.index ?? 0]?.host ?? ''}: ${r.refused[0]?.reason ?? ''}`, reviews: [], plan })
+      if (!r.ready || !r.review_id) return finish({ state: 'refused', reason: r.items.find((i) => i.error_message)?.error_message ?? 'zeusd could not plan this batch. Check the addresses.', reviews: [], plan })
+      finish({ state: 'ready', reviews: [{ reviewId: r.review_id, linkIds: review.links.map((l) => l.id) }], plan })
     } catch (e) {
       finish({ state: 'refused', reason: e instanceof Error ? e.message : 'The review failed.', reviews: [] })
     }
@@ -1148,7 +1283,7 @@ export function grabberStart(reviewId: string, queue: string | null): { ok: true
   const r = state.reviews.find((x) => x.id === reviewId)
   if (!r) return { ok: false, reason: 'This review is no longer available. Preview the downloads again.' }
   if (Date.now() - r.created > 10 * MIN) return { ok: false, reason: 'This review expired after ten minutes. Preview the downloads again.' }
-  if (LIVE && queue === null) {
+  if (LIVE && (queue === null || NATIVE)) {
     if (!r.remote || r.remote.state === 'checking') return { ok: false, reason: 'zeusd is still checking this batch. Start it in a moment.' }
     if (r.remote.state === 'refused') return { ok: false, reason: r.remote.reason ?? 'zeusd refused this batch.' }
     const remote = r.remote
@@ -1157,20 +1292,23 @@ export function grabberStart(reviewId: string, queue: string | null): { ok: true
       let started = 0
       for (const rv of remote.reviews) {
         try {
-          const res = await api.enqueue(rv.reviewId, retryKey())
+          const res = await api.enqueue(rv.reviewId, retryKey(), NATIVE ? queue : null)
           const next = { ...state.jobMeta }
           res.jobs.forEach((j) => {
             if (j.job_id) {
-              next[j.job_id] = { queue: null, source: YOU }
+              next[j.job_id] = { queue, source: YOU }
               started++
             }
           })
           set({ jobMeta: next })
+          for (const l of r.links) rememberFolder(l.category, l.dir)
+          const refused = res.jobs.filter((j) => j.error_code)
+          if (refused.length) toast({ kind: 'warn', title: `${refused.length} download${refused.length === 1 ? '' : 's'} refused`, desc: refused[0]?.error_message ?? refused[0]?.error_code ?? '', important: true, topic: 'failure' })
         } catch (e) {
           toast({ kind: 'bad', title: 'Not started', desc: e instanceof Error ? e.message : 'zeusd did not start this batch.', important: true, topic: 'failure' })
         }
       }
-      if (started) toast({ kind: 'ok', title: `${started} download${started === 1 ? '' : 's'} started`, desc: 'Enqueued in zeusd from your reviewed batch.', important: false, topic: 'queue', to: '#/downloads' })
+      if (started) toast({ kind: 'ok', title: `${started} download${started === 1 ? '' : 's'} ${queue ? 'added to the queue' : 'started'}`, desc: `From your reviewed batch${r.skippedDuplicates ? `; ${r.skippedDuplicates} duplicate${r.skippedDuplicates === 1 ? '' : 's'} skipped` : ''}.`, important: false, topic: 'queue', to: '#/downloads' })
       void refreshFiles(false)
     })()
     return { ok: true, ids: [] }
@@ -1183,6 +1321,8 @@ export function grabberStart(reviewId: string, queue: string | null): { ok: true
       queue,
       start: queue === null,
       size: l.size,
+      ...(l.expectedSha256 ? { expectedSha256: l.expectedSha256 } : {}),
+      overwrite: overwriteFor(l.dupeChoice, r.overwrite ?? state.settings.downloads.duplicates),
       ...(l.check === 'needs_login' ? { sessionOrigin: new URL(l.url).origin } : {}),
     })),
   )
@@ -1216,6 +1356,11 @@ export function siteRequestRun(req: SiteRequest, name: string, queue: string | n
 
 export function rescan(path?: string): void {
   if (state.index.state === 'scanning') return
+  if (NATIVE) {
+    set({ index: { ...state.index, state: 'scanning', progress: 0, scanning: path ?? 'your folders' } })
+    void filesApi.rescan(path).then(() => nudgeIndexSync(), () => undefined)
+    return
+  }
   if (LIVE) {
     set({ index: { ...state.index, state: 'scanning', progress: 0, scanning: path ?? 'your download folder' } })
     void refreshFiles(true).then(() => {
