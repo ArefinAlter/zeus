@@ -180,6 +180,9 @@ async function request<T>(path: string, method = 'GET', body?: unknown, retried 
   return data as T
 }
 
+/** One call of the closed route table (native app: Tauri IPC; test builds: the loopback harness). For feature modules. */
+export const call = <T>(method: string, path: string, body?: unknown): Promise<T> => request<T>(path, method, body)
+
 // ---------------------------------------------------------------- the bridge (zeusd)
 
 export interface SessionInfo {
