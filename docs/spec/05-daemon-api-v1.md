@@ -426,9 +426,9 @@ Rules:
 
 | Permission | Grants | A | S | H | Ad |
 |---|---|---|---|---|---|
-| `jobs.read` | `jobs.probe`, `jobs.list`, `jobs.get`, `jobs.wait`, `jobs.verify`; `cloud.accounts.list`, `cloud.list`, `cloud.get` | yes | yes | yes | yes |
+| `jobs.read` | `jobs.probe`, `jobs.list`, `jobs.get`, `jobs.wait`, `jobs.verify`; `queues.list`; `cloud.accounts.list`, `cloud.list`, `cloud.get` | yes | yes | yes | yes |
 | `jobs.write` | `jobs.enqueue`; `cloud.plan`, `cloud.submit` | yes | yes | yes | yes |
-| `jobs.control` | `jobs.control`, `cloud.control` | yes | yes | yes | yes |
+| `jobs.control` | `jobs.control`, `cloud.control`, `queues.put`, `queues.delete`, `queues.control`, `queues.configure` | yes | yes | yes | yes |
 | `events.read` | `events.subscribe`, `events.unsubscribe` | yes | yes | yes | yes |
 | `sessions.read` | `sessions.list` | yes | yes | yes | yes |
 | `sessions.request` | `sessions.request` (raises an approval, never grants) | yes | yes | yes | yes |
@@ -523,6 +523,11 @@ ADR 0011 introduces the `service` kind for first-party programs that use the dae
 | `jobs.wait` | MVP | `jobs.read` | A S H Ad | no | At most 60 000 ms. Capability `jobs.wait`. |
 | `jobs.control` | MVP | `jobs.control` | A S H Ad | yes | `pause`, `resume`, `cancel`, `retry`, `retry_now`, `reprioritize`. |
 | `jobs.verify` | MVP | `jobs.read` | A S H Ad | no | Re-hashes a completed file. |
+| `queues.list` | MVP | `jobs.read` | A S H Ad | no | Queues, speed limiter, defaults (section 9.14). A service sees only its own jobs in them. |
+| `queues.put` | MVP | `jobs.control` | A H Ad | yes | Creates or replaces a queue. Refused for services. |
+| `queues.delete` | MVP | `jobs.control` | A H Ad | yes | The built-in queue `main` cannot be deleted. Refused for services. |
+| `queues.control` | MVP | `jobs.control` | A S H Ad | yes | `start`, `stop`, `assign`, `unassign`, `move`, `ack_finish`; a service may only move its own jobs. |
+| `queues.configure` | MVP | `jobs.control` | A H Ad | yes | Speed limiter and scheduler defaults. Refused for services. |
 | `events.subscribe` | MVP | `events.read` | A S H Ad | no | Capability `events`. |
 | `events.unsubscribe` | MVP | `events.read` | A S H Ad | no | Capability `events`. |
 | `sessions.list` | MVP | `sessions.read` | A S H Ad | no | Grants, never material. Paged. |
@@ -1188,6 +1193,33 @@ Protection strengthening and a new copy start with the same pure preview method:
 ```
 
 These are alternative examples before the tombstone is applied. Neither preview writes a file or changes protection. Each returned plan must be separately applied with its own retry key; reusing the tombstone key with another plan fails with `api.idempotency_conflict`.
+
+### 9.14 `queues.*`
+
+Queues hold downloads until they run, so that a person can say "these overnight, two at a time, at most 512 KiB/s". They are daemon state (the file `queues.json` beside the journal, ADR 0012), so every client sees the same queues and they keep running when the window that created them closes. Nothing in this section can decide an approval, grant a session or release the kill switch.
+
+**Membership.** A download joins a queue when it is enqueued with the job label `zeus.queue=<queue id>` (`jobs.enqueue` refuses an unknown queue before creating any job) or when `queues.control` `assign` names it. Membership is not part of the job and does not change its spec. Without a label a download is not in any queue and starts at once, as before.
+
+**Running and holding.** A queue is either running or stopped. A stopped queue holds its members: the daemon pauses them (they are `paused` in the engine and listed in `held_job_ids`). A running queue releases held members in `order`, resuming them while fewer than `max_concurrent` members occupy a slot (`queued`, `probing`, `downloading`, `verifying`, `finalizing`, `retry_scheduled`). A member that starts by other means while its queue is stopped or full is paused again; a held member that a client resumes directly leaves the queue. A queue that runs out of work after doing some stops itself, records `finished_at_ms` and, when `on_finish` is not `nothing`, sets `finish_action_pending` until `queues.control` `ack_finish`. `stop_limiter` is performed by the daemon (it turns the limiter off); `notify`, `close_app` and `sleep` are performed by the application that sees the flag.
+
+**Schedule.** `schedule.start_enabled` starts the queue at `start_time` (local wall-clock `HH:MM`, or UTC, per `defaults.timezone`) on `days` (0 is Sunday) or once on `start_date`; `stop_enabled` stops it at `stop_time`, on the next day when that is earlier than the start. A scheduled stop pauses running members, or with `defaults.stop_behaviour: finish_current` lets the running ones finish and releases no more. `defaults.missed_window: run_once` starts a queue whose start fell while the daemon was off; `skip` waits for the next one. The scheduler ticks once a second; a start or stop is therefore at most a second late.
+
+**Failures.** A failed member whose error is `retryable` is retried `retries` times, `retry_delay_s` seconds apart, on top of the engine's own retry budget; other failures leave the queue. The daemon never retries while the kill switch is engaged.
+
+**Kill switch.** While it is engaged, queues stop, nothing is released and `start` fails with `policy.kill_switch_engaged`. A schedule never releases it, and releasing it does not restart queues.
+
+**Speed limiter.** `limit_kib_s` of a queue bounds the rate of all its members together; `queues.configure` `limiter` bounds everything the daemon downloads, optionally only inside a daily window (`from` to `to` on `days`, a window past midnight belongs to the day it started). A download is paced at the lower of the two limits that apply to it, shared in arrival order with the other downloads under the same limit; saved-up capacity is at most 100 ms. Changes apply to the next piece of data, without a restart. Measured against a loopback server the pacing stays within 1 percent of the limit.
+
+**Visibility and authority.** A service credential sees only its own jobs in `order` and `held_job_ids`, may `assign`, `unassign` and `move` them, and may not change queues, the limiter or the defaults.
+
+```jsonl fragment
+{"jsonrpc":"2.0","id":40,"method":"queues.put","params":{"queue":{"id":"night","name":"Night","max_concurrent":2,"retries":3,"retry_delay_s":60,"schedule":{"start_enabled":true,"start_time":"23:00","repeat":"days","days":[0,1,2,3,4,5,6],"stop_enabled":true,"stop_time":"06:00"},"on_finish":"notify","limit_kib_s":512},"idempotency_key":"put-night"}}
+{"jsonrpc":"2.0","id":41,"method":"jobs.enqueue","params":{"jobs":[{"url":"https://files.example.com/a.iso","labels":{"zeus.queue":"night"}}]}}
+{"jsonrpc":"2.0","id":42,"method":"queues.control","params":{"action":"start","id":"night"}}
+{"jsonrpc":"2.0","id":43,"method":"queues.configure","params":{"limiter":{"enabled":true,"limit_kib_s":2048,"schedule_enabled":true,"from":"09:00","to":"17:00","days":[1,2,3,4,5]}}}
+```
+
+`queues.list` returns `{queues, limiter, defaults, now_ms, utc_offset_min, kill_switch_engaged}`; each queue carries its definition and `builtin`, `running`, `last_started_ms`, `next_start_ms`, `next_stop_ms`, `waiting`, `active`, `order`, `held_job_ids`, `finished_at_ms` and `finish_action_pending`.
 
 ## 10. Event streams
 

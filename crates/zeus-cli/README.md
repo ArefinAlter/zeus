@@ -19,6 +19,21 @@ Artifact queries preserve public records and pagination. `ls` accepts SHA-256/BL
 
 In `zeus tui`, `/` searches loaded jobs by name, redacted URL or state. Enter finishes typing; Escape clears search; Ctrl-C exits. Search text cannot trigger pause/resume/cancel shortcuts. Selection follows job identity when snapshots reorder, and the table scrolls to keep the selected job visible. This is a live queue filter, not a filesystem index.
 
+## Queues
+
+```text
+zeus queues ls
+zeus queues put night.json
+zeus get --queue night https://files.example.org/big.iso   # waits in the queue until it runs
+zeus get https://files.example.org/small.zip               # not in a queue: starts at once
+zeus queues start night
+zeus queues stop night
+zeus queues limit --kib-s 2048
+zeus queues limit --off
+```
+
+A queue holds its downloads until it runs (by hand with `start`, or on its schedule), releases at most `max_concurrent` of them at a time, retries failures that are worth retrying and paces its members at its own `limit_kib_s` and at the global limit, whichever is lower. `queues.json` in the state directory keeps queues, membership and the limiter across restarts. `ls` shows what each queue is doing; `--json` prints the full views. Starting a queue is refused while the kill switch is engaged. See spec 05 section 9.14 for the queue file shape and the schedule rules.
+
 ## Cloud delivery
 
 `zeus cloud accounts configure` opens the controlling terminal to register a destination. The daemon independently verifies the human terminal and pinned CLI executable. Native provider credentials are entered with echo disabled and stored in the OS keyring; there are no secret command-line flags or stdin credential inputs. The setup command does not perform OAuth sign-in or refresh native access credentials. Obtain the appropriate access credential separately, or use an explicitly configured rclone executable, dedicated config file and remote. No account is auto-discovered.
