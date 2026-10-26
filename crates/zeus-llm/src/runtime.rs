@@ -58,6 +58,16 @@ use crate::{
     PrivacyTier, ProviderKind, ProviderStatus, SpendCaps, SpendLedger, TrustedKeys, redact_text,
 };
 use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
+
+/// Whether a manifest's `min_zeus_version` is above this build's policy level
+/// ([`crate::policy::POLICY_LEVEL`]), which disables remote model providers. The release name of the build (for
+/// example `0.0.1-beta`) plays no part.
+pub fn requires_newer_build(min: &str) -> Result<bool, LlmError> {
+    let level = semver::Version::parse(crate::policy::POLICY_LEVEL)
+        .map_err(|_| LlmError::SchemaViolation)?;
+    let min = semver::Version::parse(min).map_err(|_| LlmError::SchemaViolation)?;
+    Ok(level < min)
+}
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -387,11 +397,7 @@ impl ModelRuntime {
         if let Some(policy) = policy {
             config.status = policy.status_map();
             let too_old = match policy.min_zeus_version {
-                Some(min) => {
-                    semver::Version::parse(env!("CARGO_PKG_VERSION"))
-                        .map_err(|_| LlmError::SchemaViolation)?
-                        < semver::Version::parse(&min).map_err(|_| LlmError::SchemaViolation)?
-                }
+                Some(min) => requires_newer_build(&min)?,
                 None => false,
             };
             for kind in ProviderKind::LADDER {
@@ -575,6 +581,16 @@ mod tests {
                     .encode(key.sign(&pae(PAYLOAD_TYPE, &payload)).to_bytes()),
             }],
         }
+    }
+    #[test]
+    fn a_manifest_minimum_is_compared_with_the_policy_level_not_the_release_name() {
+        // Release names such as 0.0.1-beta do not change which providers a build may use.
+        assert!(!requires_newer_build("0.1.0").unwrap());
+        assert!(!requires_newer_build("0.0.1-beta").unwrap());
+        assert!(requires_newer_build("0.2.0").unwrap());
+        assert!(requires_newer_build("1.0.0").unwrap());
+        assert!(requires_newer_build("soon").is_err());
+        assert!(!env!("CARGO_PKG_VERSION").is_empty());
     }
     #[test]
     fn policy_rollback_and_equivocation_rejected_after_restart_and_no_trust_keys_are_invented() {
