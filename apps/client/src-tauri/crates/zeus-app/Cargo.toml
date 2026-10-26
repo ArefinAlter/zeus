@@ -1,0 +1,48 @@
+[package]
+name = "zeus-app"
+description = "The Zeus desktop app's engine: provisions and supervises its own zeusd and serves the client's closed route table."
+version = "0.0.1-beta"
+edition = "2024"
+rust-version = "1.90"
+license = "Apache-2.0"
+repository = "https://github.com/ArefinAlter/zeus"
+authors = ["Zeus contributors"]
+publish = false
+
+[features]
+default = []
+# A loopback HTTP front of the route table, used to test the interface in an ordinary browser (never shipped enabled).
+http-harness = ["dep:axum"]
+
+[[bin]]
+name = "zeus-app-http"
+path = "src/bin/zeus-app-http.rs"
+required-features = ["http-harness"]
+
+[dependencies]
+axum = { workspace = true, optional = true }
+zeus-api.workspace = true
+zeus-types.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+url.workspace = true
+rand.workspace = true
+sha2.workspace = true
+hex.workspace = true
+directories.workspace = true
+toml.workspace = true
+
+[dev-dependencies]
+tempfile = "3.27"
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[lints.clippy]
+dbg_macro = "warn"
+todo = "deny"
+unimplemented = "deny"

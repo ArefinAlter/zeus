@@ -1,16 +1,35 @@
-# The Zeus client's desktop shell: Tauri 2 around the shared frontend (`../dist/web`), on the scripted backend that
-# lives in the frontend. It has no daemon connection, no app commands and no plugins.
+# The Zeus desktop app: Tauri 2 around the shared frontend (`../dist/web`), and `zeus-app`, the engine it owns.
+#
+# On first launch the app provisions its own Zeus installation in its per-user data folder, starts the bundled `zeusd`
+# as a managed child process and talks to it over zeusd's local IPC with its own `app` credential. The credential never
+# reaches the webview: the page calls one closed command, `backend_call`, whose route table lives in `zeus-app`.
 #
 # This is its own Cargo workspace (ADR 0009 pattern): Tauri and the system webview never enter the daemon workspace at
-# the repository root, which excludes `apps/client/src-tauri`. It depends on no Zeus crate.
+# the repository root, which excludes `apps/client/src-tauri`.
 [workspace]
 resolver = "3"
-members = ["."]
+members = [".", "crates/zeus-app"]
+
+[workspace.dependencies]
+zeus-api = { path = "../../../crates/zeus-api" }
+zeus-types = { path = "../../../../zeus-core/crates/zeus-types" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1.53", features = ["rt-multi-thread", "macros", "sync", "time", "net", "fs", "process", "signal", "io-util"] }
+thiserror = "2"
+tracing = "0.1"
+url = "2.5"
+rand = "0.10"
+sha2 = "0.11"
+hex = "0.4"
+directories = "6"
+toml = "1.1"
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio"] }
 
 [package]
 name = "zeus-client"
-description = "Zeus pre-alpha client: the desktop shell around the shared frontend. It talks to the hosted pre-alpha or your own zeusd (through zeus-web-bridge) from the page; the shell itself has no daemon connection."
-version = "0.0.1-alpha"
+description = "The Zeus desktop app: a Tauri 2 shell around the shared frontend and the engine it owns (zeus-app)."
+version = "0.0.1-beta"
 edition = "2024"
 rust-version = "1.90"
 license = "Apache-2.0"
@@ -29,7 +48,13 @@ default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]
 
 [dependencies]
+zeus-app = { path = "crates/zeus-app" }
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
 tauri = { version = "~2.11", default-features = false, features = ["wry", "compression", "common-controls-v6", "x11", "dbus"] }
+tauri-plugin-single-instance = "2"
 
 [build-dependencies]
 tauri-build = { version = "~2.6", default-features = false, features = ["config-json"] }

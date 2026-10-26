@@ -27,12 +27,14 @@ function preactFrozenPrototype(): Plugin {
 // One build serves the desktop shell (bundled assets) and the website copy under /client/. Relative asset URLs keep
 // it independent of the mount point. Nothing is fetched at run time: no fonts, no scripts, no data.
 // Build modes (`vite build --mode <mode>`), set here rather than in .env files so a fresh clone builds the same:
-// * desktop (npm run build): the desktop app's frontend; starts on the hosted pre-alpha, switchable in Settings.
+// * desktop (npm run build): the desktop app's frontend; inside the app it starts on the Zeus engine on this computer,
+//   switchable in Settings.
+// * harness: test builds of the interface against the engine's loopback harness (page address names it).
 // * hosted: the web client the hosted pre-alpha serves on its own origin; no browser storage (the service keeps
 //   preferences per sandbox).
 // * scripted: offline, on the in-page sample backend; no network request at all.
 // * site: the old website copy on the sample backend, without browser storage.
-const BACKEND: Record<string, string> = { desktop: 'desktop', hosted: 'hosted', scripted: 'scripted', site: 'scripted', development: 'scripted' }
+const BACKEND: Record<string, string> = { desktop: 'desktop', harness: 'harness', hosted: 'hosted', scripted: 'scripted', site: 'scripted', development: 'scripted' }
 const NO_STORAGE = new Set(['hosted', 'site'])
 
 export default defineConfig(({ mode }) => ({

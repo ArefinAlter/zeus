@@ -3,7 +3,8 @@
 
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks'
 
-import { HOSTED, LIVE } from '../../backend/live'
+import { HOSTED, LIVE, NATIVE, SVC } from '../../backend/live'
+import type { LinkCheck } from '../../backend/remote'
 import { api, svc } from '../../backend/remote'
 import { addDownloads, defaultDir, sizeFor, useStore } from '../../backend/store'
 import { CATEGORIES, categoryOf } from '../../model/categories.ts'
@@ -13,6 +14,24 @@ import { fmtBytes } from '../../model/units.ts'
 import { href, navigate } from '../../lib/router'
 import { Chip, Dialog, Notice } from '../../ui/components'
 import { Icon } from '../../ui/icons'
+
+/** What an offline answer means for a person. */
+function offlineText(a: LinkCheck): string {
+  switch (a.status) {
+    case 403:
+      return 'The server refused the file (403). A signed link that expired looks like this: get a fresh link from the site.'
+    case 404:
+      return 'The server has no such file (404). Check the address.'
+    case 410:
+      return 'The file was removed from the server (410). Nothing to retry.'
+    case 429:
+      return 'The server says too many requests (429). Try again later.'
+    case 503:
+      return 'The server is busy (503) and asked Zeus to wait. Zeus retries on its own once the download starts.'
+    default:
+      return a.error_message ? `${a.error_message}` : `The server answered ${a.status || 'nothing'}; zeusd will report the same when it tries.`
+  }
+}
 
 export function AddUrl({ initial, onClose }: { initial?: string; onClose: () => void }) {
   const queues = useStore((s) => s.queues.filter((q) => q.kind === 'download'))
@@ -30,7 +49,7 @@ export function AddUrl({ initial, onClose }: { initial?: string; onClose: () => 
   const input = useRef<HTMLInputElement>(null)
   useEffect(() => input.current?.focus(), [])
   // Live: what the server answered to a HEAD request (hosted: from the pre-alpha service, sample hosts only).
-  const [answer, setAnswer] = useState<{ check: string; size: number | null; status: number } | null>(null)
+  const [answer, setAnswer] = useState<LinkCheck | null>(null)
   const [samples, setSamples] = useState<{ url: string; note: string }[]>([])
   useEffect(() => {
     if (!HOSTED) return
@@ -47,16 +66,17 @@ export function AddUrl({ initial, onClose }: { initial?: string; onClose: () => 
     setProbing(true)
     setError(null)
     if (LIVE) {
-      const done = (a: { check: string; size: number | null; status: number } | null) => {
+      const done = (a: LinkCheck | null) => {
         setProbing(false)
         setAnswer(a)
         setProbed(link.url)
-        setName(link.name)
-        const c = categoryOf(link.name, settings.categories)
+        const found = a?.name?.trim() || link.name
+        setName(found)
+        const c = categoryOf(found, settings.categories)
         setCategory(c)
         setDir(defaultDir(c))
       }
-      if (HOSTED) svc.check([link.url]).then((r) => done(r.items[0] ?? null), (e: unknown) => (setProbing(false), setError(e instanceof Error ? e.message : 'The check failed.')))
+      if (SVC) svc.check([link.url]).then((r) => done(r.items[0] ?? null), (e: unknown) => (setProbing(false), setError(e instanceof Error ? e.message : 'The check failed.')))
       else done(null)
       return
     }
@@ -146,8 +166,10 @@ export function AddUrl({ initial, onClose }: { initial?: string; onClose: () => 
               {LIVE
                 ? answer
                   ? answer.check === 'online'
-                    ? `${answer.status} · ${fmtBytes(size)}`
-                    : `The server answered ${answer.status || 'nothing'}; zeusd will report the same when it tries.`
+                    ? `${answer.status} · ${size === null ? 'size unknown' : fmtBytes(size)}${answer.redirects ? ` · ${answer.redirects} redirect${answer.redirects === 1 ? '' : 's'}` : ''}${answer.content_type ? ` · ${answer.content_type.split(';')[0]}` : ''}`
+                    : answer.check === 'needs_login'
+                      ? 'The server wants a sign-in. Zeus lends a browser login only through the extension, after you approve.'
+                      : offlineText(answer)
                   : 'zeusd probes the address when the download starts.'
                 : login
                   ? 'The site answered with a sign-in page: this file needs your login.'
@@ -155,6 +177,12 @@ export function AddUrl({ initial, onClose }: { initial?: string; onClose: () => 
             </span>
             {LIVE ? (answer ? <Chip tone={answer.check === 'online' ? 'ok' : 'bad'}>{answer.check}</Chip> : null) : login ? <Chip tone="warn">needs a site login</Chip> : <Chip tone="ok">ranges verified</Chip>}
           </div>
+          {NATIVE && answer?.check === 'online' ? (
+            <p class="muted small">
+              {answer.resumable === 'verified' ? 'The server honours byte ranges: Zeus downloads in parallel parts and can resume.' : answer.resumable === 'unsupported' ? 'The server ignores byte ranges: this file downloads in one piece and starts over if interrupted.' : 'Whether the server honours byte ranges is learned when the download starts.'}
+              {answer.name && answer.name_source === 'content_disposition' ? ' The file name comes from the server (Content-Disposition).' : ''}
+            </p>
+          ) : null}
           {login ? <Notice kind="warn">Zeus will ask for your approval before it uses your login for {link.host}. The session comes from the Zeus extension, in memory only; Zeus never reads your browser's cookie store.</Notice> : null}
           <div class="fields">
             <label class="field">
@@ -181,9 +209,9 @@ export function AddUrl({ initial, onClose }: { initial?: string; onClose: () => 
               <input value={name} onInput={(e) => setName((e.target as HTMLInputElement).value)} />
             </label>
             {problem ? <p class="field-err wide">{problem}</p> : null}
-            {LIVE ? null : (
+            {LIVE && !NATIVE ? null : (
               <label class="field wide">
-                Expected SHA-256 <span class="muted">optional</span>
+                Expected SHA-256 <span class="muted">optional, the hash the publisher gives</span>
                 <input class="mono" value={expected} placeholder="64 hex digits from the publisher" onInput={(e) => setExpected((e.target as HTMLInputElement).value)} />
               </label>
             )}

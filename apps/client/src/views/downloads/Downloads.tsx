@@ -4,7 +4,9 @@
 
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks'
 
-import { HOSTED, LIVE } from '../../backend/live'
+import { HOSTED, LIVE, NATIVE } from '../../backend/live'
+import { native } from '../../backend/remote'
+import { joinPath } from '../../lib/paths.ts'
 import { cancel, deleteCompleted, getState, isActive, pause, pauseAll, queueName, redownload, refreshAddress, remove, resume, resumeAll, setPriority, setQueue, startQueue, stopQueue, toast, useStore } from '../../backend/store'
 import { CATEGORIES, categoryLabel } from '../../model/categories.ts'
 import type { Job } from '../../model/types.ts'
@@ -157,8 +159,8 @@ export function Downloads({ view, queue, focus }: { view: string; queue: string 
     const one = selected.length === 1 ? (selected[0] as Job) : null
     const ids = selected.map((j) => j.id)
     return [
-      { label: 'Open', icon: 'external', disabled: !one || one.state !== 'completed' ? 'Only a finished file opens' : one.quarantined ? 'Quarantined: Zeus never opens it' : false, run: () => toast({ kind: '', title: 'Opening files is not part of this release', desc: 'It runs on sample data; there is no file to hand to your system.', important: true, topic: 'system' }) },
-      { label: 'Open folder', icon: 'folderopen', disabled: !one, run: () => one && navigate(href('files', { path: one.dir })) },
+      { label: 'Open', icon: 'external', disabled: !one || one.state !== 'completed' ? 'Only a finished file opens' : one.quarantined ? 'Quarantined: Zeus never opens it' : false, run: () => (NATIVE && one ? void native.open(joinPath(one.dir, one.name), 'open').catch((e: unknown) => toast({ kind: 'warn', title: 'Could not open the file', desc: e instanceof Error ? e.message : '', important: false, topic: 'system' })) : toast({ kind: '', title: 'Opening files is not part of this release', desc: 'It runs on sample data; there is no file to hand to your system.', important: true, topic: 'system' })) },
+      { label: 'Open folder', icon: 'folderopen', disabled: !one, run: () => (NATIVE && one ? void native.open(joinPath(one.dir, one.name), 'reveal').catch(() => native.open(one.dir, 'open').catch(() => undefined)) : one && navigate(href('files', { path: one.dir }))) },
       { label: 'Move or rename…', icon: 'rename', disabled: !one || isActive(one), run: () => one && setMoving(one.id) },
       { sep: true, label: '' },
       { label: 'Resume', icon: 'play', hint: 'Space', disabled: !selected.some(canResume), run: () => resume(ids) },

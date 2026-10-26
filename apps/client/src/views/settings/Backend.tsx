@@ -1,16 +1,18 @@
 // Backend: which Zeus this window talks to, and what each part of the screen comes from.
 //
-// The website copy always uses the hosted pre-alpha. The desktop app starts on the hosted pre-alpha and can switch to
-// your own zeusd (through zeus-web-bridge on 127.0.0.1) or to the offline sample data.
+// The website copy always uses the hosted pre-alpha. The desktop app starts on the Zeus engine it runs on this computer
+// and can switch to the hosted pre-alpha, to your own zeusd (through zeus-web-bridge on 127.0.0.1) or to offline sample
+// data.
 
 import { useState } from 'preact/hooks'
 
-import { HOSTED, LIVE } from '../../backend/live'
-import { HOSTED_URL, LOCAL_URL, SWITCHABLE, backend, hasLocalToken, setLocalToken, switchBackend } from '../../backend/remote'
+import { HOSTED, LIVE, NATIVE } from '../../backend/live'
+import { HOSTED_URL, IN_APP, LOCAL_URL, SWITCHABLE, backend, hasLocalToken, setLocalToken, switchBackend } from '../../backend/remote'
 import type { BackendKind } from '../../backend/remote'
 import { useStore } from '../../backend/store'
 import { fmtBytes } from '../../model/units.ts'
 import { Chip, CodeCopy, Kv, Notice, PageHead, SettingRow, SettingsGroup } from '../../ui/components'
+import { EngineSettings } from './Engine'
 
 const SOURCES: [string, string, string][] = [
   ['Downloads, states and controls', 'zeusd', 'jobs.list, jobs.enqueue (dry run, then the reviewed batch) and jobs.control through zeus-web-bridge'],
@@ -41,7 +43,7 @@ export function BackendSettings() {
     <>
       <PageHead title="Backend" sub="Which Zeus this window talks to." />
       <SettingsGroup title="This window">
-        <SettingRow title="Backend" desc={cur.kind === 'hosted' ? `The hosted pre-alpha at ${cur.base || window.location.origin}: a real zeusd behind zeus-web-bridge, in a private sandbox.` : cur.kind === 'local' ? `Your own zeusd through zeus-web-bridge at ${cur.base}.` : 'Sample data inside the app. No network request is made.'}>
+        <SettingRow title="Backend" desc={cur.kind === 'native' ? 'The Zeus engine on this computer: a bundled zeusd that this app set up, runs and talks to with its own restricted credential.' : cur.kind === 'hosted' ? `The hosted pre-alpha at ${cur.base || window.location.origin}: a real zeusd behind zeus-web-bridge, in a private sandbox.` : cur.kind === 'local' ? `Your own zeusd through zeus-web-bridge at ${cur.base}.` : 'Sample data inside the app. No network request is made.'}>
           <Chip tone={cur.kind === 'scripted' ? 'warn' : live?.connected ? 'ok' : 'bad'}>{cur.kind === 'scripted' ? 'sample data' : live?.connected ? 'connected' : 'not connected'}</Chip>
         </SettingRow>
         {live?.failure ? <Notice kind="error">{live.failure.message}</Notice> : null}
@@ -50,8 +52,8 @@ export function BackendSettings() {
             <Kv
               rows={[
                 ['zeusd', d ? `${d.daemon_version}${d.journal_ok ? ', journal healthy' : ', journal check failed'}` : '…'],
-                ['bridge', sess ? `zeus-web-bridge ${sess.bridge_version} (${sess.mode})` : '…'],
-                ['credential', d ? `gui, ${d.permissions.length} permissions: ${d.permissions.join(', ')}` : '…'],
+                [NATIVE ? 'app' : 'bridge', sess ? (NATIVE ? `Zeus ${sess.bridge_version}, ${sess.platform ?? ''}` : `zeus-web-bridge ${sess.bridge_version} (${sess.mode})`) : '…'],
+                ['credential', d ? `${NATIVE ? 'app' : 'gui'}, ${d.permissions.length} permissions: ${d.permissions.join(', ')}; it can decide no approval` : '…'],
                 ['capabilities', d ? d.capabilities.join(', ') : '…'],
                 ...(HOSTED && sess
                   ? ([
@@ -65,6 +67,8 @@ export function BackendSettings() {
           </div>
         ) : null}
       </SettingsGroup>
+
+      {NATIVE ? <EngineSettings /> : null}
 
       {cur.kind === 'local' ? (
         <SettingsGroup title="Bridge token" note="zeus-web-bridge prints the path of its owner-only token file when it starts. The token is held in this window's memory only; paste it again after a restart.">
@@ -91,8 +95,13 @@ export function BackendSettings() {
       {SWITCHABLE ? (
         <SettingsGroup title="Switch backend" note="The window reloads. Settings you changed are kept with the backend they were made on.">
           <div class="row stack">
+            {IN_APP ? (
+              <label class="radio">
+                <input type="radio" name="backend" checked={kind === 'native'} onChange={() => setKind('native')} /> This computer: the Zeus engine inside this app (default)
+              </label>
+            ) : null}
             <label class="radio">
-              <input type="radio" name="backend" checked={kind === 'hosted'} onChange={() => setKind('hosted')} /> Hosted pre-alpha ({HOSTED_URL})
+              <input type="radio" name="backend" checked={kind === 'hosted'} onChange={() => setKind('hosted')} /> Hosted pre-alpha ({HOSTED_URL}), a sandbox on a server, sample file hosts only
             </label>
             <label class="radio">
               <input type="radio" name="backend" checked={kind === 'local'} onChange={() => setKind('local')} /> My own zeusd, through zeus-web-bridge on this computer
@@ -110,20 +119,20 @@ export function BackendSettings() {
         </SettingsGroup>
       ) : null}
 
-      <SettingsGroup title="Your own zeusd" note="zeusd has one listener, a local IPC socket. zeus-web-bridge is the separate HTTP bridge for this client: it uses zeusd's restricted gui credential (seven permissions, no approval decisions, no file writes), listens on 127.0.0.1 only and requires its token on every request.">
+      {NATIVE ? null : <SettingsGroup title="Your own zeusd" note="zeusd has one listener, a local IPC socket. zeus-web-bridge is the separate HTTP bridge for this client: it uses zeusd's restricted gui credential (seven permissions, no approval decisions, no file writes), listens on 127.0.0.1 only and requires its token on every request.">
         <div class="row stack">
           <CodeCopy text={'zeus daemon install\nzeusd run\nzeus-web-bridge        # prints its address and the path of bridge.token'} />
         </div>
-      </SettingsGroup>
+      </SettingsGroup>}
 
       {LIVE ? (
         <SettingsGroup title="Where each part comes from">
-          {SOURCES.filter(([, from]) => HOSTED || from === 'zeusd').map(([what, from, how]) => (
-            <SettingRow title={what} desc={how}>
-              <Chip tone={from === 'zeusd' ? 'ok' : ''}>{from}</Chip>
+          {SOURCES.filter(([, from]) => HOSTED || NATIVE || from === 'zeusd').map(([what, from, how]) => (
+            <SettingRow title={what} desc={NATIVE ? how.replace('through zeus-web-bridge', 'through the app').replace('zeusd does not schedule queues or limit speed yet; queued downloads go to zeusd when their queue starts', 'zeusd holds, schedules and limits downloads per queue') : how}>
+              <Chip tone={from === 'zeusd' ? 'ok' : ''}>{NATIVE && from !== 'zeusd' ? 'this app' : from}</Chip>
             </SettingRow>
           ))}
-          {!HOSTED ? <SettingRow title="Everything else" desc="Queues, settings, lists and threads are kept on this computer (the window's own storage)."><Chip>this device</Chip></SettingRow> : null}
+          {!HOSTED && !NATIVE ? <SettingRow title="Everything else" desc="Queues, settings, lists and threads are kept on this computer (the window's own storage)."><Chip>this device</Chip></SettingRow> : null}
         </SettingsGroup>
       ) : null}
 
