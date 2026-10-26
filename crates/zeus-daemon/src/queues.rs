@@ -799,7 +799,12 @@ impl QueueService {
         if inner.stored.queue(queue).is_none() || inner.stored.members.len() >= MAX_QUEUED_JOBS {
             return;
         }
-        let fp = fingerprint(spec);
+        // The stored request is what the engine hands the transport later, so fingerprint that one.
+        let fp = self
+            .port
+            .get()
+            .and_then(|p| p.fingerprint(job_id))
+            .unwrap_or_else(|| fingerprint(spec));
         self.limits.set_member(&fp, Some(queue));
         inner.stored.members.push(Member {
             job_id,
@@ -831,8 +836,10 @@ impl QueueService {
 
     // ---------------------------------------------------------------- the scheduler
 
-    /// One scheduler tick: scheduled starts and stops, holding and releasing, retries, finished queues.
-    pub async fn tick(&self) -> ApiResult<()> {
+    /// One scheduler tick: scheduled starts and stops, holding and releasing, retries, finished queues. Returns how
+    /// long to wait for the next one: a quarter of a second while a running queue still has downloads to release
+    /// (so a finished download is replaced at once), a second otherwise.
+    pub async fn tick(&self) -> ApiResult<std::time::Duration> {
         let mut inner = self.inner.lock().await;
         let now = (self.now)();
         self.apply_limiter(&inner.stored, now);
@@ -869,7 +876,16 @@ impl QueueService {
         if changed || inner.dirty || now - inner.last_saved_ms >= CLOCK_SAVE_MS {
             self.save(&mut inner, now)?;
         }
-        Ok(())
+        let stored = &inner.stored;
+        let busy = stored.queues.iter().any(|q| {
+            q.draining
+                || (q.running && stored.members.iter().any(|m| m.queue == q.def.id && m.held))
+        });
+        Ok(std::time::Duration::from_millis(if busy {
+            250
+        } else {
+            1000
+        }))
     }
 
     /// Reconcile after a change made by an API call (no scheduled starts), then save.
@@ -1333,6 +1349,11 @@ mod tests {
         assert_eq!(h.fake.state(c), JobState::Paused, "only two at a time");
         let v = h.view("night").await;
         assert_eq!((v.running, v.waiting, v.active), (true, 1, 2));
+        assert_eq!(
+            h.service.tick().await.unwrap(),
+            std::time::Duration::from_millis(250),
+            "a running queue with downloads left to release ticks fast"
+        );
 
         // When one finishes the next is released on the next tick.
         h.fake.set(a, JobState::Completed, false);
@@ -1346,7 +1367,10 @@ mod tests {
         h.fake.set(b, JobState::Completed, false);
         h.fake.set(c, JobState::Completed, false);
         h.advance(1000);
-        h.service.tick().await.unwrap();
+        assert_eq!(
+            h.service.tick().await.unwrap(),
+            std::time::Duration::from_secs(1)
+        );
         let v = h.view("night").await;
         assert!(!v.running && v.order.is_empty());
         assert!(v.finished_at_ms.is_some());
@@ -1457,7 +1481,7 @@ mod tests {
         let v = h.view(MAIN_QUEUE).await;
         assert_eq!(v.next_start_ms, Some(ms_utc(2026, 10, 25, 23, 0) as u64));
         // Nothing happens before 23:00.
-        h.advance(8 * 3600_000);
+        h.advance(8 * 3_600_000);
         h.service.tick().await.unwrap();
         assert_eq!(h.fake.state(a), JobState::Paused);
         // At 23:00 it starts.
@@ -1468,7 +1492,7 @@ mod tests {
         assert!(v.running);
         assert_eq!(v.next_stop_ms, Some(ms_utc(2026, 10, 26, 6, 0) as u64));
         // Past 06:00 the scheduled stop pauses what is left.
-        h.advance(7 * 3600_000);
+        h.advance(7 * 3_600_000);
         h.service.tick().await.unwrap();
         assert_eq!(h.fake.state(a), JobState::Paused);
         assert!(!h.view(MAIN_QUEUE).await.running);

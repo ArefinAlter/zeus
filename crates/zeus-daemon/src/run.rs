@@ -107,11 +107,15 @@ pub async fn run(paths: ZeusPaths) -> Result<()> {
     let queue_stopped = queue_stop.clone();
     let queue_runner = tokio::spawn(async move {
         loop {
-            if let Err(e) = queues.tick().await {
-                tracing::warn!(code = %e.envelope().code, "queue scheduling needs attention");
-            }
+            let delay = match queues.tick().await {
+                Ok(delay) => delay,
+                Err(e) => {
+                    tracing::warn!(code = %e.envelope().code, "queue scheduling needs attention");
+                    std::time::Duration::from_secs(1)
+                }
+            };
             tokio::select! {
-                () = tokio::time::sleep(std::time::Duration::from_secs(1)) => {}
+                () = tokio::time::sleep(delay) => {}
                 () = queue_stopped.notified() => break,
             }
         }

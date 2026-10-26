@@ -23,6 +23,7 @@ use zeus_api::methods::jobs::{
     ControlAction, EnqueueParams, JobsControlParams, JobsGetParams, JobsListParams,
     JobsVerifyParams, JobsWaitParams, NewJob, ProbeParams, WaitUntil,
 };
+use zeus_api::methods::queues::QUEUE_LABEL;
 use zeus_api::methods::sessions::{
     ApprovalsListParams, DecideOutcome, SessionsListParams, SessionsRevokeParams,
 };
@@ -775,7 +776,11 @@ async fn get<C: Client + ?Sized>(
             overwrite: None,
             max_connections: None,
             transport_hint: None,
-            labels: BTreeMap::new(),
+            labels: args
+                .queue
+                .iter()
+                .map(|queue| (QUEUE_LABEL.to_owned(), queue.clone()))
+                .collect(),
             run_id: None,
         })
         .collect();

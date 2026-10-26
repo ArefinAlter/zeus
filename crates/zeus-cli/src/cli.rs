@@ -123,6 +123,9 @@ pub struct GetArgs {
     /// Idempotency key (default: derived from the URLs).
     #[arg(long)]
     pub idempotency_key: Option<String>,
+    /// Put the downloads in this queue: they wait there until it runs (`zeus queues start`).
+    #[arg(long)]
+    pub queue: Option<String>,
 }
 
 /// `zeus approvals`.

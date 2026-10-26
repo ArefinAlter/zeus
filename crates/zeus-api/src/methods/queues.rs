@@ -493,6 +493,38 @@ mod tests {
         assert!(matches!(unassign.action, QueueAction::Unassign { .. }));
     }
 
+    /// The requests of spec 05 section 9.14 parse into the types the daemon serves.
+    #[test]
+    fn the_examples_of_the_spec_parse() {
+        let put: QueuesPutParams = serde_json::from_value(serde_json::json!({
+            "queue": {"id":"night","name":"Night","max_concurrent":2,"retries":3,"retry_delay_s":60,
+                "schedule":{"start_enabled":true,"start_time":"23:00","repeat":"days","days":[0,1,2,3,4,5,6],
+                    "stop_enabled":true,"stop_time":"06:00"},
+                "on_finish":"notify","limit_kib_s":512},
+            "idempotency_key":"put-night"
+        }))
+        .unwrap();
+        assert_eq!(put.queue.limit_kib_s, Some(512));
+        assert_eq!(put.queue.on_finish, OnFinish::Notify);
+        assert!(put.queue.schedule.start_enabled);
+        let configure: QueuesConfigureParams = serde_json::from_value(serde_json::json!({
+            "limiter":{"enabled":true,"limit_kib_s":2048,"schedule_enabled":true,"from":"09:00","to":"17:00","days":[1,2,3,4,5]}
+        }))
+        .unwrap();
+        assert_eq!(configure.limiter.unwrap().days, vec![1, 2, 3, 4, 5]);
+        let action: QueuesControlParams =
+            serde_json::from_value(serde_json::json!({"action":"move","job_id":"job_01M45R71NCNH3W8EQ63TAFME4C","offset":-1}))
+                .unwrap();
+        assert!(matches!(
+            action.action,
+            QueueAction::Move { offset: -1, .. }
+        ));
+        assert!(
+            serde_json::from_value::<QueuesControlParams>(serde_json::json!({"action":"explode"}))
+                .is_err()
+        );
+    }
+
     #[test]
     fn a_queue_view_flattens_its_settings() {
         let view = QueueView {

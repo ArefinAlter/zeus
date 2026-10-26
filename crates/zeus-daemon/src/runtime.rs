@@ -1554,5 +1554,8 @@ mod lifecycle;
 #[path = "queue_api.rs"]
 mod queue_api;
 #[cfg(test)]
+#[path = "queue_tests.rs"]
+mod queue_tests;
+#[cfg(test)]
 #[path = "runtime_tests.rs"]
 mod tests;
