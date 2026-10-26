@@ -314,7 +314,8 @@ async fn a_connection_that_cannot_open_says_so_without_the_key() {
     let t = Target { kind: Kind::Openai, base_url: format!("http://127.0.0.1:{closed}/v1"), json_tools: false };
     let (r, _) = chat(&fast(), &t, Some(&ApiKey::new(CANARY.into())), &request("m", false), &CancellationToken::new()).await;
     let e = r.unwrap_err();
-    assert_eq!(e.kind, ErrorKind::Network);
+    // A closed port refuses at once on Linux and after the stack's retries (a timeout here) on Windows.
+    assert!(matches!(e.kind, ErrorKind::Network | ErrorKind::Timeout), "{:?}", e.kind);
     assert!(!e.message.contains("ZEUS-CANARY"));
 }
 
