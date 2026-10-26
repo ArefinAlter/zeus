@@ -323,6 +323,9 @@ pub enum Command {
     /// Inspect artifact records and provenance, or register a local file.
     #[command(subcommand)]
     Artifacts(crate::artifacts::ArtifactsCommand),
+    /// Download queues: list them, start or stop one, set the speed limit.
+    #[command(subcommand)]
+    Queues(crate::queues::QueuesCommand),
     /// Download one or more URLs.
     Get(GetArgs),
     /// Check a URL: size, resumability, type, whether a session is needed.

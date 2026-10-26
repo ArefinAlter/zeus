@@ -24,6 +24,7 @@ pub mod connect;
 pub mod exit;
 pub mod files;
 pub mod output;
+pub mod queues;
 mod terminal_os;
 pub mod trust;
 pub mod tui;

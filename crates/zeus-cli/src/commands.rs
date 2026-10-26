@@ -213,6 +213,7 @@ pub async fn run_remote<C: Client + ?Sized>(
         Command::Workflow(command) => crate::workflow::run(command, client, global.dry_run).await,
         Command::Files(command) => crate::files::run(command, client, global.dry_run).await,
         Command::Artifacts(command) => crate::artifacts::run(command, client, global.dry_run).await,
+        Command::Queues(command) => crate::queues::run(command, client, global.dry_run).await,
         Command::Get(args) => get(args, global, client, color).await,
         Command::Probe { url } => probe(url, client).await,
         Command::Ls {

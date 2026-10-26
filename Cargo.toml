@@ -109,6 +109,8 @@ indexmap = { version = "2.14", features = ["serde"] }
 url = { version = "2.5", features = ["serde"] }
 ulid = "3"
 time = { version = "0.3", features = ["serde", "formatting", "parsing", "macros"] }
+# Queue schedules follow the computer's local time zone (clock changes included).
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 semver = { version = "1", features = ["serde"] }
 unicode-normalization = "0.1"
 unicode-segmentation = "1.13"

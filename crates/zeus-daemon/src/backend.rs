@@ -35,6 +35,11 @@ use zeus_api::methods::jobs::{
     JobsGetResult, JobsListParams, JobsListResult, JobsVerifyParams, JobsVerifyResult,
     JobsWaitParams, JobsWaitResult, ProbeParams, ProbeResultView,
 };
+use zeus_api::methods::queues::{
+    QueuesConfigureParams, QueuesConfigureResult, QueuesControlParams, QueuesControlResult,
+    QueuesDeleteParams, QueuesDeleteResult, QueuesListParams, QueuesListResult, QueuesPutParams,
+    QueuesPutResult,
+};
 use zeus_api::methods::sessions::{
     ApprovalsDecideParams, ApprovalsDecideResult, ApprovalsGetParams, ApprovalsGetResult,
     ApprovalsListParams, ApprovalsListResult, SessionsListParams, SessionsListResult,
@@ -97,6 +102,16 @@ backend! {
     jobs_control(JobsControlParams) -> JobsControlResult;
     /// `jobs.verify`.
     jobs_verify(JobsVerifyParams) -> JobsVerifyResult;
+    /// `queues.list`.
+    queues_list(QueuesListParams) -> QueuesListResult;
+    /// `queues.put`.
+    queues_put(QueuesPutParams) -> QueuesPutResult;
+    /// `queues.delete`.
+    queues_delete(QueuesDeleteParams) -> QueuesDeleteResult;
+    /// `queues.control`.
+    queues_control(QueuesControlParams) -> QueuesControlResult;
+    /// `queues.configure`.
+    queues_configure(QueuesConfigureParams) -> QueuesConfigureResult;
     /// `events.subscribe`: replays durable events, then pushes through `ctx.notifier`.
     events_subscribe(SubscribeParams) -> SubscribeResult;
     /// `events.unsubscribe`.

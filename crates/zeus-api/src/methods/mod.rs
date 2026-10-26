@@ -15,6 +15,7 @@ pub mod daemon;
 pub mod events;
 pub mod files;
 pub mod jobs;
+pub mod queues;
 pub mod sessions;
 pub mod workflows;
 
@@ -61,6 +62,7 @@ use self::daemon::*;
 use self::events::*;
 use self::files::*;
 use self::jobs::*;
+use self::queues::*;
 use self::sessions::*;
 use self::workflows::*;
 
@@ -108,6 +110,17 @@ rpc_methods! {
     JobsControl = "jobs.control" (JobsControlParams) -> JobsControlResult;
     /// Re-hash a completed file and compare.
     JobsVerify = "jobs.verify" (JobsVerifyParams) -> JobsVerifyResult;
+
+    /// List download queues, the speed limiter and the scheduler defaults.
+    QueuesList = "queues.list" (QueuesListParams) -> QueuesListResult;
+    /// Create a queue or replace its settings.
+    QueuesPut = "queues.put" (QueuesPutParams) -> QueuesPutResult;
+    /// Delete a queue; its members leave it.
+    QueuesDelete = "queues.delete" (QueuesDeleteParams) -> QueuesDeleteResult;
+    /// Start or stop a queue, move jobs between queues, acknowledge a finished queue.
+    QueuesControl = "queues.control" (QueuesControlParams) -> QueuesControlResult;
+    /// Change the speed limiter and the scheduler defaults.
+    QueuesConfigure = "queues.configure" (QueuesConfigureParams) -> QueuesConfigureResult;
 
     /// Subscribe to events.
     EventsSubscribe = "events.subscribe" (SubscribeParams) -> SubscribeResult;

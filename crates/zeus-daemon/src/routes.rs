@@ -15,9 +15,9 @@ use zeus_api::methods::{
     DaemonPing, DaemonShutdown, DaemonStatus, DoctorRun, EventsSubscribe, EventsUnsubscribe,
     FilesList, FilesOrganize, FilesRootsRegister, FilesUndo, JobsControl, JobsEnqueue, JobsGet,
     JobsList, JobsProbe, JobsVerify, JobsWait, LlmAuthCancel, LlmAuthSignOut, LlmAuthStart,
-    LlmAuthStatus, LlmConfigure, LlmStatus, SessionsList, SessionsRequest, SessionsRevoke,
-    WorkflowsControl, WorkflowsDryRun, WorkflowsGet, WorkflowsList, WorkflowsManifest,
-    WorkflowsPlan, WorkflowsRun,
+    LlmAuthStatus, LlmConfigure, LlmStatus, QueuesConfigure, QueuesControl, QueuesDelete,
+    QueuesList, QueuesPut, SessionsList, SessionsRequest, SessionsRevoke, WorkflowsControl,
+    WorkflowsDryRun, WorkflowsGet, WorkflowsList, WorkflowsManifest, WorkflowsPlan, WorkflowsRun,
 };
 use zeus_api::methods::{
     CloudAccountsConfigure, CloudAccountsList, CloudAccountsRevoke, CloudControl, CloudGet,
@@ -71,6 +71,11 @@ pub fn build_router<B: Backend>(backend: Arc<B>) -> Router {
     let router = forward!(router, backend, JobsWait, jobs_wait);
     let router = forward!(router, backend, JobsControl, jobs_control);
     let router = forward!(router, backend, JobsVerify, jobs_verify);
+    let router = forward!(router, backend, QueuesList, queues_list);
+    let router = forward!(router, backend, QueuesPut, queues_put);
+    let router = forward!(router, backend, QueuesDelete, queues_delete);
+    let router = forward!(router, backend, QueuesControl, queues_control);
+    let router = forward!(router, backend, QueuesConfigure, queues_configure);
     let router = forward!(router, backend, EventsSubscribe, events_subscribe);
     let router = forward!(router, backend, EventsUnsubscribe, events_unsubscribe);
     let router = forward!(router, backend, SessionsList, sessions_list);
