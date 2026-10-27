@@ -1,7 +1,7 @@
 // 0.0.1c: direct folder browsing and background copies against the real desktop engine.
 // ZEUS_CLIENT_TARGET, ZEUS_BIN_DIR and ZEUS_UI_DIR select the current validated builds.
 import assert from 'node:assert/strict'
-import { mkdirSync, writeFileSync, readFileSync, existsSync, symlinkSync } from 'node:fs'
+import { mkdirSync, writeFileSync, readFileSync, existsSync, symlinkSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { startHarness, until } from '../harness.mjs'
 import { openUi } from '../ui.mjs'
@@ -71,16 +71,23 @@ try {
   }
   ui = await openUi(h)
   await ui.page.goto(`${ui.origin}/index.html?harness=${encodeURIComponent(h.url)}&token=${h.token}#/files?path=${encodeURIComponent(folder)}`)
-  await ui.page.getByText('500 items loaded', { exact: true }).waitFor()
+  await ui.page.locator('.fscope[role="status"]').filter({ hasText: /^500 items loaded/ }).waitFor()
   await ui.page.getByRole('button', { name: 'Load more', exact: true }).click()
-  await ui.page.getByText('1,000 items loaded', { exact: true }).waitFor()
+  await ui.page.locator('.fscope[role="status"]').filter({ hasText: /^1,000 items loaded/ }).waitFor()
   await ui.page.getByRole('button', { name: 'Load more', exact: true }).click()
-  await ui.page.getByText('1,006 items loaded', { exact: true }).waitFor()
+  await ui.page.locator('.fscope[role="status"]').filter({ hasText: /^1,006 items loaded/ }).waitFor()
   check('the real file-manager UI loads every live folder page', await ui.page.getByRole('button', { name: 'Load more', exact: true }).count() === 0)
   check('file-manager UI has no page errors', ui.errors.length === 0)
   await ui.page.screenshot({ path: join(output, 'live-folder.png'), fullPage: true })
   writeFileSync(join(output, 'results.json'), JSON.stringify({ passed: true, checks, pageErrors: ui.errors, backend: 'real zeus-app-http and zeusd, isolated profile' }, null, 2))
+} catch (error) {
+  if (ui) {
+    writeFileSync(join(output, 'failure.json'), JSON.stringify({ error:String(error),body:await ui.page.locator('body').innerText(),pageErrors:ui.errors },null,2))
+    await ui.page.screenshot({path:join(output,'failure.png'),fullPage:true})
+  }
+  throw error
 } finally {
   await ui?.close()
   await h.stop()
+  rmSync(join(home,'search-only','cancel-copy.bin'),{force:true})
 }
