@@ -403,7 +403,12 @@ for (const q of ['f4', 'ext:dat size:<2', 'd05 f1', 'regex:f\\d{3}\\.dat$']) {
 console.log('# search latency in the page with', wantEntries + BIG, 'entries:', JSON.stringify(lat))
 await ui3.page.screenshot({ path: `${out}/08-big-index.png` })
 await ui3.close()
-check('the page stayed free of console errors', [...ui.errors, ...ui2.errors, ...ui3.errors].length === 0, [...ui.errors, ...ui2.errors, ...ui3.errors].slice(0, 2).join(' | '))
+// Chromium logs every refused request as a console error. The refusals this script provokes on purpose (a rename onto an
+// existing name, a preview of a quarantined file) answer 400 and are not errors of the page.
+const provoked = /status of 400 .*\/native\/v1\/files\/(rename|preview|move|delete)/
+const allErrors = [...ui.errors, ...ui2.errors, ...ui3.errors]
+const unexpected = allErrors.filter((e) => !provoked.test(e))
+check('the page stayed free of console errors apart from the refusals provoked on purpose', unexpected.length === 0, `${allErrors.length - unexpected.length} provoked refusals; ${unexpected.slice(0, 2).join(' | ')}`)
 
 await h.stop()
 await fx.close()
