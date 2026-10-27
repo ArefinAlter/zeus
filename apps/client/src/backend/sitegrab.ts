@@ -15,6 +15,10 @@ export interface SiteRequest {
   exclude: string[]
   maxFiles: number
   maxMiB: number
+  /** Native: milliseconds between requests to one host (at least 250; the site's Crawl-delay may raise it). */
+  delayMs?: number
+  /** Native: names a walk so it can be cancelled. */
+  walkId?: string
 }
 
 export interface SitePreview {
@@ -25,6 +29,11 @@ export interface SitePreview {
   files: { url: string; name: string; size: number; depth: number; from: string; host: string }[]
   skipped: { reason: string; count: number }[]
   totalBytes: number
+  /** Native: what the site's robots.txt said, how many requests the walk made and how long it took. */
+  robots?: { found: boolean; rules: number; crawl_delay_ms: number | null }
+  requests?: number
+  unknownSizes?: number
+  elapsedMs?: number
 }
 
 const SECTIONS = ['docs', 'guides', 'downloads', 'releases', 'papers', 'media', 'archive', 'blog', 'help']

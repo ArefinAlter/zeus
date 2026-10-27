@@ -2,19 +2,27 @@
 // set names, folders and categories, then review and start. The two steps match the desktop client's real flow
 // (apps/desktop/README.md): "Preview downloads" resolves destinations without creating jobs, and "Start reviewed
 // downloads" starts exactly that reviewed batch. At most 50 unique http(s) links and 64 KiB of input.
+//
+// In the desktop app the online check is a real probe through zeusd (size, the name the server gives, whether byte
+// ranges work), the review is zeusd's dry run, a file that is already in the list is offered as Skip, Download again or
+// Replace, and an expected SHA-256 can be set per link.
 
 import { useEffect, useMemo, useState } from 'preact/hooks'
 
-import type { GrabberLink, Review } from '../backend/store'
-import { grabberAdd, grabberCheck, grabberPreview, grabberRemove, grabberStart, grabberUpdate, grabberUpdateMany, useStore } from '../backend/store'
+import type { GrabberLink, PlanRow, Review } from '../backend/store'
+import { defaultDir, grabberAdd, grabberCheck, grabberPreview, grabberRemove, grabberStart, grabberUpdate, grabberUpdateMany, useStore } from '../backend/store'
 import { CATEGORIES } from '../model/categories.ts'
+import { folderProblem } from '../model/grab.ts'
+import type { DupeChoice, Overwrite } from '../model/grab.ts'
 import { MAX_URLS, nameProblem, packagesByHost } from '../model/links.ts'
 import type { CategoryId } from '../model/types.ts'
 import { fmtBytes } from '../model/units.ts'
-import { HOSTED, LIVE } from '../backend/live'
+import { HOSTED, LIVE, NATIVE } from '../backend/live'
+import { SEP, baseOf, parentOf } from '../lib/paths.ts'
 import { href } from '../lib/router'
 import { Chip, Empty, Notice, PageHead, Provenance } from '../ui/components'
 import { Icon } from '../ui/icons'
+import '../styles/grabber.css'
 
 const SAMPLE = [
   'https://papers.example.org/2026/annual-review.pdf',
@@ -55,16 +63,47 @@ function checkChip(c: GrabberLink['check']) {
   }
 }
 
+const OVERWRITE: [Overwrite, string][] = [
+  ['rename', 'Keep both: add (1), (2)…'],
+  ['fail', 'Stop with an error'],
+  ['replace', 'Replace (the old file goes to the trash)'],
+]
+
+const DUPE: [DupeChoice, string][] = [
+  ['skip', 'Skip'],
+  ['again', 'Download again'],
+  ['replace', 'Replace the old file'],
+]
+
+/** What zeusd's dry run says about one reviewed link. */
+function planNote(l: GrabberLink, plan: PlanRow | undefined, collides: boolean) {
+  const notes: preact.ComponentChildren[] = []
+  if (plan?.error_code) notes.push(<Chip tone="bad">{plan.error_message ?? plan.error_code}</Chip>)
+  if (plan?.filename && plan.filename !== l.name) notes.push(<Chip tone="warn">renamed: a file has this name</Chip>)
+  else if (!NATIVE && collides) notes.push(<Chip tone="warn">renamed: a file has this name</Chip>)
+  if (l.dupe && l.dupeChoice === 'replace') notes.push(<Chip tone="warn">replaces the file on disk</Chip>)
+  if (l.dupe && l.dupeChoice === 'again') notes.push(<Chip>downloaded again</Chip>)
+  if (plan?.approval_needed || l.check === 'needs_login') notes.push(<Chip tone="warn">asks for a login first</Chip>)
+  for (const w of plan?.warnings ?? []) notes.push(<Chip tone="warn">{w}</Chip>)
+  if (!notes.length && l.check === 'unchecked') notes.push(<Chip>not checked</Chip>)
+  return notes
+}
+
 export function Grabber() {
   const links = useStore((s) => s.grabber)
   const queues = useStore((s) => s.queues.filter((q) => q.kind === 'download'))
+  const roots = useStore((s) => s.settings.saveTo.writeRoots)
+  const defaultOverwrite = useStore((s) => s.settings.downloads.duplicates)
   const [text, setText] = useState('')
   const [summary, setSummary] = useState<ReturnType<typeof grabberAdd> | null>(null)
   const [review, setReview] = useState<Review | null>(null)
   const [reviewErr, setReviewErr] = useState<string | null>(null)
-  const [queue, setQueue] = useState<string>('now')
+  const startNow = useStore((s) => s.settings.downloads.startImmediately)
+  const defaultQueue = useStore((s) => s.settings.scheduler.defaultQueue)
+  const [queue, setQueue] = useState<string>(startNow ? 'now' : defaultQueue)
+  const [overwrite, setOverwrite] = useState<Overwrite | null>(null)
   const [collapsed, setCollapsed] = useState<string[]>([])
-  const [started, setStarted] = useState<number | null>(null)
+  const [started, setStarted] = useState<{ n: number; skipped: number; left: number } | null>(null)
 
   const add = (t: string) => {
     if (!t.trim()) return
@@ -83,15 +122,20 @@ export function Grabber() {
   const selected = links.filter((l) => l.selected)
   const sel = selected.map((l) => l.id)
   const total = selected.reduce((n, l) => n + (l.size ?? 0), 0)
+  const dupes = selected.filter((l) => l.dupe)
+  const checking = links.filter((l) => l.check === 'checking').length
   const changed = () => {
     setReview(null)
     setReviewErr(null)
   }
+  const ci = SEP() === '\\' || !NATIVE
+  const badFolders = NATIVE ? selected.filter((l) => folderProblem(l.dir, roots, ci)) : []
 
   const liveReview = useStore((s) => (review ? s.reviews.find((r) => r.id === review.id) : undefined))
   const remote = liveReview?.remote
+  const plan = (i: number): PlanRow | undefined => remote?.plan?.find((p) => p.index === i)
   const preview = () => {
-    const r = grabberPreview(sel)
+    const r = grabberPreview(sel, { overwrite: overwrite ?? defaultOverwrite })
     if (typeof r === 'string') {
       setReviewErr(r)
       setReview(null)
@@ -102,9 +146,10 @@ export function Grabber() {
   }
   const start = () => {
     if (!review) return
+    const left = links.filter((l) => !review.links.some((x) => x.id === l.id)).length
     const r = grabberStart(review.id, queue === 'now' ? null : queue)
     if (!r.ok) return setReviewErr(r.reason)
-    setStarted(r.ids.length || review.links.length)
+    setStarted({ n: r.ids.length || review.links.length, skipped: review.skippedDuplicates ?? 0, left })
     setReview(null)
   }
 
@@ -141,9 +186,11 @@ export function Grabber() {
           >
             <Icon name="copy" /> Paste from clipboard
           </button>
-          <button type="button" class="btn small ghost" onClick={() => add(HOSTED ? SAMPLE_HOSTED : SAMPLE)}>
-            Add sample links
-          </button>
+          {NATIVE ? null : (
+            <button type="button" class="btn small ghost" onClick={() => add(HOSTED ? SAMPLE_HOSTED : SAMPLE)}>
+              Add sample links
+            </button>
+          )}
           <span class="spacer" />
           <span class="muted small">
             {links.length} of {MAX_URLS} links · Ctrl+Enter adds
@@ -173,8 +220,8 @@ export function Grabber() {
       {links.length ? (
         <>
           <div class="toolbar">
-            <button type="button" class="btn small" onClick={() => grabberCheck(links.filter((l) => l.check === 'unchecked' || l.selected).map((l) => l.id))}>
-              <Icon name="refresh" /> Check online status
+            <button type="button" class="btn small" disabled={checking > 0} onClick={() => grabberCheck(links.filter((l) => l.check === 'unchecked' || l.selected).map((l) => l.id))}>
+              <Icon name="refresh" /> {checking ? `Checking… ${links.length - checking} of ${links.length}` : 'Check online status'}
             </button>
             <button type="button" class="btn small ghost" onClick={() => (grabberUpdateMany(links.map((l) => l.id), { selected: true }), changed())}>
               Select all
@@ -197,7 +244,7 @@ export function Grabber() {
                 value=""
                 onChange={(e) => {
                   const c = (e.target as HTMLSelectElement).value as CategoryId
-                  if (c) grabberUpdateMany(sel, { category: c })
+                  if (c) for (const l of selected) grabberUpdate(l.id, { category: c, ...(l.dirEdited ? {} : { dir: defaultDir(c) }) })
                   changed()
                 }}
               >
@@ -237,10 +284,11 @@ export function Grabber() {
                     <label class="inline small">
                       Folder
                       <input
-                        class="mono pkgdir"
+                        class={`mono pkgdir ${NATIVE && folderProblem(p.items[0]?.dir ?? '', roots, ci) ? 'bad' : ''}`}
                         aria-label={`Folder for ${p.host}`}
                         value={p.items[0]?.dir ?? ''}
-                        onChange={(e) => (grabberUpdateMany(p.items.map((l) => l.id), { dir: (e.target as HTMLInputElement).value }), changed())}
+                        title={NATIVE ? (folderProblem(p.items[0]?.dir ?? '', roots, ci) ?? 'Inside a download folder') : undefined}
+                        onChange={(e) => (grabberUpdateMany(p.items.map((l) => l.id), { dir: (e.target as HTMLInputElement).value, dirEdited: true }), changed())}
                       />
                     </label>
                   </header>
@@ -254,35 +302,91 @@ export function Grabber() {
                           <th>Type</th>
                           <th>Status</th>
                           <th>Category</th>
+                          {NATIVE ? <th>Expected SHA-256</th> : null}
                           <th>Address</th>
                         </tr>
                       </thead>
                       <tbody>
                         {p.items.map((l) => {
                           const problem = nameProblem(l.name)
+                          const shaBad = !!l.expectedSha256 && !/^[0-9a-f]{64}$/.test(l.expectedSha256)
                           return (
-                            <tr aria-selected={l.selected}>
-                              <td class="ck">
-                                <input type="checkbox" aria-label={`Select ${l.name}`} checked={l.selected} onChange={(e) => (grabberUpdate(l.id, { selected: (e.target as HTMLInputElement).checked }), changed())} />
-                              </td>
-                              <td>
-                                <input class={`cellinput ${problem ? 'bad' : ''}`} aria-label="File name" value={l.name} title={problem ?? 'Rename before starting'} onChange={(e) => (grabberUpdate(l.id, { name: (e.target as HTMLInputElement).value }), changed())} />
-                              </td>
-                              <td class="num">{l.size === null ? <span class="muted">–</span> : fmtBytes(l.size)}</td>
-                              <td class="mono small">{l.type}</td>
-                              <td>{checkChip(l.check)}</td>
-                              <td>
-                                <select class="cellselect" aria-label="Category" value={l.category} onChange={(e) => (grabberUpdate(l.id, { category: (e.target as HTMLSelectElement).value as CategoryId }), changed())}>
-                                  {CATEGORIES.map((c) => (
-                                    <option value={c.id}>{c.label}</option>
-                                  ))}
-                                </select>
-                              </td>
-                              <td class="mono small addr" title={l.queryWithheld ? 'The query string is withheld from display' : undefined}>
-                                {l.display.replace(/^https?:\/\//, '')}
-                                {l.queryWithheld ? ' ?…' : ''}
-                              </td>
-                            </tr>
+                            <>
+                              <tr aria-selected={l.selected} class={l.check === 'offline' ? 'rowbad' : undefined}>
+                                <td class="ck">
+                                  <input type="checkbox" aria-label={`Select ${l.name}`} checked={l.selected} onChange={(e) => (grabberUpdate(l.id, { selected: (e.target as HTMLInputElement).checked }), changed())} />
+                                </td>
+                                <td>
+                                  <input class={`cellinput ${problem ? 'bad' : ''}`} aria-label="File name" value={l.name} title={problem ?? 'Rename before starting'} onChange={(e) => (grabberUpdate(l.id, { name: (e.target as HTMLInputElement).value }), changed())} />
+                                </td>
+                                <td class="num">{l.size === null ? <span class="muted">–</span> : fmtBytes(l.size)}</td>
+                                <td class="mono small">{l.type}</td>
+                                <td>{checkChip(l.check)}</td>
+                                <td>
+                                  <select
+                                    class="cellselect"
+                                    aria-label="Category"
+                                    value={l.category}
+                                    onChange={(e) => {
+                                      const c = (e.target as HTMLSelectElement).value as CategoryId
+                                      grabberUpdate(l.id, { category: c, ...(l.dirEdited ? {} : { dir: defaultDir(c) }) })
+                                      changed()
+                                    }}
+                                  >
+                                    {CATEGORIES.map((c) => (
+                                      <option value={c.id}>{c.label}</option>
+                                    ))}
+                                  </select>
+                                </td>
+                                {NATIVE ? (
+                                  <td>
+                                    <input
+                                      class={`cellinput mono small ${shaBad ? 'bad' : ''}`}
+                                      aria-label={`Expected SHA-256 of ${l.name}`}
+                                      placeholder="optional, 64 hex digits"
+                                      value={l.expectedSha256 ?? ''}
+                                      title={shaBad ? 'A SHA-256 is 64 hexadecimal digits.' : 'The hash the publisher gives. zeusd refuses the file if its bytes differ.'}
+                                      onChange={(e) => {
+                                        const v = (e.target as HTMLInputElement).value.trim().toLowerCase()
+                                        grabberUpdate(l.id, v ? { expectedSha256: v } : { expectedSha256: undefined as unknown as string })
+                                        changed()
+                                      }}
+                                    />
+                                  </td>
+                                ) : null}
+                                <td class="mono small addr" title={l.queryWithheld ? 'The query string is withheld from display' : undefined}>
+                                  {l.display.replace(/^https?:\/\//, '')}
+                                  {l.queryWithheld ? ' ?…' : ''}
+                                </td>
+                              </tr>
+                              {l.note || l.dupe ? (
+                                <tr class="gnote">
+                                  <td />
+                                  <td colSpan={NATIVE ? 7 : 6}>
+                                    {l.dupe ? (
+                                      <span class="dupe">
+                                        <Chip tone="warn">{l.dupe.where}</Chip> <span class="muted small">as {l.dupe.name}.</span>{' '}
+                                        <select
+                                          class="cellselect"
+                                          aria-label={`What to do with the duplicate ${l.name}`}
+                                          value={l.dupeChoice ?? 'skip'}
+                                          onChange={(e) => {
+                                            const choice = (e.target as HTMLSelectElement).value as DupeChoice
+                                            grabberUpdate(l.id, { dupeChoice: choice, selected: choice !== 'skip' })
+                                            changed()
+                                          }}
+                                        >
+                                          {DUPE.map(([v, label]) => (
+                                            <option value={v}>{label}</option>
+                                          ))}
+                                        </select>{' '}
+                                      </span>
+                                    ) : null}
+                                    {l.note ? <span class={`muted small ${l.check === 'offline' ? 'gnote-bad' : ''}`}>{l.note}</span> : null}
+                                  </td>
+                                </tr>
+                              ) : null}
+                            </>
                           )
                         })}
                       </tbody>
@@ -296,20 +400,33 @@ export function Grabber() {
             <span>
               <strong>{selected.length}</strong> selected · {fmtBytes(total)}
               {selected.some((l) => l.check === 'needs_login') ? ' · some need a site login; Zeus will ask you first' : ''}
+              {dupes.length ? ` · ${dupes.length} already in your list` : ''}
             </span>
             <span class="spacer" />
+            {NATIVE ? (
+              <label class="inline small">
+                If a file with the name exists
+                <select aria-label="If a file with the name exists" value={overwrite ?? defaultOverwrite} onChange={(e) => (setOverwrite((e.target as HTMLSelectElement).value as Overwrite), changed())}>
+                  {OVERWRITE.map(([v, label]) => (
+                    <option value={v}>{label}</option>
+                  ))}
+                </select>
+              </label>
+            ) : null}
             {!review ? (
-              <button type="button" class="btn primary" disabled={!selected.length} onClick={preview}>
+              <button type="button" class="btn primary" disabled={!selected.length || badFolders.length > 0} title={badFolders.length ? 'A folder is outside the download folders' : undefined} onClick={preview}>
                 <Icon name="eye" /> Preview downloads
               </button>
             ) : null}
           </div>
           {reviewErr ? <Notice kind="error">{reviewErr}</Notice> : null}
+          {badFolders.length ? <Notice kind="warn">{folderProblem(badFolders[0]?.dir ?? '', roots, ci)}</Notice> : null}
           {review ? (
             <section class="review">
               <h2>Review</h2>
               <p class="muted small">
                 These {review.links.length} files would be created exactly as listed. No job exists yet. The review holds the original addresses for ten minutes; changing anything above discards it.
+                {review.skippedDuplicates ? ` ${review.skippedDuplicates} duplicate${review.skippedDuplicates === 1 ? '' : 's'} left out because you chose Skip.` : ''}
               </p>
               <div class="table-wrap short">
                 <table>
@@ -322,14 +439,18 @@ export function Grabber() {
                     </tr>
                   </thead>
                   <tbody>
-                    {review.links.map((l, i) => (
-                      <tr>
-                        <td>{review.destinations[i]?.name}</td>
-                        <td class="mono small">{review.destinations[i]?.dir}</td>
-                        <td class="num">{fmtBytes(l.size)}</td>
-                        <td>{review.destinations[i]?.collides ? <Chip tone="warn">renamed: a file has this name</Chip> : l.check === 'needs_login' ? <Chip tone="warn">asks for a login first</Chip> : l.check === 'unchecked' ? <Chip>not checked</Chip> : null}</td>
-                      </tr>
-                    ))}
+                    {review.links.map((l, i) => {
+                      const p = plan(i)
+                      const where = p?.destination ? parentOf(p.destination) : review.destinations[i]?.dir
+                      return (
+                        <tr>
+                          <td>{p?.filename ?? (p?.destination ? baseOf(p.destination) : review.destinations[i]?.name)}</td>
+                          <td class="mono small">{where}</td>
+                          <td class="num">{fmtBytes(l.size ?? p?.size ?? null)}</td>
+                          <td>{planNote(l, p, !!review.destinations[i]?.collides)}</td>
+                        </tr>
+                      )
+                    })}
                   </tbody>
                 </table>
               </div>
@@ -353,7 +474,7 @@ export function Grabber() {
                       <option value={q.id}>Add to {q.name}</option>
                     ))}
                   </select>
-                  <button type="button" class="btn primary" onClick={start}>
+                  <button type="button" class="btn primary" disabled={remote?.state === 'refused'} onClick={start}>
                     <Icon name="download" /> Start reviewed downloads
                   </button>
                 </span>
@@ -363,18 +484,28 @@ export function Grabber() {
         </>
       ) : (
         <Empty>
-          No links yet. Paste some above, or press <strong>Add sample links</strong> to see how packages, duplicates and refusals look.
+          {NATIVE ? (
+            <>No links yet. Paste some above: one per line, or the HTML of a page.</>
+          ) : (
+            <>
+              No links yet. Paste some above, or press <strong>Add sample links</strong> to see how packages, duplicates and refusals look.
+            </>
+          )}
         </Empty>
       )}
       {started !== null ? (
         <Notice kind="ok">
-          Started {started} download{started === 1 ? '' : 's'}. <a href={href('downloads', { view: 'unfinished' })}>See them in Downloads</a>
+          Started {started.n} download{started.n === 1 ? '' : 's'}.
+          {started.skipped ? ` ${started.skipped} duplicate${started.skipped === 1 ? '' : 's'} skipped.` : ''}
+          {started.left ? ` ${started.left} link${started.left === 1 ? '' : 's'} not started stay in the list.` : ''} <a href={href('downloads', { view: 'unfinished' })}>See them in Downloads</a>
         </Notice>
       ) : null}
       <Provenance>
-        {LIVE
-          ? `Preview asks zeusd for a dry run through zeus-web-bridge, and Start enqueues exactly that reviewed batch. ${HOSTED ? 'Online checks are HEAD requests from the pre-alpha service to the sample hosts; nothing reaches the internet.' : 'Online checks are dry runs in your zeusd.'}`
-          : "Preview and start match the desktop client's real two-step review against zeusd. Online checks, sizes and packages here are answered from sample data."}
+        {NATIVE
+          ? "The online check is a probe through zeusd: the size, the name the server gives and whether byte ranges work. Preview is zeusd's dry run, and Start enqueues exactly that reviewed batch once, with a retry key. Nothing is fetched by this window itself."
+          : LIVE
+            ? `Preview asks zeusd for a dry run through zeus-web-bridge, and Start enqueues exactly that reviewed batch. ${HOSTED ? 'Online checks are HEAD requests from the pre-alpha service to the sample hosts; nothing reaches the internet.' : 'Online checks are dry runs in your zeusd.'}`
+            : "Preview and start match the desktop client's real two-step review against zeusd. Online checks, sizes and packages here are answered from sample data."}
       </Provenance>
     </div>
   )

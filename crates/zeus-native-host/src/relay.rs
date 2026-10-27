@@ -31,11 +31,20 @@ pub async fn run(launch: &Launch) -> Result<(), HostError> {
         version: env!("CARGO_PKG_VERSION").into(),
         role: ClientRole::NativeHost,
     });
+    // The OS evidence names the browser: argv cannot tell Edge or Brave from Chrome (spec 02 section 3.2).
+    let verified_browser = crate::parent::verified_browser(launch.browser);
+    let parent_verified = verified_browser.is_some();
+    if !parent_verified {
+        // The browser discards stderr; a launcher script that redirects it (the desktop app's does) keeps this line.
+        eprintln!(
+            "zeus-native-host: the browser that started this host is not a verifiable install (spec 07 section 7.4); the daemon will refuse its requests"
+        );
+    }
     config.attach = Some(AttachInfo {
-        browser: launch.browser,
+        browser: verified_browser.unwrap_or(launch.browser),
         attested_extension: launch.extension_id.clone(),
         host_version: env!("CARGO_PKG_VERSION").into(),
-        parent_verified: crate::parent::verify(launch.browser),
+        parent_verified,
     });
     let client = IpcClient::connect(&paths.endpoint(), credential, &secret, config)
         .await

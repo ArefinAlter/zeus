@@ -1,0 +1,45 @@
+PASS  a new installation has no model switched on, no consent and no key
+PASS  a key is stored and the page learns only "stored" and its last four characters
+PASS  the configuration never contains the key
+PASS  keys are kept where the engine says  (os)
+PASS  the preview lists what would be sent and says consent is missing  (4238 tokens in)
+PASS  the preview names what is never sent
+PASS  without permission no request is made to the provider  (needs_consent)
+PASS  the model calls zeus_enqueue and the call is shown with its result  (1 download created)
+PASS  a card for the job comes out of the result
+PASS  the download ran in the real engine and completed with the right SHA-256  (81ee4fa6c804)
+PASS  the final answer streamed after the tool result
+PASS  usage and spend are recorded per call and per thread  (thread 240 in, 50 out, $0.00147)
+PASS  the request carried the key in a header, the 13 tools and the system prompt; the key was in no body or URL
+PASS  the tool result went back to the model labelled as data
+PASS  the usage route agrees with the events
+PASS  the Anthropic wire works end to end (tool_use, tool_result, x-api-key, version header)
+PASS  at Read only access a download call is shown as refused and nothing starts  (refused: it needs Download access and this thread has Read only)
+PASS  the model is told about the refusal and the answer says so
+PASS  a tool that does not exist and an approve action are both refused  (refused: there is no such tool | refused: no tool decides an approval; only a person does)
+PASS  a tool switched off in Settings is refused with that reason
+PASS  the batch limit does not refuse a single download
+PASS  a session request creates an approval that waits for a person, and a card says so  (pending user approval; state pending; kind session_grant)
+PASS  no route of the app decides a daemon approval, and the request the agent raised is still pending afterwards  (refused 404, refused 404, refused 404, refused 404, refused 404)
+PASS  a cap of zero means no model call  (No model call was made: this provider's monthly cap is zero. Raise it in Setting)
+PASS  the offline switch blocks every call, tests included
+PASS  Test connection makes one real tiny request after consent  (2 ms)
+PASS  List models asks the provider
+PASS  stopping mid-stream ends the run at once and keeps what streamed  (117 ms)
+PASS  a new message in the same thread works after a stop
+PASS  the Providers page shows the key as stored with its last four characters only
+PASS  the page asks before the first request and lists what is sent and never sent  (Send this thread to p-mock? Zeus has not sent anything to p)
+PASS  nothing has reached the provider while the question is open  (0 requests)
+PASS  the thread shows the tool call, the job card and the streamed answer  (download http://127.0.0.1:54210/files/from-ui.bin?size=3145728&seed=33 I will start that download. W)
+PASS  the details panel names the model and shows the spend meter  (Thread state idle model p-mock, mock-model-a spend 240 in, 50 out, about $0.0015 of $2.00 for this thread today about $0)
+PASS  a refused call is shown as refused in the thread  (Worked · 1 tool call · 1 refused download http://127.0.0.1:54210/files/refused-ui.bin?size=100&seed=)
+PASS  the stop button ends a streaming answer
+PASS  the approval the agent raised is shown on a card as waiting for a person, with the command to decide it at a terminal  (session http://127.0.0.1:18998 Worked · 1 tool call · 0.0 s Waiting for you 1 pending Site login 127.0.0.1:18998 KTF-GAZ)
+PASS  the page has no button that approves or denies it
+PASS  no console error on the pages used
+PASS  removing a key removes it
+PASS  the key is in no file of the app folder, the engine state or the logs
+PASS  the key was in no response the page or this script received
+PASS  the key was not printed by the engine process
+SCENARIO 10: PASSED (43 checks)
+exit 0

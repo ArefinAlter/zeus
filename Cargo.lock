@@ -5477,7 +5477,7 @@ dependencies = [
 
 [[package]]
 name = "zeus-a2a"
-version = "0.1.0"
+version = "0.0.1-beta"
 dependencies = [
  "jsonschema",
  "proptest",
@@ -5491,7 +5491,7 @@ dependencies = [
 
 [[package]]
 name = "zeus-a2a-bridge"
-version = "0.1.0"
+version = "0.0.1-beta"
 dependencies = [
  "async-trait",
  "blake3",
@@ -5510,7 +5510,7 @@ dependencies = [
 
 [[package]]
 name = "zeus-api"
-version = "0.1.0"
+version = "0.0.1-beta"
 dependencies = [
  "async-trait",
  "blake3",
@@ -5555,7 +5555,7 @@ dependencies = [
 
 [[package]]
 name = "zeus-cli"
-version = "0.1.0"
+version = "0.0.1-beta"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -5594,7 +5594,7 @@ dependencies = [
 
 [[package]]
 name = "zeus-cloud"
-version = "0.1.0"
+version = "0.0.1-beta"
 dependencies = [
  "async-trait",
  "axum",
@@ -5629,13 +5629,14 @@ dependencies = [
 
 [[package]]
 name = "zeus-daemon"
-version = "0.1.0"
+version = "0.0.1-beta"
 dependencies = [
  "anyhow",
  "assert_cmd",
  "async-trait",
  "blake3",
  "bytes",
+ "chrono",
  "directories",
  "futures",
  "hex",
@@ -5758,7 +5759,7 @@ dependencies = [
 
 [[package]]
 name = "zeus-llm"
-version = "0.1.0"
+version = "0.0.1-beta"
 dependencies = [
  "async-trait",
  "base64 0.23.1",
@@ -5787,7 +5788,7 @@ dependencies = [
 
 [[package]]
 name = "zeus-mcp"
-version = "0.1.0"
+version = "0.0.1-beta"
 dependencies = [
  "async-trait",
  "axum",
@@ -5810,7 +5811,7 @@ dependencies = [
 
 [[package]]
 name = "zeus-native-host"
-version = "0.1.0"
+version = "0.0.1-beta"
 dependencies = [
  "assert_cmd",
  "predicates",
@@ -5879,7 +5880,7 @@ dependencies = [
 
 [[package]]
 name = "zeus-workflow"
-version = "0.1.0"
+version = "0.0.1-beta"
 dependencies = [
  "async-trait",
  "blake3",

@@ -15,7 +15,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.0.1-beta"
 edition = "2024"
 rust-version = "1.90"
 license = "Apache-2.0"
@@ -48,16 +48,16 @@ zeus-http = { path = "../zeus-core/crates/zeus-http", version = "0.1.0" }
 zeus-engine = { path = "../zeus-core/crates/zeus-engine", version = "0.1.0" }
 
 # ---- zeus-app crates ----
-zeus-api = { path = "crates/zeus-api", version = "0.1.0" }
-zeus-daemon = { path = "crates/zeus-daemon", version = "0.1.0" }
-zeus-mcp = { path = "crates/zeus-mcp", version = "0.1.0" }
-zeus-cli = { path = "crates/zeus-cli", version = "0.1.0" }
-zeus-native-host = { path = "crates/zeus-native-host", version = "0.1.0" }
-zeus-workflow = { path = "crates/zeus-workflow", version = "0.1.0", default-features = false }
-zeus-llm = { path = "crates/zeus-llm", version = "0.1.0", default-features = false }
-zeus-a2a = { path = "crates/zeus-a2a", version = "0.1.0" }
-zeus-a2a-bridge = { path = "crates/zeus-a2a-bridge", version = "0.1.0" }
-zeus-cloud = { path = "crates/zeus-cloud", version = "0.1.0" }
+zeus-api = { path = "crates/zeus-api", version = "0.0.1-beta" }
+zeus-daemon = { path = "crates/zeus-daemon", version = "0.0.1-beta" }
+zeus-mcp = { path = "crates/zeus-mcp", version = "0.0.1-beta" }
+zeus-cli = { path = "crates/zeus-cli", version = "0.0.1-beta" }
+zeus-native-host = { path = "crates/zeus-native-host", version = "0.0.1-beta" }
+zeus-workflow = { path = "crates/zeus-workflow", version = "0.0.1-beta", default-features = false }
+zeus-llm = { path = "crates/zeus-llm", version = "0.0.1-beta", default-features = false }
+zeus-a2a = { path = "crates/zeus-a2a", version = "0.0.1-beta" }
+zeus-a2a-bridge = { path = "crates/zeus-a2a-bridge", version = "0.0.1-beta" }
+zeus-cloud = { path = "crates/zeus-cloud", version = "0.0.1-beta" }
 zeus-artifact = { path = "../zeus-core/crates/zeus-artifact", version = "0.1.0" }
 
 # ---- async runtime and utilities ----
@@ -109,6 +109,8 @@ indexmap = { version = "2.14", features = ["serde"] }
 url = { version = "2.5", features = ["serde"] }
 ulid = "3"
 time = { version = "0.3", features = ["serde", "formatting", "parsing", "macros"] }
+# Queue schedules follow the computer's local time zone (clock changes included).
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 semver = { version = "1", features = ["serde"] }
 unicode-normalization = "0.1"
 unicode-segmentation = "1.13"

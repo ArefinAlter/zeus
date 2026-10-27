@@ -1,0 +1,70 @@
+/* The link grabber's row notes, duplicate choices and the review table. */
+.glinks tr.gnote td {
+  padding-top: 0;
+  padding-bottom: 6px;
+  border-top: 0;
+}
+
+.glinks tr.gnote .dupe {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.glinks tr.rowbad td {
+  opacity: 0.85;
+}
+
+.gnote-bad {
+  color: var(--bad, #b3261e);
+}
+
+.glinks .cellinput.small {
+  font-size: 11px;
+  min-width: 14ch;
+}
+
+.review table td:last-child {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.sg-skipped {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 6px 0;
+}
+
+.sg-facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 8px;
+  margin: 6px 0;
+}
+
+.sg-facts > div {
+  border: 1px solid var(--line, rgba(128, 128, 128, 0.25));
+  border-radius: 8px;
+  padding: 6px 10px;
+}
+
+.sg-facts .k {
+  font-size: 11px;
+  color: var(--muted, #6b6b6b);
+}
+
+.verify-box {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.verify-box .cmd {
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 11px;
+  word-break: break-all;
+}

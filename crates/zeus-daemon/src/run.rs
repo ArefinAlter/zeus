@@ -101,6 +101,25 @@ pub async fn run(paths: ZeusPaths) -> Result<()> {
             tokio::time::sleep(std::time::Duration::from_secs(1)).await;
         }
     });
+    let queues = backend.queues.clone();
+    // The scheduler finishes the tick it is in before it stops, so a hold is never half recorded.
+    let queue_stop = Arc::new(tokio::sync::Notify::new());
+    let queue_stopped = queue_stop.clone();
+    let queue_runner = tokio::spawn(async move {
+        loop {
+            let delay = match queues.tick().await {
+                Ok(delay) => delay,
+                Err(e) => {
+                    tracing::warn!(code = %e.envelope().code, "queue scheduling needs attention");
+                    std::time::Duration::from_secs(1)
+                }
+            };
+            tokio::select! {
+                () = tokio::time::sleep(delay) => {}
+                () = queue_stopped.notified() => break,
+            }
+        }
+    });
     let maintenance = tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(1));
         loop {
@@ -127,6 +146,8 @@ pub async fn run(paths: ZeusPaths) -> Result<()> {
         },
     };
     let notice = backend.shutdown.stopping().await;
+    queue_stop.notify_one();
+    let _ = queue_runner.await;
     maintenance.abort();
     let _ = maintenance.await;
     cloud_runner.abort();

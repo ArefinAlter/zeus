@@ -1,0 +1,61 @@
+/* Files page additions: highlighted matches, the indexing progress line, and the preview pane's contents. */
+mark.hl {
+  background: color-mix(in srgb, var(--accent, #4a6cf7) 28%, transparent);
+  color: inherit;
+  border-radius: 3px;
+  padding: 0 1px;
+}
+
+.fprogress {
+  position: relative;
+  height: 22px;
+  margin: 0 0 6px;
+  border: 1px solid var(--line, rgba(127, 127, 127, 0.3));
+  border-radius: 6px;
+  overflow: hidden;
+  font-size: 12px;
+}
+.fprogress .bar {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: color-mix(in srgb, var(--accent, #4a6cf7) 22%, transparent);
+  transition: width 0.4s ease;
+}
+.fprogress .txt {
+  position: relative;
+  line-height: 20px;
+  padding: 0 8px;
+}
+
+.fprev {
+  margin: 8px 0;
+}
+.fprev-text {
+  margin: 0;
+  max-height: 260px;
+  overflow: auto;
+  padding: 8px;
+  border: 1px solid var(--line, rgba(127, 127, 127, 0.3));
+  border-radius: 6px;
+  background: var(--surface-2, rgba(127, 127, 127, 0.07));
+  font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.fprev-img {
+  display: block;
+  max-width: 100%;
+  max-height: 240px;
+  margin: 0 auto;
+  border: 1px solid var(--line, rgba(127, 127, 127, 0.3));
+  border-radius: 6px;
+  background: repeating-conic-gradient(rgba(127, 127, 127, 0.18) 0% 25%, transparent 0% 50%) 50% / 16px 16px;
+  object-fit: contain;
+}
+.fprev-refused {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--warn, #b7791f) 14%, transparent);
+  font-size: 13px;
+}

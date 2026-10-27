@@ -11,8 +11,8 @@ use std::{
 };
 use tokio::sync::Mutex;
 use zeus_api::methods::{
-    admin::*, artifacts::*, cloud::*, daemon::*, events::*, files::*, jobs::*, sessions::*,
-    workflows::*,
+    admin::*, artifacts::*, cloud::*, daemon::*, events::*, files::*, jobs::*, queues::*,
+    sessions::*, workflows::*,
 };
 use zeus_api::{ApiError, ApiResult, CallContext, Page};
 use zeus_engine::{Engine, EngineBuilder, EngineConfig};
@@ -69,6 +69,8 @@ pub struct RuntimeBackend {
     outbox: Arc<std::sync::Mutex<crate::outbox::Outbox>>,
     pub(crate) workflows: Arc<crate::workflows::WorkflowService>,
     pub(crate) cloud: Arc<crate::cloud::CloudService>,
+    /// Download queues, their scheduler and the speed limiter's settings.
+    pub(crate) queues: Arc<crate::queues::QueueService>,
     subscriptions: Mutex<HashMap<String, (zeus_types::ConnectionId, tokio::task::AbortHandle)>>,
     deferred_audit: crate::deferred_audit::DeferredAudit,
     state_dir: PathBuf,
@@ -187,6 +189,18 @@ impl RuntimeBackend {
                 .map(|id| roots_of.roots(&id))
                 .unwrap_or_default()
         }));
+        // The speed limiter wraps the transport of every job: the workflow network for workflow runs and the
+        // engine's own default (same settings) for ordinary downloads.
+        let limits = crate::limiter::Limits::new();
+        let queues = crate::queues::QueueService::open(&state_dir, limits.clone())?;
+        let default_transport: Arc<dyn zeus_http::HttpTransport> = Arc::new(
+            zeus_http::ReqwestTransport::new(&engine_config.http).map_err(|_| internal())?,
+        );
+        let transports = Arc::new(crate::limiter::LimitedFactory::new(
+            workflows.transport_factory(),
+            default_transport,
+            limits,
+        ));
         let engine = EngineBuilder::new(engine_config)
             .clock(clock)
             .session_provider(browser.clone())
@@ -194,10 +208,14 @@ impl RuntimeBackend {
             .journal(journal.clone())
             .audit(audit.clone())
             .approvals(consent.clone())
-            .job_transports(workflows.transport_factory())
+            .job_transports(transports)
             .build()
             .await
             .map_err(error)?;
+        queues.attach(Arc::new(crate::queues::EnginePort {
+            engine: engine.clone(),
+            journal: journal.clone(),
+        }));
         workflows.attach_engine(engine.clone())?;
         let trust = crate::trust::TrustedPrograms::load_or_initialize(&state_dir)?;
         let receipts = crate::mutations::MutationStore::open(&state_dir.join("api-receipts.redb"))?;
@@ -244,6 +262,7 @@ impl RuntimeBackend {
             outbox,
             workflows,
             cloud,
+            queues,
             info: DaemonInfo {
                 version: env!("CARGO_PKG_VERSION").into(),
                 instance_id: zeus_api::auth::Nonce::generate().as_str()[..32].to_owned(),
@@ -630,6 +649,15 @@ impl Backend for RuntimeBackend {
             return Ok(result);
         }
         self.admit()?;
+        for job in &p.jobs {
+            if let Some(queue) = job.labels.get(QUEUE_LABEL)
+                && !self.queues.knows(queue).await
+            {
+                return Err(ApiError::invalid_params(
+                    "the zeus.queue label names no queue".to_owned(),
+                ));
+            }
+        }
         // A service writes only inside its registered roots; resolve every entry before any job exists.
         let service_dirs = match Self::scope(ctx).service() {
             Some(_) => Some(
@@ -715,6 +743,7 @@ impl Backend for RuntimeBackend {
                 });
                 continue;
             }
+            let queued = spec.labels.contains_key(QUEUE_LABEL).then(|| spec.clone());
             match self
                 .engine
                 .enqueue(zeus_engine::api::EnqueueRequest {
@@ -723,13 +752,21 @@ impl Backend for RuntimeBackend {
                 })
                 .await
             {
-                Ok(result) => entries.push(EnqueuedJob {
-                    job_id: Some(result.job.id),
-                    state: Some(result.job.state),
-                    approval_id: result.approval.map(|a| a.id),
-                    plan: None,
-                    error: None,
-                }),
+                Ok(result) => {
+                    if let Some(spec) = &queued {
+                        // The queue holds the download back at once when it is not running.
+                        self.queues
+                            .on_enqueued(result.job.id, result.job.state, spec)
+                            .await;
+                    }
+                    entries.push(EnqueuedJob {
+                        job_id: Some(result.job.id),
+                        state: Some(result.job.state),
+                        approval_id: result.approval.map(|a| a.id),
+                        plan: None,
+                        error: None,
+                    });
+                }
                 Err(e) => entries.push(EnqueuedJob {
                     job_id: None,
                     state: None,
@@ -979,6 +1016,41 @@ impl Backend for RuntimeBackend {
             quarantined: job.quarantined,
             quarantine_reasons: job.quarantine_reasons,
         })
+    }
+    async fn queues_list(
+        &self,
+        ctx: &CallContext,
+        p: QueuesListParams,
+    ) -> ApiResult<QueuesListResult> {
+        self.queues_list_impl(ctx, p).await
+    }
+    async fn queues_put(
+        &self,
+        ctx: &CallContext,
+        p: QueuesPutParams,
+    ) -> ApiResult<QueuesPutResult> {
+        self.queues_put_impl(ctx, p).await
+    }
+    async fn queues_delete(
+        &self,
+        ctx: &CallContext,
+        p: QueuesDeleteParams,
+    ) -> ApiResult<QueuesDeleteResult> {
+        self.queues_delete_impl(ctx, p).await
+    }
+    async fn queues_control(
+        &self,
+        ctx: &CallContext,
+        p: QueuesControlParams,
+    ) -> ApiResult<QueuesControlResult> {
+        self.queues_control_impl(ctx, p).await
+    }
+    async fn queues_configure(
+        &self,
+        ctx: &CallContext,
+        p: QueuesConfigureParams,
+    ) -> ApiResult<QueuesConfigureResult> {
+        self.queues_configure_impl(ctx, p).await
     }
     async fn events_subscribe(
         &self,
@@ -1479,6 +1551,11 @@ mod events_backend;
 mod file_operations;
 #[path = "lifecycle.rs"]
 mod lifecycle;
+#[path = "queue_api.rs"]
+mod queue_api;
+#[cfg(test)]
+#[path = "queue_tests.rs"]
+mod queue_tests;
 #[cfg(test)]
 #[path = "runtime_tests.rs"]
 mod tests;

@@ -14,6 +14,24 @@ use crate::error::HostError;
 /// File name of the allow-list, next to the host binary.
 pub const FILE_NAME: &str = "allowed-extensions.json";
 
+/// Where the host reads its allow-list: the file beside the host binary when it exists, otherwise the one in the
+/// installation's state directory (found through the same `ZEUS_*` environment the host uses to find the daemon). The
+/// second place exists for installs where the binary's folder is not writable (a system package) or where a launcher
+/// script selects the installation, as the desktop app does. A missing file in both places allows nothing.
+pub fn locate() -> Option<std::path::PathBuf> {
+    let beside = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|dir| dir.join(FILE_NAME)))?;
+    if beside.is_file() {
+        return Some(beside);
+    }
+    let state = zeus_api::endpoint::ZeusPaths::discover()
+        .ok()?
+        .state_dir
+        .join(FILE_NAME);
+    state.is_file().then_some(state).or(Some(beside))
+}
+
 /// The allow-list file.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AllowList {

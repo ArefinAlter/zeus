@@ -1,0 +1,29 @@
+PASS  the walk ran  (7 pages, 7 files, 17 requests in 16 s)
+PASS  it read the pages within depth 2 and not the deeper one  (/site/ /site/guide/ /site/blog/ /site/loop/ /site/guide/chapter1/ /site/blog/post1/ /site/loop/?again=1)
+PASS  it found exactly the allowed files  (blog.zip,chapter1.pdf,data.zip,guide.pdf,notes.txt,post.png,report.pdf)
+PASS  with the sizes the server reports
+PASS  it recorded where each file was found and at what depth
+PASS  robots.txt: the private area is skipped and never requested  (blocked 1)
+PASS  it says what it left out and why  ([{"count":1,"reason":"file on another host"},{"count":1,"reason":"blocked by robots.txt"},{"count":1,"reason":"duplicate"},{"count":1,"reason":"page did not answer"},{"count":1,"reason":"not an HTML page"},{"count":1,"reason":"deeper than the depth limit"}])
+PASS  robots.txt was read first and its crawl delay reported
+PASS  requests are spaced by the site's Crawl-delay (at least 1 s, although 250 ms was asked)  (smallest gap 1001 ms over 17 requests)
+PASS  the walk names itself  (Zeus/0.0.1-beta (+site grabber))
+PASS  a file type filter keeps only that type, and depth 1 stops at the first links  (report.pdf,guide.pdf)
+PASS  exclude and include rules apply to pages and files  (report.pdf,data.zip,guide.pdf,chapter1.pdf)
+PASS  the file limit stops the list and counts what it left out
+PASS  depth 0 reads only the start page
+PASS  an address that is not http or https is refused with a sentence
+PASS  an address with a password is refused
+PASS  a walk can be cancelled and stops asking  (113 ms to stop)
+PASS  and no request follows the cancel
+PASS  the dialog shows what it would read and fetch  (Would read 5 pages and fetch 4 files, 120 KiB in all.)
+PASS  it shows robots.txt facts, skipped reasons and who holds the approval  (Site grabber · Preview1 Start page2 How deep3 File types4 Rules5 PreviewWould read 5 pages and fetch 4 files, 120 KiB in all.robots.txt read: 1 rule for Zeus, a crawl delay of 1 s kept. 12 requests in)
+PASS  the plan approval shows its facts, held by this app  (websitehttp://127.0.0.1:51410asked byYou, in Zeus (human)for4 files, 120 KiB, 5 pages, depth 2laststhis one operationwhatWorkflow runfilesreport.pdf · 30.4 KiBdata.zip · 28.2 KiBguide.pdf · 29.3 KiBch)
+  held approvals: [["approved","workflow_plan","Zeus app (this window)"]] | toasts:  | page errors:  | jobs: 4
+  rows: chapter1.pdf32.6 KiB100 %––completedhashedtoday 16:56Documents–127.0.0.1 || guide.pdf29.3 KiB100 %––completedhashedtoday 16:56Documents–127.0.0.1 || data.zip28.2 KiB100 %––completedhashedtoday 16:56Compressed–127.0.0.1 || report.pdf30.4 KiB100 %––completedhashedtoday 16:56Documents–127.0.0.1
+PASS  after the approval the four files download  (report.pdf:completed,data.zip:completed,guide.pdf:completed,chapter1.pdf:completed)
+PASS  each has the exact bytes the site serves
+PASS  the grabber project is kept  ([["fixture handbook","running"]])
+PASS  no console errors
+SCENARIO 6: PASSED
+exit 0

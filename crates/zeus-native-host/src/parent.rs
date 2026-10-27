@@ -18,8 +18,41 @@ struct Process {
 
 #[derive(Clone, Debug)]
 struct Registration {
+    name: &'static str,
     firefox: bool,
     image: PathBuf,
+}
+
+/// A browser installation the host accepts as a launcher on this computer.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RecognizedInstall {
+    /// `chrome`, `edge`, `brave`, `chromium` or `firefox` (the spelling of the install commands).
+    pub name: &'static str,
+    /// True for Firefox, whose manifests use add-on ids.
+    pub firefox: bool,
+    /// The browser executable.
+    pub image: PathBuf,
+}
+
+/// The browser installs this host would accept as the parent of a connection, so a status page can say which
+/// browsers can carry Zeus decisions before anyone clicks. Per-user and portable installs are not listed: they fail
+/// closed (see the module documentation).
+pub fn recognized_installs() -> Vec<RecognizedInstall> {
+    #[cfg(any(target_os = "linux", windows))]
+    {
+        platform::registered()
+            .into_iter()
+            .map(|r| RecognizedInstall {
+                name: r.name,
+                firefox: r.firefox,
+                image: r.image,
+            })
+            .collect()
+    }
+    #[cfg(not(any(target_os = "linux", windows)))]
+    {
+        Vec::new()
+    }
 }
 
 fn same_path(a: &Path, b: &Path) -> bool {
@@ -42,23 +75,22 @@ fn child_of(child: &Process, parent: &Process) -> bool {
         && parent.started <= child.started
 }
 
-fn verify_chain(
+/// The name of the registered install that started the host (`edge`, `chrome`, ...), if the process chain proves it.
+fn chain_match(
     browser: BrowserName,
     host: &Process,
     parent: &Process,
     grandparent: Option<&Process>,
     registered: &[Registration],
     command: Option<&Path>,
-) -> bool {
+) -> Option<&'static str> {
     if !child_of(host, parent) {
-        return false;
+        return None;
     }
     let candidate = if command.is_some_and(|cmd| same_path(cmd, &parent.image)) {
-        let Some(grandparent) = grandparent else {
-            return false;
-        };
+        let grandparent = grandparent?;
         if !child_of(parent, grandparent) || grandparent.pid == host.pid {
-            return false;
+            return None;
         }
         grandparent
     } else {
@@ -67,20 +99,50 @@ fn verify_chain(
     let firefox = browser == BrowserName::Firefox;
     registered
         .iter()
-        .any(|r| r.firefox == firefox && same_path(&r.image, &candidate.image))
+        .find(|r| r.firefox == firefox && same_path(&r.image, &candidate.image))
+        .map(|r| r.name)
 }
 
-/// Check the actual parent chain. This function never elevates, writes registration or logs paths.
-pub fn verify(browser: BrowserName) -> bool {
+fn verify_chain(
+    browser: BrowserName,
+    host: &Process,
+    parent: &Process,
+    grandparent: Option<&Process>,
+    registered: &[Registration],
+    command: Option<&Path>,
+) -> bool {
+    chain_match(browser, host, parent, grandparent, registered, command).is_some()
+}
+
+fn browser_named(name: &str) -> Option<BrowserName> {
+    match name {
+        "chrome" => Some(BrowserName::Chrome),
+        "edge" => Some(BrowserName::Edge),
+        "brave" => Some(BrowserName::Brave),
+        "chromium" => Some(BrowserName::Chromium),
+        "firefox" => Some(BrowserName::Firefox),
+        _ => None,
+    }
+}
+
+/// Check the actual parent chain and name the browser it proves: the registered install that started this host. The
+/// argv of a Chromium-family launch cannot tell Chrome from Edge or Brave, so the verified install, never argv, decides
+/// which browser the daemon is told it is talking to. `None` when the parent cannot be verified.
+pub fn verified_browser(browser: BrowserName) -> Option<BrowserName> {
     #[cfg(any(target_os = "linux", windows))]
     {
-        platform::verify(browser).unwrap_or(false)
+        platform::verify(browser).and_then(browser_named)
     }
     #[cfg(not(any(target_os = "linux", windows)))]
     {
         let _ = browser;
-        false
+        None
     }
+}
+
+/// Check the actual parent chain. This function never elevates, writes registration or logs paths.
+pub fn verify(browser: BrowserName) -> bool {
+    verified_browser(browser).is_some()
 }
 
 #[cfg(target_os = "linux")]
@@ -114,32 +176,43 @@ mod platform {
         Some(path)
     }
 
-    pub(super) fn verify(browser: BrowserName) -> Option<bool> {
-        let host = identity(std::process::id())?;
-        let parent = identity(host.parent)?;
-        let registered: Vec<_> = [
-            (false, "/opt/google/chrome/chrome"),
-            (false, "/opt/google/chrome-beta/chrome"),
-            (false, "/usr/lib/chromium/chromium"),
-            (false, "/usr/lib/chromium-browser/chromium-browser"),
-            (false, "/opt/microsoft/msedge/msedge"),
-            (false, "/opt/brave.com/brave/brave"),
-            (true, "/usr/lib/firefox/firefox"),
-            (true, "/usr/lib/firefox/firefox-bin"),
-            (true, "/usr/lib/firefox-esr/firefox-esr"),
+    pub(super) fn registered() -> Vec<Registration> {
+        [
+            ("chrome", false, "/opt/google/chrome/chrome"),
+            ("chrome", false, "/opt/google/chrome-beta/chrome"),
+            ("chromium", false, "/usr/lib/chromium/chromium"),
+            (
+                "chromium",
+                false,
+                "/usr/lib/chromium-browser/chromium-browser",
+            ),
+            ("edge", false, "/opt/microsoft/msedge/msedge"),
+            ("brave", false, "/opt/brave.com/brave/brave"),
+            ("firefox", true, "/usr/lib/firefox/firefox"),
+            ("firefox", true, "/usr/lib/firefox/firefox-bin"),
+            ("firefox", true, "/usr/lib/firefox-esr/firefox-esr"),
         ]
         .into_iter()
-        .filter_map(|(firefox, path)| {
-            trusted_install(path).map(|image| Registration { firefox, image })
+        .filter_map(|(name, firefox, path)| {
+            trusted_install(path).map(|image| Registration {
+                name,
+                firefox,
+                image,
+            })
         })
-        .collect();
+        .collect()
+    }
+
+    pub(super) fn verify(browser: BrowserName) -> Option<&'static str> {
+        let host = identity(std::process::id())?;
+        let parent = identity(host.parent)?;
+        let registered = registered();
         // Reparenting while collecting evidence invalidates this attestation.
         let fresh = identity(host.pid)?;
-        Some(
-            fresh.parent == host.parent
-                && fresh.started == host.started
-                && verify_chain(browser, &host, &parent, None, &registered, None),
-        )
+        if fresh.parent != host.parent || fresh.started != host.started {
+            return None;
+        }
+        chain_match(browser, &host, &parent, None, &registered, None)
     }
 }
 
@@ -248,18 +321,22 @@ mod platform {
             .ok()
     }
 
+    pub(super) fn registered() -> Vec<Registration> {
+        registrations()
+    }
+
     fn registrations() -> Vec<Registration> {
         let mut output = Vec::new();
         // HKCU App Paths can be rewritten by any process running as this user. It cannot
         // attest a browser parent for human decisions. Per-user browser installs fail closed.
         for hive in [HKEY_LOCAL_MACHINE] {
             for view in [KEY_WOW64_64KEY, KEY_WOW64_32KEY] {
-                for (name, firefox) in [
-                    ("chrome.exe", false),
-                    ("msedge.exe", false),
-                    ("brave.exe", false),
-                    ("chromium.exe", false),
-                    ("firefox.exe", true),
+                for (short, name, firefox) in [
+                    ("chrome", "chrome.exe", false),
+                    ("edge", "msedge.exe", false),
+                    ("brave", "brave.exe", false),
+                    ("chromium", "chromium.exe", false),
+                    ("firefox", "firefox.exe", true),
                 ] {
                     let key =
                         format!("SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths\\{name}");
@@ -275,7 +352,11 @@ mod platform {
                         continue;
                     }
                     if let Ok(image) = std::fs::canonicalize(path) {
-                        output.push(Registration { firefox, image });
+                        output.push(Registration {
+                            name: short,
+                            firefox,
+                            image,
+                        });
                     }
                 }
             }
@@ -283,7 +364,7 @@ mod platform {
         output
     }
 
-    pub(super) fn verify(browser: BrowserName) -> Option<bool> {
+    pub(super) fn verify(browser: BrowserName) -> Option<&'static str> {
         let parents = parents()?;
         // Keep handles alive throughout verification so recycled PIDs cannot change identities.
         let (host, _host_handle) = identity(std::process::id(), &parents)?;
@@ -297,14 +378,14 @@ mod platform {
         } else {
             None
         };
-        Some(verify_chain(
+        chain_match(
             browser,
             &host,
             &parent,
             grandparent.as_ref().map(|(p, _)| p),
             &registrations(),
             command.as_deref(),
-        ))
+        )
     }
 }
 
@@ -322,10 +403,12 @@ mod tests {
     fn registered() -> Vec<Registration> {
         vec![
             Registration {
+                name: "chrome",
                 firefox: false,
                 image: "/installed/chrome.exe".into(),
             },
             Registration {
+                name: "firefox",
                 firefox: true,
                 image: "/installed/firefox.exe".into(),
             },
@@ -368,6 +451,42 @@ mod tests {
             None
         ));
     }
+    #[test]
+    fn the_verified_install_names_the_browser_not_argv() {
+        let host = process(3, 2, 30, "/host");
+        let edge = process(2, 1, 20, "/installed/msedge.exe");
+        let registered = vec![
+            Registration {
+                name: "chrome",
+                firefox: false,
+                image: "/installed/chrome.exe".into(),
+            },
+            Registration {
+                name: "edge",
+                firefox: false,
+                image: "/installed/msedge.exe".into(),
+            },
+        ];
+        // A Chromium-family launch is reported as `chrome` by argv; the install says edge.
+        assert_eq!(
+            chain_match(BrowserName::Chrome, &host, &edge, None, &registered, None),
+            Some("edge")
+        );
+        assert_eq!(browser_named("edge"), Some(BrowserName::Edge));
+        assert_eq!(browser_named("netscape"), None);
+        assert_eq!(
+            chain_match(
+                BrowserName::Chrome,
+                &host,
+                &process(2, 1, 20, "/tmp/msedge.exe"),
+                None,
+                &registered,
+                None
+            ),
+            None
+        );
+    }
+
     #[test]
     fn only_os_command_interpreter_permits_one_extra_parent() {
         let host = process(4, 3, 40, "/host");
@@ -435,6 +554,15 @@ mod tests {
             None
         ));
     }
+    #[test]
+    fn recognized_installs_name_only_known_browsers() {
+        for install in recognized_installs() {
+            assert!(["chrome", "edge", "brave", "chromium", "firefox"].contains(&install.name));
+            assert_eq!(install.firefox, install.name == "firefox");
+            assert!(install.image.is_absolute());
+        }
+    }
+
     #[test]
     fn test_runner_is_not_a_verified_browser_launch() {
         assert!(!verify(BrowserName::Chrome));

@@ -84,6 +84,8 @@ export interface Job {
   approvalId?: string
   grabberProject?: string
   sessionOrigin?: string
+  /** Native: the finished file is no longer in the download folders (removed, moved or excluded from the index). */
+  missing?: boolean
   description?: string
   events: JobEvent[]
   /** Bytes hashed so far while verifying. */

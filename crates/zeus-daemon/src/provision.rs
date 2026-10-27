@@ -49,6 +49,7 @@ pub const DEFAULT_CREDENTIALS: &[(&str, ClientKind, ClientRole)] = &[
     ("a2a", ClientKind::Agent, ClientRole::A2a),
     ("host", ClientKind::Human, ClientRole::NativeHost),
     ("gui", ClientKind::Agent, ClientRole::Gui),
+    ("app", ClientKind::Agent, ClientRole::Gui),
 ];
 
 /// What [`provision`] did.
@@ -56,7 +57,7 @@ pub const DEFAULT_CREDENTIALS: &[(&str, ClientKind, ClientRole)] = &[
 pub struct ProvisionReport {
     /// The IPC secret file was created.
     pub created_ipc_secret: bool,
-    /// Credential files created, by name (`cli`, `agent`, `a2a`, `host`, `gui`).
+    /// Credential files created, by name (`cli`, `agent`, `a2a`, `host`, `gui`, `app`).
     pub created_credentials: Vec<String>,
 }
 
@@ -200,8 +201,25 @@ pub struct NewCredential<'a> {
     pub permissions: Option<BTreeSet<Permission>>,
 }
 
+/// What the `app` credential of the standalone desktop app may do: the agent ceiling minus file writes and
+/// workflow runs, plus nothing human-only.
+pub const APP_PERMISSIONS: &[Permission] = &[
+    Permission::JobsRead,
+    Permission::JobsWrite,
+    Permission::JobsControl,
+    Permission::EventsRead,
+    Permission::SessionsRead,
+    Permission::ApprovalsRead,
+    Permission::FilesRead,
+    Permission::WorkflowsPlan,
+    Permission::ConfigRead,
+    Permission::AuditRead,
+    Permission::LlmRead,
+    Permission::DaemonRead,
+];
+
 /// Names of the provisioned credentials; `clients.add` cannot reuse them.
-pub const RESERVED_NAMES: &[&str] = &["cli", "agent", "a2a", "host", "gui"];
+pub const RESERVED_NAMES: &[&str] = &["cli", "agent", "a2a", "host", "gui", "app"];
 /// Roots one service credential may register (05 section 13.1).
 pub const MAX_SERVICE_ROOTS: usize = 16;
 /// Credentials one store holds, revoked ones included, so the index stays small.
@@ -671,7 +689,7 @@ pub fn provision(paths: &ZeusPaths, now: Timestamp) -> Result<ProvisionReport, P
         let id = CredentialId::generate();
         let mut credential = Credential::new(id.clone(), *kind, *role, token.auth_key(), now)
             .map_err(|e| ProvisionError::Corrupt(e.to_string()))?;
-        if *role == ClientRole::Gui {
+        if *name == "gui" {
             // The first desktop client reads work and previews/enqueues/controls downloads.
             // It is not an attested human decision surface and never borrows the CLI credential.
             credential.permissions = [
@@ -685,6 +703,12 @@ pub fn provision(paths: &ZeusPaths, now: Timestamp) -> Result<ProvisionReport, P
             ]
             .into_iter()
             .collect();
+        } else if *name == "app" {
+            // The standalone desktop app owns its own installation. It does what the person does with the
+            // download manager (queues, link review, files, events, redacted configuration) and nothing that
+            // needs a human decision: no approvals.decide, no config.write, no files.write, no admin, no
+            // session revocation. Approvals stay on the interactive CLI (ADR 0007, ADR 0009).
+            credential.permissions = APP_PERMISSIONS.iter().copied().collect();
         }
         let mut record = stored_from(&credential);
         record.name = Some((*name).to_string());
@@ -748,7 +772,7 @@ mod tests {
         assert!(first.created_ipc_secret);
         assert_eq!(
             first.created_credentials,
-            ["cli", "agent", "a2a", "host", "gui"]
+            ["cli", "agent", "a2a", "host", "gui", "app"]
         );
         let before = std::fs::read(paths.credential_file("agent")).unwrap();
         let secret_before = std::fs::read(paths.ipc_secret_file()).unwrap();
@@ -782,7 +806,7 @@ mod tests {
     }
 
     #[test]
-    fn an_existing_install_gains_only_the_restricted_gui_credential() {
+    fn an_existing_install_gains_only_the_missing_desktop_credentials() {
         let dir = tempfile::tempdir().unwrap();
         let paths = paths(dir.path());
         provision(&paths, Timestamp::now()).unwrap();
@@ -796,9 +820,10 @@ mod tests {
             .retain(|record| record.role != ClientRole::Gui);
         write_private(&store_path, &serde_json::to_vec(&stored).unwrap()).unwrap();
         std::fs::remove_file(paths.credential_file("gui")).unwrap();
+        std::fs::remove_file(paths.credential_file("app")).unwrap();
 
         let upgraded = provision(&paths, Timestamp::now()).unwrap();
-        assert_eq!(upgraded.created_credentials, ["gui"]);
+        assert_eq!(upgraded.created_credentials, ["gui", "app"]);
         assert!(!upgraded.created_ipc_secret);
         assert_eq!(
             std::fs::read(paths.credential_file("cli")).unwrap(),
@@ -854,6 +879,29 @@ mod tests {
         assert!(!gui.permissions.contains(&Permission::ApprovalsDecide));
         assert!(!gui.permissions.contains(&Permission::WorkflowsRun));
         assert!(!gui.permissions.contains(&Permission::FilesWrite));
+        let app = store
+            .get(&load_client_credential(&paths, "app").unwrap().id)
+            .unwrap();
+        assert_eq!((app.kind, app.role), (ClientKind::Agent, ClientRole::Gui));
+        assert_eq!(app.permissions, APP_PERMISSIONS.iter().copied().collect());
+        for denied in [
+            Permission::ApprovalsDecide,
+            Permission::ConfigWrite,
+            Permission::FilesWrite,
+            Permission::DaemonAdmin,
+            Permission::SessionsRevoke,
+            Permission::KillSwitch,
+            Permission::LlmConfigure,
+            Permission::WorkflowsRun,
+        ] {
+            assert!(!app.permissions.contains(&denied), "{denied}");
+        }
+        assert!(
+            app.permissions
+                .iter()
+                .all(|p| ClientKind::Agent.default_permissions().contains(p)),
+            "the app credential stays inside the agent ceiling"
+        );
         let host = store
             .get(&load_client_credential(&paths, "host").unwrap().id)
             .unwrap();

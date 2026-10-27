@@ -1,7 +1,7 @@
 {
   "name": "zeus-client",
   "private": true,
-  "version": "0.0.1-alpha",
+  "version": "0.0.1-beta",
   "description": "Zeus pre-alpha client: downloads, link grabber, queues, files search, agent threads and approvals. Talks to a real zeusd through zeus-web-bridge (hosted or local); a scripted backend remains for offline builds and tests.",
   "license": "Apache-2.0",
   "author": "Verne Ltd.",
@@ -20,7 +20,9 @@
     "build:site": "tsc --noEmit -p . && vite build --mode site --outDir dist/site",
     "preview": "vite preview",
     "build:desktop": "node scripts/build-desktop.mjs",
-    "publish:site": "node scripts/publish-site.mjs"
+    "publish:site": "node scripts/publish-site.mjs",
+    "build:harness": "tsc --noEmit -p . && vite build --mode harness --outDir dist/harness",
+    "test:acceptance": "node tests/acceptance/s01-download.mjs && node tests/acceptance/s02-resume-failures.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "2.11.1",

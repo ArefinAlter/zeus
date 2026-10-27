@@ -7,9 +7,11 @@ import { useState } from 'preact/hooks'
 
 import type { ProviderEntry } from '../../backend/settings'
 import { PROVIDER_PRESETS } from '../../backend/settings'
+import { NATIVE } from '../../backend/live'
 import { updateSettings, useStore } from '../../backend/store'
 import { Chip, CodeCopy, NumberInput, PageHead, Provenance, SettingsGroup, Switch } from '../../ui/components'
 import { Icon } from '../../ui/icons'
+import { NativeProviders } from './ProvidersNative'
 
 function masked(key: string | undefined): string {
   if (!key) return 'no key'
@@ -17,6 +19,10 @@ function masked(key: string | undefined): string {
 }
 
 export function ProvidersSettings() {
+  return NATIVE ? <NativeProviders /> : <ScriptedProviders />
+}
+
+function ScriptedProviders() {
   const list = useStore((s) => s.settings.providers)
   const [sel, setSel] = useState(0)
   const [adding, setAdding] = useState(false)

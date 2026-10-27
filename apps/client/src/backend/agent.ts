@@ -9,6 +9,8 @@
 import { ACCESS_INFO, clampSkillTools, mayCall } from '../model/agentTools.ts'
 import type { AgentAccess, Job } from '../model/types.ts'
 import { fmtBytes, fmtRate } from '../model/units.ts'
+import { NATIVE } from './live.ts'
+import { forgetNative, sendNative, stopNative } from './agentNative.ts'
 import { CLAUDE } from './sample.ts'
 import type { State } from './store.ts'
 import { addDownloads, createApproval, getState, grabberAdd, isActive, pause, refreshAddress, requestOrganize, resume, setThreads, sizeFor } from './store.ts'
@@ -47,12 +49,14 @@ export function renameThread(id: string, title: string): void {
 }
 
 export function removeThread(id: string): void {
+  if (NATIVE) forgetNative(id)
   const l = live.get(id)
   if (l) l.stop = true
   setThreads((list) => list.filter((t) => t.id !== id))
 }
 
 export function stopThread(id: string): void {
+  if (NATIVE) stopNative(id)
   const l = live.get(id)
   if (l) l.stop = true
 }
@@ -451,7 +455,13 @@ function pickScenario(text: string): Scenario {
   return help
 }
 
+/** Answer the last message again (the desktop app's agent only). */
+export function regenerate(id: string): Promise<void> {
+  return sendNative(id, null, true)
+}
+
 export async function send(id: string, text: string): Promise<void> {
+  if (NATIVE) return sendNative(id, text)
   const t = thread(id)
   if (!t || t.state === 'running') return
   const s = getState()

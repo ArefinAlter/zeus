@@ -16,6 +16,7 @@ export const NAV: NavItem[] = [
   { id: 'files', label: 'Files', icon: 'search', group: 'Transfers' },
   { id: 'agent', label: 'Agent', icon: 'chat', group: 'Agents' },
   { id: 'skills', label: 'Skills', icon: 'skill', group: 'Agents' },
+  { id: 'connect', label: 'Connect', icon: 'plug', group: 'Agents' },
   { id: 'approvals', label: 'Approvals', icon: 'seal', group: 'Trust' },
   { id: 'connectors', label: 'Connectors', icon: 'plug', group: 'Trust' },
 ]

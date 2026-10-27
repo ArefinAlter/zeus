@@ -1,0 +1,109 @@
+/* The desktop app's agent: consent dialog, model picker, spend meter, provider settings. */
+
+.consent-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  margin: 8px 0;
+}
+.consent-grid h4 {
+  margin: 0 0 4px;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted-foreground);
+}
+.consent-pre {
+  max-height: 220px;
+  overflow: auto;
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  background: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+.consent-msgs {
+  list-style: none;
+  margin: 6px 0;
+  padding: 0;
+  max-height: 200px;
+  overflow: auto;
+  font-size: 13px;
+}
+.consent-msgs li {
+  padding: 4px 0;
+  border-bottom: 1px solid var(--border);
+}
+.consent-msgs .role {
+  display: inline-block;
+  min-width: 84px;
+  color: var(--muted-foreground);
+  font-size: 12px;
+}
+
+.approval-command {
+  display: grid;
+  gap: 4px;
+  margin-top: 8px;
+}
+
+.model-pick .row-ready,
+.model-pick .row-blocked {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+}
+
+.spend-meter {
+  display: grid;
+  gap: 4px;
+}
+.spend-meter .bar {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--accent);
+  overflow: hidden;
+}
+.spend-meter .bar > i {
+  display: block;
+  height: 100%;
+  background: var(--primary);
+}
+.spend-meter .bar.hot > i {
+  background: var(--warning);
+}
+
+.keystore-box {
+  display: grid;
+  gap: 8px;
+}
+.price-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+.test-result {
+  font-size: 13px;
+}
+.test-result.bad {
+  color: var(--error-foreground);
+}
+.test-result.ok {
+  color: var(--success-foreground);
+}
+.notice-link {
+  margin-left: 8px;
+  font-size: 12px;
+}
+.thread-actions {
+  display: flex;
+  gap: 8px;
+  padding: 4px 16px 0;
+}
+@media (max-width: 720px) {
+  .consent-grid {
+    grid-template-columns: 1fr;
+  }
+}

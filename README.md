@@ -4,7 +4,7 @@
 
 Your agents can find it. Zeus makes sure they actually get it: verified, filed and accounted for. It works with your real browser, never reads your cookie database, and keeps a tamper-evident record of what it did.
 
-> **Status: pre-alpha, implementation in progress.** The daemon, transfer engine, native relay, MCP stdio server, terminal interfaces, restricted desktop client, public-page workflow runner and model adapters have executable implementations and hermetic tests. Real browser/GUI acceptance, cross-platform release validation and several roadmap capabilities remain unfinished. There is no frozen API. A first pre-alpha, [release 0.0.1a](https://github.com/ArefinAlter/zeus/releases/tag/v0.0.1a) (unsigned builds for Windows x64 and Linux x64), can be tried in the browser at <https://zeus.103.191.50.32.sslip.io> or downloaded from the [Zeus website](https://zeus-site-bay.vercel.app/get-started/). See the [implementation and remaining-work ledger](docs/IMPLEMENTATION_STATUS.md).
+> **Status: pre-alpha, implementation in progress.** [Release 0.0.1b](https://github.com/ArefinAlter/zeus/releases/tag/v0.0.1b) (unsigned installers for Windows x64 and Linux x64, 2026-10-27) is the first standalone desktop app: it sets up and supervises its own `zeusd`, so there is no daemon to start by hand, and it has real downloads, queues and a speed limiter held by the daemon, a file index, link and site grabbers, an in-app agent with your own model keys, and MCP and browser-extension integration. What was proved and what was not is in [docs/ACCEPTANCE-0.0.1b.md](docs/ACCEPTANCE-0.0.1b.md); approvals are decided only in the terminal or the extension, never by the app. The extension still runs as a development extension, so deciding from its popup is refused. The hosted pre-alpha at <https://zeus.103.191.50.32.sslip.io> still runs the 0.0.1a backend and only fetches sample fixtures. Downloads are on the [Zeus website](https://zeus-site-bay.vercel.app/get-started/). There is no frozen API. See the [implementation and remaining-work ledger](docs/IMPLEMENTATION_STATUS.md).
 
 Zeus combines familiar download queues, resumable transfers and a link inbox with explicit agent plans, human approvals and per-run budgets. The [download workspace design](docs/design/download-workspace.md) includes a runnable visual prototype; its queue and agent controls are simulations until connected to the daemon.
 
@@ -51,7 +51,7 @@ One daemon owns all state; everything else is a client of its local JSON-RPC API
 
 Clone them **side by side**: this workspace refers to `../zeus-core`.
 
-The optional [Tauri desktop client](apps/desktop/README.md) lives in its own Cargo workspace under `apps/desktop`. It uses the real daemon for download pages, reviewed link intake, job controls and run/file/artifact inspection; its Rust bridge owns the restricted credential. Follow its README for provisioning and launch instructions.
+The standalone [desktop app](apps/client/README.md) (Tauri 2 and Preact, its own Cargo workspace under `apps/client/src-tauri`) owns and supervises its engine; build and test instructions are in its README. The older restricted [Tauri desktop client](apps/desktop/README.md) lives in its own Cargo workspace under `apps/desktop`. It uses the real daemon for download pages, reviewed link intake, job controls and run/file/artifact inspection; its Rust bridge owns the restricted credential. Follow its README for provisioning and launch instructions.
 
 ```
 zeus-workspace/

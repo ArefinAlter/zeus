@@ -123,6 +123,9 @@ pub struct GetArgs {
     /// Idempotency key (default: derived from the URLs).
     #[arg(long)]
     pub idempotency_key: Option<String>,
+    /// Put the downloads in this queue: they wait there until it runs (`zeus queues start`).
+    #[arg(long)]
+    pub queue: Option<String>,
 }
 
 /// `zeus approvals`.
@@ -275,9 +278,14 @@ pub enum NativeHostCommand {
         /// Development extension id to pin (repeatable). The host logs a warning on every start.
         #[arg(long = "dev-extension-id")]
         dev_extension_ids: Vec<String>,
-        /// Path of the zeus-native-host executable. Default: next to this program.
+        /// Path of the zeus-native-host executable (or of a launcher script that starts it). Default: next to this
+        /// program.
         #[arg(long)]
         host_path: Option<String>,
+        /// Folder for the host's allow-list file. Default: next to the host executable. The host also reads
+        /// `allowed-extensions.json` from the Zeus state directory when no file sits beside it.
+        #[arg(long)]
+        allow_list_dir: Option<String>,
     },
     /// Remove the registrations.
     Uninstall {
@@ -323,6 +331,9 @@ pub enum Command {
     /// Inspect artifact records and provenance, or register a local file.
     #[command(subcommand)]
     Artifacts(crate::artifacts::ArtifactsCommand),
+    /// Download queues: list them, start or stop one, set the speed limit.
+    #[command(subcommand)]
+    Queues(crate::queues::QueuesCommand),
     /// Download one or more URLs.
     Get(GetArgs),
     /// Check a URL: size, resumability, type, whether a session is needed.

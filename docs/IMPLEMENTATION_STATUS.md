@@ -4,6 +4,23 @@ Reviewed 2026-10-16; updated 2026-10-21 with the continuation work below. This i
 
 The [2026-10-18 project handoff](PROJECT_HANDOFF.md) records the exact companion revisions, operating instructions and additional source-review findings; its [discrepancy register](PROJECT_HANDOFF.md#known-gaps-and-documentation-discrepancies) includes unwired configuration, emergency-stop audit recovery and missing model-to-product integration. The [end-to-end roadmap](../ROADMAP.md) covers all four repositories, including the site preview. The validation evidence below was rerun on 2026-10-18 after the continuation work; the earlier October 16 figures are kept where a check was not repeated.
 
+## Release 0.0.1b: the standalone desktop app
+
+Release 0.0.1b (pre-alpha, 2026-10-27) adds `apps/client`, a desktop app that runs on its own. Evidence, scenario by scenario, with the limits, is in [ACCEPTANCE-0.0.1b.md](ACCEPTANCE-0.0.1b.md). In short:
+
+| Area | Runs today | Not claimed |
+|---|---|---|
+| Engine ownership | The app provisions its own Zeus installation in the per-user folder, supervises `zeusd`, adopts a daemon left by a crash and stops it on quit. The page calls one closed command, `backend_call`, and never sees the credential. | Auto-update, signed installers, macOS. |
+| Downloads | Segmented resumable transfers, kill and resume, redirects, `Retry-After`, server-given names, SHA-256 and BLAKE3, quarantine of executables. | Behaviour on hosts other than a local fixture server and the public test file named in ACCEPTANCE-0.0.1b.md. |
+| Queues, scheduler, limiter | Held by `zeusd` (`queues.json`, spec 05 section 9.14): start and stop times, days, concurrency, on-finish action, a global, a per-queue and a scheduled limit. The receiver-side test measures each limit within 0.5 percent. | A SOCKS proxy, metered connections, IPv6 choice (shown as planned and switched off). |
+| Files | Index and watcher, search, preview, rename, move, delete to the recycle bin, bookmarks, history. | Preview of formats other than text and pictures. |
+| Grabbers | Link grabber with review and duplicate handling; site grabber (robots, depth, filters) with an app-held approval of the plan. | Sites that need scripts to render. |
+| Agent | In-app threads with your own keys (Anthropic, OpenAI-compatible, Gemini, Ollama), the 13 tools, spend ledger, consent per provider. | A live provider call: only local servers speaking the real wire formats were used. |
+| Connect | Generated MCP configuration for Claude Code, Cursor and Codex, a real handshake test, a packaged browser extension and its native host. | Deciding an approval from the extension popup with a development extension id (refused by design until the extension has a published id). |
+| Approvals | Shown in the window, decided only in the terminal or the extension. | A decision from the window: no. |
+
+No `zeus-core` change and no new ADR. ADR 0012 gained one row for `queues.json`, and spec 05 gained section 9.14 for queues.
+
 ## Roadmap position
 
 | Phase | Implemented in this change | Still required to finish the phase |

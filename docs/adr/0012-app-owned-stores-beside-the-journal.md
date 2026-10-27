@@ -24,6 +24,7 @@ ADR 0005 made redb the engine's transfer journal and kept it behind `zeus-journa
 | `models.redb`, `chatgpt.redb` | model service (`zeus-llm` runtime) | Model configuration, durable spend reservations, account metadata; secrets stay in the OS keyring (09) |
 | `cloud.redb` (+ `cloud-staging/`) | cloud service | Plans, deliveries, private checkpoints and idempotency receipts (14) |
 | `files.redb` | file organiser | Approval-bound operation lists and per-step outcomes for undo (05 section 9.6) |
+| `queues.json` | queue service | Download queues, their members and held state, the speed limiter's settings and the scheduler defaults (05 section 9.14). A small JSON file rewritten atomically (temporary file, fsync, rename) after every change: the data is a few kilobytes, has one writer, and needs no transaction across stores because a job that is missing from it simply runs unqueued. A damaged file is set aside as `queues.json.damaged` and the daemon starts with empty queues. |
 | `a2a-index.redb` | A2A bridge process | Peer task ownership and retry bindings; the bridge's only durable state (10) |
 
 3. **Credentials and roots stay in `credentials.json`.** The verifier index is a small JSON file written atomically; service roots live beside the credential they belong to, so revocation deactivates both in one write.

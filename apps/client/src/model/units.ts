@@ -54,11 +54,24 @@ export function parseBytes(s: string): number | null {
 }
 
 /** "today 14:05", "yesterday 09:12", "21 Oct 16:40", "21 Oct 2025": dates people scan in a list. */
+let twelveHour = false
+
+/** The person's clock choice (Settings, General). */
+export function setTimeFormat(f: '12h' | '24h'): void {
+  twelveHour = f === '12h'
+}
+
+function clock(d: Date): string {
+  if (!twelveHour) return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+  const h = d.getHours() % 12 || 12
+  return `${h}:${String(d.getMinutes()).padStart(2, '0')} ${d.getHours() < 12 ? 'am' : 'pm'}`
+}
+
 export function fmtWhen(t: number | undefined, now = Date.now()): string {
   if (t === undefined) return '–'
   const d = new Date(t)
   const n = new Date(now)
-  const hm = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+  const hm = clock(d)
   const sameDay = (a: Date, b: Date) => a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate()
   if (sameDay(d, n)) return `today ${hm}`
   const y = new Date(n.getFullYear(), n.getMonth(), n.getDate() - 1)

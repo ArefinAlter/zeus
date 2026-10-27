@@ -1,0 +1,12 @@
+engine ready in 1.9 s, zeusd 0.0.1-beta, credential permissions: jobs.read,jobs.write,jobs.control,events.read,sessions.read,approvals.read,files.read,workflows.plan,audit.read,config.read,llm.read,daemon.read
+probe: {"approval_needed":false,"check":"online","content_type":"application/octet-stream","final_url":"http://127.0.0.1:49270/files/ubuntu-sample.iso?…","interstitial":false,"name":"ubuntu-sample.iso","name_source":"url_path","redirects":0,"resumable":"verified","size":100663296,"status":206}
+job job_01M5YFPP5W6TA798W04SSDBT67 queued
+states seen: queued -> downloading -> verifying -> completed
+progress samples while downloading: 12; distinct byte counts: 7; max rate 35144237 B/s; eta seen: true
+final: {"state":"completed","bytes":100663296,"total":100663296,"sha256":"18edcf8b4a09b1b436992ef82b4e022936e4b96e5acc1acf49fd1688813f94aa","path":"D:\\verne-build\\zeus\\scratch\\s01\\downloads\\ubuntu-sample.iso"}
+job detail probe: {"range":"verified","type":"application/octet-stream","name":{"source":"url_path","value":"ubuntu-sample.iso"}} result: {"sha256":"18edcf8b4a09b1b436992ef82b4e022936e4b96e5acc1acf49fd1688813f94aa","blake3":"6193f3692b9d882ce3fad5ef65d61e8f62997b4123769a04efbd87fa0c8d0ffa","mime":null}
+sha256 from zeusd matches the server's, file on disk matches (100663296 bytes)
+in the file index: true
+in zeusd files.list: true ; folder opens: {"ok":true}
+SCENARIO 1: PASSED
+exit 0

@@ -53,7 +53,7 @@ export function statusDetail(j: Job, now: number): string {
     case 'failed':
       return j.error?.code ?? 'failed'
     case 'completed':
-      return j.quarantined ? 'quarantined' : j.matchedExpected ? 'matches published hash' : 'hashed'
+      return j.missing ? 'file removed or moved' : j.quarantined ? 'quarantined' : j.matchedExpected ? 'matches published hash' : 'hashed'
     case 'paused':
       return `${fmtBytes(j.done)} saved`
     case 'queued':

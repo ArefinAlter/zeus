@@ -6,7 +6,8 @@ import { useEffect, useState } from 'preact/hooks'
 
 import { removeThread } from './backend/agent'
 import type { Toast } from './backend/store'
-import { HOSTED, LIVE } from './backend/live'
+import { HOSTED, LIVE, NATIVE } from './backend/live'
+import { inQuietHours, shellApi } from './backend/shell'
 import { dismissToast, getState, globalStop, pauseAll, resumeAll, setLimiter, useStore } from './backend/store'
 import { limiterActive } from './model/schedule.ts'
 import { fmtBytes, fmtRate } from './model/units.ts'
@@ -23,6 +24,7 @@ import { Palette } from './ui/Palette'
 import { WindowControls } from './ui/WindowControls'
 import { Agent, DetailsToggle } from './views/Agent'
 import { ApprovalDetail, Approvals } from './views/Approvals'
+import { Connect } from './views/Connect'
 import { Connectors } from './views/Connectors'
 import { AddUrl } from './views/dialogs/AddUrl'
 import { SiteGrabber } from './views/dialogs/SiteGrabber'
@@ -41,6 +43,7 @@ const TITLES: Record<string, string> = {
   agent: 'Agent',
   skills: 'Skills',
   approvals: 'Approvals',
+  connect: 'Connect',
   connectors: 'Connectors',
   settings: 'Settings',
   about: 'About',
@@ -64,6 +67,8 @@ function Page({ path, query }: { path: string[]; query: URLSearchParams }) {
       return <Skills {...(a ? { id: a } : {})} />
     case 'approvals':
       return a ? <ApprovalDetail id={a} key={a} /> : <Approvals {...(query.get('state') ? { state: query.get('state') as string } : {})} />
+    case 'connect':
+      return <Connect />
     case 'connectors':
       return <Connectors {...(a ? { id: a } : {})} />
     case 'settings':
@@ -83,6 +88,7 @@ function Toasts() {
   const toasts = useStore((s) => s.toasts)
   const prefs = usePrefs()
   const notif = useStore((s) => s.settings.notifications)
+  const showDone = useStore((s) => s.settings.downloads.showCompleteDialog)
   const [seen] = useState(() => new Set<number>())
   const visible = toasts.filter((t) => {
     if (prefs.notifications === 'off' && t.topic !== 'system') return false
@@ -98,7 +104,12 @@ function Toasts() {
       if (seen.has(t.id)) continue
       seen.add(t.id)
       if (t.sound && prefs.sounds && visible.includes(t)) chime(t.sound)
-      setTimeout(() => dismissToast(t.id), t.kind === 'warn' || t.kind === 'bad' ? 9000 : 6000)
+      // Away from the window, the same notices go to the system's notification area (never the agent's words or links).
+      if (NATIVE && visible.includes(t) && (document.hidden || !document.hasFocus()) && !(notif.quietEnabled && inQuietHours(notif.quietFrom, notif.quietTo))) {
+        void shellApi.notify(t.title, t.desc ?? '').catch(() => undefined)
+      }
+      const sticky = t.topic === 'complete' && showDone
+      if (!sticky) setTimeout(() => dismissToast(t.id), t.kind === 'warn' || t.kind === 'bad' ? 9000 : 6000)
     }
   }, [toasts])
   if (!visible.length) return null
@@ -155,8 +166,8 @@ function StatusBar() {
         <Icon name="gauge" /> {limiter.enabled ? (on ? `limit ${fmtBytes(limiter.limitKiBps * 1024)}/s` : 'limit off-schedule') : 'no limit'}
       </button>
       <span class="hide-narrow">{index.state === 'scanning' ? `indexing ${Math.round(index.progress * 100)} %` : `index current`}</span>
-      <span class="sb-pill" title={LIVE ? (HOSTED ? 'A real zeusd on the pre-alpha server, in a private sandbox' : 'Your own zeusd through zeus-web-bridge') : 'This release runs on sample data with no backend'}>
-        Pre-alpha release · {LIVE ? (HOSTED ? 'hosted zeusd' : 'your zeusd') : 'sample data'}
+      <span class="sb-pill" title={LIVE ? (NATIVE ? 'The Zeus engine on this computer: a bundled zeusd that this app set up and runs' : HOSTED ? 'A real zeusd on the pre-alpha server, in a private sandbox' : 'Your own zeusd through zeus-web-bridge') : 'This release runs on sample data with no backend'}>
+        Pre-alpha release · {LIVE ? (NATIVE ? 'this computer' : HOSTED ? 'hosted zeusd' : 'your zeusd') : 'sample data'}
       </span>
     </footer>
   )
@@ -166,7 +177,7 @@ function StatusBar() {
 function ConnLink() {
   const live = useStore((s) => s.live)
   const ok = !LIVE || !!live?.connected
-  const title = !LIVE ? 'This release runs on sample data with no backend' : ok ? `Connected to ${HOSTED ? 'the hosted zeusd' : 'your zeusd'}${live?.daemon ? ` ${live.daemon.daemon_version}` : ''}` : (live?.failure?.message ?? 'Connecting…')
+  const title = !LIVE ? 'This release runs on sample data with no backend' : ok ? `Connected to ${NATIVE ? 'the Zeus engine on this computer' : HOSTED ? 'the hosted zeusd' : 'your zeusd'}${live?.daemon ? ` ${live.daemon.daemon_version}` : ''}` : (live?.failure?.message ?? 'Connecting…')
   return (
     <a class={`conn ${ok ? 'ok' : 'bad'}`} href={href('settings', LIVE ? 'daemon' : 'about')} title={title}>
       <span class="dot" />
@@ -181,8 +192,8 @@ function ConnBanner() {
   if (!LIVE || !live || live.connected) return null
   return (
     <div class="notice warn conn-banner" role="status">
-      {live.failure ? live.failure.message : HOSTED ? 'Connecting to the Zeus pre-alpha server…' : 'Connecting to your zeusd…'}{' '}
-      <a href={href('settings', 'daemon')}>Backend settings</a>
+      {live.failure ? live.failure.message : NATIVE ? 'Starting the Zeus engine…' : HOSTED ? 'Connecting to the Zeus pre-alpha server…' : 'Connecting to your zeusd…'}{' '}
+      <a href={href('settings', 'daemon')}>{NATIVE ? 'Engine' : 'Backend settings'}</a>
     </div>
   )
 }
@@ -248,6 +259,7 @@ export function App() {
   const speed = active.reduce((n, j) => n + j.rate, 0)
   useEffect(() => {
     document.title = prefs.titleSpeed && active.length ? `${fmtRate(speed)} · ${active.length} active · Zeus` : 'Zeus'
+    if (NATIVE) void shellApi.tooltip(active.length ? `Zeus · ${fmtRate(speed)} · ${active.length} active` : 'Zeus · idle').catch(() => undefined)
   }, [prefs.titleSpeed, active.length, Math.round(speed / 65536)])
 
   useEffect(() => {

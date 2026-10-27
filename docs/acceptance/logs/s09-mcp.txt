@@ -1,0 +1,22 @@
+PASS  the configuration points at the bundled zeus and says `mcp`  (A:\zeus-build-cache\zeus\debug\zeus.exe)
+PASS  it carries the four variables that select this app's engine
+PASS  the Claude Code and Cursor JSON parse and name the same server
+PASS  the Claude Code command line is `claude mcp add ... zeus -- <zeus> mcp`
+PASS  the Codex entry is a [mcp_servers.zeus] table with command, args and env
+PASS  the app's own connection test lists thirteen tools  (zeus 0.0.1-beta, 42 ms)
+PASS  they are the thirteen tools of the catalogue
+PASS  an MCP client handshake succeeds  (zeus 0.0.1-beta, protocol 2025-06-18)
+PASS  tools/list returns the thirteen tools
+PASS  no listed tool can decide an approval  (none)
+PASS  zeus_probe reports the size and that ranges work  ({"approval_needed":false,"etag":"\"s31-n12582912\"","interstitial_suspected":false,"range_support":")
+PASS  zeus_enqueue starts a download and returns a job id  (job_01M5YG3T1ESS86HAK337VCSFA1)
+PASS  the download completes through the MCP tools  (completed)
+PASS  its SHA-256 equals the bytes the server holds  (c7c17ae772e023d2)
+PASS  zeus_verify re-hashes the file and agrees  ({"matches_expected":true,"matches_recorded":true,"quarantine_reasons":[],"quarantined":false,"sha256)
+PASS  zeus_files_list shows the file
+PASS  a session request creates a pending approval and nothing more  (1 waiting for a person)
+PASS  a call to an approving tool is refused as unknown  (Unknown Zeus tool)
+PASS  the app route table has no way to decide a daemon approval  (app.unknown_route)
+PASS  the approval is still waiting for a person after every attempt  (pending)
+SCENARIO 9: PASSED
+exit 0

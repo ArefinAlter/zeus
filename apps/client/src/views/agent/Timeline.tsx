@@ -141,6 +141,11 @@ export function Timeline({ thread }: { thread: Thread }) {
                 return (
                   <div class={`inlinenote ${it.tone}`} key={it.id}>
                     {it.tone === 'warn' ? <Chip tone="warn">note</Chip> : null} {it.text}
+                    {it.link ? (
+                      <a class="notice-link" href={it.link.to}>
+                        {it.link.label}
+                      </a>
+                    ) : null}
                   </div>
                 )
               default:

@@ -1,28 +1,37 @@
 // Files: instant search over an index of the download folders, with the search syntax, result filters, a folders pane,
-// a preview pane, bookmarks and search history of a desktop file search tool. zeusd has no file index yet; the design
-// is in docs/design/client-workflows-and-platforms.md ("Scoped file index"). In this release the index is sample
-// metadata held in memory, and nothing reads a disk.
+// a preview pane, bookmarks and the search history of a desktop file search tool.
+//
+// In the desktop app the index is real: the engine scans the download folders (and folders you add), follows changes
+// with the file system watcher, and sends this page only what changed. The page searches its copy with the syntax in
+// model/search.ts, previews the selected file through the engine (text, pictures, or a card of facts) and offers rename,
+// move and delete inside the download folders. In the hosted pre-alpha and the offline sample the index is a sandbox
+// scan or sample metadata, as before.
 
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks'
 
-import { HOSTED, LIVE } from '../backend/live'
-import { addBookmark, clearHistory, getState, pushHistory, removeBookmark, rescan, toast, useStore } from '../backend/store'
+import { filesApi } from '../backend/files'
+import type { Preview } from '../backend/files'
+import { HOSTED, LIVE, NATIVE } from '../backend/live'
+import { addBookmark, clearHistory, pushHistory, removeBookmark, rescan, toast, useStore } from '../backend/store'
 import { extOf } from '../model/categories.ts'
-import { DEFAULT_OPTIONS, FILTERS, SYNTAX, filterMatch, matches, parseQuery } from '../model/search.ts'
-import type { SearchOptions } from '../model/search.ts'
+import { DEFAULT_OPTIONS, FILTERS, SYNTAX, filterMatch, highlightRanges, matches, parseQuery } from '../model/search.ts'
+import type { Query, SearchOptions } from '../model/search.ts'
 import type { FileEntry } from '../model/types.ts'
 import { fmtBytes, fmtStamp, fmtWhen } from '../model/units.ts'
+import { baseOf, isInside, joinPath, parentOf } from '../lib/paths.ts'
 import { setPrefs, usePrefs } from '../lib/prefs'
 import { href, navigate } from '../lib/router'
 import { categoryOf } from '../model/categories.ts'
 import type { MenuItem } from '../ui/components'
 import { Chip, ContextMenu, CopyButton, Dialog, Provenance } from '../ui/components'
 import { Icon, categoryIcon } from '../ui/icons'
+import { DeleteDialog, MoveDialog, RenameDialog } from './files/FileOps'
+import '../styles/files.css'
 
 type SortKey = 'name' | 'path' | 'size' | 'modified'
 
 function fullPath(f: FileEntry): string {
-  return `${f.dir}\\${f.name}`
+  return joinPath(f.dir, f.name)
 }
 
 interface Folder {
@@ -30,32 +39,64 @@ interface Folder {
   name: string
   depth: number
   count: number
+  open: boolean
+  hasChildren: boolean
 }
 
-function folderTree(files: FileEntry[]): Folder[] {
+/** The folders pane: every folder of an included root with its file count, collapsed below the first level. */
+function folderTree(files: FileEntry[], roots: string[], open: Set<string>): Folder[] {
   const counts = new Map<string, number>()
+  const rootOf = new Map<string, string>()
+  const rootFor = (dir: string): string | undefined => {
+    let r = rootOf.get(dir)
+    if (r === undefined) {
+      r = roots.find((x) => isInside(x, dir)) ?? ''
+      rootOf.set(dir, r)
+    }
+    return r || undefined
+  }
   for (const f of files) {
-    if (f.isFolder) continue
+    const r = rootFor(f.dir)
+    if (!r) continue
+    if (f.isFolder) {
+      const p = fullPath(f)
+      if (!counts.has(p)) counts.set(p, 0)
+      continue
+    }
     let d = f.dir
-    while (d) {
+    for (let i = 0; i < 64 && isInside(r, d); i++) {
       counts.set(d, (counts.get(d) ?? 0) + 1)
-      const i = d.lastIndexOf('\\')
-      if (i <= 2) break
-      d = d.slice(0, i)
+      if (d.length <= r.length) break
+      d = parentOf(d)
     }
   }
-  const roots = getState().settings.index.roots.filter((r) => r.include).map((r) => r.path)
-  return [...counts.entries()]
-    .filter(([p]) => roots.some((r) => p === r || p.startsWith(r + '\\')))
-    .map(([path, count]) => {
-      const root = roots.find((r) => path === r || path.startsWith(r + '\\')) ?? ''
-      const depth = path === root ? 0 : path.slice(root.length + 1).split('\\').length
-      return { path, name: path === root ? root : (path.split('\\').pop() ?? path), depth, count }
-    })
-    .sort((a, b) => a.path.localeCompare(b.path))
+  const parents = new Set<string>()
+  for (const p of counts.keys()) parents.add(parentOf(p))
+  const out: Folder[] = []
+  for (const [path, count] of counts) {
+    const root = rootFor(path)
+    if (!root) continue
+    const depth = path.length <= root.length ? 0 : path.slice(root.length).split(/[\\/]/).filter(Boolean).length
+    // Shown when every folder between it and its root is open.
+    let visible = true
+    if (depth > 0) {
+      let p = parentOf(path)
+      for (let i = 0; i < 64; i++) {
+        if (!open.has(p)) {
+          visible = false
+          break
+        }
+        if (p.length <= root.length) break
+        p = parentOf(p)
+      }
+    }
+    if (!visible) continue
+    out.push({ path, name: depth === 0 ? root : baseOf(path), depth, count, open: open.has(path), hasChildren: parents.has(path) })
+  }
+  return out.sort((a, b) => a.path.localeCompare(b.path))
 }
 
-/** A small generated picture for image files, from the file's hash: the preview has no file to read in this release. */
+/** A small generated picture for image files in the offline sample, from the file's hash. */
 function Thumb({ seed }: { seed: string }) {
   let h = 0
   for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) >>> 0
@@ -69,12 +110,73 @@ function Thumb({ seed }: { seed: string }) {
   )
 }
 
+/** A name with the parts the search matched marked. */
+function Name({ name, q }: { name: string; q: Query }) {
+  const ranges = q.length ? highlightRanges(q, name) : []
+  if (!ranges.length) return <>{name}</>
+  const parts: preact.ComponentChildren[] = []
+  let at = 0
+  for (const [a, b] of ranges) {
+    if (a > at) parts.push(name.slice(at, a))
+    parts.push(<mark class="hl">{name.slice(a, b)}</mark>)
+    at = b
+  }
+  if (at < name.length) parts.push(name.slice(at))
+  return <>{parts}</>
+}
+
+type PreviewState = { path: string; data?: Preview; error?: string } | null
+
+function PreviewBody({ pv, current }: { pv: PreviewState; current: FileEntry }) {
+  if (!pv || pv.path !== fullPath(current)) return <div class="muted small">Reading the file…</div>
+  if (pv.error) return <p class="muted small">{pv.error}</p>
+  const d = pv.data
+  if (!d) return null
+  switch (d.kind) {
+    case 'text':
+      return (
+        <>
+          <pre class="fprev-text" tabIndex={0} aria-label="Start of the file">
+            {d.text}
+          </pre>
+          <p class="muted small">
+            {d.truncated ? `The first ${fmtBytes((d.text ?? '').length)} of ${fmtBytes(d.size ?? 0)}. ` : ''}
+            {typeof d.lines === 'number' ? `${d.lines.toLocaleString('en-US')} line${d.lines === 1 ? '' : 's'}. ` : ''}
+            {d.note ?? ''}
+          </p>
+        </>
+      )
+    case 'image':
+      return (
+        <>
+          <img class="fprev-img" src={d.data_url} alt={`Preview of ${d.name ?? current.name}`} />
+          <p class="muted small">
+            {d.width && d.height ? `${d.width} × ${d.height} pixels. ` : ''}
+            {d.mime}
+          </p>
+        </>
+      )
+    case 'folder':
+      return (
+        <p class="muted small">
+          {(d.entries ?? 0).toLocaleString('en-US')} item{d.entries === 1 ? '' : 's'} below, {fmtBytes(d.bytes ?? 0)} in files.
+        </p>
+      )
+    case 'refused':
+      return <p class="fprev-refused">{d.message ?? 'Zeus does not preview this file.'}</p>
+    default:
+      return <p class="muted small">{d.message ?? 'No preview for this kind of file.'}</p>
+  }
+}
+
 export function Files({ initialPath }: { initialPath?: string }) {
   const files = useStore((s) => s.files)
   const index = useStore((s) => s.index)
   const bookmarks = useStore((s) => s.bookmarks)
   const history = useStore((s) => s.history)
   const now = useStore((s) => s.now)
+  const indexRoots = useStore((s) => s.settings.index.roots)
+  const writeRoots = useStore((s) => s.settings.saveTo.writeRoots)
   const prefs = usePrefs()
   const [query, setQuery] = useState('')
   const [filter, setFilter] = useState('everything')
@@ -87,6 +189,9 @@ export function Files({ initialPath }: { initialPath?: string }) {
   const [menu, setMenu] = useState<{ x: number; y: number; id: number } | null>(null)
   const [scroll, setScroll] = useState(0)
   const [height, setHeight] = useState(600)
+  const [openDirs, setOpenDirs] = useState<Set<string>>(() => new Set())
+  const [pv, setPv] = useState<PreviewState>(null)
+  const [op, setOp] = useState<{ kind: 'rename' | 'move' | 'delete'; id: number } | null>(null)
   const input = useRef<HTMLInputElement>(null)
   const list = useRef<HTMLDivElement>(null)
   const rowH = prefs.density === 'compact' ? 24 : 30
@@ -113,8 +218,8 @@ export function Files({ initialPath }: { initialPath?: string }) {
   const results = useMemo(() => {
     if (!parsed.ok) return []
     const q = parsed.query
-    const inFolder = (f: FileEntry) => !folder || f.dir === folder || f.dir.startsWith(folder + '\\') || (f.isFolder && fullPath(f).startsWith(folder))
-    const out = files.filter((f) => inFolder(f) && filterMatch(filter, f) && matches(q, f))
+    const inside = folder ? (f: FileEntry) => isInside(folder, f.dir) || (f.isFolder && isInside(folder, fullPath(f))) : () => true
+    const out = files.filter((f) => inside(f) && filterMatch(filter, f) && matches(q, f))
     const k = sort.key
     out.sort((a, b) => {
       const x = k === 'name' ? a.name.toLowerCase() : k === 'path' ? a.dir.toLowerCase() : k === 'size' ? a.size : a.modified
@@ -124,16 +229,61 @@ export function Files({ initialPath }: { initialPath?: string }) {
     return out
   }, [files, parsed, filter, folder, sort])
   const took = performance.now() - t0
-  const tree = useMemo(() => folderTree(files), [files])
+  const includedRoots = useMemo(() => indexRoots.filter((r) => r.include).map((r) => r.path), [indexRoots])
+  const tree = useMemo(() => {
+    const open = new Set(openDirs)
+    for (const r of includedRoots) open.add(r)
+    return folderTree(files, includedRoots, open)
+  }, [files, includedRoots, openDirs])
   const current = results.find((f) => f.id === sel) ?? null
   const totalSize = results.reduce((n, f) => n + f.size, 0)
+  const hiliteQuery: Query = parsed.ok ? parsed.query : []
 
   // Only the rows in view are drawn.
   const first = Math.max(0, Math.floor(scroll / rowH) - 8)
   const last = Math.min(results.length, Math.ceil((scroll + height) / rowH) + 8)
   const shown = results.slice(first, last)
 
+  // The preview of the selected file, from the engine.
+  const curPath = current ? fullPath(current) : null
+  useEffect(() => {
+    if (!NATIVE || !prefs.filesPreview || !curPath) {
+      setPv(null)
+      return
+    }
+    let alive = true
+    const t = setTimeout(() => {
+      filesApi.preview(curPath).then(
+        (data) => alive && setPv({ path: curPath, data }),
+        (e: unknown) => alive && setPv({ path: curPath, error: e instanceof Error ? e.message : 'No preview.' }),
+      )
+    }, 120)
+    return () => {
+      alive = false
+      clearTimeout(t)
+    }
+  }, [curPath, current?.size, current?.modified, prefs.filesPreview])
+
   const commit = () => pushHistory(query)
+  const writable = (f: FileEntry): true | string => {
+    if (!NATIVE) return 'Zeus changes files only in the desktop app, inside its download folders.'
+    if (!writeRoots.some((r) => isInside(r, f.dir))) return 'Zeus changes files only inside its download folders; this folder is indexed for search only.'
+    if (f.quarantined) return 'Quarantined: Zeus does not move, rename or delete it here. `zeus files organize` at a terminal asks you first.'
+    return true
+  }
+  const openFile = (f: FileEntry, reveal = false) => {
+    if (f.isFolder && !reveal) return setFolder(fullPath(f))
+    if (NATIVE) {
+      filesApi.open(fullPath(f), reveal ? 'reveal' : 'open').catch((e: unknown) => toast({ kind: 'warn', title: reveal ? 'Could not show the file' : 'Could not open the file', desc: e instanceof Error ? e.message : '', important: false, topic: 'system' }))
+    } else if (reveal) setFolder(f.dir)
+    else toast({ kind: '', title: 'Opening files is not part of this release', desc: 'The index holds sample metadata; there is no file to open.', important: true, topic: 'system' })
+  }
+  const act = (kind: 'rename' | 'move' | 'delete', f: FileEntry | null) => {
+    if (!f) return
+    const ok = writable(f)
+    if (ok !== true) return void toast({ kind: 'warn', title: 'Not here', desc: ok, important: false, topic: 'system' })
+    setOp({ kind, id: f.id })
+  }
   const onKey = (e: KeyboardEvent) => {
     const i = results.findIndex((f) => f.id === sel)
     if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
@@ -147,22 +297,36 @@ export function Files({ initialPath }: { initialPath?: string }) {
         if (k * rowH < el.scrollTop) el.scrollTop = k * rowH
         else if ((k + 1) * rowH > el.scrollTop + el.clientHeight - rowH) el.scrollTop = (k + 2) * rowH - el.clientHeight
       }
-    } else if (e.key === 'Enter' && current?.isFolder) {
-      setFolder(fullPath(current))
+    } else if (e.key === 'Enter' && current) {
+      openFile(current)
+    } else if (e.key === 'F2') {
+      e.preventDefault()
+      act('rename', current)
+    } else if (e.key === 'Delete') {
+      e.preventDefault()
+      act('delete', current)
     }
   }
 
-  const items = (f: FileEntry): MenuItem[] => [
-    { label: 'Open', icon: 'external', disabled: f.quarantined ? 'Quarantined: Zeus never opens it' : f.isFolder ? false : false, run: () => (f.isFolder ? setFolder(fullPath(f)) : toast({ kind: '', title: 'Opening files is not part of this release', desc: 'The index holds sample metadata; there is no file to open.', important: true, topic: 'system' })) },
-    { label: 'Open folder', icon: 'folderopen', run: () => setFolder(f.dir) },
-    { sep: true, label: '' },
-    { label: 'Copy full path', icon: 'copy', run: () => void navigator.clipboard?.writeText(fullPath(f)).catch(() => undefined) },
-    { label: 'Copy name', icon: 'copy', run: () => void navigator.clipboard?.writeText(f.name).catch(() => undefined) },
-    { label: 'Copy SHA-256', icon: 'copy', disabled: !f.sha256, run: () => void navigator.clipboard?.writeText(f.sha256 ?? '').catch(() => undefined) },
-    { sep: true, label: '' },
-    { label: 'Show in Downloads', icon: 'download', disabled: !f.jobId ? 'Not downloaded by this Zeus' : false, run: () => navigate(href('downloads', { job: f.jobId })) },
-    { label: 'Search in this folder', icon: 'search', run: () => setFolder(f.isFolder ? fullPath(f) : f.dir) },
-  ]
+  const items = (f: FileEntry): MenuItem[] => {
+    const w = writable(f)
+    const why = w === true ? false : w
+    return [
+      { label: 'Open', icon: 'external', disabled: f.quarantined ? 'Quarantined: Zeus never opens it' : false, run: () => openFile(f) },
+      { label: 'Open folder', icon: 'folderopen', run: () => openFile(f, true) },
+      { sep: true, label: '' },
+      { label: 'Copy full path', icon: 'copy', run: () => void navigator.clipboard?.writeText(fullPath(f)).catch(() => undefined) },
+      { label: 'Copy name', icon: 'copy', run: () => void navigator.clipboard?.writeText(f.name).catch(() => undefined) },
+      { label: 'Copy SHA-256', icon: 'copy', disabled: !f.sha256, run: () => void navigator.clipboard?.writeText(f.sha256 ?? '').catch(() => undefined) },
+      { sep: true, label: '' },
+      { label: 'Rename…', icon: 'rename', hint: 'F2', disabled: why, run: () => act('rename', f) },
+      { label: 'Move…', icon: 'folder', disabled: why, run: () => act('move', f) },
+      { label: 'Delete…', icon: 'trash', hint: 'Del', danger: true, disabled: why, run: () => act('delete', f) },
+      { sep: true, label: '' },
+      { label: 'Show in Downloads', icon: 'download', disabled: !f.jobId ? 'Not downloaded by this Zeus' : false, run: () => navigate(href('downloads', { job: f.jobId })) },
+      { label: 'Search in this folder', icon: 'search', run: () => setFolder(f.isFolder ? fullPath(f) : f.dir) },
+    ]
+  }
 
   const toggle = (k: keyof SearchOptions, label: string, text: string) => (
     <button type="button" class={`opt ${opts[k] ? 'on' : ''}`} aria-pressed={opts[k]} title={label} aria-label={label} onClick={() => setOpts({ ...opts, [k]: !opts[k] })}>
@@ -177,6 +341,9 @@ export function Files({ initialPath }: { initialPath?: string }) {
       </button>
     </div>
   )
+
+  const opFile = op ? files.find((x) => x.id === op.id) : undefined
+  const moveFolders = useMemo(() => (op?.kind === 'move' ? files.filter((f) => f.isFolder && writeRoots.some((r) => isInside(r, fullPath(f)))).map(fullPath) : []), [op?.kind, files, writeRoots])
 
   return (
     <div class={`files-page ${prefs.filesFolders ? 'with-folders' : ''} ${prefs.filesPreview ? 'with-preview' : ''}`}>
@@ -233,6 +400,14 @@ export function Files({ initialPath }: { initialPath?: string }) {
           </button>
         </div>
       ) : null}
+      {NATIVE && index.state === 'scanning' ? (
+        <div class="fprogress" role="status">
+          <span class="bar" style={{ width: `${Math.round(index.progress * 100)}%` }} />
+          <span class="txt">
+            {index.verifying ? 'Checking the saved index' : 'Indexing'} {index.scanning ? `· ${index.scanning}` : ''}: {Math.round(index.progress * 100)} %
+          </span>
+        </div>
+      ) : null}
       <div class="fpanes">
         {prefs.filesFolders ? (
           <aside class="fside" aria-label="Folders, bookmarks and history">
@@ -240,8 +415,22 @@ export function Files({ initialPath }: { initialPath?: string }) {
             <ul class="ftree">
               {tree.map((f) => (
                 <li>
-                  <button type="button" class={folder === f.path ? 'on' : ''} style={{ paddingLeft: `${8 + f.depth * 14}px` }} onClick={() => setFolder(folder === f.path ? null : f.path)} title={f.path}>
-                    <Icon name={f.depth === 0 ? 'drive' : folder === f.path ? 'folderopen' : 'folder'} />
+                  <button
+                    type="button"
+                    class={folder === f.path ? 'on' : ''}
+                    style={{ paddingLeft: `${8 + f.depth * 14}px` }}
+                    onClick={() => {
+                      setFolder(folder === f.path ? null : f.path)
+                      if (f.hasChildren) {
+                        const next = new Set(openDirs)
+                        if (next.has(f.path)) next.delete(f.path)
+                        else next.add(f.path)
+                        setOpenDirs(next)
+                      }
+                    }}
+                    title={f.path}
+                  >
+                    <Icon name={f.depth === 0 ? 'drive' : folder === f.path || f.open ? 'folderopen' : 'folder'} />
                     <span class="name">{f.name}</span>
                     <span class="trail">{f.count}</span>
                   </button>
@@ -303,9 +492,10 @@ export function Files({ initialPath }: { initialPath?: string }) {
                   class={`frow ${f.id === sel ? 'on' : ''}`}
                   role="row"
                   aria-selected={f.id === sel}
+                  data-path={fullPath(f)}
                   style={{ top: `${(first + i) * rowH}px`, height: `${rowH}px` }}
                   onMouseDown={() => setSel(f.id)}
-                  onDblClick={() => (f.isFolder ? setFolder(fullPath(f)) : undefined)}
+                  onDblClick={() => openFile(f)}
                   onContextMenu={(e) => {
                     e.preventDefault()
                     setSel(f.id)
@@ -314,7 +504,9 @@ export function Files({ initialPath }: { initialPath?: string }) {
                 >
                   <span class="fc name">
                     <Icon name={f.isFolder ? 'folder' : categoryIcon(categoryOf(f.name))} />
-                    <span class="nm">{f.name}</span>
+                    <span class="nm">
+                      <Name name={f.name} q={hiliteQuery} />
+                    </span>
                     {f.quarantined ? (
                       <span class="qflag" title="Quarantined">
                         <Icon name="shield" />
@@ -327,14 +519,26 @@ export function Files({ initialPath }: { initialPath?: string }) {
                 </div>
               ))}
             </div>
-            {results.length === 0 ? <div class="empty">{parsed.ok ? 'No file matches. Check the filter and the folder scope.' : 'Fix the search to see results.'}</div> : null}
+            {results.length === 0 ? (
+              <div class="empty">
+                {!parsed.ok
+                  ? 'Fix the search to see results.'
+                  : files.length === 0 && NATIVE
+                    ? index.state === 'scanning'
+                      ? 'Indexing your folders…'
+                      : 'Nothing is indexed yet. Downloads appear here as they finish. Add other folders in Search and index settings.'
+                    : 'No file matches. Check the filter and the folder scope.'}
+              </div>
+            ) : null}
           </div>
           <div class="fstatus">
             <span>
               {results.length.toLocaleString('en-US')} object{results.length === 1 ? '' : 's'} · {fmtBytes(totalSize)}
             </span>
             <span class="muted">
-              {index.state === 'scanning' ? `Scanning ${index.scanning ?? ''}: ${Math.round(index.progress * 100)} %` : `Index current · generation ${index.generation} · ${files.length.toLocaleString('en-US')} entries`}
+              {index.state === 'scanning'
+                ? `${index.verifying ? 'Checking' : 'Scanning'} ${index.scanning ?? ''}: ${Math.round(index.progress * 100)} %`
+                : `Index current · generation ${index.generation} · ${files.length.toLocaleString('en-US')} entries${NATIVE ? (index.watcher ? ' · following changes' : ' · not following changes') : ''}${index.capped ? ' · capped' : ''}`}
             </span>
             <span class="spacer" />
             <span class="muted">searched in {took < 1 ? '<1' : took.toFixed(0)} ms</span>
@@ -350,7 +554,7 @@ export function Files({ initialPath }: { initialPath?: string }) {
           <aside class="fpreview" aria-label="Preview">
             {current ? (
               <>
-                {!current.isFolder && /^(jpg|jpeg|png|webp|heic|tif|svg)$/.test(extOf(current.name)) ? (
+                {NATIVE ? null : !current.isFolder && /^(jpg|jpeg|png|webp|heic|tif|svg)$/.test(extOf(current.name)) ? (
                   <Thumb seed={current.sha256 ?? current.name} />
                 ) : (
                   <div class="bigicon">
@@ -358,6 +562,11 @@ export function Files({ initialPath }: { initialPath?: string }) {
                   </div>
                 )}
                 <div class="pname">{current.name}</div>
+                {NATIVE ? (
+                  <div class="fprev">
+                    <PreviewBody pv={pv} current={current} />
+                  </div>
+                ) : null}
                 <dl class="kvs">
                   <dt>folder</dt>
                   <dd class="mono break small">{current.dir}</dd>
@@ -385,18 +594,29 @@ export function Files({ initialPath }: { initialPath?: string }) {
                       <dd class="mono break small">{current.sha256}</dd>
                     </>
                   ) : null}
+                  {pv?.data?.blake3 && pv.path === fullPath(current) ? (
+                    <>
+                      <dt>BLAKE3</dt>
+                      <dd class="mono break small">{pv.data.blake3}</dd>
+                    </>
+                  ) : null}
                   <dt>quarantine</dt>
                   <dd>{current.quarantined ? <Chip tone="warn">quarantined</Chip> : 'no'}</dd>
                 </dl>
                 <div class="dactions">
                   <CopyButton text={fullPath(current)} label="Copy path" />
+                  {NATIVE ? (
+                    <button type="button" class="btn small" onClick={() => openFile(current, true)}>
+                      <Icon name="folderopen" /> Show in folder
+                    </button>
+                  ) : null}
                   {current.jobId ? (
                     <a class="btn small" href={href('downloads', { job: current.jobId })}>
                       <Icon name="download" /> In Downloads
                     </a>
                   ) : null}
                 </div>
-                <p class="muted small">{LIVE ? 'A preview of the contents needs the file itself; this client indexes names, sizes, dates and the digests zeusd recorded.' : 'A preview of the contents needs the file itself. This release indexes sample names, sizes and dates only.'}</p>
+                {NATIVE ? null : <p class="muted small">{LIVE ? 'A preview of the contents needs the file itself; this client indexes names, sizes, dates and the digests zeusd recorded.' : 'A preview of the contents needs the file itself. This release indexes sample names, sizes and dates only.'}</p>}
               </>
             ) : (
               <div class="pane-empty">Select a file to see its details.</div>
@@ -405,9 +625,11 @@ export function Files({ initialPath }: { initialPath?: string }) {
         ) : null}
       </div>
       <Provenance>
-        {LIVE
-          ? `zeusd has no file index yet. ${HOSTED ? 'The pre-alpha service indexes the real files of your sandbox folder' : "This client indexes zeusd's file list of your download folder"}; SHA-256, quarantine and the job behind each file come from zeusd. The search syntax and its rules are tested.`
-          : 'zeusd has no file index yet (planned: a scoped metadata index of the download folders). This release searches sample metadata in memory; the syntax and its rules are tested.'}
+        {NATIVE
+          ? 'The engine keeps this index of your download folders (and folders you add) and follows changes with the file system watcher. Search runs in this window over the index; it matches names, sizes and dates, not file contents. SHA-256, quarantine and the job behind each file come from zeusd. Zeus reads at most the start of a text file or a small picture for the preview, never a quarantined file.'
+          : LIVE
+            ? `zeusd has no file index yet. ${HOSTED ? 'The pre-alpha service indexes the real files of your sandbox folder' : "This client indexes zeusd's file list of your download folder"}; SHA-256, quarantine and the job behind each file come from zeusd. The search syntax and its rules are tested.`
+            : 'zeusd has no file index yet (planned: a scoped metadata index of the download folders). This release searches sample metadata in memory; the syntax and its rules are tested.'}
       </Provenance>
       {menu ? (
         <ContextMenu
@@ -423,6 +645,9 @@ export function Files({ initialPath }: { initialPath?: string }) {
       ) : null}
       {help ? <SyntaxHelp onClose={() => setHelp(false)} onUse={(q) => (setQuery(q), setHelp(false))} /> : null}
       {saving ? <SaveBookmark query={query} filter={filter} onClose={() => setSaving(false)} /> : null}
+      {op && opFile && op.kind === 'rename' ? <RenameDialog path={fullPath(opFile)} name={opFile.name} onClose={() => setOp(null)} /> : null}
+      {op && opFile && op.kind === 'move' ? <MoveDialog path={fullPath(opFile)} dir={opFile.isFolder ? parentOf(fullPath(opFile)) : opFile.dir} roots={writeRoots} folders={moveFolders} onClose={() => setOp(null)} /> : null}
+      {op && opFile && op.kind === 'delete' ? <DeleteDialog paths={[fullPath(opFile)]} names={[opFile.name]} onClose={() => setOp(null)} /> : null}
     </div>
   )
 }
@@ -486,3 +711,4 @@ function SaveBookmark({ query, filter, onClose }: { query: string; filter: strin
     </Dialog>
   )
 }
+

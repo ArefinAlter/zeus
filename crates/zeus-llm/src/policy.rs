@@ -74,6 +74,12 @@ pub struct ProviderPolicy {
     pub last_verified: Option<String>,
 }
 
+/// The policy compatibility level of this build, a semantic version that a manifest's `min_zeus_version` is
+/// compared with. It is deliberately not the crate or release version: a release name such as `0.0.1-beta` says how
+/// finished the product is, while a policy needs to say which provider-handling rules a build implements. Raise it
+/// when a build gains a capability that signed policy may start to require.
+pub const POLICY_LEVEL: &str = "0.1.0";
+
 /// The policy document. All numbers are integers and instants are RFC 3339 strings (00 section 7).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct PolicyManifest {
@@ -85,7 +91,8 @@ pub struct PolicyManifest {
     pub issued_at: String,
     /// When it stops applying (RFC 3339 UTC).
     pub expires_at: String,
-    /// Minimum Zeus version allowed to use remote-model features; older builds disable them.
+    /// Minimum policy level ([`POLICY_LEVEL`]) allowed to use remote-model features; older builds disable them.
+    /// The field keeps its wire name; it is compared with the build's policy level, not with its release name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub min_zeus_version: Option<String>,
     /// Status per provider. Absent providers are treated as enabled.

@@ -7,7 +7,7 @@
 import { useEffect, useRef, useState } from 'preact/hooks'
 
 import type { DecideResult } from '../backend/store'
-import { LIVE } from '../backend/live'
+import { LIVE, NATIVE } from '../backend/live'
 import { decide, useStore } from '../backend/store'
 import { ARMING_MS, KIND_LABEL, SCOPE_BUTTON, SCOPE_LASTS, codeMatches } from '../model/approvals.ts'
 import type { Approval, ApprovalState, Scope } from '../model/types.ts'
@@ -54,7 +54,7 @@ export function Approvals({ state }: { state?: string }) {
                   </td>
                   <td>
                     {a.facts.requester.label}
-                    {a.heldBy ? <span class="muted small"> · {a.heldBy === 'zeusd' ? 'held by zeusd' : 'held by the pre-alpha service'}</span> : null}
+                    {a.heldBy ? <span class="muted small"> · {a.heldBy === 'zeusd' ? 'held by zeusd' : NATIVE ? 'held by this app' : 'held by the pre-alpha service'}</span> : null}
                   </td>
                   <td>{a.facts.for}</td>
                   <td>{KIND_LABEL[a.facts.kind]}</td>
@@ -72,7 +72,9 @@ export function Approvals({ state }: { state?: string }) {
         <Empty>No {filter} requests.</Empty>
       )}
       <Provenance>
-        {LIVE
+        {NATIVE
+          ? "Requests held by zeusd (a browser login lent to a download, a handoff, a destructive file operation) are listed here and decided only on zeusd's trust surfaces: zeus approvals in a terminal, or the browser extension's popup. This page cannot decide them. Site-grabber plans proposed in this window are held by this app, which checks the request hash, the arming delay and the offered scopes before it records your decision; they ask for nothing from zeusd until you approve."
+          : LIVE
           ? 'Requests held by zeusd are listed through zeus-web-bridge and decided only on zeusd\'s trust surfaces (zeus approvals in a terminal, the extension popup); this page cannot decide them. Site-grabber plans and file moves proposed in this client are held by the pre-alpha service, which checks the request hash, the arming delay and the offered scopes before it records your decision.'
           : 'zeusd decides approvals from the terminal (zeus approvals) and the extension popup, with channel evidence. A trusted desktop decision channel is planned; in this release a decision here changes only the sample data.'}
       </Provenance>
@@ -223,7 +225,9 @@ export function ApprovalDetail({ id }: { id: string }) {
       <Provenance>
         {a.heldBy === 'zeusd'
           ? 'zeusd computed this request hash (BLAKE3 over the JCS form of the facts) and accepts a decision only from a person on its own trust surfaces.'
-          : LIVE
+          : NATIVE
+            ? 'Held by this app: the hash is SHA-256 over the canonical facts (zeusd uses BLAKE3 over JCS), and the app checks the hash, the arming delay and the scope again before it records your decision. Nothing reaches zeusd until you approve.'
+            : LIVE
             ? 'Held by the pre-alpha service: the hash is SHA-256 over the canonical facts (zeusd uses BLAKE3 over JCS), and the service checks the hash, the arming delay and the scope again before it records your decision.'
             : 'zeusd hashes the facts with BLAKE3 over their JCS form; this release computes a SHA-256 stand-in over the same canonical facts. In zeusd, decisions come from the terminal or the extension popup; here they change only sample data.'}
       </Provenance>

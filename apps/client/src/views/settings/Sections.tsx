@@ -5,11 +5,14 @@
 
 import { useState } from 'preact/hooks'
 
-import { HOSTED, LIVE } from '../../backend/live'
-import { releaseStop, rescan, updateSettings, useStore } from '../../backend/store'
+import { NATIVE, HOSTED, LIVE, applyEngineSettings } from '../../backend/live'
+import { shellApi } from '../../backend/shell'
+import { defaultDir, getState, releaseStop, rescan, toast, updateSettings, useStore } from '../../backend/store'
 import { ACCESS_INFO, ACCESS_ORDER, HUMAN_ONLY, NEVER, TOOLS } from '../../model/agentTools.ts'
-import { CATEGORIES, overlaps, parseExtList } from '../../model/categories.ts'
-import type { AgentAccess } from '../../model/types.ts'
+import { CATEGORIES, defaultMap, overlaps, parseExtList } from '../../model/categories.ts'
+import { folderProblem, insideRoot } from '../../model/grab.ts'
+import { SEP, isAbsolute, joinPath } from '../../lib/paths.ts'
+import type { AgentAccess, CategoryId } from '../../model/types.ts'
 import { fmtBytes, fmtWhen } from '../../model/units.ts'
 import { setPrefs, usePrefs } from '../../lib/prefs'
 import type { Notifications } from '../../lib/prefs'
@@ -17,13 +20,40 @@ import { href } from '../../lib/router'
 import { openDialog } from '../../lib/ui'
 import { Chip, CodeCopy, Notice, NumberInput, PageHead, Provenance, Select, SettingRow, SettingsGroup, Switch } from '../../ui/components'
 import { Icon } from '../../ui/icons'
+import { BrowserIntegrationSettings } from '../integration/BrowserSettings'
+import { NativeIndexSettings } from './IndexNative'
 
 const NOTE = LIVE ? (HOSTED ? 'Changes are kept for your sandbox by the pre-alpha service.' : 'Changes are kept on this device.') : 'Changes apply to this session\'s sample data.'
+
+/** The desktop app's own window behaviour (start at sign-in, the notification-area icon, closing to it). */
+function useShell() {
+  const g = useStore((s) => s.settings.general)
+  const [note, setNote] = useState<string | null>(null)
+  const [update, setUpdate] = useState<string | null>(null)
+  const [checking, setChecking] = useState(false)
+  const save = (patch: Partial<typeof g>) => {
+    updateSettings('general', patch)
+    const next = { ...g, ...patch }
+    void shellApi
+      .put({ launch_at_login: next.launchAtLogin, start_minimized: next.startMinimized, show_tray: next.showTray, close_to_tray: next.closeToTray, check_updates_weekly: next.checkUpdates === 'weekly' })
+      .then((v) => setNote(v.note ?? null), (e: unknown) => setNote(e instanceof Error ? e.message : 'The change was not applied.'))
+  }
+  const check = () => {
+    setChecking(true)
+    setUpdate(null)
+    void shellApi
+      .update()
+      .then((u) => setUpdate(u.newer ? `A newer release is out: ${u.latest}.${u.url ? ` ${u.url}` : ''}` : `You have the latest release (${u.current}).`), (e: unknown) => setUpdate(e instanceof Error ? e.message : 'The check failed.'))
+      .finally(() => setChecking(false))
+  }
+  return { g, note, update, checking, save, check }
+}
 
 export function GeneralSettings() {
   const g = useStore((s) => s.settings.general)
   const p = usePrefs()
-  const set = (patch: Partial<typeof g>) => updateSettings('general', patch)
+  const shell = useShell()
+  const set = (patch: Partial<typeof g>) => (NATIVE ? shell.save(patch) : updateSettings('general', patch))
   return (
     <>
       <PageHead title="General" sub={NOTE} />
@@ -31,19 +61,20 @@ export function GeneralSettings() {
         <SettingRow title="Start page" desc="The page the app opens on.">
           <Select label="Start page" value={p.startPage} onChange={(v) => setPrefs({ startPage: v })} options={[['downloads', 'Downloads'], ['agent', 'Agent'], ['files', 'Files'], ['grabber', 'Link grabber'], ['queues', 'Queues']]} />
         </SettingRow>
-        <SettingRow title="Launch at sign-in" desc="Start Zeus when you sign in to your computer." planned>
+        <SettingRow title="Launch at sign-in" desc="Start Zeus when you sign in to your computer." planned={!NATIVE}>
           <Switch label="Launch at sign-in" checked={g.launchAtLogin} onChange={(v) => set({ launchAtLogin: v })} />
         </SettingRow>
-        <SettingRow title="Start minimized" planned>
+        <SettingRow title="Start minimized" desc="Starts with the window hidden in the notification area (or minimized when the icon is off)." planned={!NATIVE}>
           <Switch label="Start minimized" checked={g.startMinimized} onChange={(v) => set({ startMinimized: v })} />
         </SettingRow>
-        <SettingRow title="Icon in the notification area" desc="Shows speed and lets you pause everything from the tray." planned>
+        <SettingRow title="Icon in the notification area" desc={NATIVE ? 'Click it to open Zeus; its menu has Show and Quit. The tooltip shows the speed.' : 'Shows speed and lets you pause everything from the tray.'} planned={!NATIVE}>
           <Switch label="Icon in the notification area" checked={g.showTray} onChange={(v) => set({ showTray: v })} />
         </SettingRow>
-        <SettingRow title="Closing the window keeps downloads running" desc="zeusd runs separately from this window, so closing it never stops a transfer.">
+        <SettingRow title={NATIVE ? 'Closing the window hides it to the notification area' : 'Closing the window keeps downloads running'} desc={NATIVE ? 'Downloads and queues keep running. Quit from the icon\'s menu (or turn this off) to stop Zeus and its engine.' : 'zeusd runs separately from this window, so closing it never stops a transfer.'}>
           <Switch label="Closing keeps downloads running" checked={g.closeToTray} onChange={(v) => set({ closeToTray: v })} />
         </SettingRow>
       </SettingsGroup>
+      {NATIVE && shell.note ? <Notice kind="warn">{shell.note}</Notice> : null}
       <SettingsGroup title="Behaviour">
         <SettingRow title="Ask before removing downloads" desc="Removing an unfinished download deletes its partial data.">
           <Switch label="Ask before removing" checked={p.confirmRemove} onChange={(v) => setPrefs({ confirmRemove: v })} />
@@ -54,12 +85,18 @@ export function GeneralSettings() {
         <SettingRow title="Time format">
           <Select label="Time format" value={g.timeFormat} onChange={(v) => set({ timeFormat: v })} options={[['24h', '24-hour'], ['12h', '12-hour']]} />
         </SettingRow>
-        <SettingRow title="Language" planned>
-          <Select label="Language" value={g.language} onChange={(v) => set({ language: v })} options={[['English', 'English']]} />
+        <SettingRow title="Language" desc="English only in this release." fixed>
+          <Chip>English</Chip>
         </SettingRow>
-        <SettingRow title="Check for updates" desc="No telemetry. A check would only ask for the latest version number." planned>
+        <SettingRow title="Check for updates" desc={NATIVE ? 'Asks GitHub for the latest release name and nothing else (no identifier, no telemetry). Never by default; weekly checks run in the background while Zeus is open.' : 'No telemetry. A check would only ask for the latest version number.'} planned={!NATIVE}>
           <Select label="Check for updates" value={g.checkUpdates} onChange={(v) => set({ checkUpdates: v })} options={[['never', 'Never'], ['weekly', 'Weekly']]} />
+          {NATIVE ? (
+            <button type="button" class="btn small" disabled={shell.checking} onClick={shell.check}>
+              {shell.checking ? 'Checking…' : 'Check now'}
+            </button>
+          ) : null}
         </SettingRow>
+        {NATIVE && shell.update ? <Notice>{shell.update}</Notice> : null}
       </SettingsGroup>
     </>
   )
@@ -67,14 +104,16 @@ export function GeneralSettings() {
 
 export function FileTypesSettings() {
   const map = useStore((s) => s.settings.categories)
+  const saveTo = useStore((s) => s.settings.saveTo)
   const [text, setText] = useState<Record<string, string>>(() => Object.fromEntries(Object.entries(map).map(([k, v]) => [k, v.join(' ')])))
   const clash = overlaps(map)
+  const folderOf = (id: CategoryId) => (NATIVE ? defaultDir(id) : `…${SEP()}${CATEGORIES.find((c) => c.id === id)?.folder ?? ''}`)
   return (
     <>
       <PageHead title="File types and categories" sub="Which extensions belong to which category; a category decides the folder a download saves to." />
-      <SettingsGroup title="Categories" note="An extension can belong to one category only. Unknown types go to General.">
+      <SettingsGroup title="Categories" note="An extension can belong to one category only. Unknown types go to General. The set of categories is fixed in this release; the extensions in each are yours to change.">
         {CATEGORIES.filter((c) => c.id !== 'general').map((c) => (
-          <SettingRow title={c.label} desc={`Saves to …\\${c.folder}`} stack>
+          <SettingRow title={c.label} desc={`Saves to ${folderOf(c.id)}`} stack>
             <input
               class="mono"
               aria-label={`${c.label} extensions`}
@@ -84,51 +123,127 @@ export function FileTypesSettings() {
             />
           </SettingRow>
         ))}
+        <SettingRow title="Back to the defaults" desc="Restores the extension lists Zeus ships with. Folders you chose in Save to stay.">
+          <button
+            type="button"
+            class="btn small"
+            onClick={() => {
+              const d = defaultMap()
+              updateSettings('categories', d)
+              setText(Object.fromEntries(Object.entries(d).map(([k, v]) => [k, v.join(' ')])))
+            }}
+          >
+            Restore defaults
+          </button>
+        </SettingRow>
       </SettingsGroup>
       {clash.length ? <Notice kind="warn">{clash.map((c) => `.${c.ext} is in ${c.categories.join(' and ')}`).join('; ')}. Remove it from one of them.</Notice> : null}
-      <Provenance>zeusd saves into its download folders without categories; categories belong to this client.</Provenance>
+      {NATIVE && !saveTo.perCategory ? <Notice>"A folder per category" is off in Save to, so every category saves to the default folder unless it has a folder of its own there.</Notice> : null}
+      <Provenance>zeusd saves into its download folders without categories; categories and these rules belong to this app and decide the folder each download is sent to.</Provenance>
     </>
   )
 }
 
 export function SaveToSettings() {
   const s = useStore((st) => st.settings.saveTo)
+  const dirty = useStore((st) => !!st.live?.engineDirty)
   const set = (patch: Partial<typeof s>) => updateSettings('saveTo', patch)
   const [root, setRoot] = useState('')
+  const [busy, setBusy] = useState(false)
+  const ci = SEP() === '\\' || !NATIVE
+  const rootProblem = root.trim() && NATIVE ? (!isAbsolute(root.trim()) ? 'Use a full folder path.' : s.writeRoots.some((r) => insideRoot(r, root.trim(), ci) && insideRoot(root.trim(), r, ci)) ? 'That folder is already one of them.' : null) : null
+  const dirs = s.categoryDirs ?? {}
+  const last = s.lastDirs ?? {}
+  const setCategoryDir = (id: string, value: string) => {
+    // Built from the latest saved rules, not from this render's copy: two edits in quick succession must both stay.
+    const next = { ...(getState().settings.saveTo.categoryDirs ?? {}) }
+    if (value.trim()) next[id] = value.trim()
+    else delete next[id]
+    set({ categoryDirs: next })
+  }
+  const changeDefault = (value: string) => {
+    const v = value.trim()
+    if (!NATIVE) return set({ root: v })
+    if (!v) return
+    // The default folder is the first folder zeusd may write to.
+    set({ root: v, writeRoots: [v, ...s.writeRoots.slice(1).filter((r) => r !== v)] })
+  }
   return (
     <>
       <PageHead title="Save to" sub={NOTE} />
+      {NATIVE && dirty ? (
+        <Notice kind="warn">
+          The download folders changed. zeusd reads them when it starts, so they take effect after the engine restarts; downloads in progress resume.{' '}
+          <button
+            type="button"
+            class="btn small primary"
+            disabled={busy}
+            onClick={() => {
+              setBusy(true)
+              applyEngineSettings().then(
+                () => toast({ kind: 'ok', title: 'Download folders applied', desc: 'zeusd restarted with the new folders.', important: false, topic: 'system' }),
+                (e: unknown) => toast({ kind: 'bad', title: 'Not applied', desc: e instanceof Error ? e.message : 'The folders were refused.', important: true, topic: 'system' }),
+              ).finally(() => setBusy(false))
+            }}
+          >
+            Apply and restart the engine
+          </button>
+        </Notice>
+      ) : null}
       <SettingsGroup title="Folders">
         <SettingRow title="Default folder" zeusd="write_roots[0]">
-          <input class="mono wideinput" aria-label="Default folder" value={s.root} onChange={(e) => set({ root: (e.target as HTMLInputElement).value })} />
+          <input class="mono wideinput" aria-label="Default folder" value={s.root} onChange={(e) => changeDefault((e.target as HTMLInputElement).value)} />
         </SettingRow>
-        <SettingRow title="A folder per category" desc="Documents go to …\Documents, videos to …\Video, and so on.">
+        <SettingRow title="A folder per category" desc="Documents go to …\Documents, videos to …\Video, and so on, under the default folder. A folder of its own for a category (below) wins.">
           <Switch label="A folder per category" checked={s.perCategory} onChange={(v) => set({ perCategory: v })} />
         </SettingRow>
-        <SettingRow title="Folder for partial files" desc="zeusd keeps partial data beside the final file as .zpart and renames it atomically when verified.">
-          <input class="mono wideinput" aria-label="Folder for partial files" value={s.tempDir} disabled />
+        <SettingRow title="Partial files" desc="zeusd keeps unfinished data beside the final file as <name>.zpart and renames it atomically when the file is verified; its records are in the .zeus folder of each download folder.">
+          <Chip tone="info">beside each file</Chip>
         </SettingRow>
-        <SettingRow title="Ask where to save each download">
+        <SettingRow title="Ask where to save each download" desc="Add URL asks you to confirm the folder before it starts. Links from the link grabber and the site grabber show their folder in the review.">
           <Switch label="Ask each time" checked={s.askEachTime} onChange={(v) => set({ askEachTime: v })} />
         </SettingRow>
-        <SettingRow title="Remember the last folder used for a category">
-          <Switch label="Remember the last folder" checked={s.rememberLast} onChange={(v) => set({ rememberLast: v })} />
+        <SettingRow title="Remember the last folder used for a category" desc="When you save a type of file somewhere else once, the next one of that type goes there too.">
+          <Switch label="Remember the last folder" checked={s.rememberLast} onChange={(v) => set({ rememberLast: v, ...(v ? {} : { lastDirs: {} }) })} />
         </SettingRow>
       </SettingsGroup>
-      <SettingsGroup title="Folders Zeus may write to" note="Zeus writes only inside these folders, whatever a page, a file name or an agent asks. Adding one is a change of policy that zeusd accepts only from you, at a terminal.">
-        {s.writeRoots.map((r) => (
-          <SettingRow title={<span class="mono">{r}</span>}>
-            <button type="button" class="btn small ghost" disabled={s.writeRoots.length < 2} onClick={() => set({ writeRoots: s.writeRoots.filter((x) => x !== r) })}>
+      <SettingsGroup title="A folder for each category" note="Leave empty for the default subfolder. A folder must be inside a download folder; one outside is ignored.">
+        {CATEGORIES.filter((c) => c.id !== 'general').map((c) => {
+          const v = dirs[c.id] ?? ''
+          const problem = v && NATIVE ? folderProblem(v, s.writeRoots, ci) : null
+          return (
+            <SettingRow title={c.label} desc={problem ?? (last[c.id] && s.rememberLast ? `Last used: ${last[c.id]}` : undefined)} stack>
+              <input
+                class={`mono ${problem ? 'bad' : ''}`}
+                aria-label={`Folder for ${c.label}`}
+                placeholder={NATIVE ? defaultDirFor(c.id, s, ci) : `…${SEP()}${c.folder}`}
+                value={v}
+                onChange={(e) => setCategoryDir(c.id, (e.target as HTMLInputElement).value)}
+              />
+              {last[c.id] && s.rememberLast ? (
+                <button type="button" class="btn small ghost" onClick={() => set({ lastDirs: Object.fromEntries(Object.entries(last).filter(([k]) => k !== c.id)) })}>
+                  Forget the last folder
+                </button>
+              ) : null}
+            </SettingRow>
+          )
+        })}
+      </SettingsGroup>
+      <SettingsGroup title="Folders Zeus may write to" note="Zeus writes only inside these folders, whatever a page, a file name or an agent asks. The folders are written to zeusd's configuration, which this app does for you when you apply them; an agent or another program cannot change them.">
+        {s.writeRoots.map((r, i) => (
+          <SettingRow title={<span class="mono">{r}</span>} desc={i === 0 ? 'The default folder' : undefined}>
+            <button type="button" class="btn small ghost" disabled={s.writeRoots.length < 2 || i === 0} onClick={() => set({ writeRoots: s.writeRoots.filter((x) => x !== r) })}>
               Remove
             </button>
           </SettingRow>
         ))}
         <div class="row">
           <div class="text">
-            <input class="mono" aria-label="New folder" placeholder="F:\\Media\\Zeus" value={root} onInput={(e) => setRoot((e.target as HTMLInputElement).value)} />
+            <input class={`mono ${rootProblem ? 'bad' : ''}`} aria-label="New folder" placeholder={SEP() === '/' ? '/mnt/media/Zeus' : 'F:\\Media\\Zeus'} value={root} onInput={(e) => setRoot((e.target as HTMLInputElement).value)} />
+            {rootProblem ? <p class="field-err">{rootProblem}</p> : null}
           </div>
           <div class="control">
-            <button type="button" class="btn small" disabled={!/^[A-Za-z]:\\|^\\\\|^\//.test(root.trim())} onClick={() => (set({ writeRoots: [...s.writeRoots, root.trim()] }), setRoot(''))}>
+            <button type="button" class="btn small" disabled={!/^[A-Za-z]:\\|^\\\\|^\//.test(root.trim()) || !!rootProblem} onClick={() => (set({ writeRoots: [...s.writeRoots, root.trim()] }), setRoot(''))}>
               <Icon name="plus" /> Add folder
             </button>
           </div>
@@ -136,6 +251,11 @@ export function SaveToSettings() {
       </SettingsGroup>
     </>
   )
+}
+
+function defaultDirFor(id: CategoryId, s: { root: string; perCategory: boolean }, _ci: boolean): string {
+  const sub = CATEGORIES.find((c) => c.id === id)?.folder
+  return s.perCategory && sub ? joinPath(s.root, sub) : s.root
 }
 
 export function DownloadsSettings() {
@@ -159,10 +279,10 @@ export function DownloadsSettings() {
         </SettingRow>
       </SettingsGroup>
       <SettingsGroup title="Retries and timeouts">
-        <SettingRow title="Retries" desc="Retryable failures only (a timeout, a busy server). A failure that needs you stops at once.">
+        <SettingRow title="Retries" desc={NATIVE ? "zeusd's retry budgets are fixed by kind of failure (a timeout, a busy server, a changed file) and a server's Retry-After always wins. Set extra automatic retries per queue on the Queues page." : 'Retryable failures only (a timeout, a busy server). A failure that needs you stops at once.'} planned={NATIVE}>
           <NumberInput label="Retries" value={d.retries} min={0} max={50} onChange={(v) => set({ retries: v })} />
         </SettingRow>
-        <SettingRow title="First retry after" desc="Grows after each attempt. A server's Retry-After always wins.">
+        <SettingRow title="First retry after" desc={NATIVE ? "Fixed in zeusd (it grows after each attempt). A queue's own retry delay is set on the Queues page." : "Grows after each attempt. A server's Retry-After always wins."} planned={NATIVE}>
           <NumberInput label="First retry after" value={d.retryDelayS} min={1} max={3600} onChange={(v) => set({ retryDelayS: v })} unit="s" />
         </SettingRow>
         <SettingRow title="Connect timeout" zeusd="timeouts.connect_s">
@@ -176,8 +296,8 @@ export function DownloadsSettings() {
         </SettingRow>
       </SettingsGroup>
       <SettingsGroup title="Resume, duplicates and checks">
-        <SettingRow title="Resuming" desc="Zeus resumes only when the server reports the same file (strong ETag or Last-Modified); otherwise it starts over rather than join two versions.">
-          <Select label="Resuming" value={d.resume} onChange={(v) => set({ resume: v })} options={[['verified_only', 'Only when the file is the same'], ['ask', 'Ask me when it changed'], ['restart', 'Always start over']]} />
+        <SettingRow title="Resuming" desc="Zeus resumes only when the server reports the same file (strong ETag or Last-Modified); otherwise it starts over rather than join two versions." fixed={NATIVE}>
+          {NATIVE ? <Chip tone="info">only when the file is the same</Chip> : <Select label="Resuming" value={d.resume} onChange={(v) => set({ resume: v })} options={[['verified_only', 'Only when the file is the same'], ['ask', 'Ask me when it changed'], ['restart', 'Always start over']]} />}
         </SettingRow>
         <SettingRow title="When the name exists" desc="Replace moves the old file to the app trash first." zeusd="jobs: overwrite">
           <Select label="When the name exists" value={d.duplicates} onChange={(v) => set({ duplicates: v })} options={[['rename', 'Add (1), (2)…'], ['fail', 'Stop with an error'], ['replace', 'Replace (old one to trash)']]} />
@@ -185,10 +305,10 @@ export function DownloadsSettings() {
         <SettingRow title="Checksums" desc="Every finished file is hashed with SHA-256 and BLAKE3 and gets a provenance receipt; this is not optional." fixed>
           <Chip tone="ok">SHA-256 and BLAKE3</Chip>
         </SettingRow>
-        <SettingRow title="Start downloads at once" desc="Off: new downloads go to the default queue.">
+        <SettingRow title="Start downloads at once" desc="Off: the link grabber and the site grabber preselect the default queue instead of Start now. Add URL always has both buttons.">
           <Switch label="Start at once" checked={d.startImmediately} onChange={(v) => set({ startImmediately: v })} />
         </SettingRow>
-        <SettingRow title="Show a dialog when a download finishes" desc="A notification states what finished; it never asks for a decision.">
+        <SettingRow title="Keep the notice when a download finishes" desc="The notice stays until you dismiss it, instead of fading. It states what finished and never asks for a decision.">
           <Switch label="Show a dialog when finished" checked={d.showCompleteDialog} onChange={(v) => set({ showCompleteDialog: v })} />
         </SettingRow>
         <SettingRow title="Keep records of removed downloads" zeusd="tombstone_days">
@@ -212,10 +332,10 @@ export function ConnectionSettings() {
         <SettingRow title="Pause on a metered connection" planned>
           <Switch label="Pause on metered" checked={c.meteredPause} onChange={(v) => set({ meteredPause: v })} />
         </SettingRow>
-        <SettingRow title="Use IPv6">
+        <SettingRow title="Use IPv6" desc={NATIVE ? 'zeusd uses whatever the operating system offers; there is no switch.' : undefined} planned={NATIVE}>
           <Switch label="IPv6" checked={c.ipv6} onChange={(v) => set({ ipv6: v })} />
         </SettingRow>
-        <SettingRow title="Identify as" desc="Zeus sends its own user agent. It does not pretend to be a browser to get past a check.">
+        <SettingRow title="Identify as" desc="Zeus sends its own user agent. It does not pretend to be a browser to get past a check." fixed={NATIVE}>
           <Select label="Identify as" value={c.userAgent} onChange={(v) => set({ userAgent: v })} options={[['zeus', 'Zeus'], ['browser', 'Zeus, with the browser family noted']]} />
         </SettingRow>
         <SettingRow title="Invalid certificates" desc="A download over https with an invalid certificate always fails." fixed>
@@ -223,8 +343,8 @@ export function ConnectionSettings() {
         </SettingRow>
       </SettingsGroup>
       <SettingsGroup title="Proxy" note="A proxy password is entered at a terminal into the keyring, never here.">
-        <SettingRow title="Proxy" planned>
-          <Select label="Proxy" value={c.proxy} onChange={(v) => set({ proxy: v })} options={[['system', 'Use the system proxy'], ['none', 'No proxy'], ['http', 'HTTP proxy'], ['socks5', 'SOCKS5 proxy']]} />
+        <SettingRow title="Proxy" desc={NATIVE ? 'The system proxy, or an HTTP proxy given to the engine when it starts (Apply and restart the engine on the Backend page). SOCKS proxies are not supported yet.' : undefined} planned={!NATIVE}>
+          <Select label="Proxy" value={c.proxy} onChange={(v) => set({ proxy: v })} options={NATIVE ? [['system', 'Use the system proxy'], ['http', 'HTTP proxy']] : [['system', 'Use the system proxy'], ['none', 'No proxy'], ['http', 'HTTP proxy'], ['socks5', 'SOCKS5 proxy']]} />
         </SettingRow>
         {c.proxy === 'http' || c.proxy === 'socks5' ? (
           <>
@@ -275,6 +395,7 @@ export function SiteLoginsSettings() {
 }
 
 export function BrowserSettings() {
+  if (NATIVE) return <BrowserIntegrationSettings />
   const b = useStore((s) => s.settings.browser)
   const set = (patch: Partial<typeof b>) => updateSettings('browser', patch)
   return (
@@ -401,7 +522,12 @@ export function NotificationSettings() {
   )
 }
 
+/** The desktop app's Search and index page reads and writes the engine's own index configuration. */
 export function IndexSettings() {
+  return NATIVE ? <NativeIndexSettings /> : <SampleIndexSettings />
+}
+
+function SampleIndexSettings() {
   const ix = useStore((s) => s.settings.index)
   const state = useStore((s) => s.index)
   const files = useStore((s) => s.files.length)
@@ -429,7 +555,7 @@ export function IndexSettings() {
         <SettingRow title="Index date modified">
           <Switch label="Index date modified" checked={ix.indexDate} onChange={(v) => set({ indexDate: v })} />
         </SettingRow>
-        <SettingRow title="Fast sorting" desc="Keeps sorted lists by size and date; uses more memory.">
+        <SettingRow title="Fast sorting" fixed={NATIVE} desc="Keeps sorted lists by size and date; uses more memory.">
           <Switch label="Fast sorting" checked={ix.fastSort} onChange={(v) => set({ fastSort: v })} />
         </SettingRow>
         <SettingRow title="File contents" desc="Searching inside files is a separate, cancellable job and is not part of this release." planned>
@@ -495,9 +621,15 @@ export function AgentSettings() {
         <SettingRow title="Tool calls per reply">
           <NumberInput label="Tool calls per reply" value={a.maxTurnTools} min={1} max={50} onChange={(v) => set({ maxTurnTools: v })} />
         </SettingRow>
-        <SettingRow title="Models see metadata only" desc="Names, sizes and states; never file contents or full addresses." fixed>
-          <Chip tone="info">metadata only</Chip>
-        </SettingRow>
+        {NATIVE ? (
+          <SettingRow title="Trim what the model sees" desc="Tool results are cut to names, sizes and states, with long text shortened. Zeus never reads file contents for a model either way, and addresses lose their query strings.">
+            <Switch label="Trim tool results" checked={a.metadataOnly} onChange={(v) => set({ metadataOnly: v })} />
+          </SettingRow>
+        ) : (
+          <SettingRow title="Models see metadata only" desc="Names, sizes and states; never file contents or full addresses." fixed>
+            <Chip tone="info">metadata only</Chip>
+          </SettingRow>
+        )}
       </SettingsGroup>
       <SettingsGroup title="Instructions" note="Added to every thread. They can narrow what the agent does, never widen it.">
         <div class="row stack">
@@ -528,6 +660,7 @@ export function AgentSettings() {
 
 export function StorageSettings() {
   const st = useStore((s) => s.settings.storage)
+  const dl = useStore((s) => s.settings.downloads)
   const jobs = useStore((s) => s.jobs)
   const set = (patch: Partial<typeof st>) => updateSettings('storage', patch)
   const [preview, setPreview] = useState(false)
@@ -538,13 +671,17 @@ export function StorageSettings() {
     <>
       <PageHead title="Storage and cleanup" sub="What Zeus keeps and for how long. A cleanup shows what it would remove before it removes anything." />
       <SettingsGroup title="Keep">
-        <SettingRow title="Records of removed downloads" zeusd="tombstone_days">
-          <NumberInput label="Records" value={st.keepTombstonesDays} min={1} max={365} onChange={(v) => set({ keepTombstonesDays: v })} unit="days" />
+        <SettingRow title="Records of removed downloads" zeusd="tombstone_days" desc={NATIVE ? 'The same setting as on the Downloads page; it applies when the engine restarts.' : undefined}>
+          {NATIVE ? (
+            <NumberInput label="Records" value={dl.tombstoneDays} min={1} max={365} onChange={(v) => updateSettings('downloads', { tombstoneDays: v })} unit="days" />
+          ) : (
+            <NumberInput label="Records" value={st.keepTombstonesDays} min={1} max={365} onChange={(v) => set({ keepTombstonesDays: v })} unit="days" />
+          )}
         </SettingRow>
-        <SettingRow title="Partial data of failed downloads" desc="Kept so a retry can continue.">
+        <SettingRow title="Partial data of failed downloads" desc={NATIVE ? 'zeusd keeps partial data so a retry can continue, until the download is removed.' : 'Kept so a retry can continue.'} planned={NATIVE}>
           <NumberInput label="Partial data" value={st.clearPartialAfterDays} min={1} max={365} onChange={(v) => set({ clearPartialAfterDays: v })} unit="days" />
         </SettingRow>
-        <SettingRow title="Zeus trash" desc="Replaced and removed files wait here before they are gone.">
+        <SettingRow title="Zeus trash" desc={NATIVE ? 'Files you delete in Zeus go to the operating system recycle bin, which keeps its own schedule.' : 'Replaced and removed files wait here before they are gone.'} planned={NATIVE}>
           <NumberInput label="Trash" value={st.trashRetentionDays} min={1} max={365} onChange={(v) => set({ trashRetentionDays: v })} unit="days" />
         </SettingRow>
       </SettingsGroup>

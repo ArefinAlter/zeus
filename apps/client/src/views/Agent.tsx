@@ -2,9 +2,12 @@
 // the closed tool table that mirrors Zeus's MCP tools; refused calls are shown; anything with consequences is a card
 // the person presses. In this release the answers come from a script and no model is called.
 
-import { useState } from 'preact/hooks'
+import { useEffect, useState } from 'preact/hooks'
 
-import { createThread, removeThread, renameThread, send, setAccess, STARTERS, stopThread } from '../backend/agent'
+import { createThread, regenerate, removeThread, renameThread, send, setAccess, STARTERS, stopThread } from '../backend/agent'
+import { isRunning, setProvider, settleOrphan } from '../backend/agentNative'
+import { NATIVE } from '../backend/live'
+import { useAgentConfig } from '../backend/useAgentConfig'
 import { useStore } from '../backend/store'
 import { ACCESS_INFO, ACCESS_ORDER, HUMAN_ONLY, NEVER, TOOLS, accessRank, mayCall } from '../model/agentTools.ts'
 import type { AgentAccess } from '../model/types.ts'
@@ -14,13 +17,17 @@ import { href, navigate } from '../lib/router'
 import { Chip } from '../ui/components'
 import { Icon, Mark } from '../ui/icons'
 import { Composer } from './agent/Composer'
+import { ConsentDialog } from './agent/Consent'
 import { Timeline } from './agent/Timeline'
+import '../styles/agent-native.css'
 
 function NewThread() {
   const defaultAccess = useStore((s) => s.settings.agent.defaultAccess)
   const [access, setAcc] = useState<AgentAccess>(defaultAccess)
+  const [provider, setProv] = useState<string | undefined>(undefined)
   const start = (text: string) => {
     const id = createThread(access)
+    if (NATIVE && provider) setProvider(id, provider)
     navigate(href('agent', id))
     void send(id, text)
   }
@@ -30,7 +37,7 @@ function NewThread() {
         <div class="hero">
           <Mark />
           <h1>What should Zeus fetch or check?</h1>
-          <p class="muted">Ask for downloads, files or checks. The agent reads Zeus through the same tools an MCP client gets, and proposes. You press the buttons that change anything, and only you approve.</p>
+          <p class="muted">{NATIVE ? 'Ask for downloads, files or checks. A model you chose, with your own key, uses the same tools an MCP client of Zeus gets. You press the buttons that change anything, and only you approve.' : 'Ask for downloads, files or checks. The agent reads Zeus through the same tools an MCP client gets, and proposes. You press the buttons that change anything, and only you approve.'}</p>
         </div>
         <div class="starters" role="list" aria-label="Start from">
           <div class="label">Start from</div>
@@ -43,7 +50,7 @@ function NewThread() {
           ))}
         </div>
       </div>
-      <Composer draftKey="new" busy={false} access={access} onAccess={setAcc} onSend={start} onStop={() => undefined} />
+      <Composer draftKey="new" busy={false} access={access} onAccess={setAcc} onSend={start} onStop={() => undefined} providerId={provider} onProvider={setProv} />
     </div>
   )
 }
@@ -61,6 +68,7 @@ function Details({ id }: { id: string }) {
   const t = useStore((s) => s.threads.find((x) => x.id === id))
   const enabled = useStore((s) => s.settings.agent.toolsEnabled)
   const skills = useStore((s) => s.skills)
+  const cfg = useAgentConfig()
   const [renaming, setRenaming] = useState(false)
   const [title, setTitle] = useState('')
   if (!t) return null
@@ -76,7 +84,27 @@ function Details({ id }: { id: string }) {
             <Chip tone={t.state === 'running' ? 'accent' : ''}>{t.state}</Chip>
           </dd>
           <dt>model</dt>
-          <dd>Zeus agent, prepared answers; no model is called</dd>
+          <dd>
+            {NATIVE ? (
+              (() => {
+                const p = cfg?.providers.find((x) => x.id === t.provider) ?? cfg?.providers.find((x) => x.enabled)
+                return p ? `${p.name}${p.model ? `, ${p.model}` : ''}` : 'none yet; Settings, Providers'
+              })()
+            ) : (
+              'Zeus agent, prepared answers; no model is called'
+            )}
+          </dd>
+          {NATIVE ? (
+            <>
+              <dt>spend</dt>
+              <dd>
+                {t.usage ? `${t.usage.input_tokens.toLocaleString()} in, ${t.usage.output_tokens.toLocaleString()} out, about $${t.usage.usd.toFixed(4)}` : 'nothing yet'}
+                {cfg ? ` of $${cfg.thread_cap_usd.toFixed(2)} for this thread` : ''}
+              </dd>
+              <dt>today</dt>
+              <dd>{cfg ? `about $${cfg.usage.today.usd.toFixed(4)} of $${cfg.daily_cap_usd.toFixed(2)}` : '…'}</dd>
+            </>
+          ) : null}
           <dt>started</dt>
           <dd>{fmtAgo(t.created)}</dd>
           <dt>tool calls</dt>
@@ -174,6 +202,9 @@ function Details({ id }: { id: string }) {
 function ThreadPage({ id }: { id: string }) {
   const t = useStore((s) => s.threads.find((x) => x.id === id))
   const prefs = usePrefs()
+  useEffect(() => {
+    if (NATIVE) settleOrphan(id)
+  }, [id])
   if (!t)
     return (
       <div class="empty">
@@ -184,7 +215,14 @@ function ThreadPage({ id }: { id: string }) {
     <div class={`agent-thread ${prefs.agentDetails ? 'with-side' : ''}`}>
       <div class="agent-col">
         <Timeline thread={t} />
-        <Composer draftKey={t.id} busy={t.state === 'running'} access={t.access} onAccess={(a) => setAccess(t.id, a)} placeholder={`Reply. This thread has ${ACCESS_INFO[t.access].label} access.`} onSend={(text) => void send(t.id, text)} onStop={() => stopThread(t.id)} />
+        {NATIVE && t.state !== 'running' && !isRunning(t.id) && t.items.some((i) => i.kind === 'user') ? (
+          <div class="thread-actions">
+            <button type="button" class="btn small" onClick={() => void regenerate(t.id)} title="Ask the model to answer the last message again">
+              <Icon name="refresh" /> Answer again
+            </button>
+          </div>
+        ) : null}
+        <Composer draftKey={t.id} busy={t.state === 'running'} access={t.access} onAccess={(a) => setAccess(t.id, a)} placeholder={`Reply. This thread has ${ACCESS_INFO[t.access].label} access.`} onSend={(text) => void send(t.id, text)} onStop={() => stopThread(t.id)} providerId={t.provider} onProvider={(p) => setProvider(t.id, p)} />
       </div>
       {prefs.agentDetails ? <Details id={t.id} /> : null}
     </div>
@@ -192,7 +230,12 @@ function ThreadPage({ id }: { id: string }) {
 }
 
 export function Agent({ threadId }: { threadId?: string }) {
-  return threadId ? <ThreadPage id={threadId} /> : <NewThread />
+  return (
+    <>
+      {threadId ? <ThreadPage id={threadId} /> : <NewThread />}
+      {NATIVE ? <ConsentDialog /> : null}
+    </>
+  )
 }
 
 export function DetailsToggle() {

@@ -31,6 +31,8 @@ export interface IndexRoot {
   include: boolean
   monitorChanges: boolean
   rescanEveryHours: number | null
+  /** Native: one of the engine's download folders (it cannot be removed here). */
+  download?: boolean
 }
 
 export interface Settings {
@@ -51,6 +53,10 @@ export interface Settings {
     askEachTime: boolean
     rememberLast: boolean
     writeRoots: string[]
+    /** An absolute folder per category that overrides its default subfolder (inside a download folder). */
+    categoryDirs: Record<string, string>
+    /** The last folder used for each category, kept when "remember the last folder" is on. */
+    lastDirs: Record<string, string>
   }
   downloads: {
     concurrentJobs: number
@@ -144,6 +150,8 @@ export function defaultSettings(): Settings {
       askEachTime: false,
       rememberLast: true,
       writeRoots: ['D:\\Downloads\\Zeus', 'E:\\Archive\\Zeus'],
+      categoryDirs: {},
+      lastDirs: {},
     },
     downloads: {
       concurrentJobs: 4,

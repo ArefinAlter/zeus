@@ -23,6 +23,7 @@ use zeus_api::methods::jobs::{
     ControlAction, EnqueueParams, JobsControlParams, JobsGetParams, JobsListParams,
     JobsVerifyParams, JobsWaitParams, NewJob, ProbeParams, WaitUntil,
 };
+use zeus_api::methods::queues::QUEUE_LABEL;
 use zeus_api::methods::sessions::{
     ApprovalsListParams, DecideOutcome, SessionsListParams, SessionsRevokeParams,
 };
@@ -213,6 +214,7 @@ pub async fn run_remote<C: Client + ?Sized>(
         Command::Workflow(command) => crate::workflow::run(command, client, global.dry_run).await,
         Command::Files(command) => crate::files::run(command, client, global.dry_run).await,
         Command::Artifacts(command) => crate::artifacts::run(command, client, global.dry_run).await,
+        Command::Queues(command) => crate::queues::run(command, client, global.dry_run).await,
         Command::Get(args) => get(args, global, client, color).await,
         Command::Probe { url } => probe(url, client).await,
         Command::Ls {
@@ -774,7 +776,11 @@ async fn get<C: Client + ?Sized>(
             overwrite: None,
             max_connections: None,
             transport_hint: None,
-            labels: BTreeMap::new(),
+            labels: args
+                .queue
+                .iter()
+                .map(|queue| (QUEUE_LABEL.to_owned(), queue.clone()))
+                .collect(),
             run_id: None,
         })
         .collect();
@@ -1249,6 +1255,7 @@ fn native_host(
             extension_ids,
             dev_extension_ids,
             host_path,
+            allow_list_dir,
         } => {
             if extension_ids.is_empty() && dev_extension_ids.is_empty() {
                 return Err(ApiError::invalid_params(
@@ -1263,6 +1270,7 @@ fn native_host(
                 home,
                 state_dir: paths.state_dir.clone(),
                 os: Os::current(),
+                allow_list_dir: allow_list_dir.as_ref().map(PathBuf::from),
             };
             let steps =
                 install::plan(&request).map_err(|e| ApiError::invalid_params(e.to_string()))?;
@@ -1292,6 +1300,7 @@ fn native_host(
                 home,
                 state_dir: paths.state_dir.clone(),
                 os: Os::current(),
+                allow_list_dir: None,
             };
             let steps = install::plan_uninstall(&request);
             let text = describe_steps(&steps);
