@@ -397,8 +397,7 @@ mod live_subscription_tests {
         };
         let mut core = Core::new(home.clone(), paths);
         Arc::get_mut(&mut core).unwrap().keys = crate::keys::KeyStore::file_for_tests(&home);
-        let mut config = AgentConfig::default();
-        config.providers=vec![serde_json::from_value(json!({"id":"p-claude","name":"Claude Code","kind":"claude","enabled":true,"consent":true,"base_url":"","model":"default","price_in_per_mtok":0.0,"price_out_per_mtok":0.0})).unwrap()];
+        let config = AgentConfig { providers:vec![serde_json::from_value(json!({"id":"p-claude","name":"Claude Code","kind":"claude","enabled":true,"consent":true,"base_url":"","model":"default","price_in_per_mtok":0.0,"price_out_per_mtok":0.0})).unwrap()], ..AgentConfig::default() };
         core.config.save(&config).unwrap();
         let result = core.test_provider("p-claude", None).await.unwrap();
         assert_eq!(result["ok"], true, "{result}");

@@ -486,10 +486,13 @@ mod tests {
         assert!(store.get("test-provider").unwrap().is_none());
     }
     #[test]
-    fn subscriptions_do_not_require_an_initialized_api_key_store() {
+    fn subscriptions_do_not_require_api_key_store_unlock() {
         let d = tempfile::tempdir().unwrap();
         let store = KeyStore::file_for_tests(&AppHome::at(d.path().to_path_buf()));
-        assert_eq!(store.get("p-claude").err(), Some(KeyError::NotInitialized));
+        assert!(store.get("p-claude").unwrap().is_none());
+        store.initialize("acceptance-passphrase").unwrap();
+        store.lock();
+        assert_eq!(store.get("p-claude").err(), Some(KeyError::Locked));
         assert!(
             store
                 .for_provider(Kind::Claude, "p-claude")
@@ -504,7 +507,7 @@ mod tests {
         );
         assert_eq!(
             store.for_provider(Kind::Anthropic, "p-api").err(),
-            Some(KeyError::NotInitialized)
+            Some(KeyError::Locked)
         );
     }
 }

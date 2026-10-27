@@ -45,3 +45,6 @@ missing_docs = "warn"
 dbg_macro = "warn"
 todo = "deny"
 unimplemented = "deny"
+
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1", features = ["process"] }

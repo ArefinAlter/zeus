@@ -97,11 +97,7 @@ pub fn open(home: &AppHome, bin_dir: &Path, action: &str, id: &str) -> Result<()
         }
         let mut words = vec!["env".to_owned()];
         for (key, value) in home.zeus_env() {
-            words.push(sh_quote(&format!(
-                "{}={}",
-                key.to_string_lossy(),
-                value.to_string_lossy()
-            )));
+            words.push(sh_quote(&format!("{key}={value}")));
         }
         words.push(sh_quote(&program.to_string_lossy()));
         words.extend(args.iter().map(|s| sh_quote(s)));

@@ -155,6 +155,11 @@ fn copy_tree(
     facts: &HashMap<String, FileFacts>,
     job: &Job,
 ) -> Result<()> {
+    if scan::is_link(&std::fs::symlink_metadata(from)?) {
+        return Err(Failure::invalid(
+            "Choose the source itself, rather than a link or junction.",
+        ));
+    }
     let source = resolve_inside(from, reads)?;
     let dest = resolve_inside(dest, writes)?;
     if !dest.is_dir() || dest.starts_with(&source) {
