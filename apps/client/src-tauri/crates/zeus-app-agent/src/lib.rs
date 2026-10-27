@@ -161,7 +161,7 @@ impl Core {
             "tools": req.tools.iter().map(|t| json!({"name": t.name, "description": t.description})).collect::<Vec<_>>(),
             "tool_access": policy.access.label(),
             "estimate": {"system_tokens": sys_tokens, "tool_tokens": tool_tokens, "message_tokens": msg_tokens, "total_input_tokens": sys_tokens + tool_tokens + msg_tokens, "max_output_tokens": config.max_tokens},
-            "sends": ["the system prompt above", "this thread's messages and tool results, as listed", "the tool definitions listed", "your API key, only in the request header to the provider"],
+            "sends": ["the system prompt above", "this thread's messages and tool results, as listed", "the tool definitions listed", if provider.kind.is_subscription() { "the installed agent uses its own sign-in; Zeus supplies no API key" } else { "your API key, only in the request header to the provider" }],
             "never_sends": ["file contents", "cookies, passwords or session tokens", "your other threads"],
         }))
     }
@@ -181,7 +181,10 @@ impl Core {
         if let Err(cap) = self.ledger.check(&config, &provider, "_test", 40) {
             return Ok(json!({"ok": false, "code": "cap", "message": cap.message()}));
         }
-        let key = self.keys.get(&provider.id).map_err(key_failure)?;
+        let key = self
+            .keys
+            .for_provider(provider.kind, &provider.id)
+            .map_err(key_failure)?;
         let req = ChatRequest {
             model: model.clone(),
             system: "Reply with the single word OK.".into(),
@@ -228,7 +231,10 @@ impl Core {
             Ok(t) => t,
             Err(e) => return Ok(json!({"ok": false, "code": "bad_url", "message": e.message})),
         };
-        let key = self.keys.get(&provider.id).map_err(key_failure)?;
+        let key = self
+            .keys
+            .for_provider(provider.kind, &provider.id)
+            .map_err(key_failure)?;
         if provider.kind.needs_key() && key.is_none() {
             return Ok(
                 json!({"ok": false, "code": "needs_key", "message": format!("{} needs an API key first.", provider.name)}),
@@ -367,5 +373,36 @@ impl Extension for Module {
                 _ => return None,
             })
         })
+    }
+}
+
+#[cfg(test)]
+mod live_subscription_tests {
+    use super::*;
+    #[tokio::test]
+    #[ignore = "real Claude subscription request; VERNE_TEST_SUBSCRIPTION=claude"]
+    async fn native_subscription_provider_live() {
+        assert_eq!(
+            std::env::var("VERNE_TEST_SUBSCRIPTION").as_deref(),
+            Ok("claude")
+        );
+        let d = tempfile::tempdir().unwrap();
+        let home = zeus_app::home::AppHome::at(d.path().to_path_buf());
+        let paths = zeus_api::endpoint::ZeusPaths {
+            state_dir: home.state_dir(),
+            config_dir: home.config_dir(),
+            runtime_dir: home.run_dir(),
+            user_identity: "verne-acceptance".into(),
+            profile: None,
+        };
+        let mut core = Core::new(home.clone(), paths);
+        Arc::get_mut(&mut core).unwrap().keys = crate::keys::KeyStore::file_for_tests(&home);
+        let mut config = AgentConfig::default();
+        config.providers=vec![serde_json::from_value(json!({"id":"p-claude","name":"Claude Code","kind":"claude","enabled":true,"consent":true,"base_url":"","model":"default","price_in_per_mtok":0.0,"price_out_per_mtok":0.0})).unwrap()];
+        core.config.save(&config).unwrap();
+        let result = core.test_provider("p-claude", None).await.unwrap();
+        assert_eq!(result["ok"], true, "{result}");
+        assert_eq!(result["text"].as_str().unwrap().trim(), "OK");
+        assert!(!core.keys.status().initialized);
     }
 }

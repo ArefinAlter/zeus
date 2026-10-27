@@ -25,6 +25,7 @@ pub mod routes;
 pub mod shell;
 pub mod state;
 pub mod supervisor;
+pub mod terminal;
 
 #[cfg(feature = "http-harness")]
 pub mod http;

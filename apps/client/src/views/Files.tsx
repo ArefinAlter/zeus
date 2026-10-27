@@ -25,7 +25,7 @@ import { categoryOf } from '../model/categories.ts'
 import type { MenuItem } from '../ui/components'
 import { Chip, ContextMenu, CopyButton, Dialog, Provenance } from '../ui/components'
 import { Icon, categoryIcon } from '../ui/icons'
-import { DeleteDialog, MoveDialog, RenameDialog, NewFolderDialog } from './files/FileOps'
+import { DeleteDialog, MoveDialog, RenameDialog, NewFolderDialog, CopyJobs } from './files/FileOps'
 import '../styles/files.css'
 
 type SortKey = 'name' | 'path' | 'size' | 'modified'
@@ -45,7 +45,7 @@ interface Folder {
 
 /** The folders pane: every folder of an included root with its file count, collapsed below the first level. */
 function folderTree(files: FileEntry[], roots: string[], open: Set<string>): Folder[] {
-  const counts = new Map<string, number>()
+  const counts = new Map<string, number>(roots.map(root=>[root,0]))
   const rootOf = new Map<string, string>()
   const rootFor = (dir: string): string | undefined => {
     let r = rootOf.get(dir)
@@ -179,6 +179,12 @@ export function Files({ initialPath }: { initialPath?: string }) {
   const downloadRoots = useStore((s) => s.settings.saveTo.writeRoots)
   const writeRoots = [...downloadRoots, ...indexRoots.filter(r => r.include && r.manageFiles).map(r=>r.path)]
   const prefs = usePrefs()
+  const [folderFiles, setFolderFiles] = useState<FileEntry[]>([])
+  const [nextPage, setNextPage] = useState<string | null>(null)
+  const [folderError, setFolderError] = useState('')
+  const [listing, setListing] = useState(false)
+  const [revision, setRevision] = useState(0)
+  const listingEpoch = useRef(0)
   const [query, setQuery] = useState('')
   const [mkdir, setMkdir] = useState<string | null>(null)
   const [filter, setFilter] = useState('everything')
@@ -215,13 +221,40 @@ export function Files({ initialPath }: { initialPath?: string }) {
     return () => ro.disconnect()
   }, [])
 
+  const loadFolder = async (path: string, after: string, epoch: number) => {
+    setListing(true)
+    setFolderError('')
+    try {
+      const page = await filesApi.list(path, after)
+      if (listingEpoch.current !== epoch) return
+      setFolderFiles(previous => {
+        const kept = after ? previous : []
+        const rows = page.files.map((row, i) => ({ id: -(kept.length + i + 1), name: baseOf(row.path), dir: parentOf(row.path), isFolder: row.is_dir, size: row.size, modified: row.mtime, quarantined: row.quarantined }))
+        return [...kept, ...rows]
+      })
+      setNextPage(page.next)
+    } catch (e) {
+      if (listingEpoch.current === epoch) setFolderError(e instanceof Error ? e.message : 'The folder could not be read.')
+    } finally {
+      if (listingEpoch.current === epoch) setListing(false)
+    }
+  }
+  useEffect(() => {
+    const epoch = ++listingEpoch.current
+    setFolderFiles([])
+    setNextPage(null)
+    setSel(null)
+    if (NATIVE && folder) void loadFolder(folder, '', epoch)
+    return () => { listingEpoch.current++ }
+  }, [folder, revision])
+  const visibleFiles = NATIVE && folder ? folderFiles : files
   const parsed = useMemo(() => parseQuery(query, opts, Date.now()), [query, opts])
   const t0 = performance.now()
   const results = useMemo(() => {
     if (!parsed.ok) return []
     const q = parsed.query
-    const inside = folder ? (f: FileEntry) => isInside(folder, f.dir) || (f.isFolder && isInside(folder, fullPath(f))) : () => true
-    const out = files.filter((f) => inside(f) && filterMatch(filter, f) && matches(q, f))
+    const inside = folder && !NATIVE ? (f: FileEntry) => isInside(folder, f.dir) || (f.isFolder && isInside(folder, fullPath(f))) : () => true
+    const out = visibleFiles.filter((f) => inside(f) && filterMatch(filter, f) && matches(q, f))
     const k = sort.key
     out.sort((a, b) => {
       const x = k === 'name' ? a.name.toLowerCase() : k === 'path' ? a.dir.toLowerCase() : k === 'size' ? a.size : a.modified
@@ -229,14 +262,14 @@ export function Files({ initialPath }: { initialPath?: string }) {
       return (x < y ? -1 : x > y ? 1 : 0) * sort.dir || (a.isFolder === b.isFolder ? 0 : a.isFolder ? -1 : 1)
     })
     return out
-  }, [files, parsed, filter, folder, sort])
+  }, [visibleFiles, parsed, filter, folder, sort])
   const took = performance.now() - t0
-  const includedRoots = useMemo(() => indexRoots.filter((r) => r.include).map((r) => r.path), [indexRoots])
+  const includedRoots = useMemo(() => [...new Set([...downloadRoots, ...indexRoots.filter((r) => r.include).map((r) => r.path)])], [indexRoots, downloadRoots])
   const tree = useMemo(() => {
     const open = new Set(openDirs)
     for (const r of includedRoots) open.add(r)
-    return folderTree(files, includedRoots, open)
-  }, [files, includedRoots, openDirs])
+    return folderTree([...files, ...folderFiles], includedRoots, open)
+  }, [files, folderFiles, includedRoots, openDirs])
   const current = results.find((f) => f.id === sel) ?? null
   const totalSize = results.reduce((n, f) => n + f.size, 0)
   const hiliteQuery: Query = parsed.ok ? parsed.query : []
@@ -282,7 +315,7 @@ export function Files({ initialPath }: { initialPath?: string }) {
   }
   const act = (kind: 'rename' | 'move' | 'copy' | 'delete', f: FileEntry | null) => {
     if (!f) return
-    const ok = kind === 'copy' && !f.quarantined && !f.isFolder ? true : writable(f)
+    const ok = kind === 'copy' && NATIVE && !f.quarantined ? true : writable(f)
     if (ok !== true) return void toast({ kind: 'warn', title: 'Not here', desc: ok, important: false, topic: 'system' })
     setOp({ kind, id: f.id })
   }
@@ -322,7 +355,7 @@ export function Files({ initialPath }: { initialPath?: string }) {
       { label: 'Copy SHA-256', icon: 'copy', disabled: !f.sha256, run: () => void navigator.clipboard?.writeText(f.sha256 ?? '').catch(() => undefined) },
       { sep: true, label: '' },
       { label: 'Rename…', icon: 'rename', hint: 'F2', disabled: why, run: () => act('rename', f) },
-      { label: 'Copy to folder…', icon: 'copy', disabled: !NATIVE || f.quarantined || f.isFolder, run: () => act('copy', f) },
+      { label: 'Copy to folder…', icon: 'copy', disabled: !NATIVE || f.quarantined, run: () => act('copy', f) },
       { label: 'Upload…', icon: 'upload', disabled: !NATIVE || f.quarantined || f.isFolder, run: () => navigate(href('uploads', {path:fullPath(f), name:f.name})) },
       { label: 'Move…', icon: 'folder', disabled: why, run: () => act('move', f) },
       { label: 'Delete…', icon: 'trash', hint: 'Del', danger: true, disabled: why, run: () => act('delete', f) },
@@ -346,7 +379,7 @@ export function Files({ initialPath }: { initialPath?: string }) {
     </div>
   )
 
-  const opFile = op ? files.find((x) => x.id === op.id) : undefined
+  const opFile = op ? visibleFiles.find((x) => x.id === op.id) : undefined
   const moveFolders = useMemo(() => ((op?.kind === 'move' || op?.kind === 'copy') ? files.filter((f) => f.isFolder && writeRoots.some((r) => isInside(r, fullPath(f)))).map(fullPath) : []), [op?.kind, files, writeRoots])
 
   return (
@@ -359,7 +392,7 @@ export function Files({ initialPath }: { initialPath?: string }) {
             type="search"
             spellcheck={false}
             aria-label="Search files"
-            placeholder="Search the download folders: name, ext:pdf, size:>100mb, dm:lastweek…"
+            placeholder="Search files: name, ext:pdf, size:>100mb, dm:lastweek…"
             value={query}
             onInput={(e) => setQuery((e.target as HTMLInputElement).value)}
             onKeyDown={(e) => {
@@ -395,7 +428,8 @@ export function Files({ initialPath }: { initialPath?: string }) {
           <Icon name="panelright" />
         </button>
       </div>
-      {NATIVE ? <div class="fscope"><span>Manage files in folders you choose.</span><button class="btn small" onClick={()=>navigate(href('settings','index'))}>Choose folders</button><button class="btn small" disabled={!folder || !writeRoots.some(r=>isInside(r,folder))} onClick={()=>folder && setMkdir(folder)}>New folder</button>{folder ? <button class="btn small" onClick={()=>setFolder(parentOf(folder))}>Up</button> : null}</div> : null}
+      {NATIVE ? <div class="fscope"><span>Manage files in folders you choose.</span><button class="btn small" onClick={()=>navigate(href('settings','index'))}>Choose folders</button><button class="btn small" disabled={!folder || !writeRoots.some(r=>isInside(r,folder))} onClick={()=>folder && setMkdir(folder)}>New folder</button>{folder ? <><button class="btn small" disabled={!indexRoots.some(r=>r.include && isInside(r.path,parentOf(folder))) && !downloadRoots.some(r=>isInside(r,parentOf(folder)))} onClick={()=>setFolder(parentOf(folder))}>Up</button><button class="btn small" disabled={listing} onClick={()=>setRevision(n=>n+1)}>Refresh folder</button></> : null}</div> : null}
+      {NATIVE && folder ? <div class="fscope" role="status">{listing ? 'Reading folder…' : `${folderFiles.length.toLocaleString()} items loaded`}{nextPage ? <button class="btn small" disabled={listing} onClick={()=>void loadFolder(folder,nextPage,listingEpoch.current)}>Load more</button> : null}{folderError ? <span class="field-err">{folderError}</span> : null}</div> : null}
       {!parsed.ok ? <div class="fsyntaxerr">{parsed.error}</div> : null}
       {folder ? (
         <div class="fscope">
@@ -629,9 +663,10 @@ export function Files({ initialPath }: { initialPath?: string }) {
           </aside>
         ) : null}
       </div>
+      {NATIVE ? <CopyJobs /> : null}
       <Provenance>
         {NATIVE
-          ? 'The engine keeps this index of your download folders (and folders you add) and follows changes with the file system watcher. Search runs in this window over the index; it matches names, sizes and dates, not file contents. SHA-256, quarantine and the job behind each file come from zeusd. Zeus reads at most the start of a text file or a small picture for the preview, never a quarantined file.'
+          ? 'The engine keeps this index of your download folders (and folders you add) and follows changes with the file system watcher. Folders are read directly from disk, including items excluded from search. Search everywhere runs over the index; it matches names, sizes and dates, not file contents. SHA-256, quarantine and the job behind each file come from zeusd. Zeus reads at most the start of a text file or a small picture for the preview, never a quarantined file.'
           : LIVE
             ? `zeusd has no file index yet. ${HOSTED ? 'The pre-alpha service indexes the real files of your sandbox folder' : "This client indexes zeusd's file list of your download folder"}; SHA-256, quarantine and the job behind each file come from zeusd. The search syntax and its rules are tested.`
             : 'zeusd has no file index yet (planned: a scoped metadata index of the download folders). This release searches sample metadata in memory; the syntax and its rules are tested.'}
@@ -643,17 +678,17 @@ export function Files({ initialPath }: { initialPath?: string }) {
           label="File actions"
           onClose={() => setMenu(null)}
           items={(() => {
-            const f = files.find((x) => x.id === menu.id)
+            const f = visibleFiles.find((x) => x.id === menu.id)
             return f ? items(f) : []
           })()}
         />
       ) : null}
       {help ? <SyntaxHelp onClose={() => setHelp(false)} onUse={(q) => (setQuery(q), setHelp(false))} /> : null}
       {saving ? <SaveBookmark query={query} filter={filter} onClose={() => setSaving(false)} /> : null}
-      {mkdir ? <NewFolderDialog parent={mkdir} onClose={()=>setMkdir(null)} /> : null}
-      {op && opFile && op.kind === 'rename' ? <RenameDialog path={fullPath(opFile)} name={opFile.name} onClose={() => setOp(null)} /> : null}
-      {op && opFile && (op.kind === 'move' || op.kind === 'copy') ? <MoveDialog copy={op.kind === 'copy'} path={fullPath(opFile)} dir={opFile.isFolder ? parentOf(fullPath(opFile)) : opFile.dir} roots={writeRoots} folders={moveFolders} onClose={() => setOp(null)} /> : null}
-      {op && opFile && op.kind === 'delete' ? <DeleteDialog paths={[fullPath(opFile)]} names={[opFile.name]} onClose={() => setOp(null)} /> : null}
+      {mkdir ? <NewFolderDialog parent={mkdir} onClose={()=>{setMkdir(null);setRevision(n=>n+1)}} /> : null}
+      {op && opFile && op.kind === 'rename' ? <RenameDialog path={fullPath(opFile)} name={opFile.name} onClose={() => {setOp(null);setRevision(n=>n+1)}} /> : null}
+      {op && opFile && (op.kind === 'move' || op.kind === 'copy') ? <MoveDialog copy={op.kind === 'copy'} path={fullPath(opFile)} dir={opFile.isFolder ? parentOf(fullPath(opFile)) : opFile.dir} roots={writeRoots} folders={moveFolders} onClose={() => {setOp(null);setRevision(n=>n+1)}} /> : null}
+      {op && opFile && op.kind === 'delete' ? <DeleteDialog paths={[fullPath(opFile)]} names={[opFile.name]} onClose={() => {setOp(null);setRevision(n=>n+1)}} /> : null}
     </div>
   )
 }

@@ -83,6 +83,16 @@ pub async fn dispatch(app: &Arc<App>, route: &str, body: Value) -> Result<Value>
             ensure_ready(app)?;
             app.reviews.enqueue(&app.daemon, &body).await
         }
+        ("POST", ["native", "v1", "cloud", "review-terminal"]) => {
+            ensure_ready(app)?;
+            let action = body
+                .get("action")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let id = body.get("id").and_then(Value::as_str).unwrap_or_default();
+            app.supervisor.open_review_terminal(action, id)?;
+            Ok(json!({"opened":true}))
+        }
         ("GET", ["native", "v1", "cloud", "accounts"]) => {
             ensure_ready(app)?;
             app.daemon.raw("cloud.accounts.list", json!({})).await
