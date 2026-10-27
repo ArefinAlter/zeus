@@ -1299,10 +1299,22 @@ export function grabberStart(reviewId: string, queue: string | null): { ok: true
       // done by this app at the person's click: the old file goes to the recycle bin, then the name is free.
       const replacing = NATIVE ? r.links.filter((l) => l.dupe && l.dupeChoice === 'replace') : []
       if (replacing.length) {
-        const paths = replacing
-          .map((l) => state.jobs.find((j) => j.id === l.dupe?.id))
-          .filter((j): j is Job => !!j && j.state === 'completed')
-          .map((j) => joinPath(j.dir, j.name))
+        // The file to move away is the one the new download would land on: a completed download of this address that
+        // sits at the destination. (A second copy named "(1)" is another file and stays.) Failing that, the download the
+        // duplicate check pointed at.
+        const slashes = (x: string) => x.replace(/[\\/]+/g, '/')
+        const same = (a: string, b: string) => (SEP() === '\\' ? slashes(a).toLowerCase() === slashes(b).toLowerCase() : slashes(a) === slashes(b))
+        const paths = [
+          ...new Set(
+            replacing.flatMap((l) => {
+              const target = joinPath(l.dir, l.name)
+              const done = state.jobs.filter((j) => j.state === 'completed' && same(joinPath(j.dir, j.name), target))
+              if (done.length) return [target]
+              const fallback = state.jobs.find((j) => j.id === l.dupe?.id && j.state === 'completed')
+              return fallback ? [joinPath(fallback.dir, fallback.name)] : []
+            }),
+          ),
+        ]
         if (paths.length) {
           try {
             const gone = await filesApi.remove(paths)

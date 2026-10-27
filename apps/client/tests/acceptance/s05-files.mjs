@@ -11,6 +11,7 @@ import { join } from 'node:path'
 import { crc32, deflateSync } from 'node:zlib'
 
 import { startFixtures } from '../fixture-server.mjs'
+import { guard } from '../guard.mjs'
 import { download, sleep, startHarness, until } from '../harness.mjs'
 import { openUi } from '../ui.mjs'
 
@@ -48,6 +49,7 @@ function png(w, h, rgb) {
 
 const fx = await startFixtures(0)
 let h = await startHarness({ home, fresh: true })
+guard(() => ({ h, fx })) // a failed run must not leave its engine behind
 await h.ready()
 const session = await h.post('/api/v1/session')
 const root = process.platform === 'win32' ? session.root_label.replaceAll('/', '\\') : session.root_label
@@ -254,7 +256,8 @@ await page.locator('.flist').focus()
 await page.keyboard.press('F2')
 await page.waitForSelector('text=Rename')
 const nameBox = page.locator('.dialog input').first()
-await nameBox.fill('taken.txt')
+await nameBox.press('Control+A') // the dialog preselects only the base name; select it all
+await page.keyboard.insertText('taken.txt')
 await page.waitForFunction(() => document.querySelector('.dialog input')?.value === 'taken.txt')
 await page.click('.dialog button:has-text("Rename")')
 await page.waitForSelector('.dialog .notice.error, .dialog .field-err', { timeout: 10000 }).catch(async (e) => {
@@ -263,7 +266,8 @@ await page.waitForSelector('.dialog .notice.error, .dialog .field-err', { timeou
   throw e
 })
 check('renaming onto an existing name is refused and says why', existsSync(join(root, 'Documents', 'ops', 'rename-me.txt')) && ((await page.locator('.dialog .notice.error').textContent().catch(() => '')) ?? '').includes('already exists'))
-await nameBox.fill('renamed-ok.txt')
+await nameBox.press('Control+A') // the dialog preselects only the base name; select it all
+await page.keyboard.insertText('renamed-ok.txt')
 await page.waitForFunction(() => document.querySelector('.dialog input')?.value === 'renamed-ok.txt')
 await page.click('.dialog button:has-text("Rename")')
 await until(async () => existsSync(join(root, 'Documents', 'ops', 'renamed-ok.txt')) && !existsSync(join(root, 'Documents', 'ops', 'rename-me.txt')), { timeoutMs: 10000, what: 'the rename on disk' })

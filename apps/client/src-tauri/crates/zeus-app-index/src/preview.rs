@@ -122,9 +122,18 @@ pub fn dimensions(kind: Image, b: &[u8]) -> Option<(u32, u32)> {
     }
 }
 
-/// The part of `head` that is text, if it is text: valid UTF-8 (a character cut at the end is fine) with no NUL.
+/// The part of `head` that is text, if it is text: valid UTF-8 (a character cut at the end is fine) with no NUL and
+/// no more than one control character in a hundred bytes (tab, line feed, form feed, carriage return and escape are
+/// not counted). Data that happens to be valid UTF-8, such as a run of one low byte, is not text.
 pub fn as_text(head: &[u8]) -> Option<&str> {
     if head.contains(&0) {
+        return None;
+    }
+    let control = head
+        .iter()
+        .filter(|b| matches!(**b, 0x01..=0x08 | 0x0b | 0x0e..=0x1a | 0x1c..=0x1f | 0x7f))
+        .count();
+    if control * 100 > head.len() {
         return None;
     }
     match std::str::from_utf8(head) {
@@ -285,6 +294,9 @@ mod tests {
         assert_eq!(as_text(&v), Some("ab"));
         assert!(as_text(b"a\0b").is_none());
         assert!(as_text(&[0xff, 0xfe, 0xfd, 0xfc, 0xfb]).is_none());
+        assert!(as_text(&[3u8; 300]).is_none(), "a run of one control byte is data");
+        let ansi = "line one\r\n\ttab\x0cpage\x1b[0m";
+        assert_eq!(as_text(ansi.as_bytes()), Some(ansi));
     }
 
     #[test]

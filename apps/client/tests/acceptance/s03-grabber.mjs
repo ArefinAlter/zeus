@@ -107,6 +107,7 @@ check('files landed in their category folders on disk', dirs['annual-report.pdf'
 check('the program is quarantined', ok9.find((j) => j.filename === 'setup.exe')?.quarantined === true)
 
 // ---------------------------------------------------------------- B: duplicates
+await sleep(3000) // the page reads zeusd's job list every second or two; let it see that the nine are completed
 await open('grabber')
 if (await page.locator('button:has-text("Remove offline"):not([disabled])').count()) await page.click('button:has-text("Remove offline")')
 await page.fill('textarea[aria-label="Links or a page to grab from"]', u('/files/annual-report.pdf?size=300000&seed=41'))
@@ -139,7 +140,11 @@ await page.waitForSelector('text=zeusd accepted the dry run', { timeout: 30000 }
 const repl = await page.locator('section.review tbody tr').first().textContent()
 check('"Replace" says it replaces the file on disk', /replaces the file on disk/.test(repl ?? ''), repl?.replace(/\s+/g, ' '))
 await page.click('button:has-text("Start reviewed downloads")')
-await until(async () => { try { return fileSha(join(docs, 'annual-report.pdf')) === sha256(41, 300000) } catch { return false } }, { timeoutMs: 60000, what: 'the replaced file' })
+await until(async () => { try { return fileSha(join(docs, 'annual-report.pdf')) === sha256(41, 300000) } catch { return false } }, { timeoutMs: 60000, what: 'the replaced file' }).catch(async (e) => {
+  console.log('DEBUG toasts:', JSON.stringify(await page.locator('[role=status], .toast, .toasts').allInnerTexts().catch(() => [])))
+  console.log('DEBUG jobs:', JSON.stringify((await jobs()).map((j) => [j.filename, j.state, j.path])))
+  throw e
+})
 check('Replace put the right bytes back, in the same place', true)
 
 // ---------------------------------------------------------------- C: zeusd's overwrite policies, through the batch API
