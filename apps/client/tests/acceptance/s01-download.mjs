@@ -63,9 +63,20 @@ if (!publicUrl) {
   const onDisk = await hashFile(last.path)
   console.log(`sha256 from zeusd ${last.sha256 === expect ? 'matches' : 'DIFFERS FROM'} the server's, file on disk ${onDisk === expect ? 'matches' : 'DIFFERS'} (${statSync(last.path).size} bytes)`)
   ok = ok && last.sha256 === expect && onDisk === expect && statSync(last.path).size === size
+} else if (process.argv.includes('--sha256')) {
+  // A public file whose SHA-256 was computed independently (for example with curl and sha256sum).
+  const want = process.argv[process.argv.indexOf('--sha256') + 1]
+  const onDisk = await hashFile(last.path)
+  console.log(`independent SHA-256 ${last.sha256 === want ? 'matches' : 'DIFFERS FROM'} zeusd's, file on disk ${onDisk === want ? 'matches' : 'DIFFERS'} (${statSync(last.path).size} bytes)`)
+  ok = ok && last.sha256 === want && onDisk === want
 }
-const index = await h.get('/svc/v1/index')
-const found = index.files.some((f) => !f.is_dir && f.path === last.path)
+// The watcher puts a new file in the index within a moment of its last write.
+let found = false
+for (let i = 0; i < 30 && !found; i++) {
+  const index = await h.get('/svc/v1/index')
+  found = index.files.some((f) => !f.is_dir && f.path === last.path)
+  if (!found) await new Promise((r) => setTimeout(r, 500))
+}
 console.log('in the file index:', found)
 const files = await h.get('/api/v1/files')
 console.log('in zeusd files.list:', files.items.some((f) => f.path === last.path), '; folder opens:', JSON.stringify(await h.post('/native/v1/open', { path: join(last.path, '..'), action: 'open' }).catch((e) => e.message)))

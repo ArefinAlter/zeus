@@ -42,7 +42,7 @@ Observed: probe with name, type and verified range support; states `queued, prob
 
 Limits: the transfer is from a local server. The same script takes `--url` for a public address; see the real-internet run below.
 
-@@REAL_INTERNET@@
+Real internet: `node tests/acceptance/s01-download.mjs --url https://proof.ovh.net/files/10Mb.dat --sha256 e5b844cc57f57094ea4585e235f36c78c1cd222262bb89d53c94dcb4d6b3e55d` downloads a public 10 MiB test file over https (probe: status 206, range support verified). The states are `queued, probing, retry_scheduled, downloading, completed` (the engine scheduled one retry after a transient network error and went on), and the SHA-256 reported by `zeusd` and the SHA-256 of the file on disk both equal the one computed independently with `curl` and `sha256sum`. The file appears in the app's index and in `zeusd`'s file list.
 
 ## 2. Kill and resume, plus failure modes: passed
 
@@ -122,7 +122,16 @@ Engine settings reach `zeusd`'s `config.toml` (`concurrent_jobs = 6`, `connectio
 
 ## Installed app
 
-@@INSTALLED@@
+The final Windows installer was run on the build machine with a scratch data folder (`ZEUS_APP_HOME`), so none of the person's own data was touched. Screenshots: `docs/images/zeus-0.0.1b-first-launch.png`, `-downloading.png`, `-completed.png`, `-settings.png`.
+
+1. `Zeus_0.0.1-beta_x64-setup.exe /S` installs for the current user into `%LOCALAPPDATA%\Programs\Zeus` (not into `%LOCALAPPDATA%\Zeus`, where `zeusd` keeps its own state when it runs alone) with `zeus-client.exe`, `zeusd.exe`, `zeus.exe`, `zeus-native-host.exe` and `uninstall.exe`; no administrator prompt.
+2. Starting `zeus-client.exe` starts its engine without a command line: an empty download list appears with no error, and the engine runs from the install folder.
+3. Add URL on a local fixture file of 120 MiB: the check answers `206 · 120 MiB · application/octet-stream · online`, "the server honours byte ranges", and the file name comes from `Content-Disposition` ("Annual Report.pdf"). Start: progress 26.7 % at 6.27 MiB/s with 14 s left, then `completed · hashed`. The file on disk has 125,829,120 bytes and its SHA-256 (`039df70f…24a8`) equals the server's.
+4. Killing the app leaves `zeusd` running (same process id); starting the app again adopts it. The download list is intact after a restart.
+5. With "Closing the window hides it to the notification area" on (the default), closing the window leaves the app and `zeusd` running; with it off, closing the window ends both. The switch is saved in the app's `shell.json`.
+6. `uninstall.exe /S` removes the install folder and the uninstall entry. The installer's own location key under `HKCU\Software\Verne Ltd.\Zeus` stays (a reinstall goes to the same folder, as NSIS installers do).
+
+Limit: the installed app was driven on Windows 11 only. Linux is below.
 
 ## Packaging and release checks
 
