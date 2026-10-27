@@ -513,6 +513,8 @@ export function queueToDaemon(q: Queue): Record<string, unknown> {
   }
 }
 
+let lastDefaultsKey = ''
+let defaultsBusy = false
 let queuesBusy = false
 let lastQueues: QueuesList | null = null
 let finishing = new Set<string>()
@@ -539,7 +541,17 @@ export async function pollQueues(): Promise<void> {
       to: r.limiter.to,
       days: r.limiter.days as typeof prev.limiter.days,
     }
-    S.set({ queues, limiter, killSwitch: r.kill_switch_engaged || prev.killSwitch })
+    // The scheduler's defaults live in zeusd: it is the source of truth, the Settings page shows and edits them.
+    const fromDaemon = { defaultQueue: r.defaults.default_queue, timezone: r.defaults.timezone, missedWindow: r.defaults.missed_window, stopBehaviour: r.defaults.stop_behaviour }
+    const daemonKey = JSON.stringify(fromDaemon)
+    let settings = prev.settings
+    if (daemonKey !== lastDefaultsKey && !defaultsBusy) {
+      lastDefaultsKey = daemonKey
+      if (JSON.stringify({ defaultQueue: settings.scheduler.defaultQueue, timezone: settings.scheduler.timezone, missedWindow: settings.scheduler.missedWindow, stopBehaviour: settings.scheduler.stopBehaviour }) !== daemonKey) {
+        settings = { ...settings, scheduler: { ...settings.scheduler, ...fromDaemon } }
+      }
+    }
+    S.set({ queues, limiter, settings, killSwitch: r.kill_switch_engaged || prev.killSwitch })
     rebuildJobs()
     for (const q of r.queues) {
       if (!q.finish_action_pending) {
@@ -657,6 +669,10 @@ export function engineSettingsFrom(settings: Settings): EngineSettings {
     read_s: settings.downloads.readS,
     probe_s: settings.downloads.probeS,
     tombstone_days: settings.downloads.tombstoneDays,
+    proxy: settings.connection.proxy === 'http' ? 'http' : 'system',
+    proxy_host: settings.connection.proxyHost,
+    proxy_port: settings.connection.proxyPort,
+    proxy_bypass: settings.connection.proxyBypass,
   }
 }
 
@@ -680,6 +696,20 @@ function watchEngineSettings(): void {
   S.subscribe(() => {
     const s = S.get()
     if (!s.live?.loaded || !s.live) return
+    // A change of the scheduler's defaults goes to zeusd at once.
+    const sc = s.settings.scheduler
+    const wanted = JSON.stringify({ defaultQueue: sc.defaultQueue, timezone: sc.timezone, missedWindow: sc.missedWindow, stopBehaviour: sc.stopBehaviour })
+    if (lastDefaultsKey && wanted !== lastDefaultsKey && !defaultsBusy) {
+      defaultsBusy = true
+      void configureDefaults({ timezone: sc.timezone, missedWindow: sc.missedWindow, stopBehaviour: sc.stopBehaviour, defaultQueue: sc.defaultQueue })
+        .then(() => {
+          lastDefaultsKey = wanted
+        })
+        .catch(() => undefined)
+        .finally(() => {
+          defaultsBusy = false
+        })
+    }
     const dirty = engineKey(engineSettingsFrom(s.settings)) !== appliedEngine
     if (dirty !== !!s.live.engineDirty) S.set({ live: { ...s.live, engineDirty: dirty } })
   })
@@ -1070,6 +1100,7 @@ export function startLive(hooks: StoreHooks): void {
                   probeS: engineSettings.probe_s,
                   tombstoneDays: engineSettings.tombstone_days,
                 },
+                connection: { ...cur.settings.connection, proxy: engineSettings.proxy, proxyHost: engineSettings.proxy_host, proxyPort: engineSettings.proxy_port, proxyBypass: engineSettings.proxy_bypass },
               }
             : {}),
           index: { ...cur.settings.index, roots: (NATIVE ? nativeRoots : [root]).map((path) => ({ path, kind: 'folder' as const, include: true, monitorChanges: NATIVE, rescanEveryHours: null })) },

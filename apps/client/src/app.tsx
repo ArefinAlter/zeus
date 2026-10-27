@@ -88,6 +88,7 @@ function Toasts() {
   const toasts = useStore((s) => s.toasts)
   const prefs = usePrefs()
   const notif = useStore((s) => s.settings.notifications)
+  const showDone = useStore((s) => s.settings.downloads.showCompleteDialog)
   const [seen] = useState(() => new Set<number>())
   const visible = toasts.filter((t) => {
     if (prefs.notifications === 'off' && t.topic !== 'system') return false
@@ -107,7 +108,8 @@ function Toasts() {
       if (NATIVE && visible.includes(t) && (document.hidden || !document.hasFocus()) && !(notif.quietEnabled && inQuietHours(notif.quietFrom, notif.quietTo))) {
         void shellApi.notify(t.title, t.desc ?? '').catch(() => undefined)
       }
-      setTimeout(() => dismissToast(t.id), t.kind === 'warn' || t.kind === 'bad' ? 9000 : 6000)
+      const sticky = t.topic === 'complete' && showDone
+      if (!sticky) setTimeout(() => dismissToast(t.id), t.kind === 'warn' || t.kind === 'bad' ? 9000 : 6000)
     }
   }, [toasts])
   if (!visible.length) return null

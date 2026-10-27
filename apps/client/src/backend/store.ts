@@ -15,7 +15,7 @@ import { categoryOf, extOf } from '../model/categories.ts'
 import { intake, nameProblem } from '../model/links.ts'
 import { jobRateCap, startDue, stopDue } from '../model/schedule.ts'
 import type { Approval, ApprovalFacts, ApprovalKind, CategoryId, FileEntry, Job, JobSource, JobState, Queue, Scope, SpeedLimiter } from '../model/types.ts'
-import { fmtBytes } from '../model/units.ts'
+import { fmtBytes, setTimeFormat } from '../model/units.ts'
 import { CONNECTORS } from './connectors.ts'
 import type { JobMeta, LiveInfo, PendingItem } from './live.ts'
 import { HOSTED, LIVE, NATIVE, SVC, clearStored, configureLimiter, control as liveControl, deleteQueueRemote, hostRefusal, newPendingId, putQueue, queueControl, rebuildJobs, refreshFiles, send as liveSend, startLive, subdirOf } from './live.ts'
@@ -1416,6 +1416,7 @@ export function clearHistory(): void {
 export function updateSettings<K extends keyof Settings>(key: K, patch: Partial<Settings[K]> | Settings[K]): void {
   const cur = state.settings[key]
   const next = Array.isArray(cur) ? (patch as Settings[K]) : ({ ...(cur as object), ...(patch as object) } as Settings[K])
+  if (key === 'general') setTimeFormat((next as Settings['general']).timeFormat)
   set({ settings: { ...state.settings, [key]: next } })
 }
 

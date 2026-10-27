@@ -31,6 +31,33 @@ pub struct EngineSettings {
     pub probe_s: u32,
     /// Days to keep records of finished downloads, 1 to 365.
     pub tombstone_days: u32,
+    /// How the engine reaches the network: `system` (the operating system's proxy settings) or `http` (the proxy
+    /// below, given to the engine through its environment when it starts).
+    pub proxy: String,
+    /// The HTTP proxy's host, when `proxy` is `http`.
+    pub proxy_host: String,
+    /// The HTTP proxy's port.
+    pub proxy_port: u32,
+    /// Hosts that bypass the proxy, comma separated.
+    pub proxy_bypass: String,
+}
+
+impl EngineSettings {
+    /// The proxy environment variables for the engine's process, in a form zeusd's HTTP client reads.
+    pub fn proxy_env(&self) -> Vec<(String, String)> {
+        if self.proxy != "http" || self.proxy_host.trim().is_empty() {
+            return Vec::new();
+        }
+        let url = format!("http://{}:{}", self.proxy_host.trim(), self.proxy_port);
+        let mut env = vec![
+            ("HTTP_PROXY".to_owned(), url.clone()),
+            ("HTTPS_PROXY".to_owned(), url),
+        ];
+        if !self.proxy_bypass.trim().is_empty() {
+            env.push(("NO_PROXY".to_owned(), self.proxy_bypass.replace(' ', "")));
+        }
+        env
+    }
 }
 
 impl Default for EngineSettings {
@@ -44,6 +71,10 @@ impl Default for EngineSettings {
             read_s: 30,
             probe_s: 45,
             tombstone_days: 30,
+            proxy: "system".into(),
+            proxy_host: String::new(),
+            proxy_port: 8080,
+            proxy_bypass: "localhost, 127.0.0.1".into(),
         }
     }
 }
@@ -89,6 +120,13 @@ impl EngineSettings {
         range("Read timeout", self.read_s, 5, 300)?;
         range("Probe deadline", self.probe_s, 5, 300)?;
         range("Record retention", self.tombstone_days, 1, 365)?;
+        range("Proxy port", self.proxy_port, 1, 65535)?;
+        if !["system", "http"].contains(&self.proxy.as_str()) {
+            return Err(Failure::invalid("The proxy is the system's or an HTTP proxy."));
+        }
+        if self.proxy == "http" && (self.proxy_host.trim().is_empty() || self.proxy_host.contains(['/', '@', ' '])) {
+            return Err(Failure::invalid("Give the HTTP proxy as a host name or address, without a scheme or a login."));
+        }
         if self.write_roots.is_empty() || self.write_roots.len() > 16 {
             return Err(Failure::invalid("Keep between 1 and 16 download folders."));
         }

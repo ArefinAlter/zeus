@@ -1,7 +1,7 @@
 // About: what this release is, plainly. It runs on sample data with no daemon behind it; the interface and the rules
 // are real, the data and the agent's replies are prepared.
 
-import { HOSTED, LIVE } from '../backend/live'
+import { HOSTED, LIVE, NATIVE } from '../backend/live'
 import { backend } from '../backend/remote'
 import { resetAll, useStore } from '../backend/store'
 import { desktopOs } from '../lib/shell'
@@ -46,6 +46,7 @@ const SERVICE: [string, string][] = [
 export function About() {
   const os = desktopOs()
   const live = useStore((s) => s.live)
+  if (NATIVE) return <AboutNative version={live?.daemon?.daemon_version ?? null} />
   if (LIVE) return <AboutLive os={os} expires={live?.session?.expires_ms ?? null} hosts={live?.session?.fixture_hosts ?? []} version={live?.daemon?.daemon_version ?? null} />
   return (
     <div class="page">
@@ -124,6 +125,73 @@ function Rows({ rows }: { rows: [string, string][] }) {
           </div>
         </div>
       ))}
+    </div>
+  )
+}
+
+const NATIVE_REAL: [string, string][] = [
+  ['The engine', 'zeusd, set up and run by this app in its own folder, started when you open Zeus and stopped when you quit. It restarts if it dies and resumes interrupted downloads from the bytes already saved.'],
+  ['Downloads', 'Parallel parts that resume, retries that honour Retry-After, redirects, server-given names, SHA-256 and BLAKE3 for every file, quarantine of programs and scripts.'],
+  ['Queues, scheduler and speed limiter', 'Held and run by zeusd: start and stop times, days, how many at a time, what to do when a queue finishes, retries; a global limit, a limit per queue and a time window.'],
+  ['Files', 'An index of your download folders kept up to date by a file watcher, instant search with the operators of a file-search tool, a preview of text and pictures, rename, move and delete on your click.'],
+  ['Link grabber and site grabber', 'Online check of many links at once, a reviewed batch started once, duplicate handling; a polite crawler that reads robots.txt and keeps to the host you name.'],
+  ['Agent', 'Threads with your own model keys (Anthropic, OpenAI-compatible providers, Gemini, local Ollama). Keys stay in the operating system credential store and never reach this window. Nothing is sent to a provider until you allow it for that provider.'],
+  ['Connect', 'The thirteen Zeus tools for Claude Code, Cursor and Codex through the bundled zeus program, and the browser extension with its native-messaging host.'],
+]
+
+const NATIVE_LIMITS: [string, string][] = [
+  ['Approvals', 'A login lent from your browser, a handoff or a destructive file operation is decided only by a person at the Zeus command line (zeus approvals) or in the browser extension. This window shows them and never decides them.'],
+  ['The browser extension', 'It loads as a development extension with a fixed development id. A store version, and decisions from the extension popup for it, wait for publication.'],
+  ['Installers', 'Unsigned: Windows SmartScreen warns before the first run. There is no automatic update; Settings can ask GitHub for the latest release name.'],
+  ['Settings that do not apply', 'Rows marked planned have no effect yet (metered connections, IPv6, a SOCKS proxy, cleanup schedules). They are switched off rather than pretending.'],
+  ['Platforms', 'Windows x64 and Linux x64. macOS builds come later.'],
+]
+
+function AboutNative({ version }: { version: string | null }) {
+  const live = useStore((s) => s.live)
+  const sess = live?.session
+  return (
+    <div class="page">
+      <PageHead title="About Zeus" />
+      <div class="panel">
+        <div class="about-brand">
+          <Mark />
+          <div>
+            <div class="about-name">Zeus</div>
+            <div class="muted">
+              <Chip tone="accent">Pre-alpha release</Chip> version {__APP_VERSION__}
+            </div>
+          </div>
+        </div>
+        <p>
+          Zeus is a download manager and file search tool that your AI assistant can use, and that asks you before it uses a login. This is the standalone app: one installer, no daemon to start, no account, and nothing leaves your computer except the downloads you ask for and the model requests you allow.
+        </p>
+        <Kv
+          rows={[
+            ['engine', version ? `zeusd ${version}, on this computer` : 'starting'],
+            ['data folder', sess?.home ?? '…'],
+            ['downloads go to', (sess?.roots ?? [sess?.root_label ?? '…']).join(', ')],
+            ['log', sess?.logs ?? '…'],
+            ['licence', 'Apache-2.0'],
+          ]}
+        />
+      </div>
+      <h2>What runs on this computer</h2>
+      <Rows rows={NATIVE_REAL} />
+      <h2>Limits of this release</h2>
+      <Rows rows={NATIVE_LIMITS} />
+      <div class="toolbar">
+        <button type="button" class="btn" onClick={() => resetAll()}>
+          Clear the settings and lists this app keeps
+        </button>
+      </div>
+      <p class="muted small">Clearing keeps your downloads, their records and your keys; it resets settings, lists, threads and bookmarks.</p>
+      <div class="about-credit">
+        <span>Designed and built by</span>
+        <VerneMark />
+        <span class="name">Verne Ltd.</span>
+      </div>
+      <p class="muted small">Copyright 2026 Verne Ltd. · vernesystems.com</p>
     </div>
   )
 }

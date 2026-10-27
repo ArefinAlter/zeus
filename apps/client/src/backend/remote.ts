@@ -428,6 +428,10 @@ export interface EngineSettings {
   read_s: number
   probe_s: number
   tombstone_days: number
+  proxy: 'system' | 'http'
+  proxy_host: string
+  proxy_port: number
+  proxy_bypass: string
 }
 
 /** zeusd's queue API, as `queues.list` returns it. */

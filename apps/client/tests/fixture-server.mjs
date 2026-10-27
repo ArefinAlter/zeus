@@ -198,6 +198,7 @@ export function startFixtures(port = 0) {
       }
       if (!res.write(bytes(seed, p, to))) await new Promise((r) => res.once('drain', r))
       sent += to - p
+      ;(entry.marks ??= []).push([Date.now(), to - p])
       if (rate) await sleep(((to - p) / rate) * 1000)
     }
     entry.end = Date.now()

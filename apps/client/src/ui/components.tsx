@@ -168,7 +168,11 @@ export function SettingRow({ title, desc, children, stack, zeusd, planned, fixed
           </div>
         ) : null}
       </div>
-      {children ? <div class="control">{children}</div> : null}
+      {children ? (
+        <div class="control" {...(planned ? { inert: true, 'aria-disabled': true, title: 'Not available in this release', style: { opacity: 0.5, pointerEvents: 'none' } } : {})}>
+          {children}
+        </div>
+      ) : null}
     </div>
   )
 }

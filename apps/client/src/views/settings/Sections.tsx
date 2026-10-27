@@ -278,10 +278,10 @@ export function DownloadsSettings() {
         </SettingRow>
       </SettingsGroup>
       <SettingsGroup title="Retries and timeouts">
-        <SettingRow title="Retries" desc="Retryable failures only (a timeout, a busy server). A failure that needs you stops at once.">
+        <SettingRow title="Retries" desc={NATIVE ? "zeusd's retry budgets are fixed by kind of failure (a timeout, a busy server, a changed file) and a server's Retry-After always wins. Set extra automatic retries per queue on the Queues page." : 'Retryable failures only (a timeout, a busy server). A failure that needs you stops at once.'} planned={NATIVE}>
           <NumberInput label="Retries" value={d.retries} min={0} max={50} onChange={(v) => set({ retries: v })} />
         </SettingRow>
-        <SettingRow title="First retry after" desc="Grows after each attempt. A server's Retry-After always wins.">
+        <SettingRow title="First retry after" desc={NATIVE ? "Fixed in zeusd (it grows after each attempt). A queue's own retry delay is set on the Queues page." : "Grows after each attempt. A server's Retry-After always wins."} planned={NATIVE}>
           <NumberInput label="First retry after" value={d.retryDelayS} min={1} max={3600} onChange={(v) => set({ retryDelayS: v })} unit="s" />
         </SettingRow>
         <SettingRow title="Connect timeout" zeusd="timeouts.connect_s">
@@ -295,8 +295,8 @@ export function DownloadsSettings() {
         </SettingRow>
       </SettingsGroup>
       <SettingsGroup title="Resume, duplicates and checks">
-        <SettingRow title="Resuming" desc="Zeus resumes only when the server reports the same file (strong ETag or Last-Modified); otherwise it starts over rather than join two versions.">
-          <Select label="Resuming" value={d.resume} onChange={(v) => set({ resume: v })} options={[['verified_only', 'Only when the file is the same'], ['ask', 'Ask me when it changed'], ['restart', 'Always start over']]} />
+        <SettingRow title="Resuming" desc="Zeus resumes only when the server reports the same file (strong ETag or Last-Modified); otherwise it starts over rather than join two versions." fixed={NATIVE}>
+          {NATIVE ? <Chip tone="info">only when the file is the same</Chip> : <Select label="Resuming" value={d.resume} onChange={(v) => set({ resume: v })} options={[['verified_only', 'Only when the file is the same'], ['ask', 'Ask me when it changed'], ['restart', 'Always start over']]} />}
         </SettingRow>
         <SettingRow title="When the name exists" desc="Replace moves the old file to the app trash first." zeusd="jobs: overwrite">
           <Select label="When the name exists" value={d.duplicates} onChange={(v) => set({ duplicates: v })} options={[['rename', 'Add (1), (2)…'], ['fail', 'Stop with an error'], ['replace', 'Replace (old one to trash)']]} />
@@ -307,7 +307,7 @@ export function DownloadsSettings() {
         <SettingRow title="Start downloads at once" desc="Off: the link grabber and the site grabber preselect the default queue instead of Start now. Add URL always has both buttons.">
           <Switch label="Start at once" checked={d.startImmediately} onChange={(v) => set({ startImmediately: v })} />
         </SettingRow>
-        <SettingRow title="Show a dialog when a download finishes" desc="A notification states what finished; it never asks for a decision.">
+        <SettingRow title="Keep the notice when a download finishes" desc="The notice stays until you dismiss it, instead of fading. It states what finished and never asks for a decision.">
           <Switch label="Show a dialog when finished" checked={d.showCompleteDialog} onChange={(v) => set({ showCompleteDialog: v })} />
         </SettingRow>
         <SettingRow title="Keep records of removed downloads" zeusd="tombstone_days">
@@ -331,10 +331,10 @@ export function ConnectionSettings() {
         <SettingRow title="Pause on a metered connection" planned>
           <Switch label="Pause on metered" checked={c.meteredPause} onChange={(v) => set({ meteredPause: v })} />
         </SettingRow>
-        <SettingRow title="Use IPv6">
+        <SettingRow title="Use IPv6" desc={NATIVE ? 'zeusd uses whatever the operating system offers; there is no switch.' : undefined} planned={NATIVE}>
           <Switch label="IPv6" checked={c.ipv6} onChange={(v) => set({ ipv6: v })} />
         </SettingRow>
-        <SettingRow title="Identify as" desc="Zeus sends its own user agent. It does not pretend to be a browser to get past a check.">
+        <SettingRow title="Identify as" desc="Zeus sends its own user agent. It does not pretend to be a browser to get past a check." fixed={NATIVE}>
           <Select label="Identify as" value={c.userAgent} onChange={(v) => set({ userAgent: v })} options={[['zeus', 'Zeus'], ['browser', 'Zeus, with the browser family noted']]} />
         </SettingRow>
         <SettingRow title="Invalid certificates" desc="A download over https with an invalid certificate always fails." fixed>
@@ -342,8 +342,8 @@ export function ConnectionSettings() {
         </SettingRow>
       </SettingsGroup>
       <SettingsGroup title="Proxy" note="A proxy password is entered at a terminal into the keyring, never here.">
-        <SettingRow title="Proxy" planned>
-          <Select label="Proxy" value={c.proxy} onChange={(v) => set({ proxy: v })} options={[['system', 'Use the system proxy'], ['none', 'No proxy'], ['http', 'HTTP proxy'], ['socks5', 'SOCKS5 proxy']]} />
+        <SettingRow title="Proxy" desc={NATIVE ? 'The system proxy, or an HTTP proxy given to the engine when it starts (Apply and restart the engine on the Backend page). SOCKS proxies are not supported yet.' : undefined} planned={!NATIVE}>
+          <Select label="Proxy" value={c.proxy} onChange={(v) => set({ proxy: v })} options={NATIVE ? [['system', 'Use the system proxy'], ['http', 'HTTP proxy']] : [['system', 'Use the system proxy'], ['none', 'No proxy'], ['http', 'HTTP proxy'], ['socks5', 'SOCKS5 proxy']]} />
         </SettingRow>
         {c.proxy === 'http' || c.proxy === 'socks5' ? (
           <>
@@ -554,7 +554,7 @@ function SampleIndexSettings() {
         <SettingRow title="Index date modified">
           <Switch label="Index date modified" checked={ix.indexDate} onChange={(v) => set({ indexDate: v })} />
         </SettingRow>
-        <SettingRow title="Fast sorting" desc="Keeps sorted lists by size and date; uses more memory.">
+        <SettingRow title="Fast sorting" fixed={NATIVE} desc="Keeps sorted lists by size and date; uses more memory.">
           <Switch label="Fast sorting" checked={ix.fastSort} onChange={(v) => set({ fastSort: v })} />
         </SettingRow>
         <SettingRow title="File contents" desc="Searching inside files is a separate, cancellable job and is not part of this release." planned>
@@ -659,6 +659,7 @@ export function AgentSettings() {
 
 export function StorageSettings() {
   const st = useStore((s) => s.settings.storage)
+  const dl = useStore((s) => s.settings.downloads)
   const jobs = useStore((s) => s.jobs)
   const set = (patch: Partial<typeof st>) => updateSettings('storage', patch)
   const [preview, setPreview] = useState(false)
@@ -669,13 +670,17 @@ export function StorageSettings() {
     <>
       <PageHead title="Storage and cleanup" sub="What Zeus keeps and for how long. A cleanup shows what it would remove before it removes anything." />
       <SettingsGroup title="Keep">
-        <SettingRow title="Records of removed downloads" zeusd="tombstone_days">
-          <NumberInput label="Records" value={st.keepTombstonesDays} min={1} max={365} onChange={(v) => set({ keepTombstonesDays: v })} unit="days" />
+        <SettingRow title="Records of removed downloads" zeusd="tombstone_days" desc={NATIVE ? 'The same setting as on the Downloads page; it applies when the engine restarts.' : undefined}>
+          {NATIVE ? (
+            <NumberInput label="Records" value={dl.tombstoneDays} min={1} max={365} onChange={(v) => updateSettings('downloads', { tombstoneDays: v })} unit="days" />
+          ) : (
+            <NumberInput label="Records" value={st.keepTombstonesDays} min={1} max={365} onChange={(v) => set({ keepTombstonesDays: v })} unit="days" />
+          )}
         </SettingRow>
-        <SettingRow title="Partial data of failed downloads" desc="Kept so a retry can continue.">
+        <SettingRow title="Partial data of failed downloads" desc={NATIVE ? 'zeusd keeps partial data so a retry can continue, until the download is removed.' : 'Kept so a retry can continue.'} planned={NATIVE}>
           <NumberInput label="Partial data" value={st.clearPartialAfterDays} min={1} max={365} onChange={(v) => set({ clearPartialAfterDays: v })} unit="days" />
         </SettingRow>
-        <SettingRow title="Zeus trash" desc="Replaced and removed files wait here before they are gone.">
+        <SettingRow title="Zeus trash" desc={NATIVE ? 'Files you delete in Zeus go to the operating system recycle bin, which keeps its own schedule.' : 'Replaced and removed files wait here before they are gone.'} planned={NATIVE}>
           <NumberInput label="Trash" value={st.trashRetentionDays} min={1} max={365} onChange={(v) => set({ trashRetentionDays: v })} unit="days" />
         </SettingRow>
       </SettingsGroup>

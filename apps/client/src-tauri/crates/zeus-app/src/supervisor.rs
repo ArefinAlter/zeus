@@ -336,6 +336,9 @@ impl Supervisor {
             .open(&log_path)?;
         let err = log.try_clone()?;
         let mut cmd = tool(&self.bin_dir, "zeusd", &self.home);
+        if let Ok(settings) = engine_config::load(&self.home) {
+            cmd.envs(settings.proxy_env());
+        }
         cmd.arg("run")
             .stdout(Stdio::from(log))
             .stderr(Stdio::from(err));
