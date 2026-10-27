@@ -39,6 +39,7 @@ export function NativeProviders() {
   if (!cfg || !draft) return <PageHead title="Providers" sub="Starting the engine…" />
   const view = cfg.providers.find((p) => p.id === draft.providers[sel]?.id)
   const cur = draft.providers[sel]
+  const subscription = ['codex', 'claude', 'cursor', 'antigravity'].includes(cur?.kind ?? '')
 
   const save = (next: AgentConfigWrite) => {
     setDraft(next)
@@ -78,8 +79,8 @@ export function NativeProviders() {
 
   return (
     <>
-      <PageHead title="Providers" sub="Language models for the agent, with your own keys, tried in order. Optional: downloading never needs one." />
-      <SettingsGroup title="Safety switches" note="These apply to every provider. A provider is never called without your permission, while Offline is on, or beyond a cap. A cap of zero means no call.">
+      <PageHead title="Providers" sub="Use an existing agent sign-in or an API key. Installed agents use their own account and plan limits. Files and transfers work without a model." />
+      <SettingsGroup title="Safety switches" note="Consent and Offline apply to every connection. API spending caps apply to API-key providers. Installed agents use their provider’s plan limits and extra-usage settings. A cap of zero disables calls.">
         <SettingRow title="Offline" desc="No model is called at all, local ones included. The agent says so instead of trying.">
           <Switch label="Offline" checked={draft.offline} onChange={(v) => save({ ...draft, offline: v })} />
         </SettingRow>
@@ -152,14 +153,14 @@ export function NativeProviders() {
                 class="preset"
                 onClick={() => {
                   const id = `p-${k.kind}-${Date.now().toString(36).slice(-4)}`
-                  save({ ...draft, providers: [...draft.providers, { id, name: k.label, kind: k.kind, enabled: false, base_url: '', model: '', consent: false, monthly_cap_usd: 10, tools_mode: 'native', price_in_per_mtok: k.kind === 'ollama' ? 0 : null, price_out_per_mtok: k.kind === 'ollama' ? 0 : null }] })
+                  save({ ...draft, providers: [...draft.providers, { id, name: k.label, kind: k.kind, enabled: false, base_url: '', model: ['codex', 'claude', 'cursor', 'antigravity'].includes(k.kind) ? 'default' : '', consent: false, monthly_cap_usd: 10, tools_mode: 'native', price_in_per_mtok: ['ollama', 'codex', 'claude', 'cursor', 'antigravity'].includes(k.kind) ? 0 : null, price_out_per_mtok: ['ollama', 'codex', 'claude', 'cursor', 'antigravity'].includes(k.kind) ? 0 : null }] })
                   setSel(draft.providers.length)
                   setAdding(false)
                 }}
               >
                 <span class="preset-name">{k.label}</span>
                 <span class="preset-meta">
-                  <span class="mono">{k.default_base_url ? k.default_base_url.replace(/^https?:\/\//, '') : 'your own address'}</span>
+                  <span class="mono">{['codex', 'claude', 'cursor', 'antigravity'].includes(k.kind) ? 'Uses your installed agent sign-in' : k.default_base_url ? k.default_base_url.replace(/^https?:\/\//, '') : 'your own address'}</span>
                   {k.needs_key ? null : <Chip tone="ok">no key needed</Chip>}
                 </span>
               </button>
@@ -225,10 +226,10 @@ export function NativeProviders() {
                     Kind
                     <input class="mono" value={cur.kind} disabled />
                   </label>
-                  <label class="field wide">
+                  {!subscription ? (<label class="field wide">
                     Base URL <span class="muted small">https, or http to this computer or your own network</span>
                     <input class="mono" value={cur.base_url} placeholder={view.effective_base_url || 'https://…'} onInput={(e) => edit({ base_url: (e.target as HTMLInputElement).value.trim() })} />
-                  </label>
+                  </label>) : <p class="muted small">Uses the installed agent’s sign-in. Sign in with that provider first. Your plan controls model access, quotas and any extra usage.</p>}
                   <label class="field wide">
                     Model
                     <span class="inline">
@@ -261,7 +262,7 @@ export function NativeProviders() {
                     Tools
                     <Select<'native' | 'json'> label="How tools are offered" value={cur.tools_mode} onChange={(v) => edit({ tools_mode: v })} options={[['native', "The provider's function calling"], ['json', 'Described in the prompt (models without tool calling)']]} />
                   </label>
-                  <div class="field wide">
+                  {!subscription && (<div class="field wide">
                     API key {view.needs_key ? <span class="req">needed</span> : <span class="muted">not needed</span>}
                     <span class="inline">
                       <input type="password" autocomplete="off" spellcheck={false} aria-label="API key" placeholder={view.key.stored ? `stored · ••••${view.key.last4 ?? ''}` : 'paste a key'} value={keyInput} onInput={(e) => setKeyInput((e.target as HTMLInputElement).value)} />
@@ -290,7 +291,7 @@ export function NativeProviders() {
                       {view.key.stored ? <Chip tone="ok">stored · ••••{view.key.last4 ?? ''}</Chip> : null}
                     </span>
                     <span class="muted small">Sent only to {view.effective_base_url.replace(/^https?:\/\//, '').split('/')[0]}, in the request header, by the engine.</span>
-                  </div>
+                  </div>)}
                   <div class="field wide">
                     Permission
                     <span class="inline">
@@ -300,7 +301,7 @@ export function NativeProviders() {
                       </span>
                     </span>
                   </div>
-                  <label class="field">
+                  {!subscription ? <>                  <label class="field">
                     Monthly spending cap
                     <NumberInput label="Monthly cap in US dollars" value={cur.monthly_cap_usd} min={0} max={100000} step={0.5} unit="USD" onChange={(v) => edit({ monthly_cap_usd: v })} />
                   </label>
@@ -318,7 +319,7 @@ export function NativeProviders() {
                     <span class={`bar ${pct > 80 ? 'hot' : ''}`}>
                       <i style={{ width: `${pct}%` }} />
                     </span>
-                  </div>
+                  </div></> : <p class="muted small">Subscription calls are counted when the CLI reports usage. API dollar caps do not limit charges made through that provider’s own account.</p>}
                   <div class="field wide">
                     <span class="inline">
                       <button

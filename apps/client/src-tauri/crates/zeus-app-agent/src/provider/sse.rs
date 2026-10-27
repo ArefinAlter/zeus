@@ -34,10 +34,7 @@ impl Splitter {
     pub fn feed(&mut self, bytes: &[u8]) -> Vec<Event> {
         self.buf.extend_from_slice(bytes);
         let mut out = Vec::new();
-        loop {
-            let Some((end, skip)) = find_boundary(&self.buf) else {
-                break;
-            };
+        while let Some((end, skip)) = find_boundary(&self.buf) {
             let block: Vec<u8> = self.buf.drain(..end + skip).take(end).collect();
             if let Some(event) = parse_block(&block) {
                 out.push(event);

@@ -172,6 +172,8 @@ The extension offers the failed download over native messaging (spec 02). `zeus-
 
 ### 4.3 Approved cloud delivery
 
+The desktop adds file-management grants independently from search inclusion, and local-file uploads bounded by included read roots. Local upload plans bind the exact file digest; execution stages a separate copy and verifies it before provider disclosure. Native UI routes never decide cloud-delivery approvals. See ADR 0014 and spec 14.
+
 Cloud delivery is a distinct durable operation (spec 14), separate from local job completion. `zeus_cloud` or the CLI creates an immutable plan, then submits its ID/hash for a terminal-only `cloud_delivery` approval. The daemon binds account revision, source identity, data path, destination, byte/time limits and provider limitations. It owns the private checkpoint store and cancellation; provider adapters never decide authority.
 
 ```mermaid

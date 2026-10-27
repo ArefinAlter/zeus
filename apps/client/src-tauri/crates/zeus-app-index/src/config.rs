@@ -22,6 +22,9 @@ pub struct RootCfg {
     /// A download folder of the engine: it cannot be removed here (change it in Settings, Save to).
     #[serde(default)]
     pub download: bool,
+    /// Explicit permission to manage files here, independent of search inclusion.
+    #[serde(default)]
+    pub manage_files: bool,
 }
 
 fn yes() -> bool {
@@ -91,6 +94,7 @@ impl IndexConfig {
                     monitor_changes: true,
                     rescan_every_hours: None,
                     download: true,
+                    manage_files: false,
                 }),
             }
         }
@@ -322,7 +326,10 @@ mod tests {
         assert!(ex.skips_below(Path::new("/r/a/movie.zpart"), root));
         assert!(!ex.skips_below(Path::new("/r/a/b.txt"), root));
         // The root's own name is never judged: a root inside a folder called node_modules still indexes.
-        assert!(!ex.skips_below(Path::new("/node_modules/r/a.txt"), Path::new("/node_modules/r")));
+        assert!(!ex.skips_below(
+            Path::new("/node_modules/r/a.txt"),
+            Path::new("/node_modules/r")
+        ));
     }
 
     #[test]
@@ -334,6 +341,7 @@ mod tests {
                 monitor_changes: false,
                 rescan_every_hours: Some(6),
                 download: false,
+                manage_files: false,
             }],
             ..IndexConfig::default()
         }

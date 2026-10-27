@@ -263,7 +263,7 @@ struct HostState {
 }
 
 enum Fetch {
-    Got(Response, Url),
+    Got(Box<Response>, Url),
     Refused(&'static str),
     Failed,
 }
@@ -410,7 +410,7 @@ impl Crawler {
                 current = next;
                 continue;
             }
-            return Fetch::Got(resp, current);
+            return Fetch::Got(Box::new(resp), current);
         }
         Fetch::Refused(why::REDIRECTS)
     }
@@ -694,7 +694,7 @@ pub async fn walk(req: &SiteRequest, cancel: Arc<AtomicBool>) -> SitePreview {
             skips.add(why::NOT_HTML, page.as_str());
             continue;
         }
-        let body = read_capped(resp, PAGE_BYTES).await.unwrap_or_default();
+        let body = read_capped(*resp, PAGE_BYTES).await.unwrap_or_default();
         out.pages.push(PageRead {
             url: final_url.to_string(),
             depth,

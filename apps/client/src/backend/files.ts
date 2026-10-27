@@ -1,6 +1,6 @@
 // The file index of the desktop app: what the page reads (a delta of the engine's index every second or two), the
 // preview of one file, and the file operations the person clicks. Nothing here touches a disk: every call goes through
-// the closed route table, whose Rust side checks each path against the download folders.
+// the closed route table, whose Rust side checks each path against download and explicitly managed folders.
 
 import type { Settings } from './settings.ts'
 import { call } from './remote.ts'
@@ -45,7 +45,7 @@ export interface IndexDelta extends IndexStatus {
 }
 
 export interface IndexConfigWire {
-  roots: { path: string; include: boolean; monitor_changes: boolean; rescan_every_hours: number | null; download: boolean }[]
+  roots: { path: string; include: boolean; monitor_changes: boolean; rescan_every_hours: number | null; download: boolean; manage_files?: boolean }[]
   exclusions: string[]
   exclude_hidden: boolean
   exclude_system: boolean
@@ -91,6 +91,8 @@ export const filesApi = {
   preview: (path: string) => call<Preview>('POST', '/native/v1/files/preview', { path }),
   open: (path: string, action: 'open' | 'reveal') => call<{ ok: boolean }>('POST', '/native/v1/files/open', { path, action }),
   rename: (path: string, name: string) => call<{ ok: boolean; from: string; path: string }>('POST', '/native/v1/files/rename', { path, name }),
+  copy: (path: string, dir: string) => call<{ ok: boolean; path: string }>('POST', '/native/v1/files/copy', { path, dir }),
+  mkdir: (parent: string, name: string) => call<{ ok: boolean; path: string }>('POST', '/native/v1/files/mkdir', { parent, name }),
   move: (path: string, dir: string) => call<{ ok: boolean; from: string; path: string }>('POST', '/native/v1/files/move', { path, dir }),
   remove: (paths: string[], permanent = false) => call<DeleteResult>('POST', '/native/v1/files/delete', { paths, permanent }),
 }
@@ -143,7 +145,7 @@ type IndexSettingsView = Settings['index']
 export function indexFromWire(c: IndexConfigWire, base: IndexSettingsView): IndexSettingsView {
   return {
     ...base,
-    roots: c.roots.map((r) => ({ path: r.path, kind: 'folder' as const, include: r.include, monitorChanges: r.monitor_changes, rescanEveryHours: r.rescan_every_hours, download: r.download })),
+    roots: c.roots.map((r) => ({ path: r.path, kind: 'folder' as const, include: r.include, monitorChanges: r.monitor_changes, rescanEveryHours: r.rescan_every_hours, download: r.download, manageFiles: r.manage_files ?? false })),
     exclusions: c.exclusions,
     excludeHidden: c.exclude_hidden,
     excludeSystem: c.exclude_system,
@@ -153,7 +155,7 @@ export function indexFromWire(c: IndexConfigWire, base: IndexSettingsView): Inde
 /** The engine's configuration from the page's section. */
 export function indexToWire(ix: IndexSettingsView): IndexConfigWire {
   return {
-    roots: ix.roots.map((r) => ({ path: r.path, include: r.include, monitor_changes: r.monitorChanges, rescan_every_hours: r.rescanEveryHours, download: !!r.download })),
+    roots: ix.roots.map((r) => ({ path: r.path, include: r.include, monitor_changes: r.monitorChanges, rescan_every_hours: r.rescanEveryHours, download: !!r.download, manage_files: !!r.manageFiles })),
     exclusions: ix.exclusions,
     exclude_hidden: ix.excludeHidden,
     exclude_system: ix.excludeSystem,

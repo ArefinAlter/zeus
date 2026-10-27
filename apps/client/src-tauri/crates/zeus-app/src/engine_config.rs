@@ -122,10 +122,16 @@ impl EngineSettings {
         range("Record retention", self.tombstone_days, 1, 365)?;
         range("Proxy port", self.proxy_port, 1, 65535)?;
         if !["system", "http"].contains(&self.proxy.as_str()) {
-            return Err(Failure::invalid("The proxy is the system's or an HTTP proxy."));
+            return Err(Failure::invalid(
+                "The proxy is the system's or an HTTP proxy.",
+            ));
         }
-        if self.proxy == "http" && (self.proxy_host.trim().is_empty() || self.proxy_host.contains(['/', '@', ' '])) {
-            return Err(Failure::invalid("Give the HTTP proxy as a host name or address, without a scheme or a login."));
+        if self.proxy == "http"
+            && (self.proxy_host.trim().is_empty() || self.proxy_host.contains(['/', '@', ' ']))
+        {
+            return Err(Failure::invalid(
+                "Give the HTTP proxy as a host name or address, without a scheme or a login.",
+            ));
         }
         if self.write_roots.is_empty() || self.write_roots.len() > 16 {
             return Err(Failure::invalid("Keep between 1 and 16 download folders."));

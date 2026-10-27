@@ -209,6 +209,11 @@ impl Core {
 
     async fn list_models(&self, id: &str) -> Result<Value> {
         let (config, provider) = self.provider_or_fail(id)?;
+        if provider.kind.is_subscription() {
+            return Ok(
+                json!({"ok": true, "models": ["default"], "note": "Use the installed CLI default, or enter a model available to your account."}),
+            );
+        }
         if config.offline {
             return Ok(
                 json!({"ok": false, "code": "offline", "message": "Offline is on: no model provider is contacted."}),

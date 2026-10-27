@@ -3,7 +3,7 @@
 //! The index covers the download folders and any folders the person adds, kept current by the file system watcher and
 //! saved to a snapshot so the next start needs no scan. The page searches it with the Everything-style syntax in its own
 //! code (the entries are small and the page already holds them); this crate keeps the entries true and serves the
-//! preview of one file. File operations here are the person's clicks, inside the download folders only, and they never
+//! preview of one file. File operations here are the person's clicks, inside download and explicitly managed folders, and they never
 //! touch a file the daemon quarantined.
 
 #![forbid(unsafe_code)]
@@ -290,6 +290,39 @@ impl Extension for Module {
                         .and_then(|c| svc.set_config(c))
                         .map(|c| config_json(&c)),
                 ),
+                "POST /native/v1/files/copy" => {
+                    let from = str_of(body, "path").to_owned();
+                    let to = str_of(body, "dir").to_owned();
+                    let reads = svc.read_roots();
+                    let writes = svc.write_roots();
+                    let facts = match guarded_facts(svc, app).await {
+                        Ok(f) => f,
+                        Err(e) => return Some(Err(e)),
+                    };
+                    let result = tokio::task::spawn_blocking(move || {
+                        ops::copy_to(&from, &to, &reads, &writes, &facts)
+                    })
+                    .await;
+                    svc.rescan(None);
+                    Some(
+                        result.unwrap_or_else(|_| {
+                            Err(Failure::new("app.io", "The copy task stopped."))
+                        }),
+                    )
+                }
+                "POST /native/v1/files/mkdir" => {
+                    let parent = str_of(body, "parent").to_owned();
+                    let name = str_of(body, "name").to_owned();
+                    let roots = svc.write_roots();
+                    let result = tokio::task::spawn_blocking(move || {
+                        ops::create_folder(&parent, &name, &roots)
+                    })
+                    .await;
+                    svc.rescan(None);
+                    Some(result.unwrap_or_else(|_| {
+                        Err(Failure::new("app.io", "The folder task stopped."))
+                    }))
+                }
                 "POST /native/v1/files/preview" => Some(preview_route(svc, app, body).await),
                 "POST /native/v1/files/open" => Some(open_route(svc, app, body).await),
                 "POST /native/v1/files/rename" => Some(rename_route(svc, app, body).await),

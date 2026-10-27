@@ -408,7 +408,7 @@ mod tests {
     fn the_file_backend_seals_keys_and_needs_the_passphrase() {
         let (dir, home) = home();
         let store = KeyStore::file_for_tests(&home);
-        assert_eq!(store.get("p1").unwrap().is_none(), true);
+        assert!(store.get("p1").unwrap().is_none());
         assert_eq!(store.set("p1", "k").unwrap_err(), KeyError::NotInitialized);
         assert_eq!(
             store.initialize("short").unwrap_err(),

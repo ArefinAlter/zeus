@@ -108,8 +108,12 @@ pub fn stage_if_ephemeral(home: &AppHome, dir: PathBuf) -> Result<PathBuf> {
         if !from.exists() {
             continue;
         }
-        let same = std::fs::metadata(&to).is_ok_and(|t| std::fs::metadata(&from).is_ok_and(|f| f.len() == t.len()))
-            && std::fs::read(&from).ok().zip(std::fs::read(&to).ok()).is_some_and(|(a, b)| a == b);
+        let same = std::fs::metadata(&to)
+            .is_ok_and(|t| std::fs::metadata(&from).is_ok_and(|f| f.len() == t.len()))
+            && std::fs::read(&from)
+                .ok()
+                .zip(std::fs::read(&to).ok())
+                .is_some_and(|(a, b)| a == b);
         if !same {
             let tmp = target.join(format!(".{name}.tmp"));
             std::fs::copy(&from, &tmp)?;

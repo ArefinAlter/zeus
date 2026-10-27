@@ -210,7 +210,7 @@ pub fn build(path: &Path, shown_path: &str) -> Value {
             json!({"kind": "meta", "reason": "unreadable", "message": "Zeus cannot read this file."}),
         );
     };
-    let mut head = vec![0u8; TEXT_LIMIT.min(meta.len() as usize).max(0)];
+    let mut head = vec![0u8; TEXT_LIMIT.min(meta.len() as usize)];
     let n = file.read(&mut head).unwrap_or(0);
     head.truncate(n);
     if let Some(kind) = sniff_image(&head) {
@@ -294,7 +294,10 @@ mod tests {
         assert_eq!(as_text(&v), Some("ab"));
         assert!(as_text(b"a\0b").is_none());
         assert!(as_text(&[0xff, 0xfe, 0xfd, 0xfc, 0xfb]).is_none());
-        assert!(as_text(&[3u8; 300]).is_none(), "a run of one control byte is data");
+        assert!(
+            as_text(&[3u8; 300]).is_none(),
+            "a run of one control byte is data"
+        );
         let ansi = "line one\r\n\ttab\x0cpage\x1b[0m";
         assert_eq!(as_text(ansi.as_bytes()), Some(ansi));
     }

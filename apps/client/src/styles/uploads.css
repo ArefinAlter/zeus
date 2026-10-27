@@ -1,0 +1,14 @@
+/* The upload review uses the same neutral controls and spacing as Settings. */
+.uploads-page { display: grid; gap: 20px; align-content: start; }
+.uploads-page p { margin: 0; }
+.upload-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px 24px; max-width: 960px; }
+.upload-form .field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.upload-form .field:nth-of-type(3) { grid-column: 1 / -1; }
+.upload-form > button { justify-self: start; align-self: end; }
+.upload-section { display: grid; gap: 12px; }
+.upload-section h2 { margin: 0; }
+.upload-card { display: grid; gap: 10px; padding: 16px; border: 1px solid var(--line); border-radius: 8px; min-width: 0; }
+.upload-card > button { justify-self: start; }
+.upload-card code, .upload-card p { overflow-wrap: anywhere; }
+.upload-card .row-actions { display: flex; gap: 8px; }
+@media (max-width: 900px) { .upload-form { grid-template-columns: minmax(0, 1fr); } }

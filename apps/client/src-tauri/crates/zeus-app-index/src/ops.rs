@@ -1,7 +1,7 @@
-//! File operations on the person's click: rename, move and delete inside the download folders.
+//! File operations on the person's click: rename, move and delete inside the download and explicitly managed folders.
 //!
 //! These are the app acting for the person at the window. The daemon's credential for this app has no file write
-//! permission, and an agent has no way to reach these routes. Rules: only inside the download folders (index-only
+//! permission, and an agent has no way to reach these routes. Rules: only inside download or explicitly managed folders (search-only
 //! folders are read-only), never replace an existing file, never touch a file the daemon quarantined (that needs
 //! `zeus files organize` and an approval at a terminal), deletes go to the recycle bin or trash.
 
@@ -273,7 +273,7 @@ mod tests {
             "policy.quarantined"
         );
         assert_eq!(
-            delete(&[one.clone()], true, &roots, &facts)
+            delete(std::slice::from_ref(&one), true, &roots, &facts)
                 .unwrap_err()
                 .code,
             "policy.quarantined"
@@ -292,7 +292,134 @@ mod tests {
         let r = delete(&[format!("{root}/a")], true, &roots, &none).unwrap();
         assert_eq!(r["ok"], true);
         assert!(!Path::new(&format!("{root}/a")).exists());
-        assert!(delete(&[root.clone()], true, &roots, &none).is_err());
+        assert!(delete(std::slice::from_ref(&root), true, &roots, &none).is_err());
         assert!(delete(&[], true, &roots, &none).is_err());
+    }
+}
+
+/// Copy one regular file without replacing an existing target or following a root escape.
+pub fn copy_to(
+    path: &str,
+    dir: &str,
+    read_roots: &[String],
+    write_roots: &[String],
+    facts: &HashMap<String, FileFacts>,
+) -> Result<Value> {
+    use std::io::{Read, Write};
+    let from = resolve_inside(path, read_roots)?;
+    if quarantined_under(facts, &shown(&from)) {
+        return Err(quarantine_refusal("This file"));
+    }
+    if !from.is_file() {
+        return Err(Failure::invalid("Choose a file to copy."));
+    }
+    let dest = resolve_inside(dir, write_roots)?;
+    if !dest.is_dir() {
+        return Err(Failure::invalid("Choose an existing destination folder."));
+    }
+    let name = from
+        .file_name()
+        .ok_or_else(|| Failure::invalid("The file has no name."))?;
+    let to = dest.join(name);
+    let mut source = std::fs::File::open(&from)?;
+    let mut output = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&to)
+        .map_err(|e| {
+            if e.kind() == std::io::ErrorKind::AlreadyExists {
+                already(&name.to_string_lossy())
+            } else {
+                Failure::new("app.io", "The copy could not be created.")
+            }
+        })?;
+    let result = (|| -> std::io::Result<()> {
+        let mut bytes = [0u8; 65536];
+        loop {
+            let n = source.read(&mut bytes)?;
+            if n == 0 {
+                break;
+            }
+            output.write_all(&bytes[..n])?;
+        }
+        output.sync_all()
+    })();
+    if result.is_err() {
+        drop(output);
+        let _ = std::fs::remove_file(&to);
+        return Err(Failure::new(
+            "app.io",
+            "The copy did not finish; its incomplete output was removed.",
+        ));
+    }
+    Ok(json!({"ok":true,"path":shown(&to)}))
+}
+
+/// Create one folder in an explicitly writable existing folder.
+pub fn create_folder(parent: &str, name: &str, roots: &[String]) -> Result<Value> {
+    check_name(name)?;
+    let parent = resolve_inside(parent, roots)?;
+    let path = parent.join(name);
+    std::fs::create_dir(&path).map_err(|e| {
+        if e.kind() == std::io::ErrorKind::AlreadyExists {
+            already(name)
+        } else {
+            Failure::new("app.io", "The folder could not be created.")
+        }
+    })?;
+    Ok(json!({"ok":true,"path":shown(&path)}))
+}
+
+#[cfg(test)]
+mod management_tests {
+    use super::*;
+    #[test]
+    fn copy_never_overwrites_and_cannot_escape_a_writable_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("a.txt");
+        std::fs::write(&source, b"source").unwrap();
+        let dest = dir.path().join("dest");
+        std::fs::create_dir(&dest).unwrap();
+        let roots = vec![dir.path().to_string_lossy().into_owned()];
+        copy_to(
+            source.to_str().unwrap(),
+            dest.to_str().unwrap(),
+            &roots,
+            &roots,
+            &HashMap::new(),
+        )
+        .unwrap();
+        std::fs::write(dest.join("a.txt"), b"keep").unwrap();
+        assert!(
+            copy_to(
+                source.to_str().unwrap(),
+                dest.to_str().unwrap(),
+                &roots,
+                &roots,
+                &HashMap::new()
+            )
+            .is_err()
+        );
+        assert_eq!(std::fs::read(dest.join("a.txt")).unwrap(), b"keep");
+        let outside = tempfile::tempdir().unwrap();
+        assert!(
+            copy_to(
+                source.to_str().unwrap(),
+                outside.path().to_str().unwrap(),
+                &roots,
+                &roots,
+                &HashMap::new()
+            )
+            .is_err()
+        );
+        assert_eq!(std::fs::read(source).unwrap(), b"source");
+    }
+    #[test]
+    fn new_folder_refuses_traversal_and_existing_names() {
+        let dir = tempfile::tempdir().unwrap();
+        let roots = vec![dir.path().to_string_lossy().into_owned()];
+        create_folder(dir.path().to_str().unwrap(), "new", &roots).unwrap();
+        assert!(create_folder(dir.path().to_str().unwrap(), "new", &roots).is_err());
+        assert!(create_folder(dir.path().to_str().unwrap(), "../outside", &roots).is_err());
     }
 }

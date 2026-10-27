@@ -70,8 +70,11 @@ impl Access {
     }
 }
 
+/// One tool's name, minimum access and action-specific overrides.
+pub type ToolAccess = (&'static str, Access, &'static [(&'static str, Access)]);
+
 /// `(tool, level, action overrides)`. Mirrors apps/client/src/model/agentTools.ts (a test keeps them equal).
-pub const TABLE: &[(&str, Access, &[(&str, Access)])] = &[
+pub const TABLE: &[ToolAccess] = &[
     ("zeus_probe", Access::Read, &[]),
     ("zeus_status", Access::Read, &[]),
     ("zeus_wait", Access::Read, &[]),
@@ -502,10 +505,12 @@ fn read_private(path: &std::path::Path) -> Option<SecretString> {
     (data.len() <= 4096).then(|| SecretString::new(data))
 }
 
+type ConnectedTools = (Arc<IpcClient>, Arc<ZeusTools<IpcClient>>);
+
 /// The in-process MCP client of this installation.
 pub struct Executor {
     paths: ZeusPaths,
-    tools: Mutex<Option<(Arc<IpcClient>, Arc<ZeusTools<IpcClient>>)>>,
+    tools: Mutex<Option<ConnectedTools>>,
 }
 
 impl Executor {

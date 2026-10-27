@@ -324,6 +324,14 @@ impl Http {
         key: Option<&ApiKey>,
         estimated_input: u64,
     ) -> Result<(Outcome, RateInfo), ProviderError> {
+        if super::local_agent::agent_for_url(&built.url).is_some() {
+            let v = tokio::select! {
+                v = super::local_agent::complete(&built.url, &built.body, Duration::from_secs(240)) => v.map_err(|e| ProviderError::new(ErrorKind::BadRequest, e.to_string()))?,
+                () = cancel.cancelled() => return Err(ProviderError::new(ErrorKind::Cancelled, "Stopped.")),
+            };
+            parser.whole(&v, sink)?;
+            return Ok((parser.finish(estimated_input)?, RateInfo::default()));
+        }
         let key_text = key.map(ApiKey::expose);
         let mut attempt = 0;
         let response = loop {

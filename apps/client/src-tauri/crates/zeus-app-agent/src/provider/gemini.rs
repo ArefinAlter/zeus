@@ -430,7 +430,7 @@ impl Parser for GeminiParser {
         let Self {
             text, parts, calls, ..
         } = *self;
-        let raw = (!parts.is_empty()).then(|| RawTurn {
+        let raw = (!parts.is_empty()).then_some(RawTurn {
             kind: Kind::Google,
             value: Value::Array(parts),
         });

@@ -102,10 +102,10 @@ impl Index {
 
     fn record(&mut self, gen_: u64, path: &str) {
         self.log.push_back((gen_, path.to_owned()));
-        if self.log.len() > LOG_CAP {
-            if let Some((g, _)) = self.log.pop_front() {
-                self.log_base = self.log_base.max(g);
-            }
+        if self.log.len() > LOG_CAP
+            && let Some((g, _)) = self.log.pop_front()
+        {
+            self.log_base = self.log_base.max(g);
         }
     }
 

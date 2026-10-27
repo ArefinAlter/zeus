@@ -77,6 +77,18 @@ impl Service {
         let download = download_roots(&home);
         let cfg =
             IndexConfig::load(&index_dir(&home).join("index.json")).with_download_roots(&download);
+        let roots: Vec<_> = cfg
+            .roots
+            .iter()
+            .filter(|r| r.include)
+            .map(|r| r.path.clone())
+            .collect();
+        if let Ok(bytes) = serde_json::to_vec(&roots) {
+            let scopes = home.state_dir().join("cloud-local-roots.json");
+            if zeus_app::engine_config::write_atomic(&scopes, &bytes).is_err() {
+                let _ = std::fs::remove_file(&scopes);
+            }
+        }
         let loaded = Index::load(&index_dir(&home).join("index.bin"));
         let had_snapshot = loaded.is_some();
         let svc = Arc::new(Self {
@@ -123,9 +135,16 @@ impl Service {
             .unwrap_or_default()
     }
 
-    /// Folders the app may change: the download folders.
+    /// Download folders plus the folders explicitly enabled for management.
     pub fn write_roots(&self) -> Vec<String> {
-        download_roots(&self.home)
+        let mut roots = download_roots(&self.home);
+        roots.extend(
+            self.included()
+                .into_iter()
+                .filter(|r| r.manage_files)
+                .map(|r| r.path),
+        );
+        roots
     }
 
     /// Folders the app may read for previews: every included folder.
@@ -138,6 +157,21 @@ impl Service {
         new.validate()?;
         let merged = new.with_download_roots(&download_roots(&self.home));
         merged.save(&index_dir(&self.home).join("index.json"))?;
+        // Only this native human settings surface writes the upload read scopes.
+        let roots: Vec<_> = merged
+            .roots
+            .iter()
+            .filter(|r| r.include)
+            .map(|r| r.path.clone())
+            .collect();
+        let scopes = self.home.state_dir().join("cloud-local-roots.json");
+        if let Err(error) =
+            zeus_app::engine_config::write_atomic(&scopes, &serde_json::to_vec(&roots)?)
+        {
+            // A failed replacement must not keep a revoked grant effective.
+            let _ = std::fs::remove_file(&scopes);
+            return Err(error.into());
+        }
         if let Ok(mut c) = self.cfg.lock() {
             *c = merged.clone();
         }
@@ -163,7 +197,7 @@ impl Service {
                 json!({
                     "path": r.path, "include": r.include, "download": r.download, "monitor_changes": r.monitor_changes,
                     "rescan_every_hours": r.rescan_every_hours, "entries": count, "last_scan": scanned,
-                    "exists": Path::new(&r.path).is_dir(),
+                    "exists": Path::new(&r.path).is_dir(), "manage_files": r.manage_files,
                 })
             })
             .collect();
@@ -237,10 +271,10 @@ impl Service {
                 }
             })
             .await;
-            if !self.cancel.load(Ordering::SeqCst) {
-                if let Ok(mut m) = self.root_scans.lock() {
-                    m.insert(norm(&root.path), (Instant::now(), now_ms()));
-                }
+            if !self.cancel.load(Ordering::SeqCst)
+                && let Ok(mut m) = self.root_scans.lock()
+            {
+                m.insert(norm(&root.path), (Instant::now(), now_ms()));
             }
             self.set_status(|s| s.roots_done += 1);
         }
@@ -290,7 +324,9 @@ impl Service {
             }
             // Remembered even when the system refuses a watcher (some network shares), so it is not retried forever.
             watched.push(norm(&r.path));
-            if w.watch(Path::new(&r.path), RecursiveMode::Recursive).is_ok() {
+            if w.watch(Path::new(&r.path), RecursiveMode::Recursive)
+                .is_ok()
+            {
                 any = true;
             }
         }
@@ -382,13 +418,12 @@ impl Service {
                 }
                 _ = ticker.tick() => {
                     // The watcher's events are applied when the folder has been quiet for a moment, or after 1.5 s of noise.
-                    if let Some(f) = first {
-                        if last_event.elapsed() >= Duration::from_millis(300) || f.elapsed() >= Duration::from_millis(1500) {
+                    if let Some(f) = first
+                        && (last_event.elapsed() >= Duration::from_millis(300) || f.elapsed() >= Duration::from_millis(1500)) {
                             let batch = std::mem::take(&mut pending);
                             first = None;
                             let svc = self.clone();
                             let _ = tokio::task::spawn_blocking(move || svc.apply_paths(batch)).await;
-                        }
                     }
                     if self.dirty.load(Ordering::SeqCst) && last_save.elapsed() >= Duration::from_secs(10) {
                         let svc = self.clone();

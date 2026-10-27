@@ -173,6 +173,7 @@ pub struct CloudService {
     credentials: Arc<dyn CredentialStore>,
     factory: Arc<dyn ProviderFactory>,
     staging: PathBuf,
+    local_roots_file: PathBuf,
     gate: Mutex<()>,
     workers: std::sync::Mutex<BTreeMap<String, Worker>>,
     stopping: AtomicBool,
@@ -240,6 +241,7 @@ impl CloudService {
             credentials,
             factory,
             staging,
+            local_roots_file: state.join("cloud-local-roots.json"),
             gate: Mutex::new(()),
             workers: Default::default(),
             stopping: AtomicBool::new(false),
@@ -639,6 +641,15 @@ impl CloudService {
             ));
         }
         let (size, digest, redacted, blocks) = match &p.source {
+            CloudSource::LocalFile { path } => {
+                if p.mode != DeliveryMode::StagedUpload {
+                    return Err(invalid("local files require staged_upload mode"));
+                }
+                let path = source::local_path(self, path.expose())?;
+                let (size, digest) = source::local_digest(&path, p.max_bytes).await?;
+                let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("file");
+                (size, Some(digest), format!("local:{name}"), None)
+            }
             CloudSource::CompletedJob { job_id } => {
                 let record = self
                     .journal
@@ -987,7 +998,7 @@ impl CloudService {
                 current.stop=Some(p.action);current.view.reason=Some("cloud.user_requested_stop".into());
                 current.view.state=if current.view.plan.mode==DeliveryMode::RemoteImport&&current.checkpoint.is_some(){CloudDeliveryState::RemoteCancellationUnavailable}else if p.action==CloudControlAction::Cancel&&current.checkpoint.is_none(){CloudDeliveryState::Canceled}else{CloudDeliveryState::Paused};
             }
-            if current.view.state==CloudDeliveryState::Canceled&&current.view.plan.mode==DeliveryMode::StagedUpload&&matches!(current.source,CloudSource::PublicUrl{..}){current.view.cleanup_pending=true;}
+            if current.view.state==CloudDeliveryState::Canceled&&current.view.plan.mode==DeliveryMode::StagedUpload&&matches!(current.source,CloudSource::PublicUrl{..}|CloudSource::LocalFile{..}){current.view.cleanup_pending=true;}
             Ok(())
         })?;
         if p.action != CloudControlAction::Resume
@@ -1015,7 +1026,10 @@ impl CloudService {
                 };
             if r.view.state == CloudDeliveryState::Canceled
                 && r.view.plan.mode == DeliveryMode::StagedUpload
-                && matches!(r.source, CloudSource::PublicUrl { .. })
+                && matches!(
+                    r.source,
+                    CloudSource::PublicUrl { .. } | CloudSource::LocalFile { .. }
+                )
             {
                 r.view.cleanup_pending = true;
             }
