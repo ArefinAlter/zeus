@@ -30,18 +30,24 @@ function mix(x) {
   return (x ^ (x >> 31n)) & MASK
 }
 
-/** Bytes [start, end) of the deterministic stream for a seed. */
-export function bytes(seed, start, end) {
-  const out = Buffer.allocUnsafe(end - start)
-  let pos = start
-  while (pos < end) {
-    const block = BigInt(Math.floor(pos / 8))
-    const word = mix(block ^ (BigInt(seed) << 40n))
-    const offset = pos % 8
-    const take = Math.min(8 - offset, end - pos)
-    for (let i = 0; i < take; i++) out[pos - start + i] = Number((word >> BigInt((offset + i) * 8)) & 0xffn)
-    pos += take
+const blocks = new Map()
+
+/** A 64 KiB block of pseudo-random bytes for a seed, made once. */
+function blockFor(seed) {
+  let b = blocks.get(seed)
+  if (!b) {
+    b = Buffer.allocUnsafe(65536)
+    for (let w = 0; w < 8192; w++) b.writeBigUInt64LE(mix(BigInt(w) ^ (BigInt(seed) << 40n)), w * 8)
+    blocks.set(seed, b)
   }
+  return b
+}
+
+/** Bytes [start, end) of the deterministic stream for a seed: fast (a repeating block, varied by the high bits). */
+export function bytes(seed, start, end) {
+  const block = blockFor(seed)
+  const out = Buffer.allocUnsafe(end - start)
+  for (let k = 0, i = start; i < end; k++, i++) out[k] = block[i & 0xffff] ^ ((i >>> 16) & 0xff)
   return out
 }
 
@@ -79,6 +85,7 @@ export function startFixtures(port = 0) {
     const parts = url.pathname.split('/').filter(Boolean)
     seen.push({ method: req.method, path: url.pathname + url.search, range: req.headers.range ?? null, ua: req.headers['user-agent'] ?? null, t: Date.now() })
     if (seen.length > 5000) seen.shift()
+    const entry = seen[seen.length - 1]
     const q = (k, d) => url.searchParams.get(k) ?? d
     const size = Number(q('size', 1 << 20))
     const seed = Number(q('seed', 1))
@@ -193,6 +200,8 @@ export function startFixtures(port = 0) {
       sent += to - p
       if (rate) await sleep(((to - p) / rate) * 1000)
     }
+    entry.end = Date.now()
+    entry.sent = sent
     res.end()
   })
   return new Promise((resolve) => {
