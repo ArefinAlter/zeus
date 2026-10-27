@@ -30,6 +30,7 @@ const arg = (n, d) => {
 const flag = (n) => process.argv.includes(n)
 const out = resolve(arg('--out', join(client, 'dist', 'release')))
 const version = arg('--version', '0.0.1c')
+const semver = JSON.parse(readFileSync(join(shell, 'tauri.conf.json'), 'utf8')).version
 const bundles = arg('--bundles', win ? 'nsis' : 'deb,appimage')
 const triple = win ? 'x86_64-pc-windows-msvc' : 'x86_64-unknown-linux-gnu'
 const exe = win ? '.exe' : ''
@@ -75,7 +76,7 @@ if (win && bundles.split(',').includes('nsis')) {
   const script = join(nsisDir, 'installer.nsi')
   const toolset = join(process.env.LOCALAPPDATA ?? '', 'tauri', 'NSIS')
   const makensis = join(toolset, 'Bin', 'makensis.exe')
-  const setup = readdirSync(join(releaseDir, 'bundle', 'nsis')).find((f) => /setup\.exe$/.test(f))
+  const setup = readdirSync(join(releaseDir, 'bundle', 'nsis')).find((f) => f.includes(`_${semver}_`) && /setup\.exe$/.test(f))
   if (!existsSync(script) || !existsSync(makensis) || !setup) {
     console.error('cannot adjust the installer folder: the generated NSIS script or toolset is missing')
     process.exit(1)
@@ -98,7 +99,7 @@ const add = (p) => assets.push(p)
 
 // Installers.
 const bundleDir = join(target ?? shell + '/target', 'release', 'bundle')
-const pick = (dir, re) => (existsSync(dir) ? readdirSync(dir).filter((f) => re.test(f)).map((f) => join(dir, f)) : [])
+const pick = (dir, re) => (existsSync(dir) ? readdirSync(dir).filter((f) => f.includes(`_${semver}_`) && re.test(f)).map((f) => join(dir, f)) : [])
 for (const f of [...pick(join(bundleDir, 'nsis'), /setup\.exe$/), ...pick(join(bundleDir, 'deb'), /\.deb$/), ...pick(join(bundleDir, 'appimage'), /\.AppImage$/)]) {
   const dest = join(out, f.split(/[\\/]/).pop())
   copyFileSync(f, dest)
