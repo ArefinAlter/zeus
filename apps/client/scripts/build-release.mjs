@@ -58,6 +58,15 @@ if (!flag('--skip-daemon')) {
   run('cargo', ['build', '--release', '--locked'], { cwd: join(repo, 'services', 'pre-alpha', 'gateway'), env: { ...process.env, ...(target ? { CARGO_TARGET_DIR: bridgeTarget } : {}) } })
 }
 
+// Refuse a cached runtime from an older release, including with --skip-daemon.
+for (const name of ['zeusd', 'zeus']) {
+  const result = spawnSync(release(name), ['--version'], { encoding: 'utf8', timeout: 10000 })
+  if (result.status !== 0 || result.stdout.trim().split(/\s+/).at(-1) !== semver) {
+    console.error(`${name} must be built at ${semver}; run without --skip-daemon`)
+    process.exit(1)
+  }
+}
+
 // Sidecars for the installer.
 const bin = join(shell, 'binaries')
 mkdirSync(bin, { recursive: true })

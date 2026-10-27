@@ -75,7 +75,7 @@ async fn preview_route(svc: &Arc<Service>, app: &Arc<App>, body: &Value) -> Resu
     let path = str_of(body, "path").to_owned();
     let resolved = paths::resolve_inside(&path, &svc.read_roots())?;
     let shown = paths::shown(&resolved);
-    let table = svc.facts.table(app).await;
+    let table = Some(guarded_facts(svc, app).await?);
     let facts = table.as_ref().and_then(|t| t.get(&norm(&shown)).cloned());
     if table
         .as_ref()
@@ -112,10 +112,11 @@ async fn guarded_facts(
     svc: &Arc<Service>,
     app: &Arc<App>,
 ) -> Result<Arc<std::collections::HashMap<String, facts::FileFacts>>> {
+    svc.facts.clear();
     svc.facts.table(app).await.ok_or_else(|| {
         Failure::new(
-            "engine.unreachable",
-            "The Zeus engine must be running to check what is quarantined before changing a file.",
+            "app.quarantine_unverified",
+            "Zeus could not verify the complete quarantine history. Check that the engine is running; histories above 3,000 jobs need the reviewed file-organize workflow.",
         )
     })
 }
@@ -136,9 +137,8 @@ async fn open_route(svc: &Arc<Service>, app: &Arc<App>, body: &Value) -> Result<
                 "Zeus does not open programs and scripts. Use Show in folder, and decide there.",
             ));
         }
-        if let Some(t) = svc.facts.table(app).await
-            && facts::quarantined_under(&t, &shown)
-        {
+        let table = guarded_facts(svc, app).await?;
+        if facts::quarantined_under(&table, &shown) {
             return Err(Failure::new(
                 "app.quarantined",
                 "Quarantined: Zeus never opens it. Show it in its folder instead.",
