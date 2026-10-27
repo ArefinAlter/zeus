@@ -1,6 +1,6 @@
 // Builds every Windows or Linux release asset of the Zeus desktop app from this checkout:
 //
-//   node scripts/build-release.mjs --out <dir> [--version 0.0.1b] [--skip-daemon] [--skip-extension] [--bundles nsis|deb,appimage]
+//   node scripts/build-release.mjs --out <dir> [--version 0.0.1c] [--skip-daemon] [--skip-extension] [--bundles nsis|deb,appimage]
 //
 //  1. the browser extension package (scripts/package-extension.mjs; needs the zeus-extension checkout beside this one)
 //  2. zeusd, zeus, zeus-native-host and zeus-web-bridge in release mode (the daemon workspace, then the bridge)
@@ -29,7 +29,8 @@ const arg = (n, d) => {
 }
 const flag = (n) => process.argv.includes(n)
 const out = resolve(arg('--out', join(client, 'dist', 'release')))
-const version = arg('--version', '0.0.1b')
+const version = arg('--version', '0.0.1c')
+const semver = JSON.parse(readFileSync(join(shell, 'tauri.conf.json'), 'utf8')).version
 const bundles = arg('--bundles', win ? 'nsis' : 'deb,appimage')
 const triple = win ? 'x86_64-pc-windows-msvc' : 'x86_64-unknown-linux-gnu'
 const exe = win ? '.exe' : ''
@@ -57,6 +58,15 @@ if (!flag('--skip-daemon')) {
   run('cargo', ['build', '--release', '--locked'], { cwd: join(repo, 'services', 'pre-alpha', 'gateway'), env: { ...process.env, ...(target ? { CARGO_TARGET_DIR: bridgeTarget } : {}) } })
 }
 
+// Refuse a cached runtime from an older release, including with --skip-daemon.
+for (const name of ['zeusd', 'zeus']) {
+  const result = spawnSync(release(name), ['--version'], { encoding: 'utf8', timeout: 10000 })
+  if (result.status !== 0 || result.stdout.trim().split(/\s+/).at(-1) !== semver) {
+    console.error(`${name} must be built at ${semver}; run without --skip-daemon`)
+    process.exit(1)
+  }
+}
+
 // Sidecars for the installer.
 const bin = join(shell, 'binaries')
 mkdirSync(bin, { recursive: true })
@@ -75,7 +85,7 @@ if (win && bundles.split(',').includes('nsis')) {
   const script = join(nsisDir, 'installer.nsi')
   const toolset = join(process.env.LOCALAPPDATA ?? '', 'tauri', 'NSIS')
   const makensis = join(toolset, 'Bin', 'makensis.exe')
-  const setup = readdirSync(join(releaseDir, 'bundle', 'nsis')).find((f) => /setup\.exe$/.test(f))
+  const setup = readdirSync(join(releaseDir, 'bundle', 'nsis')).find((f) => f.includes(`_${semver}_`) && /setup\.exe$/.test(f))
   if (!existsSync(script) || !existsSync(makensis) || !setup) {
     console.error('cannot adjust the installer folder: the generated NSIS script or toolset is missing')
     process.exit(1)
@@ -98,7 +108,7 @@ const add = (p) => assets.push(p)
 
 // Installers.
 const bundleDir = join(target ?? shell + '/target', 'release', 'bundle')
-const pick = (dir, re) => (existsSync(dir) ? readdirSync(dir).filter((f) => re.test(f)).map((f) => join(dir, f)) : [])
+const pick = (dir, re) => (existsSync(dir) ? readdirSync(dir).filter((f) => f.includes(`_${semver}_`) && re.test(f)).map((f) => join(dir, f)) : [])
 for (const f of [...pick(join(bundleDir, 'nsis'), /setup\.exe$/), ...pick(join(bundleDir, 'deb'), /\.deb$/), ...pick(join(bundleDir, 'appimage'), /\.AppImage$/)]) {
   const dest = join(out, f.split(/[\\/]/).pop())
   copyFileSync(f, dest)
@@ -114,7 +124,7 @@ if (win) {
   for (const name of ['zeusd', 'zeus', 'zeus-native-host']) copyFileSync(release(name), join(dir, `${name}.exe`))
   copyFileSync(join(repo, 'LICENSE'), join(dir, 'LICENSE'))
   copyFileSync(join(repo, 'NOTICE'), join(dir, 'NOTICE'))
-  writeFileSync(join(dir, 'README.txt'), 'Zeus 0.0.1b, portable. Run zeus-client.exe. Everything the app keeps is in the ZeusData folder next to it; delete the folder to remove it.\nUnsigned: Windows SmartScreen warns before the first run (More info, Run anyway). Check SHA256SUMS.txt.\n')
+  writeFileSync(join(dir, 'README.txt'), 'Zeus 0.0.1c, portable. Run zeus-client.exe. Everything the app keeps is in the ZeusData folder next to it; delete the folder to remove it.\nUnsigned: Windows SmartScreen warns before the first run (More info, Run anyway). Check SHA256SUMS.txt.\n')
   const zip = join(out, `zeus-client-${version}-${OS}-portable.zip`)
   rmSync(zip, { force: true })
   run('powershell', ['-NoProfile', '-Command', `Compress-Archive -Path '${dir}' -DestinationPath '${zip}' -CompressionLevel Optimal`])

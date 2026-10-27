@@ -29,6 +29,7 @@ export function parentOf(path: string): string {
   const i = Math.max(path.lastIndexOf('\\'), path.lastIndexOf('/'))
   if (i < 0) return ''
   if (i === 0) return path.slice(0, 1)
+  if (i === 2 && /^[A-Za-z]:/.test(path)) return path.slice(0, 3)
   return path.slice(0, i)
 }
 

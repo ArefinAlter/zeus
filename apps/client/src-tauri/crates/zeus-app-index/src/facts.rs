@@ -40,7 +40,11 @@ impl FactsCache {
         {
             return Some(table.clone());
         }
-        let items = app.daemon.all("jobs.list", json!({}), 30).await.ok()?;
+        let items = app
+            .daemon
+            .all_complete("jobs.list", json!({}), 30)
+            .await
+            .ok()?;
         let mut map = HashMap::new();
         for job in items {
             let Some(path) = job.get("path").and_then(Value::as_str) else {

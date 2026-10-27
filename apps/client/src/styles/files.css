@@ -59,3 +59,6 @@ mark.hl {
   background: color-mix(in srgb, var(--warn, #b7791f) 14%, transparent);
   font-size: 13px;
 }
+
+.copy-jobs { max-height: 180px; overflow: auto; flex-shrink: 0; }
+.copy-jobs .fscope { justify-content: space-between; overflow-wrap: anywhere; }

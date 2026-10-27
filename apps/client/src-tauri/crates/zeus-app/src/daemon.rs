@@ -170,26 +170,37 @@ impl Daemon {
 
     /// Every item of a paged list method, up to `max_pages` pages of 100.
     pub async fn all(&self, method: &str, extra: Value, max_pages: usize) -> Result<Vec<Value>> {
-        let mut items = Vec::new();
-        let mut cursor: Option<String> = None;
-        for _ in 0..max_pages {
+        self.pages(method, extra, max_pages, false).await
+    }
+
+    /// Collect a complete bounded history, refusing to treat truncated data as authoritative.
+    pub async fn all_complete(
+        &self,
+        method: &str,
+        extra: Value,
+        max_pages: usize,
+    ) -> Result<Vec<Value>> {
+        self.pages(method, extra, max_pages, true).await
+    }
+
+    async fn pages(
+        &self,
+        method: &str,
+        extra: Value,
+        max_pages: usize,
+        complete: bool,
+    ) -> Result<Vec<Value>> {
+        collect_pages(max_pages, complete, |cursor| {
             let mut params = extra.clone();
             if let Some(obj) = params.as_object_mut() {
                 obj.insert("limit".into(), json!(100));
-                if let Some(c) = &cursor {
-                    obj.insert("cursor".into(), json!(c));
+                if let Some(cursor) = cursor {
+                    obj.insert("cursor".into(), json!(cursor));
                 }
             }
-            let page = self.raw(method, params).await?;
-            if let Some(list) = page.get("items").and_then(Value::as_array) {
-                items.extend(list.iter().cloned());
-            }
-            match page.get("next_cursor").and_then(Value::as_str) {
-                Some(next) => cursor = Some(next.to_owned()),
-                None => break,
-            }
-        }
-        Ok(items)
+            async move { self.raw(method, params).await }
+        })
+        .await
     }
 
     /// True when the daemon answers `daemon.ping` right now.
@@ -225,4 +236,51 @@ fn is_transport(error: &ApiError) -> bool {
         code,
         "api.unavailable" | "api.timeout" | "api.not_authenticated" | "api.slow_consumer"
     ) || code.starts_with("internal")
+}
+
+async fn collect_pages<F, Fut>(max_pages: usize, complete: bool, mut fetch: F) -> Result<Vec<Value>>
+where
+    F: FnMut(Option<String>) -> Fut,
+    Fut: std::future::Future<Output = Result<Value>>,
+{
+    let mut items = Vec::new();
+    let mut cursor = None;
+    for _ in 0..max_pages {
+        let page = fetch(cursor).await?;
+        if let Some(list) = page.get("items").and_then(Value::as_array) {
+            items.extend(list.iter().cloned());
+        }
+        match page.get("next_cursor").and_then(Value::as_str) {
+            Some(next) => cursor = Some(next.to_owned()),
+            None => return Ok(items),
+        }
+    }
+    if complete {
+        Err(Failure::new(
+            "app.incomplete_history",
+            "The history exceeds the verification limit; no file change was allowed.",
+        ))
+    } else {
+        Ok(items)
+    }
+}
+
+#[cfg(test)]
+mod complete_history_tests {
+    use super::*;
+    async fn fixture(cursor: Option<String>) -> Result<Value> {
+        let page = cursor.as_deref().unwrap_or("0").parse::<usize>().unwrap();
+        Ok(
+            json!({"items":[{"quarantined":page==2}],"next_cursor":if page<2 {Some((page+1).to_string())} else {None}}),
+        )
+    }
+    #[tokio::test]
+    async fn quarantine_verification_cannot_silently_omit_a_later_page() {
+        assert!(collect_pages(2, true, fixture).await.is_err());
+        let all = collect_pages(3, true, fixture).await.unwrap();
+        assert_eq!(all.len(), 3);
+        assert_eq!(all[2]["quarantined"], true);
+        // Display lists can remain bounded; they are not used to authorize file changes.
+        assert_eq!(collect_pages(2, false, fixture).await.unwrap().len(), 2);
+    }
 }

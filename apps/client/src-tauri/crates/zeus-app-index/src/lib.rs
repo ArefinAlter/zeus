@@ -8,6 +8,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod browse;
 pub mod config;
 pub mod facts;
 pub mod ops;
@@ -16,6 +17,7 @@ pub mod preview;
 pub mod scan;
 pub mod service;
 pub mod store;
+pub mod transfers;
 
 use std::future::Future;
 use std::path::PathBuf;
@@ -34,6 +36,7 @@ use crate::service::{Cmd, Service};
 /// The module registered by `zeus-app-ext`.
 pub struct Module {
     svc: Arc<Service>,
+    transfers: transfers::Transfers,
 }
 
 impl Module {
@@ -41,6 +44,7 @@ impl Module {
     pub fn new(app: &Arc<App>) -> Arc<Self> {
         Arc::new(Self {
             svc: Service::start(app),
+            transfers: transfers::Transfers::default(),
         })
     }
 }
@@ -71,7 +75,7 @@ async fn preview_route(svc: &Arc<Service>, app: &Arc<App>, body: &Value) -> Resu
     let path = str_of(body, "path").to_owned();
     let resolved = paths::resolve_inside(&path, &svc.read_roots())?;
     let shown = paths::shown(&resolved);
-    let table = svc.facts.table(app).await;
+    let table = Some(guarded_facts(svc, app).await?);
     let facts = table.as_ref().and_then(|t| t.get(&norm(&shown)).cloned());
     if table
         .as_ref()
@@ -108,10 +112,11 @@ async fn guarded_facts(
     svc: &Arc<Service>,
     app: &Arc<App>,
 ) -> Result<Arc<std::collections::HashMap<String, facts::FileFacts>>> {
+    svc.facts.clear();
     svc.facts.table(app).await.ok_or_else(|| {
         Failure::new(
-            "engine.unreachable",
-            "The Zeus engine must be running to check what is quarantined before changing a file.",
+            "app.quarantine_unverified",
+            "Zeus could not verify the complete quarantine history. Check that the engine is running; histories above 3,000 jobs need the reviewed file-organize workflow.",
         )
     })
 }
@@ -132,9 +137,8 @@ async fn open_route(svc: &Arc<Service>, app: &Arc<App>, body: &Value) -> Result<
                 "Zeus does not open programs and scripts. Use Show in folder, and decide there.",
             ));
         }
-        if let Some(t) = svc.facts.table(app).await
-            && facts::quarantined_under(&t, &shown)
-        {
+        let table = guarded_facts(svc, app).await?;
+        if facts::quarantined_under(&table, &shown) {
             return Err(Failure::new(
                 "app.quarantined",
                 "Quarantined: Zeus never opens it. Show it in its folder instead.",
@@ -290,6 +294,56 @@ impl Extension for Module {
                         .and_then(|c| svc.set_config(c))
                         .map(|c| config_json(&c)),
                 ),
+                "POST /native/v1/files/list" => {
+                    let path = str_of(body, "path").to_owned();
+                    let after = str_of(body, "after").to_owned();
+                    let roots = svc.read_roots();
+                    let limit = body
+                        .get("limit")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(500)
+                        .min(500) as usize;
+                    let facts = svc.facts.table(app).await;
+                    Some(
+                        tokio::task::spawn_blocking(move || {
+                            let mut page = browse::list(&path, &after, limit, &roots)?;
+                            if let Some(rows) = page["files"].as_array_mut() {
+                                for row in rows {
+                                    let quarantined = facts.as_ref().is_some_and(|t| {
+                                        facts::quarantined_under(
+                                            t,
+                                            row["path"].as_str().unwrap_or_default(),
+                                        )
+                                    });
+                                    row["quarantined"] = json!(quarantined);
+                                }
+                            }
+                            Ok(page)
+                        })
+                        .await
+                        .unwrap_or_else(|_| {
+                            Err(Failure::new("app.io", "The folder could not be read."))
+                        }),
+                    )
+                }
+                "GET /native/v1/files/copies" => Some(Ok(self.transfers.list())),
+                "POST /native/v1/files/copy/start" => {
+                    let facts = match guarded_facts(svc, app).await {
+                        Ok(f) => f,
+                        Err(e) => return Some(Err(e)),
+                    };
+                    Some(self.transfers.start(
+                        str_of(body, "path").to_owned(),
+                        str_of(body, "dir").to_owned(),
+                        svc.read_roots(),
+                        svc.write_roots(),
+                        facts,
+                    ))
+                }
+                "POST /native/v1/files/copy/status" | "POST /native/v1/files/copy/cancel" => Some(
+                    self.transfers
+                        .get(str_of(body, "id"), route.ends_with("/cancel")),
+                ),
                 "POST /native/v1/files/copy" => {
                     let from = str_of(body, "path").to_owned();
                     let to = str_of(body, "dir").to_owned();
@@ -335,6 +389,7 @@ impl Extension for Module {
 
     fn shutdown<'a>(&'a self) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
         Box::pin(async move {
+            self.transfers.cancel_all();
             let (tx, rx) = oneshot::channel();
             self.svc.send(Cmd::Stop(tx));
             let _ = tokio::time::timeout(std::time::Duration::from_secs(5), rx).await;

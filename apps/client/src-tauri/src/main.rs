@@ -46,6 +46,7 @@ async fn backend_call(
 /// The windowing side of the shell: the notification-area icon, start at sign-in and system notifications.
 struct Hooks {
     app: AppHandle,
+    contained: bool,
     tray: Mutex<Option<tauri::tray::TrayIcon>>,
 }
 
@@ -60,7 +61,8 @@ fn show_main(app: &AppHandle) {
 impl ShellHooks for Hooks {
     fn apply(&self, s: &ShellSettings) -> Result<(), String> {
         let mut notes: Vec<String> = Vec::new();
-        {
+        // A portable/test profile must not change the installed copy's per-user registration.
+        if !self.contained {
             use tauri_plugin_autostart::ManagerExt;
             let launcher = self.app.autolaunch();
             let result = if s.launch_at_login {
@@ -71,6 +73,10 @@ impl ShellHooks for Hooks {
             if let Err(e) = result {
                 notes.push(format!("Start at sign-in could not be changed ({e})."));
             }
+        } else if s.launch_at_login {
+            notes.push(
+                "Start at sign-in is unavailable for a portable or contained profile.".into(),
+            );
         }
         let want = s.show_tray;
         let app = self.app.clone();
@@ -225,6 +231,7 @@ fn main() {
             let settings = backend.shell.settings();
             backend.shell.set_hooks(Arc::new(Hooks {
                 app: app.handle().clone(),
+                contained: backend.home.contained,
                 tray: Mutex::new(None),
             }));
             if settings.start_minimized {

@@ -10,6 +10,7 @@ export interface IndexRow {
   size: number
   mtime: number
   is_dir: boolean
+  quarantined?: boolean
 }
 
 export interface IndexRootStatus {
@@ -82,7 +83,22 @@ export interface DeleteResult {
   failed: { path: string; code: string; message: string }[]
 }
 
+export interface CopyJob {
+  id: string
+  state: 'scanning' | 'copying' | 'complete' | 'failed' | 'cancelled'
+  path: string
+  bytes: number
+  total_bytes: number
+  files: number
+  error: string
+}
+
 export const filesApi = {
+  copies: () => call<{ jobs: CopyJob[] }>('GET', '/native/v1/files/copies'),
+  list: (path: string, after = '') => call<{ path: string; files: IndexRow[]; next: string | null; skipped: number }>('POST', '/native/v1/files/list', { path, after, limit: 500 }),
+  copyStart: (path: string, dir: string) => call<CopyJob>('POST', '/native/v1/files/copy/start', { path, dir }),
+  copyStatus: (id: string) => call<CopyJob>('POST', '/native/v1/files/copy/status', { id }),
+  copyCancel: (id: string) => call<CopyJob>('POST', '/native/v1/files/copy/cancel', { id }),
   changes: (since: number) => call<IndexDelta>('POST', '/native/v1/index/changes', { since }),
   status: () => call<IndexStatus>('GET', '/native/v1/index/status'),
   rescan: (path?: string) => call<unknown>('POST', '/svc/v1/index/rescan', path ? { path } : {}),

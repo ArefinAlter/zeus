@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
-use crate::provider::ApiKey;
+use crate::provider::{ApiKey, Kind};
 use zeus_app::engine_config::write_atomic;
 use zeus_app::home::AppHome;
 
@@ -110,6 +110,15 @@ pub struct KeyStore {
 const CHECK_TEXT: &[u8] = b"zeus-keys-ok";
 
 impl KeyStore {
+    /// Subscription connections never consult the app's API-key store, even when it is locked.
+    pub fn for_provider(&self, kind: Kind, id: &str) -> Result<Option<ApiKey>, KeyError> {
+        if kind.is_subscription() {
+            Ok(None)
+        } else {
+            self.get(id)
+        }
+    }
+
     /// The store for `home`. `ZEUS_KEYSTORE=file` or `os` forces a backend (tests, headless installs).
     pub fn new(home: &AppHome) -> Self {
         let digest = hex::encode(Sha256::digest(
@@ -475,5 +484,30 @@ mod tests {
         );
         store.delete("test-provider").unwrap();
         assert!(store.get("test-provider").unwrap().is_none());
+    }
+    #[test]
+    fn subscriptions_do_not_require_api_key_store_unlock() {
+        let d = tempfile::tempdir().unwrap();
+        let store = KeyStore::file_for_tests(&AppHome::at(d.path().to_path_buf()));
+        assert!(store.get("p-claude").unwrap().is_none());
+        store.initialize("acceptance-passphrase").unwrap();
+        store.lock();
+        assert_eq!(store.get("p-claude").err(), Some(KeyError::Locked));
+        assert!(
+            store
+                .for_provider(Kind::Claude, "p-claude")
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            store
+                .for_provider(Kind::Codex, "p-codex")
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            store.for_provider(Kind::Anthropic, "p-api").err(),
+            Some(KeyError::Locked)
+        );
     }
 }

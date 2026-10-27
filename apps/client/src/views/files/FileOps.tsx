@@ -1,11 +1,12 @@
 // The dialogs of the file operations: rename, move and delete. They act on a file inside the download folders at the
 // person's click; the engine's Rust side checks every path again and refuses anything outside or quarantined.
 
-import { useState } from 'preact/hooks'
+import { useEffect, useState } from 'preact/hooks'
 
-import { filesApi } from '../../backend/files'
+import { filesApi, type CopyJob } from '../../backend/files'
 import { nudgeIndexSync } from '../../backend/files'
 import { toast } from '../../backend/store'
+import { fmtBytes } from '../../model/units'
 import { SEP, joinPath } from '../../lib/paths.ts'
 import { Dialog, Notice } from '../../ui/components'
 
@@ -82,11 +83,26 @@ export function MoveDialog({ path, dir, roots, folders, onClose, copy = false }:
   const [value, setValue] = useState(dir)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  const [job, setJob] = useState<CopyJob | null>(null)
+  useEffect(() => {
+    if (!job || !['scanning', 'copying'].includes(job.state)) return
+    let alive = true
+    const timer = setInterval(() => {
+      void filesApi.copyStatus(job.id).then(next => {
+        if (!alive) return
+        setJob(next)
+        if (next.state === 'complete') { done('Copied', next.path); onClose() }
+        else if (next.state === 'failed' || next.state === 'cancelled') { setBusy(false); setError(next.error || 'The copy stopped. Completed destination files are kept.') }
+      }, () => { if (alive) setError('Progress is unavailable. The copy may still be running.') })
+    }, 350)
+    return () => { alive = false; clearInterval(timer) }
+  }, [job?.id, job?.state])
   const save = () => {
     setBusy(true)
-    ;(copy ? filesApi.copy(path, value.trim()) : filesApi.move(path, value.trim())).then(
-      () => {
-        done(copy ? 'Copied' : 'Moved', value.trim())
+    ;(copy ? filesApi.copyStart(path, value.trim()) : filesApi.move(path, value.trim())).then(
+      (result) => {
+        if (copy) { setJob(result as CopyJob); return }
+        done('Moved', value.trim())
         onClose()
       },
       (e: unknown) => {
@@ -109,18 +125,19 @@ export function MoveDialog({ path, dir, roots, folders, onClose, copy = false }:
           }}
         />
         <datalist id="move-folders">
-          {folders.slice(0, 300).map((f) => (
+          {[...new Set([...roots, ...folders])].slice(0, 300).map((f) => (
             <option value={f} />
           ))}
         </datalist>
       </label>
       <p class="muted small">
-        Inside a folder enabled for file management ({roots.join(', ') || 'none'}). A folder that does not exist yet is created. If the folder has a file of the same name the move is refused; Zeus never replaces a file. Example: {joinPath(roots[0] ?? '', 'Sorted')}.
+        Inside a folder enabled for file management ({roots.join(', ') || 'none'}). {copy ? 'Choose an existing folder. Folder copies include all regular files, including hidden items; links and junctions are refused.' : 'A folder that does not exist yet is created.'} If the folder has a file of the same name the move is refused; Zeus never replaces a file. Example: {joinPath(roots[0] ?? '', 'Sorted')}.
       </p>
+      {job ? <p role="status">{job.state} · {fmtBytes(job.bytes)} / {fmtBytes(job.total_bytes)} · {job.files} files{job.path ? <><br /><span class="mono">{job.path}</span></> : null}</p> : null}
       {error ? <Notice kind="error">{error}</Notice> : null}
       <div class="decide-row">
-        <button type="button" class="btn" onClick={onClose}>
-          Cancel
+        <button type="button" class="btn" onClick={() => { if (busy && job) void filesApi.copyCancel(job.id).then(setJob); else onClose() }}>
+          {busy && job ? 'Cancel copy' : 'Cancel'}
         </button>
         <button type="button" class="btn primary" disabled={busy || !value.trim() || value.trim() === dir} onClick={save}>
           {copy ? "Copy" : "Move"}
@@ -188,4 +205,24 @@ export function NewFolderDialog({ parent, onClose }: { parent: string; onClose: 
   const [name,setName]=useState('');const [error,setError]=useState('');const [busy,setBusy]=useState(false)
   const save=()=>{if(nameFault(name))return;setBusy(true);filesApi.mkdir(parent,name).then(()=>{done('Folder created',name);onClose()},e=>{setBusy(false);setError(e instanceof Error?e.message:'The folder could not be created.')})}
   return <Dialog title="New folder" onClose={onClose}><p class="mono">{parent}</p><label class="field">Name<input value={name} autofocus onInput={e=>setName(e.currentTarget.value)} onKeyDown={e=>{if(e.key==='Enter')save()}}/></label>{error?<Notice kind="error">{error}</Notice>:null}<div class="decide-row"><button class="btn" onClick={onClose}>Cancel</button><button class="btn primary" disabled={busy || !!nameFault(name)} onClick={save}>Create folder</button></div></Dialog>
+}
+
+/** Session copy progress remains available after a destination dialog closes. */
+export function CopyJobs() {
+  const [jobs, setJobs] = useState<CopyJob[]>([])
+  const [hidden, setHidden] = useState<string[]>([])
+  const [error, setError] = useState('')
+  useEffect(() => {
+    let alive = true
+    const refresh = () => void filesApi.copies().then(r => {if(alive) setJobs(r.jobs)}, () => undefined)
+    refresh()
+    const timer = setInterval(refresh, 1000)
+    return () => {alive=false;clearInterval(timer)}
+  }, [])
+  const shown = jobs.filter(job=>!hidden.includes(job.id))
+  if (!shown.length) return null
+  return <div class="copy-jobs" aria-label="File copies">{error ? <Notice kind="error">{error}</Notice> : null}{shown.map(job=><div class="fscope" key={job.id}>
+    <span role="status">{job.state} · {fmtBytes(job.bytes)} / {fmtBytes(job.total_bytes)} · {job.files} files<br /><span class="mono">{job.path || 'Scanning source…'}</span>{job.error ? <><br />{job.error}</> : null}</span>
+    {job.state==='scanning' || job.state==='copying' ? <button class="btn small" onClick={()=>void filesApi.copyCancel(job.id).catch(e=>setError(e instanceof Error ? e.message : 'Cancellation could not be requested.'))}>Cancel copy</button> : <button class="btn small ghost" onClick={()=>setHidden(ids=>[...ids,job.id])}>Dismiss</button>}
+  </div>)}</div>
 }

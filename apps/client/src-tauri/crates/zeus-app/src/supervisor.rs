@@ -151,6 +151,11 @@ fn tool(bin_dir: &Path, name: &str, home: &AppHome) -> Command {
 }
 
 impl Supervisor {
+    /// Open the installed human CLI on this installation, without granting the GUI human identity.
+    pub fn open_review_terminal(&self, action: &str, id: &str) -> Result<()> {
+        crate::terminal::open(&self.home, &self.bin_dir, action, id)
+    }
+
     /// A supervisor for the installation under `home`, with its programs in `bin_dir`.
     pub fn new(home: AppHome, bin_dir: PathBuf, daemon: Arc<Daemon>) -> Arc<Self> {
         let (status, _) = watch::channel(EngineStatus::new(

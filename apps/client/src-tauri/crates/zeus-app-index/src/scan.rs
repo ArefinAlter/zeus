@@ -68,12 +68,26 @@ pub fn is_link(meta: &std::fs::Metadata) -> bool {
 /// Display form of a path: no `\\?\` prefix.
 pub fn display(p: &Path) -> String {
     let s = p.display().to_string();
-    let s = s.strip_prefix(r"\\?\").map_or(s.clone(), str::to_owned);
+    let s = if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
+        format!(r"\\{rest}")
+    } else {
+        s.strip_prefix(r"\\?\").map_or(s.clone(), str::to_owned)
+    };
     if cfg!(windows) {
         s.replace('/', "\\")
     } else {
         s
     }
+}
+
+#[cfg(all(test, windows))]
+#[test]
+fn display_keeps_network_share_addresses_absolute() {
+    assert_eq!(
+        display(Path::new(r"\\?\UNC\server\share\folder")),
+        r"\\server\share\folder"
+    );
+    assert_eq!(display(Path::new(r"\\?\D:\folder")), r"D:\folder");
 }
 
 /// What one folder holds, as the scan reads it.

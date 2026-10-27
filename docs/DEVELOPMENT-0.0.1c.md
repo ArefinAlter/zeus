@@ -1,6 +1,6 @@
 # 0.0.1c development increment
 
-27 October 2026. Internal version `0.0.1-beta.1`. The published Latest installers remain 0.0.1b until a separate packaging and platform-acceptance run.
+27 October 2026. Internal version `0.0.1-beta.1`. Full-release packaging and acceptance are recorded in [ACCEPTANCE-0.0.1c.md](ACCEPTANCE-0.0.1c.md).
 
 ## Existing agent subscriptions
 
@@ -14,12 +14,16 @@ Subscription prices are not API prices. Provider quotas, extra-usage billing and
 
 ## Zeus
 
-Files can manage download folders and other folders separately granted Manage files access in Search and index settings. Search-only roots stay read-only for file operations. Added single-file copy and new folder, with canonical containment, collision and quarantine checks. Existing rename, move, trash and preview remain. Directory copy is not implemented; Files follows the bounded index and may omit entries excluded from indexing or above its cap.
+Files can manage download folders and other folders separately granted Manage files access in Search and index settings. Search-only roots stay read-only for file operations. Added live paged folder browsing, file/folder copy jobs with progress and cancellation, and new folder, with canonical containment, collision and quarantine checks. Existing rename, move, trash and preview remain. Folder browsing reads disk directly and is independent of index exclusions and the search cap. Copies preflight at most 100,000 entries and 128 levels, refuse links/junctions, never overwrite destinations and leave sources unchanged. Completed destination files remain after a failed/cancelled copy; its incomplete current file is removed.
 
-Uploads reviews local files, completed downloads and bounded public URLs against configured cloud accounts, requests the existing human approval, and shows engine progress plus pause/resume/cancel. Local files are hashed before review; execution snapshots a separate staged copy and checks that exact digest before provider disclosure. Scoped sources, changed bytes, approval requirements and original-file preservation have regression tests. Native UI routes cannot configure accounts, revoke scopes or decide approvals: use the established interactive Zeus CLI.
+Uploads reviews local files, completed downloads and bounded public URLs against configured cloud accounts, requests the existing human approval, and shows engine progress plus pause/resume/cancel. Local files are hashed before review; execution snapshots a separate staged copy and checks that exact digest before provider disclosure. Scoped sources, changed bytes, approval requirements and original-file preservation have regression tests. Desktop account setup, disconnect and approval-review controls open a visible terminal running the bundled CLI against this installation. The GUI keeps its restricted identity and never supplies a confirmation, credential or decision; the person reviews and types at the established terminal trust surface.
 
 Connectors use actual capabilities of Google Drive, Yandex Disk, Baidu Netdisk and explicitly configured rclone remotes. Coverage is extensible and is not a claim that every file host is supported. No changes to zeus-core. No live cloud-account upload was performed in this session; regression tests use a loopback mock destination.
 
-Frontend type checking, frontend tests and hosted build pass. Native daemon workspace Clippy and tests pass; all 257 specification examples validate. Browser acceptance with mock routes verifies the local-file review payload, approval request, and absence of any approval-deciding call. Native desktop workspace Clippy passes and its 129 tests pass (one subprocess fixture is ignored and exercised by its parent). The final installed-agent policy revision also has focused native regression coverage recorded in the operation report.
+The subscription connection test now bypasses the API-key store, including an uninitialized/locked encrypted fallback. Frontend type checking passes. Additional full-release checks are in progress.
+
+Earlier increment: frontend tests and hosted build pass. Native daemon workspace Clippy and tests pass; all 257 specification examples validate. Browser acceptance with mock routes verifies the local-file review payload, approval request, and absence of any approval-deciding call. Native desktop workspace Clippy passes and its 129 tests pass (one subprocess fixture is ignored and exercised by its parent). The final installed-agent policy revision also has focused native regression coverage recorded in the operation report.
 
 Local-path upload sources also check the journal’s quarantined job paths, both when planning and again when staging. A local path cannot be used to bypass the completed-job quarantine restriction.
+
+Final release hardening: protected previews, opens and file changes require a fresh, complete quarantine history. The bounded 3,000-job verification refuses changes when further pages remain; display pagination is not treated as authorization. Contained/portable profiles leave the installed copy's start-at-sign-in registration alone. Generated runtime programs are staged from the current checkout, checked against its version, and no longer committed as stale executable build outputs.

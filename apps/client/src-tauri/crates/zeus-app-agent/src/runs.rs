@@ -415,7 +415,7 @@ impl Core {
             ));
         }
         if provider.kind.needs_key() {
-            match self.keys.get(&provider.id) {
+            match self.keys.for_provider(provider.kind, &provider.id) {
                 Ok(Some(_)) => {}
                 Ok(None) => {
                     return Some((
@@ -562,7 +562,11 @@ impl Core {
                 Self::notice(h, text.clone(), "warn", code);
                 return (code, Some(text));
             }
-            let key = self.keys.get(&provider.id).ok().flatten();
+            let key = self
+                .keys
+                .for_provider(provider.kind, &provider.id)
+                .ok()
+                .flatten();
             let target = match provider.target() {
                 Ok(t) => t,
                 Err(e) => {

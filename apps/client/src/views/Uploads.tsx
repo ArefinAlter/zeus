@@ -25,7 +25,7 @@ type Plan = {
   supported: boolean
   unsupported_reason?: string
 }
-type Delivery = { committed_bytes: number; delivery_id: string; state: string; reason?: string; plan: Plan }
+type Delivery = { approval_id?: string; committed_bytes: number; delivery_id: string; state: string; reason?: string; plan: Plan }
 const id = () => `desktop-${crypto.randomUUID()}`
 
 export function Uploads({ initialPath = '', initialName = '' }: { initialPath?: string; initialName?: string }) {
@@ -96,6 +96,10 @@ export function Uploads({ initialPath = '', initialName = '' }: { initialPath?: 
       })
       setPlan(result.plan)
     })
+  const openReview = (action: 'configure' | 'revoke' | 'review' | 'approve', target = '') => void run(async () => {
+    await call('POST', '/native/v1/cloud/review-terminal', { action, id: target })
+    setMessage('Zeus opened a review terminal for this installation. Read the scope and confirm there. This window never sends a decision.')
+  })
   const change = () => {
     setPlan(null)
     setMessage('')
@@ -114,14 +118,15 @@ export function Uploads({ initialPath = '', initialName = '' }: { initialPath?: 
         sub="Review a destination and exact source before requesting approval. Transfer controls and progress stay in the engine."
       />
       <p class="muted">
-        Connect Google Drive, Yandex Disk, Baidu Netdisk or a configured rclone remote using Zeus cloud accounts at a terminal. A
+        Connect Google Drive, Yandex Disk, Baidu Netdisk or a configured rclone remote with account setup below. A
         destination must support uploading; support varies by connector. Account credentials stay in the engine.
       </p>
+      <div class="row-actions"><button class="btn" disabled={busy} onClick={()=>openReview('configure')}>Connect destination</button><button class="btn" disabled={busy} onClick={()=>openReview('review')}>Review pending approvals</button></div>
       {error ? <Notice kind="error">{error}</Notice> : null}
       {message ? <Notice kind="info">{message}</Notice> : null}
       {!accounts.some((a) => !a.revoked) ? (
         <Notice kind="info">
-          No destination is connected yet. Configure an account in the Zeus terminal for this installation, then refresh this page. Local
+          No destination is connected yet. Choose Connect destination below; Zeus opens account setup for this installation. Local
           files must be in a folder included under Settings, Search and index.
         </Notice>
       ) : null}
@@ -230,7 +235,7 @@ export function Uploads({ initialPath = '', initialName = '' }: { initialPath?: 
                 void run(async () => {
                   await call('POST', '/native/v1/cloud/submit', { plan_id: plan.plan_id, plan_hash: plan.plan_hash, idempotency_key: id() })
                   setPlan(null)
-                  setMessage('Approval requested. Review it in the Zeus terminal. Uploading starts only after your decision.')
+                  setMessage('Approval requested. Choose Review pending approvals to open the review terminal. Uploading starts only after your decision.')
                   await refresh()
                 })
               }
@@ -253,6 +258,7 @@ export function Uploads({ initialPath = '', initialName = '' }: { initialPath?: 
               </span>
               {d.reason ? <span class="muted">{d.reason}</span> : null}
               <div class="row-actions">
+                {d.approval_id && d.state === 'awaiting_approval' ? <button class="btn small" disabled={busy} onClick={()=>openReview('approve',d.approval_id)}>Review approval</button> : null}
                 {(['pause', 'resume', 'cancel'] as const).map((action) => (
                   <button
                     class="btn small"
@@ -288,6 +294,7 @@ export function Uploads({ initialPath = '', initialName = '' }: { initialPath?: 
               {a.provider} · {a.destination}
               {a.revoked ? ' · revoked' : ''}
             </p>
+            {!a.revoked ? <button class="btn small" disabled={busy} onClick={()=>openReview('revoke',a.account_id)}>Review disconnect</button> : null}
             <p class="muted">
               Upload: {a.capabilities.staged_upload ? 'supported' : 'unavailable'} · Streaming:{' '}
               {a.capabilities.stream_upload ? 'supported' : 'unavailable'} · Provider fetch:{' '}
