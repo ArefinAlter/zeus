@@ -83,6 +83,32 @@ pub async fn dispatch(app: &Arc<App>, route: &str, body: Value) -> Result<Value>
             ensure_ready(app)?;
             app.reviews.enqueue(&app.daemon, &body).await
         }
+        ("GET", ["native", "v1", "cloud", "accounts"]) => {
+            ensure_ready(app)?;
+            app.daemon.raw("cloud.accounts.list", json!({})).await
+        }
+        ("GET", ["native", "v1", "cloud", "deliveries"]) => {
+            ensure_ready(app)?;
+            app.daemon.raw("cloud.list", json!({"limit":100})).await
+        }
+        (
+            "POST",
+            [
+                "native",
+                "v1",
+                "cloud",
+                operation @ ("plan" | "submit" | "control"),
+            ],
+        ) => {
+            ensure_ready(app)?;
+            let mut params = body;
+            let obj = params
+                .as_object_mut()
+                .ok_or_else(|| Failure::invalid("Send a transfer request."))?;
+            obj.entry("idempotency_key")
+                .or_insert_with(|| json!(retry_key()));
+            app.daemon.raw(&format!("cloud.{operation}"), params).await
+        }
         ("GET", ["api", "v1", "files"]) => files(app).await,
         ("GET", ["api", "v1", "artifacts"]) => {
             ensure_ready(app)?;

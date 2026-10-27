@@ -11,6 +11,7 @@ resolver = "3"
 members = [".", "crates/zeus-app", "crates/zeus-app-ext", "crates/zeus-app-index", "crates/zeus-app-grab", "crates/zeus-app-agent", "crates/zeus-app-integration"]
 
 [workspace.dependencies]
+win32job = "2"
 zeus-api = { path = "../../../crates/zeus-api" }
 zeus-types = { path = "../../../../zeus-core/crates/zeus-types" }
 serde = { version = "1", features = ["derive"] }
@@ -30,7 +31,7 @@ reqwest = { version = "0.13", default-features = false, features = ["rustls", "h
 [package]
 name = "zeus-client"
 description = "The Zeus desktop app: a Tauri 2 shell around the shared frontend and the engine it owns (zeus-app)."
-version = "0.0.1-beta"
+version = "0.0.1-beta.1"
 edition = "2024"
 rust-version = "1.90"
 license = "Apache-2.0"

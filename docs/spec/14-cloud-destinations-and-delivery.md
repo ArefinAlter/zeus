@@ -125,12 +125,12 @@ The contract is [`cloud.v1.schema.json`](schema/cloud.v1.schema.json), reference
 | `cloud.accounts.list` | `jobs.read` | Public scopes and actual capabilities; no credentials or local configuration paths. |
 | `cloud.accounts.configure` | `config.write`, verified physical terminal | Create/update explicit scope and write credential to keyring. Updates require the reviewed revision. |
 | `cloud.accounts.revoke` | `config.write`, verified physical terminal | Increment revision, revoke scope, stop local workers; retain uncertainty about continuing provider operations. |
-| `cloud.plan` | `jobs.write` | Persist immutable dry run and hash. Reads no source bytes and creates no remote object. |
+| `cloud.plan` | `jobs.write` | Persist immutable dry run and hash. Hashes a bounded `local_file` source; other sources use their declared or recorded metadata. Creates no remote object. |
 | `cloud.submit` | `jobs.write` | Reserve delivery and raise `cloud_delivery` approval; does not authorize transfer. |
 | `cloud.list`, `cloud.get` | `jobs.read` | Agent callers see their own deliveries; human callers may inspect all. |
 | `cloud.control` | `jobs.control` | Pause/resume/cancel within the original authority; never broadens it. |
 
-Mutations require a caller-scoped `idempotency_key`. A plan binds account revision, source hash, mode, unique remote name, exact size, byte/time budgets, expected SHA-256 when known, provider cancellation limits and remote-fetch disclosure. `max_seconds` is 1–86400. A `public_url` source includes `size_bytes` and optionally `sha256` and `block_md5`; the other source kind is `completed_job` with `job_id`. No source kind accepts an arbitrary local path or browser session.
+Mutations require a caller-scoped `idempotency_key`. A plan binds account revision, source hash, mode, unique remote name, exact size, byte/time budgets, expected SHA-256 when known, provider cancellation limits and remote-fetch disclosure. `max_seconds` is 1–86400. A `public_url` source includes `size_bytes` and optionally `sha256` and `block_md5`; another source kind is `completed_job` with `job_id`. The `local_file` source takes an absolute `path` and supports only `staged_upload`. It is limited to regular files inside the desktop user's explicitly included read roots (ADR 0014); missing, invalid or revoked scopes fail closed. Planning reads at most `max_bytes` to bind an exact SHA-256 digest and size, without disclosing the absolute path in public views. At execution the daemon rechecks scope, stages its own copy and verifies the approved digest before contacting the upload provider. The original file is preserved. Local paths and source hashes remain private persisted inputs. Browser sessions are never accepted as cloud sources.
 
 ```json validate=cloud.v1#/$defs/CloudPlanParams
 {
@@ -176,3 +176,22 @@ The current daemon bounds outstanding deliveries, account/plan counts and privat
 - Complete human OAuth onboarding and refresh for native providers. Baidu application eligibility and account limits require live acceptance; no verified public remote-import API is enabled.
 - Broaden provider-specific resumability, cancellation and readback verification as those APIs permit; retain explicit capability limits.
 - Reconcile the implementation and generated API schemas with this draft before freezing the cloud contract.
+
+### Desktop local-file source (0.0.1c development)
+
+```json validate=cloud.v1#/$defs/CloudPlanParams
+{
+  "account_id": "research",
+  "mode": "staged_upload",
+  "source": { "kind": "local_file", "path": "/home/user/Documents/report.pdf" },
+  "remote_name": "report.pdf",
+  "max_bytes": 10485760,
+  "max_seconds": 1800,
+  "allow_unbounded_remote": false,
+  "idempotency_key": "desktop-local-report-plan-1"
+}
+```
+
+Desktop Files settings distinguish included read roots from file-management write roots. Search inclusion alone does not grant rename, move, copy or folder-creation rights. Download roots retain their existing write grant. The desktop Uploads page can list accounts/deliveries, plan, submit an approval request, and pause/resume/cancel; it cannot configure accounts or decide cloud-delivery approvals.
+
+Local-path upload sources also check the journal’s quarantined job paths, both when planning and again when staging. A local path cannot be used to bypass the completed-job quarantine restriction.

@@ -1,7 +1,7 @@
 {
   "name": "zeus-client",
   "private": true,
-  "version": "0.0.1-beta",
+  "version": "0.0.1-beta.1",
   "description": "Zeus pre-alpha client: downloads, link grabber, queues, files search, agent threads and approvals. Talks to a real zeusd through zeus-web-bridge (hosted or local); a scripted backend remains for offline builds and tests.",
   "license": "Apache-2.0",
   "author": "Verne Ltd.",

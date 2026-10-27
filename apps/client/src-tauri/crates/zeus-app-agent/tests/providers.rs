@@ -497,7 +497,7 @@ async fn a_stalled_stream_times_out() {
 async fn an_answer_over_the_size_limit_is_cut_off_with_a_clear_error() {
     let big = format!(
         "data: {}\n\n",
-        json!({"choices": [{"delta": {"content": "x".repeat(6000)}}]}).to_string()
+        json!({"choices": [{"delta": {"content": "x".repeat(6000)}}]})
     );
     let (addr, _) = serve(move |_, _| ok_stream(vec![(0, big.clone().into_bytes())])).await;
     let (r, _) = chat(

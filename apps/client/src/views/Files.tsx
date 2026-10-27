@@ -25,7 +25,7 @@ import { categoryOf } from '../model/categories.ts'
 import type { MenuItem } from '../ui/components'
 import { Chip, ContextMenu, CopyButton, Dialog, Provenance } from '../ui/components'
 import { Icon, categoryIcon } from '../ui/icons'
-import { DeleteDialog, MoveDialog, RenameDialog } from './files/FileOps'
+import { DeleteDialog, MoveDialog, RenameDialog, NewFolderDialog } from './files/FileOps'
 import '../styles/files.css'
 
 type SortKey = 'name' | 'path' | 'size' | 'modified'
@@ -176,9 +176,11 @@ export function Files({ initialPath }: { initialPath?: string }) {
   const history = useStore((s) => s.history)
   const now = useStore((s) => s.now)
   const indexRoots = useStore((s) => s.settings.index.roots)
-  const writeRoots = useStore((s) => s.settings.saveTo.writeRoots)
+  const downloadRoots = useStore((s) => s.settings.saveTo.writeRoots)
+  const writeRoots = [...downloadRoots, ...indexRoots.filter(r => r.include && r.manageFiles).map(r=>r.path)]
   const prefs = usePrefs()
   const [query, setQuery] = useState('')
+  const [mkdir, setMkdir] = useState<string | null>(null)
   const [filter, setFilter] = useState('everything')
   const [opts, setOpts] = useState<SearchOptions>(DEFAULT_OPTIONS)
   const [folder, setFolder] = useState<string | null>(initialPath ?? null)
@@ -191,7 +193,7 @@ export function Files({ initialPath }: { initialPath?: string }) {
   const [height, setHeight] = useState(600)
   const [openDirs, setOpenDirs] = useState<Set<string>>(() => new Set())
   const [pv, setPv] = useState<PreviewState>(null)
-  const [op, setOp] = useState<{ kind: 'rename' | 'move' | 'delete'; id: number } | null>(null)
+  const [op, setOp] = useState<{ kind: 'rename' | 'move' | 'copy' | 'delete'; id: number } | null>(null)
   const input = useRef<HTMLInputElement>(null)
   const list = useRef<HTMLDivElement>(null)
   const rowH = prefs.density === 'compact' ? 24 : 30
@@ -267,7 +269,7 @@ export function Files({ initialPath }: { initialPath?: string }) {
   const commit = () => pushHistory(query)
   const writable = (f: FileEntry): true | string => {
     if (!NATIVE) return 'Zeus changes files only in the desktop app, inside its download folders.'
-    if (!writeRoots.some((r) => isInside(r, f.dir))) return 'Zeus changes files only inside its download folders; this folder is indexed for search only.'
+    if (!writeRoots.some((r) => isInside(r, f.dir))) return 'Zeus changes files only inside its download folders; enable Manage files for this folder in Settings, Search and index.'
     if (f.quarantined) return 'Quarantined: Zeus does not move, rename or delete it here. `zeus files organize` at a terminal asks you first.'
     return true
   }
@@ -278,9 +280,9 @@ export function Files({ initialPath }: { initialPath?: string }) {
     } else if (reveal) setFolder(f.dir)
     else toast({ kind: '', title: 'Opening files is not part of this release', desc: 'The index holds sample metadata; there is no file to open.', important: true, topic: 'system' })
   }
-  const act = (kind: 'rename' | 'move' | 'delete', f: FileEntry | null) => {
+  const act = (kind: 'rename' | 'move' | 'copy' | 'delete', f: FileEntry | null) => {
     if (!f) return
-    const ok = writable(f)
+    const ok = kind === 'copy' && !f.quarantined && !f.isFolder ? true : writable(f)
     if (ok !== true) return void toast({ kind: 'warn', title: 'Not here', desc: ok, important: false, topic: 'system' })
     setOp({ kind, id: f.id })
   }
@@ -320,6 +322,8 @@ export function Files({ initialPath }: { initialPath?: string }) {
       { label: 'Copy SHA-256', icon: 'copy', disabled: !f.sha256, run: () => void navigator.clipboard?.writeText(f.sha256 ?? '').catch(() => undefined) },
       { sep: true, label: '' },
       { label: 'Rename…', icon: 'rename', hint: 'F2', disabled: why, run: () => act('rename', f) },
+      { label: 'Copy to folder…', icon: 'copy', disabled: !NATIVE || f.quarantined || f.isFolder, run: () => act('copy', f) },
+      { label: 'Upload…', icon: 'upload', disabled: !NATIVE || f.quarantined || f.isFolder, run: () => navigate(href('uploads', {path:fullPath(f), name:f.name})) },
       { label: 'Move…', icon: 'folder', disabled: why, run: () => act('move', f) },
       { label: 'Delete…', icon: 'trash', hint: 'Del', danger: true, disabled: why, run: () => act('delete', f) },
       { sep: true, label: '' },
@@ -343,7 +347,7 @@ export function Files({ initialPath }: { initialPath?: string }) {
   )
 
   const opFile = op ? files.find((x) => x.id === op.id) : undefined
-  const moveFolders = useMemo(() => (op?.kind === 'move' ? files.filter((f) => f.isFolder && writeRoots.some((r) => isInside(r, fullPath(f)))).map(fullPath) : []), [op?.kind, files, writeRoots])
+  const moveFolders = useMemo(() => ((op?.kind === 'move' || op?.kind === 'copy') ? files.filter((f) => f.isFolder && writeRoots.some((r) => isInside(r, fullPath(f)))).map(fullPath) : []), [op?.kind, files, writeRoots])
 
   return (
     <div class={`files-page ${prefs.filesFolders ? 'with-folders' : ''} ${prefs.filesPreview ? 'with-preview' : ''}`}>
@@ -391,6 +395,7 @@ export function Files({ initialPath }: { initialPath?: string }) {
           <Icon name="panelright" />
         </button>
       </div>
+      {NATIVE ? <div class="fscope"><span>Manage files in folders you choose.</span><button class="btn small" onClick={()=>navigate(href('settings','index'))}>Choose folders</button><button class="btn small" disabled={!folder || !writeRoots.some(r=>isInside(r,folder))} onClick={()=>folder && setMkdir(folder)}>New folder</button>{folder ? <button class="btn small" onClick={()=>setFolder(parentOf(folder))}>Up</button> : null}</div> : null}
       {!parsed.ok ? <div class="fsyntaxerr">{parsed.error}</div> : null}
       {folder ? (
         <div class="fscope">
@@ -645,8 +650,9 @@ export function Files({ initialPath }: { initialPath?: string }) {
       ) : null}
       {help ? <SyntaxHelp onClose={() => setHelp(false)} onUse={(q) => (setQuery(q), setHelp(false))} /> : null}
       {saving ? <SaveBookmark query={query} filter={filter} onClose={() => setSaving(false)} /> : null}
+      {mkdir ? <NewFolderDialog parent={mkdir} onClose={()=>setMkdir(null)} /> : null}
       {op && opFile && op.kind === 'rename' ? <RenameDialog path={fullPath(opFile)} name={opFile.name} onClose={() => setOp(null)} /> : null}
-      {op && opFile && op.kind === 'move' ? <MoveDialog path={fullPath(opFile)} dir={opFile.isFolder ? parentOf(fullPath(opFile)) : opFile.dir} roots={writeRoots} folders={moveFolders} onClose={() => setOp(null)} /> : null}
+      {op && opFile && (op.kind === 'move' || op.kind === 'copy') ? <MoveDialog copy={op.kind === 'copy'} path={fullPath(opFile)} dir={opFile.isFolder ? parentOf(fullPath(opFile)) : opFile.dir} roots={writeRoots} folders={moveFolders} onClose={() => setOp(null)} /> : null}
       {op && opFile && op.kind === 'delete' ? <DeleteDialog paths={[fullPath(opFile)]} names={[opFile.name]} onClose={() => setOp(null)} /> : null}
     </div>
   )

@@ -77,13 +77,13 @@ export function NativeIndexSettings() {
           <Chip tone="warn">not available</Chip>
         </SettingRow>
       </SettingsGroup>
-      <SettingsGroup title="Included folders" note="Your download folders are always listed; change them in Settings, Save to. Folders you add here are searched, never written to. The engine follows changes with the file system watcher where the system offers one, and rescans on the schedule you choose.">
+      <SettingsGroup title="Included folders" note="Your download folders are always listed; change them in Settings, Save to. Folders start with search access. Enable Manage files separately to allow your file operations; remote uploads still require a reviewed transfer and human approval. The engine follows changes with the file system watcher where the system offers one, and rescans on the schedule you choose.">
         {ix.roots.map((r, i) => {
           const st = per(r.path)
           return (
             <SettingRow
               title={<span class="mono">{r.path}</span>}
-              desc={`${r.download ? 'Download folder' : 'Search only'} · ${(st?.entries ?? 0).toLocaleString('en-US')} entries${st && !st.exists ? ' · the folder is not there right now; its entries stay until it returns' : ''}${st?.last_scan ? ` · scanned ${fmtWhen(st.last_scan)}` : ''}`}
+              desc={`${r.download ? 'Download folder' : r.manageFiles ? 'File management enabled' : 'Search only'} · ${(st?.entries ?? 0).toLocaleString('en-US')} entries${st && !st.exists ? ' · the folder is not there right now; its entries stay until it returns' : ''}${st?.last_scan ? ` · scanned ${fmtWhen(st.last_scan)}` : ''}`}
             >
               <Select
                 label="Rescan"
@@ -92,6 +92,7 @@ export function NativeIndexSettings() {
                 options={EVERY}
               />
               <Switch label={`Follow changes in ${r.path}`} checked={r.monitorChanges} onChange={(v) => set({ roots: ix.roots.map((x, j) => (j === i ? { ...x, monitorChanges: v } : x)) })} />
+              {!r.download ? <Switch label={`Manage files in ${r.path}`} checked={!!r.manageFiles} onChange={(v) => set({ roots: ix.roots.map((x, j) => j === i ? { ...x, manageFiles: v } : x) })} /> : null}
               <Switch label={`Include ${r.path}`} checked={r.include} onChange={(v) => set({ roots: ix.roots.map((x, j) => (j === i ? { ...x, include: v } : x)) })} />
               <button type="button" class="btn small ghost" onClick={() => rescan(r.path)}>
                 Rescan

@@ -33,6 +33,7 @@ export interface IndexRoot {
   rescanEveryHours: number | null
   /** Native: one of the engine's download folders (it cannot be removed here). */
   download?: boolean
+  manageFiles?: boolean
 }
 
 export interface Settings {

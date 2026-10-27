@@ -63,7 +63,11 @@ impl ShellHooks for Hooks {
         {
             use tauri_plugin_autostart::ManagerExt;
             let launcher = self.app.autolaunch();
-            let result = if s.launch_at_login { launcher.enable() } else { launcher.disable() };
+            let result = if s.launch_at_login {
+                launcher.enable()
+            } else {
+                launcher.disable()
+            };
             if let Err(e) = result {
                 notes.push(format!("Start at sign-in could not be changed ({e})."));
             }
@@ -78,8 +82,10 @@ impl ShellHooks for Hooks {
                 return;
             }
             let built = (|| -> Result<tauri::tray::TrayIcon, String> {
-                let show = MenuItem::with_id(&app, "show", "Show Zeus", true, None::<&str>).map_err(|e| e.to_string())?;
-                let quit = MenuItem::with_id(&app, "quit", "Quit Zeus", true, None::<&str>).map_err(|e| e.to_string())?;
+                let show = MenuItem::with_id(&app, "show", "Show Zeus", true, None::<&str>)
+                    .map_err(|e| e.to_string())?;
+                let quit = MenuItem::with_id(&app, "quit", "Quit Zeus", true, None::<&str>)
+                    .map_err(|e| e.to_string())?;
                 let menu = Menu::with_items(&app, &[&show, &quit]).map_err(|e| e.to_string())?;
                 let mut builder = TrayIconBuilder::with_id("zeus")
                     .tooltip("Zeus")
@@ -91,7 +97,12 @@ impl ShellHooks for Hooks {
                         _ => {}
                     })
                     .on_tray_icon_event(|tray, event| {
-                        if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = event {
+                        if let TrayIconEvent::Click {
+                            button: MouseButton::Left,
+                            button_state: MouseButtonState::Up,
+                            ..
+                        } = event
+                        {
                             show_main(tray.app_handle());
                         }
                     });
@@ -110,21 +121,34 @@ impl ShellHooks for Hooks {
                     }
                 }
                 Ok(Ok(None)) => {}
-                Ok(Err(e)) => notes.push(format!("The notification-area icon could not be shown ({e}).")),
+                Ok(Err(e)) => notes.push(format!(
+                    "The notification-area icon could not be shown ({e})."
+                )),
                 Err(_) => notes.push("The notification-area icon did not appear.".into()),
             }
         }
-        if !want && let Ok(mut t) = self.tray.lock() {
-            if let Some(icon) = t.take() {
-                let _ = icon.set_visible(false);
-            }
+        if !want
+            && let Ok(mut t) = self.tray.lock()
+            && let Some(icon) = t.take()
+        {
+            let _ = icon.set_visible(false);
         }
-        if notes.is_empty() { Ok(()) } else { Err(notes.join(" ")) }
+        if notes.is_empty() {
+            Ok(())
+        } else {
+            Err(notes.join(" "))
+        }
     }
 
     fn notify(&self, title: &str, body: &str) {
         use tauri_plugin_notification::NotificationExt;
-        let _ = self.app.notification().builder().title(title).body(body).show();
+        let _ = self
+            .app
+            .notification()
+            .builder()
+            .title(title)
+            .body(body)
+            .show();
     }
 
     fn tooltip(&self, text: &str) {
@@ -170,7 +194,10 @@ fn main() {
                 let _ = w.set_focus();
             }
         }))
-        .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, None::<Vec<&str>>))
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            None::<Vec<&str>>,
+        ))
         .plugin(tauri_plugin_notification::init())
         .manage(Backend(app))
         .invoke_handler(tauri::generate_handler![backend_call])
@@ -196,7 +223,10 @@ fn main() {
                 .build()?;
             let backend = app.state::<Backend>().0.clone();
             let settings = backend.shell.settings();
-            backend.shell.set_hooks(Arc::new(Hooks { app: app.handle().clone(), tray: Mutex::new(None) }));
+            backend.shell.set_hooks(Arc::new(Hooks {
+                app: app.handle().clone(),
+                tray: Mutex::new(None),
+            }));
             if settings.start_minimized {
                 if settings.show_tray {
                     let _ = window.hide();
@@ -211,7 +241,10 @@ fn main() {
             if let WindowEvent::CloseRequested { api, .. } = event {
                 let backend = window.state::<Backend>();
                 let s = backend.0.shell.settings();
-                if s.close_to_tray && s.show_tray && backend.0.shell.view()["tray_available"] == true {
+                if s.close_to_tray
+                    && s.show_tray
+                    && backend.0.shell.view()["tray_available"] == true
+                {
                     api.prevent_close();
                     let _ = window.hide();
                 }

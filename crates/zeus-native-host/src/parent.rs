@@ -103,6 +103,7 @@ fn chain_match(
         .map(|r| r.name)
 }
 
+#[cfg(test)]
 fn verify_chain(
     browser: BrowserName,
     host: &Process,

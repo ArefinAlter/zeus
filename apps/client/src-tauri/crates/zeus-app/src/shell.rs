@@ -200,18 +200,30 @@ pub async fn check_update() -> Result<Value> {
         .header("accept", "application/vnd.github+json")
         .send()
         .await
-        .map_err(|_| Failure::new("app.update_offline", "Could not reach GitHub to look for a newer release."))?;
+        .map_err(|_| {
+            Failure::new(
+                "app.update_offline",
+                "Could not reach GitHub to look for a newer release.",
+            )
+        })?;
     if !response.status().is_success() {
         return Err(Failure::new(
             "app.update_failed",
-            format!("GitHub answered {} when asked for the latest release.", response.status().as_u16()),
+            format!(
+                "GitHub answered {} when asked for the latest release.",
+                response.status().as_u16()
+            ),
         ));
     }
     let body: Value = response
         .json()
         .await
         .map_err(|_| Failure::new("app.update_failed", "GitHub's answer was not understood."))?;
-    let tag = body.get("tag_name").and_then(Value::as_str).unwrap_or_default().to_owned();
+    let tag = body
+        .get("tag_name")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
     let current = env!("CARGO_PKG_VERSION");
     Ok(json!({
         "current": current,
@@ -243,7 +255,7 @@ mod tests {
         assert!(shell.settings().show_tray && !shell.settings().launch_at_login);
         let v = shell.put(&json!({"launch_at_login": true, "start_minimized": true, "show_tray": true, "close_to_tray": false, "check_updates_weekly": false})).unwrap();
         assert_eq!(v["settings"]["launch_at_login"], true);
-        assert_eq!(shell.settings().close_to_tray, false);
+        assert!(!shell.settings().close_to_tray);
         assert!(shell.notify(&json!({"title": ""})).is_err());
     }
 }

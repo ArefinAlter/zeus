@@ -217,6 +217,54 @@ pub(super) async fn upload_source(
         ));
     }
     let mut file = match &row.source {
+        CloudSource::LocalFile { path } => {
+            // Snapshot into Zeus-owned staging. The original is never moved or deleted.
+            // The existing full verification below checks this snapshot before any remote write.
+            let source_path = local_path(service, path.expose())?;
+            let mut source = tokio::fs::File::open(source_path)
+                .await
+                .map_err(|_| invalid("local source is unavailable"))?;
+            let path = service
+                .staging
+                .join(format!("{}.part", row.view.delivery_id));
+            if path.is_symlink() {
+                return Err(invalid("unexpected staging symlink"));
+            }
+            let mut output = tokio::fs::OpenOptions::new()
+                .write(true)
+                .read(true)
+                .create(true)
+                .truncate(true)
+                .open(path)
+                .await
+                .map_err(|_| fail())?;
+            let mut buffer = vec![0; 65536];
+            let mut read = 0u64;
+            loop {
+                service.guard(&row.view.delivery_id)?;
+                if cancel.is_cancelled() {
+                    return Err(invalid("local source staging canceled"));
+                }
+                let n = source.read(&mut buffer).await.map_err(|_| fail())?;
+                if n == 0 {
+                    break;
+                }
+                read = read.saturating_add(n as u64);
+                if read > row.view.plan.size_bytes || read > row.view.plan.max_bytes {
+                    return Err(invalid("local source exceeds approved length"));
+                }
+                output.write_all(&buffer[..n]).await.map_err(|_| fail())?;
+            }
+            if read != row.view.plan.size_bytes {
+                return Err(invalid("local source size changed"));
+            }
+            output.sync_all().await.map_err(|_| fail())?;
+            output
+                .seek(std::io::SeekFrom::Start(0))
+                .await
+                .map_err(|_| fail())?;
+            output
+        }
         CloudSource::CompletedJob { job_id } => {
             let record = service
                 .journal
@@ -396,4 +444,112 @@ pub(super) async fn upload_source(
         .await
         .map_err(|_| fail())?;
     Ok((guarded(service, row, cancel, Box::new(file)), request))
+}
+
+/// Resolve a file against the desktop user's explicit read scopes. No raw path is returned to callers.
+pub(super) fn local_path(service: &CloudService, raw: &str) -> ApiResult<PathBuf> {
+    let path = Path::new(raw);
+    if !path.is_absolute()
+        || raw.contains('\0')
+        || path
+            .components()
+            .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        return Err(invalid("local source path is invalid"));
+    }
+    if service.local_roots_file.is_symlink() {
+        return Err(invalid("local upload scopes are invalid"));
+    }
+    let mut bytes = Vec::new();
+    std::io::Read::read_to_end(
+        &mut std::io::Read::take(
+            std::fs::File::open(&service.local_roots_file)
+                .map_err(|_| invalid("include the local folder in desktop Files settings first"))?,
+            65537,
+        ),
+        &mut bytes,
+    )
+    .map_err(|_| invalid("local upload scopes are invalid"))?;
+    if bytes.len() > 65536 {
+        return Err(invalid("local upload scopes are invalid"));
+    }
+    let roots: Vec<String> =
+        serde_json::from_slice(&bytes).map_err(|_| invalid("local upload scopes are invalid"))?;
+    let path = std::fs::canonicalize(path).map_err(|_| invalid("local source is unavailable"))?;
+    if !roots
+        .iter()
+        .filter_map(|r| std::fs::canonicalize(r).ok())
+        .any(|r| path.starts_with(r))
+    {
+        return Err(invalid("local source is outside included folders"));
+    }
+    if !std::fs::metadata(&path).map_err(|_| fail())?.is_file() {
+        return Err(invalid("local source must be a regular file"));
+    }
+    // A local-file spelling must not bypass the quarantine gate on completed jobs.
+    // Page the journal rather than materializing every retained job at once.
+    let mut after = None;
+    loop {
+        let rows = service
+            .journal
+            .read(|tx| {
+                tx.jobs(&zeus_journal::JobFilter {
+                    after,
+                    limit: Some(256),
+                    ..Default::default()
+                })
+            })
+            .map_err(|_| fail())?;
+        if rows.is_empty() {
+            break;
+        }
+        after = rows.last().map(|row| row.job.id);
+        for row in rows.into_iter().filter(|row| row.job.quarantined) {
+            let paths = [
+                Some(row.internal.dest_path.as_str()),
+                Some(row.internal.zpart_path.as_str()),
+                row.job.result.as_ref().map(|r| r.path.as_str()),
+            ];
+            if paths
+                .into_iter()
+                .flatten()
+                .any(|raw| std::fs::canonicalize(raw).is_ok_and(|candidate| candidate == path))
+            {
+                return Err(ApiError::new(
+                    "policy.quarantine_blocked",
+                    "quarantined files cannot be uploaded through a local path",
+                ));
+            }
+        }
+    }
+    Ok(path)
+}
+
+/// Compute a bounded source digest before a human is asked to approve its exact bytes.
+pub(super) async fn local_digest(path: &Path, max_bytes: u64) -> ApiResult<(u64, Hex256)> {
+    let mut file = tokio::fs::File::open(path)
+        .await
+        .map_err(|_| invalid("local source is unavailable"))?;
+    let size = file.metadata().await.map_err(|_| fail())?.len();
+    if size > max_bytes {
+        return Err(invalid("local source exceeds the approved byte ceiling"));
+    }
+    let mut hash = zeus_verify::hash::DualHasher::new();
+    let mut buffer = vec![0; 65536];
+    let mut read = 0u64;
+    loop {
+        let n = file.read(&mut buffer).await.map_err(|_| fail())?;
+        if n == 0 {
+            break;
+        }
+        read = read.saturating_add(n as u64);
+        if read > size || read > max_bytes {
+            return Err(invalid("local source changed while planning"));
+        }
+        hash.update(&buffer[..n]);
+    }
+    if read != size {
+        return Err(invalid("local source changed while planning"));
+    }
+    Ok((size, hash.finalize().sha256))
 }

@@ -78,15 +78,15 @@ export function RenameDialog({ path, name, onClose }: { path: string; name: stri
   )
 }
 
-export function MoveDialog({ path, dir, roots, folders, onClose }: { path: string; dir: string; roots: string[]; folders: string[]; onClose: () => void }) {
+export function MoveDialog({ path, dir, roots, folders, onClose, copy = false }: { path: string; dir: string; roots: string[]; folders: string[]; onClose: () => void; copy?: boolean }) {
   const [value, setValue] = useState(dir)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const save = () => {
     setBusy(true)
-    filesApi.move(path, value.trim()).then(
+    ;(copy ? filesApi.copy(path, value.trim()) : filesApi.move(path, value.trim())).then(
       () => {
-        done('Moved', value.trim())
+        done(copy ? 'Copied' : 'Moved', value.trim())
         onClose()
       },
       (e: unknown) => {
@@ -96,7 +96,7 @@ export function MoveDialog({ path, dir, roots, folders, onClose }: { path: strin
     )
   }
   return (
-    <Dialog title="Move to a folder" onClose={onClose}>
+    <Dialog title={copy ? "Copy to a folder" : "Move to a folder"} onClose={onClose}>
       <label class="field">
         Folder
         <input
@@ -115,7 +115,7 @@ export function MoveDialog({ path, dir, roots, folders, onClose }: { path: strin
         </datalist>
       </label>
       <p class="muted small">
-        Inside a download folder only ({roots.join(', ') || 'none'}). A folder that does not exist yet is created. If the folder has a file of the same name the move is refused; Zeus never replaces a file. Example: {joinPath(roots[0] ?? '', 'Sorted')}.
+        Inside a folder enabled for file management ({roots.join(', ') || 'none'}). A folder that does not exist yet is created. If the folder has a file of the same name the move is refused; Zeus never replaces a file. Example: {joinPath(roots[0] ?? '', 'Sorted')}.
       </p>
       {error ? <Notice kind="error">{error}</Notice> : null}
       <div class="decide-row">
@@ -123,7 +123,7 @@ export function MoveDialog({ path, dir, roots, folders, onClose }: { path: strin
           Cancel
         </button>
         <button type="button" class="btn primary" disabled={busy || !value.trim() || value.trim() === dir} onClick={save}>
-          Move
+          {copy ? "Copy" : "Move"}
         </button>
       </div>
     </Dialog>
@@ -182,4 +182,10 @@ export function DeleteDialog({ paths, names, onClose }: { paths: string[]; names
       </div>
     </Dialog>
   )
+}
+
+export function NewFolderDialog({ parent, onClose }: { parent: string; onClose: () => void }) {
+  const [name,setName]=useState('');const [error,setError]=useState('');const [busy,setBusy]=useState(false)
+  const save=()=>{if(nameFault(name))return;setBusy(true);filesApi.mkdir(parent,name).then(()=>{done('Folder created',name);onClose()},e=>{setBusy(false);setError(e instanceof Error?e.message:'The folder could not be created.')})}
+  return <Dialog title="New folder" onClose={onClose}><p class="mono">{parent}</p><label class="field">Name<input value={name} autofocus onInput={e=>setName(e.currentTarget.value)} onKeyDown={e=>{if(e.key==='Enter')save()}}/></label>{error?<Notice kind="error">{error}</Notice>:null}<div class="decide-row"><button class="btn" onClick={onClose}>Cancel</button><button class="btn primary" disabled={busy || !!nameFault(name)} onClick={save}>Create folder</button></div></Dialog>
 }

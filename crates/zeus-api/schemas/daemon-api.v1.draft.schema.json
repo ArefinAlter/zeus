@@ -2347,7 +2347,7 @@
     },
     "CloudPlanParams": {
       "additionalProperties": false,
-      "description": "Compute a dry-run plan. Does not fetch source bytes or mutate the remote destination.",
+      "description": "Compute a dry-run plan. Hashes bounded local sources; never mutates the remote destination.",
       "properties": {
         "account_id": {
           "description": "Existing configured account scope.",
@@ -2550,8 +2550,27 @@
       "type": "object"
     },
     "CloudSource": {
-      "description": "Approved source identity. Raw URLs occur only on incoming requests and private storage.",
+      "description": "Private local-file, completed-download or public-URL source identity.",
       "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "A local regular file inside a folder explicitly included by the desktop user.\nThe private path is withheld from delivery views and Debug output.",
+          "properties": {
+            "kind": {
+              "const": "local_file",
+              "type": "string"
+            },
+            "path": {
+              "$ref": "#/$defs/LocalFilePath",
+              "description": "Absolute source path; the daemon canonicalizes and checks the configured read scopes."
+            }
+          },
+          "required": [
+            "kind",
+            "path"
+          ],
+          "type": "object"
+        },
         {
           "additionalProperties": false,
           "description": "An existing completed download; Zeus never removes this user file.",
@@ -6473,6 +6492,10 @@
         "spent_month_micro_usd"
       ],
       "type": "object"
+    },
+    "LocalFilePath": {
+      "description": "An upload source path. Its wire value is private; Debug never displays it.",
+      "type": "string"
     },
     "ManifestFormat": {
       "description": "Manifest output format.",

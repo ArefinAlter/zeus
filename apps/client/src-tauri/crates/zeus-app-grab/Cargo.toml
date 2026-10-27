@@ -1,7 +1,7 @@
 [package]
 name = "zeus-app-grab"
 description = "The Zeus app's link grabber checks and site grabber crawler."
-version = "0.0.1-beta"
+version = "0.0.1-beta.1"
 edition = "2024"
 rust-version = "1.90"
 license = "Apache-2.0"

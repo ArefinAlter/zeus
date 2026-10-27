@@ -179,6 +179,9 @@ impl AgentConfig {
 
     /// Prices (input, output) in US dollars per million tokens for a provider.
     pub fn prices(&self, p: &ProviderCfg) -> (f64, f64) {
+        if p.kind.is_subscription() {
+            return (0.0, 0.0);
+        }
         (
             p.price_in_per_mtok
                 .unwrap_or(self.default_price_in_per_mtok),
@@ -210,6 +213,14 @@ impl AgentConfig {
             {
                 return Err(Failure::invalid(
                     "A provider name or model id is too long or has control characters.",
+                ));
+            }
+            if p.kind.is_subscription()
+                && !p.base_url.is_empty()
+                && p.base_url != p.kind.default_base_url()
+            {
+                return Err(Failure::invalid(
+                    "An installed-agent connection uses its own sign-in, not a custom HTTP endpoint.",
                 ));
             }
             if !p.base_url.trim().is_empty() {
@@ -306,8 +317,10 @@ mod tests {
         let mut c = AgentConfig::default();
         c.providers[1].monthly_cap_usd = -1.0;
         assert!(c.validate().is_err());
-        let mut c = AgentConfig::default();
-        c.max_tokens = 10;
+        let c = AgentConfig {
+            max_tokens: 10,
+            ..AgentConfig::default()
+        };
         assert!(c.validate().is_err());
         let mut c = AgentConfig::default();
         c.providers[1].id = "Bad Id".into();

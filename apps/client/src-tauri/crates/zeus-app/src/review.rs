@@ -141,11 +141,11 @@ fn parse_items(body: &Value, settings: &EngineSettings) -> Result<(Vec<Item>, Ve
             refused.push(json!({"index": index, "reason": reason}));
             continue;
         }
-        if let Some(d) = &dir {
-            if !Path::new(d).is_absolute() || !settings.write_roots.iter().any(|r| inside(r, d)) {
-                refused.push(json!({"index": index, "reason": "That folder is outside the download folders Zeus may write to. Add it in Settings, Save to."}));
-                continue;
-            }
+        if let Some(d) = &dir
+            && (!Path::new(d).is_absolute() || !settings.write_roots.iter().any(|r| inside(r, d)))
+        {
+            refused.push(json!({"index": index, "reason": "That folder is outside the download folders Zeus may write to. Add it in Settings, Save to."}));
+            continue;
         }
         let mut job = Map::new();
         job.insert("url".into(), json!(input));
@@ -329,11 +329,15 @@ impl Reviews {
         };
         // A queue chosen after the review labels every job of the batch; the daemon holds them for that queue.
         let mut jobs = jobs;
-        if let Some(queue) = body.get("queue").and_then(Value::as_str).filter(|q| !q.is_empty()) {
+        if let Some(queue) = body
+            .get("queue")
+            .and_then(Value::as_str)
+            .filter(|q| !q.is_empty())
+        {
             let valid = queue.len() <= 32
-                && queue
-                    .bytes()
-                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_');
+                && queue.bytes().all(|b| {
+                    b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_'
+                });
             if !valid {
                 return Err(Failure::invalid("That is not a queue name."));
             }

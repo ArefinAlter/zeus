@@ -1233,3 +1233,143 @@ async fn retention_ages_out_finished_history_but_never_live_evidence_or_a_replay
     );
     f.service.shutdown().await;
 }
+
+#[tokio::test]
+async fn local_file_upload_requires_approval_preserves_original_and_cleans_its_snapshot() {
+    let f = Fixture::new().await;
+    let folder = f.dir.path().join("local");
+    std::fs::create_dir(&folder).unwrap();
+    let path = folder.join("original.txt");
+    std::fs::write(&path, b"local original").unwrap();
+    std::fs::write(
+        &f.service.local_roots_file,
+        serde_json::to_vec(&vec![folder.to_string_lossy()]).unwrap(),
+    )
+    .unwrap();
+    let delivery = f
+        .submit(
+            CloudSource::LocalFile {
+                path: LocalFilePath::new(path.to_string_lossy().into_owned()),
+            },
+            DeliveryMode::StagedUpload,
+            "local",
+        )
+        .await;
+    f.service.tick().await.unwrap();
+    assert_eq!(f.provider.uploads.load(Ordering::SeqCst), 0);
+    assert!(
+        !serde_json::to_string(&delivery)
+            .unwrap()
+            .contains(f.dir.path().to_str().unwrap())
+    );
+    f.approve(&delivery).await;
+    f.service.tick().await.unwrap();
+    f.settle().await;
+    assert_eq!(
+        f.get(&delivery.delivery_id).state,
+        CloudDeliveryState::Completed
+    );
+    assert_eq!(std::fs::read(&path).unwrap(), b"local original");
+    assert!(
+        !f.service
+            .staging
+            .join(format!("{}.part", delivery.delivery_id))
+            .exists()
+    );
+}
+
+#[tokio::test]
+async fn local_file_changes_after_planning_never_reach_the_remote_provider() {
+    let f = Fixture::new().await;
+    let path = f.dir.path().join("change.txt");
+    std::fs::write(&path, b"original").unwrap();
+    std::fs::write(
+        &f.service.local_roots_file,
+        serde_json::to_vec(&vec![f.dir.path().to_string_lossy()]).unwrap(),
+    )
+    .unwrap();
+    let delivery = f
+        .submit(
+            CloudSource::LocalFile {
+                path: LocalFilePath::new(path.to_string_lossy().into_owned()),
+            },
+            DeliveryMode::StagedUpload,
+            "changed",
+        )
+        .await;
+    f.service.tick().await.unwrap();
+    f.approve(&delivery).await;
+    std::fs::write(&path, b"modified").unwrap();
+    f.service.tick().await.unwrap();
+    f.settle().await;
+    assert_eq!(f.provider.uploads.load(Ordering::SeqCst), 0);
+    assert_ne!(
+        f.get(&delivery.delivery_id).state,
+        CloudDeliveryState::Completed
+    );
+    assert_eq!(std::fs::read(&path).unwrap(), b"modified");
+}
+
+#[tokio::test]
+async fn local_scope_revocation_and_outside_paths_fail_closed() {
+    let f = Fixture::new().await;
+    let scope = f.dir.path().join("scope");
+    std::fs::create_dir(&scope).unwrap();
+    let outside = f.dir.path().join("outside");
+    std::fs::write(&outside, b"private").unwrap();
+    std::fs::write(
+        &f.service.local_roots_file,
+        serde_json::to_vec(&vec![scope.to_string_lossy()]).unwrap(),
+    )
+    .unwrap();
+    assert!(source::local_path(&f.service, outside.to_str().unwrap()).is_err());
+    let inside = scope.join("inside");
+    std::fs::write(&inside, b"inside").unwrap();
+    assert!(source::local_path(&f.service, inside.to_str().unwrap()).is_ok());
+    std::fs::remove_file(&f.service.local_roots_file).unwrap();
+    assert!(source::local_path(&f.service, inside.to_str().unwrap()).is_err());
+}
+
+#[tokio::test]
+async fn local_file_cannot_bypass_job_quarantine_even_after_approval() {
+    let f = Fixture::new().await;
+    let id = f.source_job(b"quarantine regression");
+    let mut record = f.service.journal.job(id).unwrap().unwrap();
+    let path = record.job.result.as_ref().unwrap().path.clone();
+    std::fs::write(
+        &f.service.local_roots_file,
+        serde_json::to_vec(&vec![f.dir.path().to_string_lossy()]).unwrap(),
+    )
+    .unwrap();
+    let delivery = f
+        .submit(
+            CloudSource::LocalFile {
+                path: LocalFilePath::new(&path),
+            },
+            DeliveryMode::StagedUpload,
+            "quarantine-local",
+        )
+        .await;
+    f.approve(&delivery).await;
+    record.job.quarantined = true;
+    f.service
+        .journal
+        .transact(|tx| tx.put_job(&record))
+        .unwrap();
+    assert_eq!(
+        source::local_path(&f.service, &path)
+            .unwrap_err()
+            .0
+            .code
+            .as_str(),
+        "policy.quarantine_blocked"
+    );
+    f.service.tick().await.unwrap();
+    f.settle().await;
+    assert_eq!(f.provider.uploads.load(Ordering::SeqCst), 0);
+    assert_ne!(
+        f.get(&delivery.delivery_id).state,
+        CloudDeliveryState::Completed
+    );
+    assert_eq!(std::fs::read(path).unwrap(), b"quarantine regression");
+}

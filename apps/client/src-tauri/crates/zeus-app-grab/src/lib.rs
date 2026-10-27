@@ -99,9 +99,7 @@ async fn verify(app: &Arc<App>, job_id: &str, body: &Value) -> Result<Value> {
         params["expected_sha256"] = json!(h);
         expected = true;
     }
-    let changed = || {
-        json!({"matches_recorded": false, "matches_expected": null, "sha256": null, "blake3": null})
-    };
+    let changed = || json!({"matches_recorded": false, "matches_expected": null, "sha256": null, "blake3": null});
     match app.daemon.raw("jobs.verify", params).await {
         Err(f) if f.code == "integrity.hash_mismatch" => {
             if !expected {

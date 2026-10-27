@@ -99,10 +99,36 @@ pub struct CloudAccountsRevokeParams {
     /// Durable request binding.
     pub idempotency_key: String,
 }
-/// Approved source identity. Raw URLs occur only on incoming requests and private storage.
+/// An upload source path. Its wire value is private; Debug never displays it.
+#[derive(Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(transparent)]
+pub struct LocalFilePath(String);
+impl LocalFilePath {
+    /// Wrap a path supplied by the person; the daemon validates containment.
+    pub fn new(path: impl Into<String>) -> Self {
+        Self(path.into())
+    }
+    /// Borrow only when validating or opening the source file.
+    pub fn expose(&self) -> &str {
+        &self.0
+    }
+}
+impl std::fmt::Debug for LocalFilePath {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("LocalFilePath([REDACTED])")
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+/// Private local-file, completed-download or public-URL source identity.
 pub enum CloudSource {
+    /// A local regular file inside a folder explicitly included by the desktop user.
+    /// The private path is withheld from delivery views and Debug output.
+    LocalFile {
+        /// Absolute source path; the daemon canonicalizes and checks the configured read scopes.
+        path: LocalFilePath,
+    },
     /// An existing completed download; Zeus never removes this user file.
     CompletedJob {
         /// Download identity.
@@ -122,7 +148,7 @@ pub enum CloudSource {
         block_md5: Option<Vec<String>>,
     },
 }
-/// Compute a dry-run plan. Does not fetch source bytes or mutate the remote destination.
+/// Compute a dry-run plan. Hashes bounded local sources; never mutates the remote destination.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CloudPlanParams {

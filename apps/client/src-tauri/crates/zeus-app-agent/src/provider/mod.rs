@@ -11,6 +11,9 @@
 //! parser (SSE events to neutral deltas). The HTTP layer ([`http`]) streams, retries, cancels and limits sizes; the
 //! parsers and builders are tested on their own with canned wire data.
 
+#[path = "../../../../../../../shared/local_agent.rs"]
+pub mod local_agent;
+
 pub mod anthropic;
 pub mod gemini;
 pub mod http;
@@ -27,6 +30,14 @@ use serde_json::Value;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Kind {
+    /// The locally installed Codex, using its own sign-in.
+    Codex,
+    /// The locally installed Claude Code, using its own sign-in.
+    Claude,
+    /// The locally installed Cursor CLI, using its own sign-in.
+    Cursor,
+    /// The locally installed Antigravity CLI, using its own sign-in.
+    Antigravity,
     /// Anthropic Messages API.
     Anthropic,
     /// OpenAI Chat Completions.
@@ -62,7 +73,11 @@ pub enum Wire {
 
 impl Kind {
     /// Every kind, in the order the ladder lists them.
-    pub const ALL: [Kind; 10] = [
+    pub const ALL: [Kind; 14] = [
+        Kind::Codex,
+        Kind::Claude,
+        Kind::Cursor,
+        Kind::Antigravity,
         Kind::Anthropic,
         Kind::Openai,
         Kind::Google,
@@ -84,9 +99,21 @@ impl Kind {
         }
     }
 
+    /// Whether this is an existing installed-agent sign-in.
+    pub fn is_subscription(self) -> bool {
+        matches!(
+            self,
+            Self::Codex | Self::Claude | Self::Cursor | Self::Antigravity
+        )
+    }
+
     /// The public base URL of the provider (empty for a custom endpoint).
     pub fn default_base_url(self) -> &'static str {
         match self {
+            Kind::Codex => "https://codex.local-agent.invalid/v1",
+            Kind::Claude => "https://claude.local-agent.invalid/v1",
+            Kind::Cursor => "https://cursor.local-agent.invalid/v1",
+            Kind::Antigravity => "https://antigravity.local-agent.invalid/v1",
             Kind::Anthropic => "https://api.anthropic.com",
             Kind::Openai => "https://api.openai.com/v1",
             Kind::Google => "https://generativelanguage.googleapis.com/v1beta",
@@ -102,12 +129,24 @@ impl Kind {
 
     /// Whether a key is needed (a local Ollama and a custom endpoint may run without one).
     pub fn needs_key(self) -> bool {
-        !matches!(self, Kind::Ollama | Kind::OpenaiCompatible)
+        !matches!(
+            self,
+            Kind::Ollama
+                | Kind::OpenaiCompatible
+                | Kind::Codex
+                | Kind::Claude
+                | Kind::Cursor
+                | Kind::Antigravity
+        )
     }
 
     /// A display name.
     pub fn label(self) -> &'static str {
         match self {
+            Kind::Codex => "Codex (existing sign-in)",
+            Kind::Claude => "Claude Code (existing sign-in)",
+            Kind::Cursor => "Cursor (existing sign-in)",
+            Kind::Antigravity => "Antigravity (existing sign-in)",
             Kind::Anthropic => "Anthropic",
             Kind::Openai => "OpenAI",
             Kind::Google => "Google Gemini",

@@ -341,7 +341,10 @@ impl CloudService {
                 current.view.state,
                 CloudDeliveryState::Completed | CloudDeliveryState::Canceled
             ) && current.view.plan.mode == DeliveryMode::StagedUpload
-                && matches!(current.source, CloudSource::PublicUrl { .. })
+                && matches!(
+                    current.source,
+                    CloudSource::PublicUrl { .. } | CloudSource::LocalFile { .. }
+                )
             {
                 current.view.cleanup_pending = true;
             }
@@ -357,8 +360,10 @@ impl CloudService {
         }
     }
     async fn cleanup_staged(&self, row: &Delivery) -> ApiResult<()> {
-        if !matches!(row.source, CloudSource::PublicUrl { .. })
-            || row.view.plan.mode != DeliveryMode::StagedUpload
+        if !matches!(
+            row.source,
+            CloudSource::PublicUrl { .. } | CloudSource::LocalFile { .. }
+        ) || row.view.plan.mode != DeliveryMode::StagedUpload
             || !matches!(
                 row.view.state,
                 CloudDeliveryState::Completed | CloudDeliveryState::Canceled
