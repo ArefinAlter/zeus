@@ -1,0 +1,22 @@
+PASS  the build carries the extension  (nfiaihlklfadnbcfadmhbmddabmafilo)
+PASS  Edge is found and the host can verify it (machine-wide install)  (\\?\C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe)
+PASS  installing without consent is refused and writes nothing
+PASS  the plan lists the registry key, manifest, launcher, allow-list and extension folders  (6 steps)
+PASS  the registration points at the app's launcher and pins the extension id
+PASS  the host's allow-list lists the id as a development extension, in the engine's state folder  (D:\verne-build\zeus\scratch\d\s08-home\zeus\state\allowed-extensions.json)
+PASS  the launcher sets this installation's environment and starts the bundled host
+PASS  Edge loads the packaged extension under its development id  (nfiaihlklfadnbcfadmhbmddabmafilo)
+PASS  the extension connects to the engine through the native host
+PASS  the browser's own download is interrupted and cannot be resumed  (SERVER_BAD_CONTENT, 0 bytes)
+PASS  the extension offers it and the engine creates a job from the browser  (job_01M5YG7PM52968VA2G10W8YE9J awaiting_approval)
+PASS  an approval of kind handoff is pending, listed by the command line a person uses  (ap_01M5YG7PM5MGB1H6W2EA648BDY)
+PASS  the status shows that requests are waiting for a person  (1 pending)
+PASS  with no decision nothing downloads: the job waits and no bytes were fetched  (awaiting_approval, 0 bytes)
+PASS  no route of the app can decide it  (approval.not_found)
+popup buttons: ["Stop all work","Release stop (keep jobs paused)","Allow once","Allow this site for 24 hours","Don’t allow","Never for this site"]
+popup after the click: Zeus | Connected to Zeus | Stop all work | Release stop (keep jobs paused) |  | The decision could not be sent (This version of Zeus cannot take decisions from the browser.). |  | NEEDS YOUR DECISION | Finish a failed download | File name (supplied by the website) | Rescue browser download | Site | http://127.0.0.1:64645 |  | Request code: FYZ-3ZA · 7fbe3fa8a26a2fd9 |  | Browser · Private window | false | Browser · Name | edge | Browser · profile id | ebad0740b64b21cd71cfec4f65fffcff | First use
+PASS  the daemon refuses a decision from a development-id extension and the approval keeps waiting for a person  (This version of Zeus cannot take decisions from the browser.)
+PASS  cleanup: the Edge registration is gone again
+LIMIT  completion after approval was NOT demonstrated: the popup decision is refused for a development extension id, so a person decides it at the terminal (zeus approvals)
+SCENARIO 8: PASSED WITH LIMITS
+exit 0

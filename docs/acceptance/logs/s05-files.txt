@@ -1,0 +1,58 @@
+download folder: D:\verne-build\zeus\scratch\a\s05\downloads
+created 2001 files in 0.8 s
+PASS  the index holds exactly the files made (watcher and scanner agree)  (2037 of 2037, settled in 3.6 s after the last file)
+PASS  partial files, node_modules, Thumbs.db and hidden files are skipped
+PASS  the watcher is on
+PASS  paths are absolute without a verbatim prefix
+PASS  the page shows every entry
+PASS  search "ext:pdf" answers  (500 hits, expected 500)
+PASS  search "ext:txt;png" answers  (1000 hits, expected 1000)
+PASS  search "size:>2mb" answers  (1 hits, expected 1)
+PASS  search "dm:2020" answers  (40 hits, expected 40)
+PASS  search "dm:today ext:pdf" answers  (480 hits)
+PASS  search "note-12" answers  (28 hits)
+PASS  search "folder:" answers  (36 hits, expected 36)
+PASS  search "file:" answers  (2001 hits, expected 2001)
+PASS  search "regex:^doc-1\d\d\.pdf$" answers  (25 hits)
+PASS  search "*.pdf" answers  (500 hits, expected 500)
+PASS  search "ext:zip !pack-1" matches the disk  (222 vs 222)
+PASS  search "path:Pictures ext:png" matches the disk  (0 vs 0)
+PASS  search "regex:^doc-1\d\d\.pdf$" matches the disk  (25 vs 25)
+PASS  search "DOC-" matches the disk  (0 vs 0)
+PASS  search "^pack-\d+\.zip$" matches the disk  (500 vs 500)
+PASS  search "Music" matches the disk  (339 vs 339)
+PASS  the Picture filter shows the pictures
+PASS  the folders pane lists the download folder and its children  (11 rows)
+PASS  choosing a folder narrows the search to it
+PASS  a text file previews its start  (note number 5)
+PASS  a picture previews as an image with its real size  ({"w":2,"h":2,"src":"data:image/png;base64,"})
+archive preview took 140 ms
+PASS  an archive shows a facts card, not its bytes  (No preview for this kind of file.)
+PASS  a file created while the page is open appears  (1.9 s)
+PASS  a rename on disk shows as old name gone, new name present
+PASS  a delete on disk removes the entry
+PASS  a new folder with a file inside is picked up whole
+PASS  renaming onto an existing name is refused and says why
+PASS  rename through the page renames the file
+PASS  move through the page creates the folder and moves the file
+PASS  delete through the page removes the file (recycle bin or, where there is none, after the explicit second step)
+PASS  the engine refuses a path outside the folders even when asked directly  (app.path_outside)
+PASS  a path with .. is refused  (api.invalid_params)
+PASS  the daemon quarantines the executable  (completed)
+PASS  a quarantined file is not previewed  (refused)
+PASS  a quarantined file cannot be renamed here  (policy.quarantined)
+PASS  a quarantined file cannot be deleted here  (policy.quarantined)
+PASS  a quarantined file is never opened  (app.runnable)
+PASS  the bookmark is still there after a restart
+PASS  the search history is still there after a restart
+PASS  using the bookmark runs its search
+PASS  after the restart the saved index served at once and was verified  (2047 entries, verifying false, state current)
+made 50000 files in 17.0 s
+PASS  a folder of 50000 files is indexed  (1.7 s total (29377 files/s), first results after 0.9 s)
+# rescan of 52037 unchanged entries: 0.7 s
+# engine app process memory with 52037 entries: 34,760 K
+# search latency in the page with 52037 entries: [{"q":"f4","wall_ms":23,"shown":"searched in 7 ms"},{"q":"ext:dat size:<2","wall_ms":30,"shown":"searched in 17 ms"},{"q":"d05 f1","wall_ms":11,"shown":"searched in 2 ms"},{"q":"regex:f\\d{3}\\.dat$","wall_ms":25,"shown":"searched in 11 ms"}]
+PASS  the page stayed free of console errors apart from the refusals provoked on purpose  (2 provoked refusals; )
+finished in 93 s
+SCENARIO 5: PASSED
+exit 0

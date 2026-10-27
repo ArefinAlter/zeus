@@ -1,0 +1,15 @@
+killing the app and zeusd at 44 MiB committed (zeusd pid 17448)
+PASS  after relaunch the job keeps its committed bytes  (44 MiB, engine back in 2.0 s)
+PASS  the resumed download completes  (completed)
+PASS  its SHA-256 matches the server's bytes
+PASS  the file on disk has the full size
+PASS  the committed prefix was not fetched again  (37 ranged requests after the restart, lowest start 44 MiB)
+PASS  a server without ranges downloads in one piece and says so  (unsupported)
+PASS  its SHA-256 matches
+PASS  three redirects are followed  (redirects 3)
+PASS  the Content-Disposition name is used  (Quarterly Report (1).pdf)
+PASS  403 (an expired signed link) fails with a code the interface explains  (failed http.status_403)
+PASS  410 fails and is not retried  (failed http.status_410)
+PASS  503 with Retry-After schedules a retry and then succeeds  (retry_scheduled seen: true; final completed; gaps between requests (s): 0.0, 3.0, 0.1)
+SCENARIO 2: PASSED
+exit 0

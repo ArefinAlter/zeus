@@ -1,0 +1,18 @@
+   Compiling zeus-daemon v0.0.1-beta (A:\zeus\crates\zeus-daemon)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2m 35s
+     Running tests\limiter_throughput.rs (A:\zeus-build-cache\zeus\debug\deps\limiter_throughput-e23d7efaf8683510.exe)
+
+running 4 tests
+outside the window: 672313 KiB/s
+two downloads sharing 1024 KiB/s: measured 1024 KiB/s against a limit of 1024 KiB/s (-0.0 percent)
+test concurrent_downloads_share_one_limit ... ok
+inside the window, 1024 KiB/s: measured 1019 KiB/s against a limit of 1024 KiB/s (-0.5 percent)
+test outside_its_window_the_limiter_does_not_slow_anything_down ... ok
+global 1024 KiB/s: measured 1024 KiB/s against a limit of 1024 KiB/s (-0.0 percent)
+queue 512 KiB/s under global 2048: measured 512 KiB/s against a limit of 512 KiB/s (-0.0 percent)
+test the_global_limit_holds_within_ten_percent ... ok
+test a_lower_queue_limit_wins_over_the_global_one ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.01s
+
+FINISHED

@@ -1,0 +1,12 @@
+engine ready in 0.5 s, zeusd 0.0.1-beta, credential permissions: jobs.read,jobs.write,jobs.control,events.read,sessions.read,approvals.read,files.read,workflows.plan,audit.read,config.read,llm.read,daemon.read
+probe: {"approval_needed":false,"check":"online","content_type":"application/octet-stream","final_url":"https://proof.ovh.net/files/10Mb.dat","interstitial":false,"name":"10Mb.dat","name_source":"url_path","redirects":0,"resumable":"verified","size":10485760,"status":206}
+job job_01M5YG8CFWW314T5PJQSETXMQ1 queued
+states seen: queued -> probing -> downloading -> completed
+progress samples while downloading: 3; distinct byte counts: 1; max rate 0 B/s; eta seen: true
+final: {"state":"completed","bytes":10485760,"total":10485760,"sha256":"e5b844cc57f57094ea4585e235f36c78c1cd222262bb89d53c94dcb4d6b3e55d","path":"D:\\verne-build\\zeus\\scratch\\s01\\downloads\\10Mb.dat"}
+job detail probe: {"range":"verified","type":"application/octet-stream","name":{"source":"url_path","value":"10Mb.dat"}} result: {"sha256":"e5b844cc57f57094ea4585e235f36c78c1cd222262bb89d53c94dcb4d6b3e55d","blake3":"75e674ae3dd00cf6d8ac6273a2c784304cda304ac0c7af595a007dc9500bde6d","mime":null}
+independent SHA-256 matches zeusd's, file on disk matches (10485760 bytes)
+in the file index: true
+in zeusd files.list: true ; folder opens: {"ok":true}
+SCENARIO 1: PASSED
+exit 0

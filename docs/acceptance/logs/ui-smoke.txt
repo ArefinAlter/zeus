@@ -1,0 +1,6 @@
+PASS  the check shows the server's answer  (206 · 24.0 MiB · application/octet-streamonline)
+PASS  the name from the server is offered  (Annual Report.pdf)
+PASS  the download appears in the list  (1 rows)
+PASS  no console errors on any page
+UI SMOKE: PASSED
+exit 0

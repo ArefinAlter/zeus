@@ -1,0 +1,29 @@
+PASS  a file with a matching published hash completes  (completed)
+PASS  zeusd recorded the published hash it was checked against
+PASS  SHA-256 equals an independent computation
+PASS  BLAKE3 equals an independent computation  (2ee3e3217242d26d3696e94005545820791d042184674785f09129ca8f4eba5f)
+PASS  a document is not quarantined
+PASS  a mismatching published hash fails the job  (failed integrity.hash_mismatch)
+PASS  and no completed file is left at the destination  (folder has: wrong-hash.bin.zpart)
+  detail: attempts 1, integrity restarts 0, error integrity.hash_mismatch: completed file checksum does not match
+PASS  the received bytes stay only as a .zpart partial (a failed job cannot be cancelled, so zeusd keeps it)  (partial true, cancel api.invalid_transition)
+PASS  setup.exe is quarantined with a reason  (executable_type,mime_mismatch)
+PASS  run-me.sh is quarantined with a reason  (executable_type,mime_mismatch)
+PASS  tool.AppImage is quarantined with a reason  (executable_type,mime_mismatch)
+PASS  script.ps1 is quarantined with a reason  (executable_type,mime_mismatch)
+PASS  invoice.pdf.exe is quarantined with a reason  (executable_type,mime_mismatch)
+PASS  lib.dll is quarantined with a reason  (executable_type,mime_mismatch)
+PASS  app.msi is quarantined with a reason  (executable_type,mime_mismatch)
+PASS  macro.bat is quarantined with a reason  (executable_type,mime_mismatch)
+PASS  the app refuses to open a program or script  (app.runnable)
+PASS  a plain text file is not quarantined
+PASS  verify again: the file still matches what zeusd recorded  (size 3145728)
+PASS  verify against the published hash: matches
+PASS  verify against a wrong hash: does not match
+PASS  a malformed hash is refused  (api.invalid_params)
+PASS  the properties panel shows the quarantine, its reason and the terminal route
+PASS  the panel shows SHA-256, BLAKE3 and "verified against a published hash: yes"  (completedyes every byte was committed, hashed and recorded, 2026-10-27 16:57:04 +06:00SHA-25681ee4fa6c804e91d528127778d888b4ea6b633ecbf1ed882540e96676d371714BLAKE32ee3e3217242d26d3696e94005545820791d042184674785f09129ca8f4eba5fsize3.00 MiBverified against a published hashyes: it matches the SHA-256 you gavequarantineno Copy SHA-256 Copy BLAKE3Verify againzeusd re-reads the file on disk and compares it with what it recorded.Compare with a published SHA-256CompareCompleted means the file was hashed and recorded. Verified against a published hash needs a hash from the publisher; the two stay separate facts.Historytoday 16:57Enqueued in zeusd)
+PASS  after one byte changes on disk, zeusd reports the mismatch
+PASS  no console errors
+SCENARIO 7: PASSED
+exit 0

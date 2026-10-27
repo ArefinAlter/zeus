@@ -1,0 +1,22 @@
+PASS  engine settings reach zeusd's config.toml  (tombstone_days = 45; concurrent_jobs = 6; connections_per_job = 5)
+PASS  the scheduler defaults live in zeusd  ({"default_queue":"main","missed_window":"run_once","stop_behaviour":"finish_current","timezone":"utc"})
+PASS  start minimized reaches the app's shell settings file  ({"check_updates_weekly":false,"close_to_tray":false,"launch_at_login":false,"show_tray":true,"start_minimized":true})
+PASS  the engine sends its downloads through the proxy setting  (3 requests seen by the proxy)
+PASS  General: start page, time format, the confirm switch and start minimized
+PASS  Appearance: density, content width, theme and scheme  (compact Grove
+Green-tinted surfaces.)
+PASS  Keybindings: the recorded shortcut  (Shortcut for Open the command palette. Click to change. -> Ctrl
+Alt
+Y)
+PASS  File types: the edited extension list
+PASS  Save to: both switches
+PASS  Downloads: the engine numbers, the name policy and start at once
+PASS  Connection: the proxy
+PASS  Scheduler: time zone, missed start, stop behaviour
+PASS  Notifications: the failure switch and quiet hours
+PASS  Agent: largest batch and default access
+PASS  Storage: record retention (the engine's tombstone days)
+PASS  no console error on any settings page
+PASS  rows marked planned have their control switched off  (3 of 3 connection rows)
+SCENARIO 11: PASSED
+exit 0

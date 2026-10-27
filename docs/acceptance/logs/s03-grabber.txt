@@ -1,0 +1,33 @@
+PASS  13 links are taken; the ftp and magnet addresses are refused; the repeated line is dropped  (Added 13 links, 1 exact duplicate dropped.ftp://files.example.org/legacy.tar ftp addresses are refused; Zeus downloads http and https only.magnet:?xt=urn:btih:0)
+PASS  the four bad links are offline and deselected  (4 deselected)
+PASS  each bad link says why in words (403 expired, 404, 410, 503)  (resumable | resumable | resumable | resumable | resumable | resumable | no byte ranges: one piece, starts over if interrupted | resumable; 2 redirects | the server names it Server Named.pdf; resumable)
+PASS  the server-given name is offered, with its category
+PASS  a server without byte ranges is called out
+PASS  the review puts each type in its category folder  (annual-report.pdf -> \Documents; jazz.mp3 -> \Music; backup.zip -> \Compressed; photo.jpg -> \Pictures; clip.mp4 -> \Video; setup.exe -> \Programs; plain.bin -> ; moved.zip -> \Compressed; Server Named.pdf -> \Documents)
+PASS  nine downloads complete, one reviewed batch  (9 completed, states completed,completed,completed,completed,completed,completed,completed,completed,completed)
+PASS  every file has the right bytes (SHA-256 equals the server's)
+PASS  files landed in their category folders on disk  ({"annual-report.pdf":"Documents","jazz.mp3":"Music","backup.zip":"Compressed","photo.jpg":"Pictures","clip.mp4":"Video","setup.exe":"Programs","plain.bin":"","moved.zip":"Compressed","Server Named.pdf":"Documents"})
+PASS  the program is quarantined
+PASS  a file that is already downloaded is flagged, and skipped by default  (already downloaded as annual-report.pdf. SkipDownload againReplace the old file )
+PASS  previewing only a skipped duplicate says nothing would be created
+PASS  "Download again" says it will be a new copy before anything happens  (annual-report.pdfD:\verne-build\zeus\scratch\s03\downloads\Documents293 KiBdownloaded again)
+PASS  both copies are on disk with the right bytes
+PASS  "Replace" says it replaces the file on disk  (annual-report.pdfD:\verne-build\zeus\scratch\s03\downloads\Documents293 KiBreplaces the file on disk)
+PASS  Replace put the right bytes back, in the same place
+PASS  policy "fail": the existing file is not touched  (refused fs.permission_denied)
+PASS  policy "fail": the second download is refused or fails  (refused at enqueue)
+PASS  policy "rename": a second file with (1) appears, the first stays
+PASS  policy "replace": zeusd refuses it for this credential (it needs a human-approved destructive operation) and the file is untouched  (policy.approval_denied)
+PASS  a folder outside the download folders is called out
+PASS  Add URL follows the category folder rule for video  (D:\verne-build\zeus\scratch\s03\downloads\Films)
+PASS  the video went to the folder of its own
+PASS  "ask each time" holds the download until the folder is confirmed  (D:\verne-build\zeus\scratch\s03\downloads\Documents)
+PASS  and then lets it start
+PASS  "remember the last folder" brings a typed folder back for that type  (D:\verne-build\zeus\scratch\s03\downloads\Tunes)
+PASS  Add URL flags a duplicate and holds Start until a choice is made
+PASS  "Download again" enables it
+PASS  the folder rule for video survived a restart  (D:\verne-build\zeus\scratch\s03\downloads\Films)
+PASS  and still decides where video goes  (D:\verne-build\zeus\scratch\s03\downloads\Films)
+PASS  no console errors
+SCENARIO 3: PASSED
+exit 0

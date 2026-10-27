@@ -1,0 +1,18 @@
+PASS  a queue with a start time is stored by zeusd and reports its next start  (next start 4:53:00 PM)
+PASS  the three downloads are held: queued in zeusd, nothing transferred  (held 3, states paused,paused,paused)
+PASS  the server saw no ranged body request while the queue waits  (0 requests)
+PASS  the queue starts by itself at its start time  (due 16:53, started 4:53:00 PM (38 s wait))
+PASS  only one download ran at a time (max concurrent 1)  (max active 1)
+PASS  when the last file finishes the queue stops and asks for its on-finish action
+PASS  a started queue runs two at a time and holds the third
+PASS  stopping the queue pauses its downloads and keeps their bytes  (paused,paused,paused)
+  global: 24 MiB, steady rate 1306 KiB/s (limit 1024)
+PASS  global limit 1024 KiB/s is effective end to end (the server was slowed to about the limit)  (1306 KiB/s accepted by the server)
+  queue: steady rate 644 KiB/s (queue limit 512, global 1024)
+PASS  a queue limit of 512 KiB/s under the global 1024 is effective and lower than the global one  (644 KiB/s accepted by the server)
+  window: 12 MiB, steady rate 48988 KiB/s (limit off-window)
+PASS  outside its schedule window the limiter does not apply  (48988 KiB/s)
+PASS  the Queues page lists the queues zeusd holds and the speed limiter
+PASS  the Speed limiter page shows the limit and window stored in zeusd  (Speed limiter 256 KiB/s New queue Main queue stopped Starts by hand Start now Name Schedule Files in the queue Limits Start Start at a time )
+SCENARIO 4: PASSED
+exit 0

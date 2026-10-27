@@ -20,7 +20,7 @@ Status words: **passed** means every check of the scenario's script passed on th
 | 10 | In-app BYOK agent with the 13 tools | Passed with limits | `s10-agent.mjs` |
 | 11 | Settings persistence, nothing decorative | Passed | `s11-settings.mjs` |
 
-Packaging, installation and release checks are at the end.
+The output of the final run of each script is stored in [acceptance/logs/](acceptance/logs/) (one text file per script). Packaging, installation and release checks are at the end.
 
 ## How the scripts run
 
@@ -36,9 +36,9 @@ The harness is a loopback HTTP wrapper around the app's route table, used only b
 
 ## 1. Real download on a fresh profile: passed
 
-`s01-download.mjs` starts from an empty app folder with no daemon running. The app provisions its installation and starts `zeusd` (engine ready in 18.9 s on a cold, busy disk; 2.9 s on a warm restart in scenario 2), then a 96 MiB file (served at 12 MiB/s per connection) is added through Add URL.
+`s01-download.mjs` starts from an empty app folder with no daemon running. The app provisions its installation and starts `zeusd` (engine ready in 1.9 s in the final run; the first run on a cold, busy disk took 18.9 s), then a 96 MiB file (served at 12 MiB/s per connection) is added through Add URL.
 
-Observed: probe with name, type and verified range support; states `queued, probing, downloading, verifying, completed`; 29 progress samples with 10 distinct byte counts, speed up to 13.8 MB/s and a time left; `zeusd`'s SHA-256 equals the server's and the file on disk has all 100,663,296 bytes; the file appears in the app's index and in `zeusd`'s file list; the folder opens. The credential the page's engine uses has twelve permissions and no `approvals.decide`.
+Observed: probe with name, type and verified range support; states `queued, downloading, verifying, completed`; 12 progress samples with 7 distinct byte counts, speed up to 35.1 MB/s and a time left; `zeusd`'s SHA-256 equals the server's and the file on disk has all 100,663,296 bytes; the file appears in the app's index and in `zeusd`'s file list; the folder opens. The credential the page's engine uses has twelve permissions and no `approvals.decide`.
 
 Limits: the transfer is from a local server. The same script takes `--url` for a public address; see the real-internet run below.
 
@@ -46,7 +46,7 @@ Real internet: `node tests/acceptance/s01-download.mjs --url https://proof.ovh.n
 
 ## 2. Kill and resume, plus failure modes: passed
 
-`s02-resume-failures.mjs`: the app and `zeusd` are killed at 44 MiB committed; on relaunch the engine is back in 2.9 s, the job keeps its 44 MiB, completes with the right SHA-256, and the server saw no request for bytes below 44 MiB (37 ranged requests after the restart, lowest start 44 MiB). A server without ranges downloads in one piece and says "unsupported"; three redirects are followed; the `Content-Disposition` name is used; `403` (an expired signed link) fails with `http.status_403` and `410` fails without retry; `503` with `Retry-After` schedules a retry and then succeeds (gaps 0.2, 3.1, 0.1 s).
+`s02-resume-failures.mjs`: the app and `zeusd` are killed at 44 MiB committed; on relaunch the engine is back in 2.0 s, the job keeps its 44 MiB, completes with the right SHA-256, and the server saw no request for bytes below 44 MiB (37 ranged requests after the restart, lowest start 44 MiB). A server without ranges downloads in one piece and says "unsupported"; three redirects are followed; the `Content-Disposition` name is used; `403` (an expired signed link) fails with `http.status_403` and `410` fails without retry; `503` with `Retry-After` schedules a retry and then succeeds (gaps 0.0, 3.0, 0.1 s).
 
 Limit: `zeusd` itself names a file from the URL path. The app probes first and uses the server's `Content-Disposition` name when it enqueues, so the name is right in this app; a client that enqueues without probing gets the URL name.
 
@@ -58,7 +58,7 @@ Limits: "Replace" is done by the app, which moves the old file to the recycle bi
 
 ## 4. Queues, scheduler and speed limiter: passed with limits
 
-`s04-queues.mjs`: queues live in `zeusd` (`queues.json`, spec 05 section 9.14). A queue with a start time holds its three downloads (no byte requested), starts by itself at the time (due 15:51, started 15:51:01), runs one at a time when set to one and two at a time when set to two, stops and asks for its on-finish action when the last file ends, and stopping the queue pauses its downloads and keeps their bytes. The Queues page and the Speed limiter page show what `zeusd` stores.
+`s04-queues.mjs`: queues live in `zeusd` (`queues.json`, spec 05 section 9.14). A queue with a start time holds its three downloads (no byte requested), starts by itself at the time (a 38 s wait in the final run, started within a second of its start time), runs one at a time when set to one and two at a time when set to two, stops and asks for its on-finish action when the last file ends, and stopping the queue pauses its downloads and keeps their bytes. The Queues page and the Speed limiter page show what `zeusd` stores.
 
 The limiter is a throttle in `zeusd`'s HTTP transport (global, per queue, with a schedule window). Measured against the limit, with a receiver-side measurement in `crates/zeus-daemon/tests/limiter_throughput.rs`:
 
@@ -70,21 +70,21 @@ The limiter is a throttle in `zeusd`'s HTTP transport (global, per queue, with a
 | Inside the schedule window | 1024 KiB/s | 1019 KiB/s (-0.5 %) |
 | Outside the schedule window | none | not slowed (672,313 KiB/s on loopback) |
 
-All inside 10 percent of the limit. Evidence: `D:\verne-build\zeus\evidence\limiter-throughput-test.txt` (kept in the release notes' evidence bundle, not in the repository).
+All inside 10 percent of the limit. Evidence: [acceptance/logs/limiter-throughput.txt](acceptance/logs/limiter-throughput.txt).
 
-Limits: the end-to-end run in `s04-queues.mjs` measures at the server and reads high (1311 KiB/s for a 1024 limit, 669 for 512, because the sockets' buffers fill ahead of the receiver); it proves the limit is effective (the server was slowed from about 9,000 to about the limit), not its precision. The precise number is the receiver-side test above. Both were measured on a debug build.
+Limits: the end-to-end run in `s04-queues.mjs` measures at the server and reads high (1306 KiB/s for a 1024 limit, 644 for 512, because the sockets' buffers fill ahead of the receiver); it proves the limit is effective (outside the schedule window the same transfer ran at about 49,000 KiB/s, with the limit on about 1,300), not its precision. The precise number is the receiver-side test above. Both were measured on a debug build.
 
 ## 5. Files: passed
 
-`s05-files.mjs`: 2,001 files made on disk are all in the index within 1.6 s of the last write, and the watcher and scanner agree (2,037 entries counting folders). Partial files, `node_modules`, `Thumbs.db`, hidden files and `.zeus` folders are skipped. Search operators (`ext:`, `size:`, `dm:`, `path:`, `folder:`, `file:`, `regex:`, wildcards, `!`, `;` lists) and the case, path and regex toggles give the counts the disk gives. The Picture filter and the folders pane work. A text file previews its start, a picture previews as an image with its real size, an archive shows a facts card, not its bytes. Files created, renamed and deleted while the page is open appear within seconds. Rename (including a refusal onto an existing name), move (creating the folder) and delete (to the recycle bin; permanent delete only after a second step) work through the page. The engine refuses a path outside the download folders and any path with `..`; quarantined files are never previewed or changed. Bookmarks and history survive a restart.
+`s05-files.mjs`: 2,001 files made on disk are all in the index within seconds of the last write (3.6 s in the final run), and the watcher and scanner agree (2,037 entries counting folders). Partial files, `node_modules`, `Thumbs.db`, hidden files and `.zeus` folders are skipped. Search operators (`ext:`, `size:`, `dm:`, `path:`, `folder:`, `file:`, `regex:`, wildcards, `!`, `;` lists) and the case, path and regex toggles give the counts the disk gives. The Picture filter and the folders pane work. A text file previews its start, a picture previews as an image with its real size, an archive shows a facts card, not its bytes. Files created, renamed and deleted while the page is open appear within seconds. Rename (including a refusal onto an existing name), move (creating the folder) and delete (to the recycle bin; permanent delete only after a second step) work through the page. The engine refuses a path outside the download folders and any path with `..`; quarantined files are never previewed or changed. Bookmarks and history survive a restart.
 
-Scale (the script's last section): 50,000 more files made on disk are indexed in 1.7 s (28,719 files per second, first results after 0.9 s); a rescan of the resulting 52,037 unchanged entries takes 0.6 s; the engine process holds 34.5 MB with all of them; a search in the page answers in 13 to 35 ms wall time (the engine reports 1 to 7 ms). After a restart the saved index serves at once and is verified in the background.
+Scale (the script's last section): 50,000 more files made on disk are indexed in 1.7 s (29,377 files per second, first results after 0.9 s); a rescan of the resulting 52,037 unchanged entries takes 0.7 s; the engine process holds 34.8 MB with all of them; a search in the page answers in 11 to 30 ms wall time (the engine reports 2 to 17 ms). After a restart the saved index serves at once and is verified in the background.
 
 Limits: previews cover text and pictures only; the index is names, sizes and dates, never contents.
 
 ## 6. Site grabber: passed
 
-`s06-sitegrab.mjs` against a local fixture site: a same-host walk of 7 pages and 7 files in 16 s; depth 2 reads the pages within depth and not deeper ones; exactly the allowed files are found with their sizes and where each was found; `robots.txt` is read first, the private area is never requested, and the `Crawl-delay` spaces the requests (smallest gap 965 ms over 17 requests although 250 ms was asked); the walk identifies itself as `Zeus/0.0.1-beta (+site grabber)`; type filters, include and exclude rules, the file limit and depth 0 work; addresses that are not http or https, or carry a password, are refused; a walk cancels in 65 ms and no request follows. Through the dialog, the plan approval shows its facts and who holds it ("Zeus app (this window)", a human click, labelled as app-held and not a daemon approval); after it the four files download with exactly the bytes the site serves.
+`s06-sitegrab.mjs` against a local fixture site: a same-host walk of 7 pages and 7 files in 16 s; depth 2 reads the pages within depth and not deeper ones; exactly the allowed files are found with their sizes and where each was found; `robots.txt` is read first, the private area is never requested, and the `Crawl-delay` spaces the requests (smallest gap 1,001 ms over 17 requests although 250 ms was asked); the walk identifies itself as `Zeus/0.0.1-beta (+site grabber)`; type filters, include and exclude rules, the file limit and depth 0 work; addresses that are not http or https, or carry a password, are refused; a walk cancels in 113 ms and no request follows. Through the dialog, the plan approval shows its facts and who holds it ("Zeus app (this window)", a human click, labelled as app-held and not a daemon approval); after it the four files download with exactly the bytes the site serves.
 
 Limits: the walk reads HTML links only (no scripts); it never leaves the host you name.
 
@@ -131,11 +131,41 @@ The final Windows installer was run on the build machine with a scratch data fol
 5. With "Closing the window hides it to the notification area" on (the default), closing the window leaves the app and `zeusd` running; with it off, closing the window ends both. The switch is saved in the app's `shell.json`.
 6. `uninstall.exe /S` removes the install folder and the uninstall entry. The installer's own location key under `HKCU\Software\Verne Ltd.\Zeus` stays (a reinstall goes to the same folder, as NSIS installers do).
 
+The checks above were made with the first build of the installer; the installer that is released (SHA-256 `d8d6b8e3…76b0`, built after the lockfile change described under "Source changes behind the release") was installed, started, used and uninstalled again in a scripted run: it installs into `%LOCALAPPDATA%\Programs\Zeus`; `zeus --version` and `zeusd --version` print `0.0.1-beta`; the engine is ready after 3 s; a 20 MiB download made with the bundled `zeus get --wait --sha256 …` and the environment the Connect page gives completes in the app's engine with the server's SHA-256; closing the window (with hide-to-tray off) ends the app and `zeusd` within 11 s; `uninstall.exe /S` removes the folder and the uninstall entry.
+
 Limit: the installed app was driven on Windows 11 only. Linux is below.
 
 ## Packaging and release checks
 
-@@PACKAGING@@
+All assets are built from the commit that is tagged `v0.0.1b` by `apps/client/scripts/build-release.mjs`. Sizes and SHA-256 are also in the release's `SHA256SUMS.txt`.
+
+| File | Size | SHA-256 |
+|---|---|---|
+| `Zeus_0.0.1-beta_amd64.AppImage` | 102.1 MiB (107,055,608 bytes) | `be01adfaf43d7f6dbff9ea12ca1d02031d78229f57974a510285fcfff35d2d31` |
+| `Zeus_0.0.1-beta_amd64.deb` | 30.5 MiB (31,943,150 bytes) | `deaecb7c7d1fc12181c8eb412dd06469d4ffdec11a194c5a3605b327efc5dbc3` |
+| `Zeus_0.0.1-beta_x64-setup.exe` | 19.6 MiB (20,524,333 bytes) | `d8d6b8e300cb2d4524d5c27b2628513bcbbae4e744cba5e207bba9c6202976b0` |
+| `zeus-cli-0.0.1b-linux-x64.tar.gz` | 21.9 MiB (22,977,680 bytes) | `b65f3658356c4166594e2f7cd5cdd3ca7bb59a901a99d097329c73b007aac969` |
+| `zeus-cli-0.0.1b-windows-x64.zip` | 21.0 MiB (22,035,989 bytes) | `b5cea46972d078b8bbf50eb29c6b239d5de8ed65c6c778eb7dee60fc13bc755f` |
+| `zeus-client-0.0.1b-windows-x64-portable.zip` | 28.1 MiB (29,476,422 bytes) | `2244e6c01cd5641bee6f744d867f917d455235684fd0d2f4a4da7459fa7c14ec` |
+| `zeus-extension-chromium-0.0.1b.zip` | 0.4 MiB (382,885 bytes) | `edd36916c8e91995e39cc45065ed28d4a5a68b69c178a359095c011907310914` |
+| `zeus-extension-firefox-0.0.1b.zip` | 0.4 MiB (382,599 bytes) | `109cdd3f4ce74a2c4db9f61f33cd47aa12a41e59d7e2025b8deca6defc281433` |
+
+**Windows (built on Windows 11, Rust 1.99, Node 22).** The NSIS installer installs per user, without an administrator prompt, into `%LOCALAPPDATA%\Programs\Zeus`; the generated NSIS script is changed by the build script because Tauri's own default folder is the one `zeusd` uses for its state when it runs alone. The portable zip carries `zeus-client.exe`, its three sidecars and an empty `ZeusData` folder that selects portable mode. The installed app, its restart behaviour and the uninstall were checked (see "Installed app"). Both installers are unsigned.
+
+**Linux (built in a private WSL 2 distribution, `zeus-build`, a clone of an Ubuntu 22.04 build image with Rust 1.99.1, Node 22 and WebKitGTK 4.1).** The binaries need glibc 2.34 or newer (Ubuntu 22.04, Debian 12). The `.deb` is the package `zeus` with `zeus-client`, `zeus`, `zeusd` and `zeus-native-host` in `/usr/bin` and the dependencies `libayatana-appindicator3-1`, `libwebkit2gtk-4.1-0` and `libgtk-3-0`. The AppImage stages its three sidecars into `<data folder>/bin` at start, because an AppImage is mounted at a path that changes with every run and the native-messaging host and the MCP configuration need a stable one.
+
+Smoke test, headless, in the same distribution (a clone of the build image; Xvfb with a D-Bus session, `WEBKIT_DISABLE_COMPOSITING_MODE=1`, `WEBKIT_DISABLE_DMABUF_RENDERER=1`, and `GDK_BACKEND=x11` with `WAYLAND_DISPLAY` unset: WSLg exports a Wayland display, and without these the window opens on the Windows desktop and the Xvfb screen stays black):
+
+| Check | AppImage | .deb |
+|---|---|---|
+| Starts without a command line; engine ready | after 5 s (first run, sidecars staged) | after 2 s |
+| Window "Zeus", 1360 x 880, and a tray icon on the X server | yes | yes |
+| A 48 MiB download with the bundled `zeus get --wait --sha256 …` into the app's own engine (the profile and folders that the Connect page gives) | completed, SHA-256 equal to the source | completed, SHA-256 equal to the source |
+| The app's list shows it as completed and hashed (screenshot `docs/images/zeus-0.0.1b-linux-appimage.png`) | yes | yes |
+| `apt-get install ./Zeus_0.0.1-beta_amd64.deb` resolves its dependencies and `apt-get remove zeus` removes it | | yes |
+| `zeus`, `zeusd`, `zeus-web-bridge` from the CLI archive print `0.0.1-beta` | yes | |
+
+Limits: one distribution and one environment (WSL 2); no display server of a real desktop, no window manager, no clicks (the interface itself was driven on Windows, and the page is the same); no browser integration was run on Linux; the tray icon is created but its menu was not used; Wayland, Fedora, Arch and other desktops were not tried.
 
 ## What is not proved in 0.0.1b
 
@@ -148,4 +178,4 @@ Limit: the installed app was driven on Windows 11 only. Linux is below.
 
 ## Source changes behind the release
 
-No change to `zeus-core`. No new ADR file: ADR 0012 gained one row (the `queues.json` store) and spec 05 gained section 9.14 (queues, the scheduler and the speed limiter). `zeus`, `zeusd`, `zeus-native-host` and `zeus-web-bridge` report version `0.0.1-beta`.
+No change to `zeus-core`. The client's lockfile moved `tokio` from 1.53.2 to 1.53.3 (the Linux build of `interprocess` 2.4.7 needs it; the daemon workspace already used 1.53.3), after which every script above was run again. No new ADR file: ADR 0012 gained one row (the `queues.json` store) and spec 05 gained section 9.14 (queues, the scheduler and the speed limiter). `zeus`, `zeusd`, `zeus-native-host` and `zeus-web-bridge` report version `0.0.1-beta`.
