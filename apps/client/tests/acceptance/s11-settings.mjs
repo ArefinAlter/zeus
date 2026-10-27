@@ -83,7 +83,12 @@ const firstBinding = page.locator('button[aria-label^="Shortcut for"]').first()
 const bindingLabel = await firstBinding.getAttribute('aria-label')
 await firstBinding.click()
 await page.waitForFunction(() => /Press the new shortcut/.test(document.querySelector('button[aria-label^="Shortcut for"]')?.textContent ?? ''))
-await page.keyboard.press('Control+Alt+KeyY')
+// The page attaches its key listener just after it draws the prompt; press until the recording ends.
+for (let tries = 0; tries < 12; tries++) {
+  await page.keyboard.press('Control+Alt+KeyY')
+  await page.waitForTimeout(300)
+  if (!/Press the new shortcut/.test((await page.locator('button[aria-label^="Shortcut for"]').first().textContent()) ?? '')) break
+}
 await page.waitForFunction(() => !/Press the new shortcut/.test(document.querySelector('button[aria-label^="Shortcut for"]')?.textContent ?? ''), null, { timeout: 5000 })
 want.bindingText = (await page.locator('button[aria-label^="Shortcut for"]').first().innerText()).trim()
 await go('settings/filetypes')

@@ -65,6 +65,33 @@ for (const name of ['zeusd', 'zeus', 'zeus-native-host']) copyFileSync(release(n
 run('npm', ['run', 'build'], { cwd: client })
 run('npx', ['tauri', 'build', '--config', 'src-tauri/tauri.bundle.conf.json', '--bundles', bundles], { cwd: client })
 
+// The installer's default folder. Tauri's per-user default is %LOCALAPPDATA%\Zeus, which is also where zeusd keeps its
+// own state when it runs on its own (spec 03 section 3.1), so a person with the command-line Zeus would find the app
+// mixed into that folder. Put the app under %LOCALAPPDATA%\Programs\Zeus instead: the generated NSIS script is patched
+// and compiled again with the toolset Tauri downloaded.
+if (win && bundles.split(',').includes('nsis')) {
+  const releaseDir = join(target ?? shell + '/target', 'release')
+  const nsisDir = join(releaseDir, 'nsis', 'x64')
+  const script = join(nsisDir, 'installer.nsi')
+  const toolset = join(process.env.LOCALAPPDATA ?? '', 'tauri', 'NSIS')
+  const makensis = join(toolset, 'Bin', 'makensis.exe')
+  const setup = readdirSync(join(releaseDir, 'bundle', 'nsis')).find((f) => /setup\.exe$/.test(f))
+  if (!existsSync(script) || !existsSync(makensis) || !setup) {
+    console.error('cannot adjust the installer folder: the generated NSIS script or toolset is missing')
+    process.exit(1)
+  }
+  const from = 'StrCpy $INSTDIR "$LOCALAPPDATA\\${PRODUCTNAME}"'
+  const text = readFileSync(script, 'utf8')
+  if (!text.includes(from)) {
+    console.error('cannot adjust the installer folder: the NSIS script has changed shape')
+    process.exit(1)
+  }
+  writeFileSync(script, text.replace(from, 'StrCpy $INSTDIR "$LOCALAPPDATA\\Programs\\${PRODUCTNAME}"'))
+  rmSync(join(nsisDir, 'nsis-output.exe'), { force: true })
+  run(makensis, ['-INPUTCHARSET', 'UTF8', '-OUTPUTCHARSET', 'UTF8', '-V2', 'installer.nsi'], { cwd: nsisDir, env: { ...process.env, NSISDIR: toolset, NSISCONFDIR: toolset } })
+  copyFileSync(join(nsisDir, 'nsis-output.exe'), join(releaseDir, 'bundle', 'nsis', setup))
+}
+
 const appExe = release('zeus-client')
 const assets = []
 const add = (p) => assets.push(p)

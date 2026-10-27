@@ -7,7 +7,7 @@ import { useState } from 'preact/hooks'
 
 import { NATIVE, HOSTED, LIVE, applyEngineSettings } from '../../backend/live'
 import { shellApi } from '../../backend/shell'
-import { defaultDir, releaseStop, rescan, toast, updateSettings, useStore } from '../../backend/store'
+import { defaultDir, getState, releaseStop, rescan, toast, updateSettings, useStore } from '../../backend/store'
 import { ACCESS_INFO, ACCESS_ORDER, HUMAN_ONLY, NEVER, TOOLS } from '../../model/agentTools.ts'
 import { CATEGORIES, defaultMap, overlaps, parseExtList } from '../../model/categories.ts'
 import { folderProblem, insideRoot } from '../../model/grab.ts'
@@ -155,7 +155,8 @@ export function SaveToSettings() {
   const dirs = s.categoryDirs ?? {}
   const last = s.lastDirs ?? {}
   const setCategoryDir = (id: string, value: string) => {
-    const next = { ...dirs }
+    // Built from the latest saved rules, not from this render's copy: two edits in quick succession must both stay.
+    const next = { ...(getState().settings.saveTo.categoryDirs ?? {}) }
     if (value.trim()) next[id] = value.trim()
     else delete next[id]
     set({ categoryDirs: next })
