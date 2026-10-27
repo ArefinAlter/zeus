@@ -175,6 +175,24 @@ let nextFileId = 1
 let fileJobIds = new Set<string>()
 const lastState = new Map<string, string>()
 
+/**
+ * The speed to show. zeusd reports its own smoothed rate; when that is still zero (the first moments of a transfer, or
+ * a server that delivers in large steps) the page estimates it from how many bytes were committed over the last few
+ * seconds, so a running download never reads as stalled when it is not.
+ */
+const rateMemo = new Map<string, { t: number; done: number; rate: number }[]>()
+function shownRate(r: RemoteJob): number {
+  const now = Date.now()
+  const h = (rateMemo.get(r.id) ?? []).filter((x) => now - x.t < 6000)
+  if (!h.length || h[h.length - 1]?.done !== r.bytes_done) h.push({ t: now, done: r.bytes_done, rate: 0 })
+  rateMemo.set(r.id, h)
+  if (r.rate_ewma) return r.rate_ewma
+  const first = h[0]
+  const last = h[h.length - 1]
+  if (first && last && last.t > first.t && last.done > first.done) return Math.round(((last.done - first.done) * 1000) / (last.t - first.t))
+  return 0
+}
+
 function toJob(r: RemoteJob, prev: Job | undefined): Job {
   const s = S.get()
   const meta = s.jobMeta[r.id] ?? {}
@@ -196,7 +214,7 @@ function toJob(r: RemoteJob, prev: Job | undefined): Job {
     queryWithheld: r.url_redacted.includes('?…'),
     size,
     done: r.bytes_done,
-    rate: active ? (r.rate_ewma ?? 0) : 0,
+    rate: active ? shownRate(r) : 0,
     state,
     category: categoryOf(name, s.settings.categories),
     queue: NATIVE ? (queueOfJob.get(r.id) ?? null) : (meta.queue ?? null),
