@@ -11,8 +11,8 @@ use zeus_app::failure::{Failure, Result};
 use crate::{
     config::norm,
     facts::{FileFacts, quarantined_under},
-    paths::{resolve_inside, shown},
-    scan,
+    paths::{RootCaps, shown},
+    read::{OpenedRead, changed},
     search::in_scope,
     store::Index,
 };
@@ -82,6 +82,24 @@ pub fn verify_duplicates(
     roots: &[String],
     facts: &HashMap<String, FileFacts>,
 ) -> Result<Value> {
+    verify_duplicates_pinned(paths, &RootCaps::capture(roots)?, facts)
+}
+
+/// Hash selected files through enablement-bound read roots, retaining every opened file until the
+/// final identity/metadata recheck. Distinct names of one file object are not duplicate copies.
+pub fn verify_duplicates_pinned(
+    paths: &[String],
+    roots: &RootCaps,
+    facts: &HashMap<String, FileFacts>,
+) -> Result<Value> {
+    verify_steps(paths, roots, facts, || {})
+}
+fn verify_steps(
+    paths: &[String],
+    roots: &RootCaps,
+    facts: &HashMap<String, FileFacts>,
+    after_hashes: impl FnOnce(),
+) -> Result<Value> {
     if !(2..=32).contains(&paths.len()) {
         return Err(Failure::invalid("Verify 2 to 32 files at a time."));
     }
@@ -89,78 +107,67 @@ pub fn verify_duplicates(
     let mut total = 0u64;
     let mut seen = std::collections::HashSet::new();
     for path in paths {
-        if scan::is_link(&std::fs::symlink_metadata(path)?) {
-            return Err(Failure::invalid(
-                "Duplicate verification does not follow links or junctions.",
-            ));
-        }
-        let p = resolve_inside(path, roots)?;
-        if !seen.insert(p.clone()) {
-            continue;
-        }
-        let meta = std::fs::symlink_metadata(&p)?;
-        if !meta.is_file() || scan::is_link(&meta) {
-            return Err(Failure::invalid("Verify regular files only."));
-        }
-        if quarantined_under(facts, &shown(&p)) {
+        let path = roots.path(path)?;
+        if quarantined_under(facts, &shown(&path)) {
             return Err(crate::ops::quarantine_refusal("This file"));
         }
+        let input = OpenedRead::open(roots, &path)?;
+        if !seen.insert(input.before.file_id.clone().ok_or_else(changed)?) {
+            continue;
+        }
         total = total
-            .checked_add(meta.len())
+            .checked_add(input.before.len)
             .ok_or_else(|| Failure::invalid("The files are too large."))?;
         if total > 1024 * 1024 * 1024 {
             return Err(Failure::invalid(
                 "Verify at most 1 GiB of file content per request.",
             ));
         }
-        prepared.push((p, meta));
+        prepared.push((path, input));
     }
     if prepared.len() < 2 {
-        return Err(Failure::invalid("Choose at least two distinct paths."));
+        return Err(Failure::invalid(
+            "Choose at least two distinct file objects.",
+        ));
     }
+    let started = std::time::Instant::now();
     let mut groups: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    for (path, before) in prepared {
-        let mut input = std::fs::File::open(&path)?;
-        let opened = input.metadata()?;
-        if opened.len() != before.len() || opened.modified().ok() != before.modified().ok() {
-            return Err(Failure::new(
-                "app.file_changed",
-                "A file changed before verification.",
-            ));
-        }
+    for (path, input) in &mut prepared {
+        input.check_unchanged()?;
         let mut hash = Sha256::new();
         let mut buffer = [0u8; 65536];
         let mut bytes = 0u64;
         loop {
-            let n = input.read(&mut buffer)?;
+            if started.elapsed() > std::time::Duration::from_secs(120) {
+                return Err(Failure::new(
+                    "app.io",
+                    "Duplicate verification exceeded two minutes.",
+                ));
+            }
+            let n = input.file.read(&mut buffer)?;
             if n == 0 {
                 break;
             }
             bytes += n as u64;
-            if bytes > before.len() {
-                return Err(Failure::new(
-                    "app.file_changed",
-                    "A file grew during verification.",
-                ));
+            if bytes > input.before.len {
+                return Err(changed());
             }
             hash.update(&buffer[..n]);
         }
-        let after = std::fs::symlink_metadata(&path)?;
-        if resolve_inside(&shown(&path), roots)? != path
-            || scan::is_link(&after)
-            || bytes != before.len()
-            || after.len() != before.len()
-            || after.modified().ok() != before.modified().ok()
-        {
-            return Err(Failure::new(
-                "app.file_changed",
-                "A file changed during verification.",
-            ));
+        if bytes != input.before.len {
+            return Err(changed());
         }
+        input.check_unchanged()?;
         groups
             .entry(hex::encode(hash.finalize()))
             .or_default()
-            .push(shown(&path));
+            .push(shown(path));
+    }
+    // A deterministic test boundary also verifies an earlier file cannot change while later files
+    // are hashed. Production supplies no callback and no external mutation authority.
+    after_hashes();
+    for (_, input) in &prepared {
+        input.check_unchanged()?;
     }
     Ok(
         json!({"algorithm":"sha256","bytes_read":total,"groups":groups.into_iter().filter(|(_,p)|p.len()>1).map(|(sha256,paths)|json!({"sha256":sha256,"paths":paths,"verified":true})).collect::<Vec<_>>(),"deletes_files":false}),
@@ -208,5 +215,35 @@ mod tests {
         assert_eq!(v["files"], 2);
         assert_eq!(v["duplicate_candidates"][0]["verified"], false);
         assert_eq!(v["logical_bytes"], 2048);
+    }
+    #[test]
+    fn aliases_count_once_and_late_changes_invalidate_all_duplicate_results() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = dir.path().join("a");
+        let b = dir.path().join("b");
+        let alias = dir.path().join("alias");
+        std::fs::write(&a, b"same").unwrap();
+        std::fs::write(&b, b"same").unwrap();
+        std::fs::hard_link(&a, &alias).unwrap();
+        let roots = RootCaps::capture(&[shown(dir.path())]).unwrap();
+        let paths = vec![shown(&a), shown(&alias), shown(&b)];
+        let result = verify_duplicates_pinned(&paths, &roots, &HashMap::new()).unwrap();
+        assert_eq!(result["bytes_read"], 8);
+        assert_eq!(result["groups"][0]["paths"].as_array().unwrap().len(), 2);
+        assert!(verify_duplicates_pinned(&paths[..2], &roots, &HashMap::new()).is_err());
+        assert!(
+            verify_steps(&paths, &roots, &HashMap::new(), || {
+                std::fs::write(&a, b"changed after hashing").unwrap();
+            })
+            .is_err()
+        );
+        let facts = HashMap::from([(
+            norm(&shown(&b)),
+            FileFacts {
+                quarantined: true,
+                ..FileFacts::default()
+            },
+        )]);
+        assert!(verify_duplicates_pinned(&paths, &roots, &facts).is_err());
     }
 }

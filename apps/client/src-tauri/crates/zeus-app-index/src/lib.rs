@@ -18,6 +18,7 @@ pub mod history;
 pub mod ops;
 pub mod paths;
 pub mod preview;
+mod read;
 pub mod scan;
 pub mod search;
 pub mod service;
@@ -90,7 +91,8 @@ fn config_json(cfg: &IndexConfig) -> Value {
 
 async fn preview_route(svc: &Arc<Service>, app: &Arc<App>, body: &Value) -> Result<Value> {
     let path = str_of(body, "path").to_owned();
-    let resolved = paths::resolve_inside(&path, &svc.read_roots())?;
+    let roots = svc.file_capabilities(false)?;
+    let resolved = roots.path(&path)?;
     let shown = paths::shown(&resolved);
     let table = Some(guarded_facts(svc, app).await?);
     let facts = table.as_ref().and_then(|t| t.get(&norm(&shown)).cloned());
@@ -106,7 +108,7 @@ async fn preview_route(svc: &Arc<Service>, app: &Arc<App>, body: &Value) -> Resu
     }
     let p = resolved.clone();
     let s = shown.clone();
-    let mut out = tokio::task::spawn_blocking(move || preview::build(&p, &s))
+    let mut out = tokio::task::spawn_blocking(move || preview::build_pinned(&p, &s, &roots))
         .await
         .map_err(|_| Failure::new("app.io", "The preview failed."))?;
     if out["kind"] == "folder" {
@@ -359,10 +361,13 @@ impl Extension for Module {
                         Ok(f) => f,
                         Err(e) => return Some(Err(e)),
                     };
-                    let roots = svc.read_roots();
+                    let roots = match svc.file_capabilities(false) {
+                        Ok(roots) => roots,
+                        Err(error) => return Some(Err(error)),
+                    };
                     Some(
                         tokio::task::spawn_blocking(move || {
-                            analytics::verify_duplicates(&paths, &roots, &facts)
+                            analytics::verify_duplicates_pinned(&paths, &roots, &facts)
                         })
                         .await
                         .unwrap_or_else(|_| {
