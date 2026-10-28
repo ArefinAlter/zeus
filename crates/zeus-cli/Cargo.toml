@@ -25,6 +25,7 @@ name = "zeus"
 path = "src/main.rs"
 
 [dependencies]
+base64.workspace = true
 zeus-api.workspace = true
 zeus-a2a-bridge.workspace = true
 zeus-mcp.workspace = true

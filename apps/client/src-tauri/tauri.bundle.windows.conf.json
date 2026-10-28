@@ -1,0 +1,14 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "bundle": {
+    "externalBin": [
+      "binaries/zeusd",
+      "binaries/zeus",
+      "binaries/zeus-native-host",
+      "binaries/zeus-everything-query"
+    ],
+    "resources": {
+      "../../../tools/everything-broker/LICENSE-SDK.txt": "LICENSE-EVERYTHING-SDK.txt"
+    }
+  }
+}

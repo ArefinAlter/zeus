@@ -2,7 +2,7 @@
 //
 // 1. The engine's own routes give the configuration for Claude Code, Cursor, Codex and a generic entry; each parses and
 //    points at the bundled `zeus` and this app's environment.
-// 2. "Test the connection" (a handshake started from Rust) lists the fourteen tools.
+// 2. "Test the connection" (a handshake started from Rust) lists the fifteen tools.
 // 3. A separate MCP client over stdio (tests/mcp-client.mjs), started from the generated configuration exactly as an
 //    assistant would, initializes, lists the tools, probes a URL, downloads a file from the fixture server, waits for it,
 //    verifies it, and the SHA-256 matches the server's bytes.
@@ -24,7 +24,7 @@ const check = (name, ok, detail = '') => {
   console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}${detail ? `  (${detail})` : ''}`)
 }
 
-const EXPECTED = ['zeus_probe', 'zeus_enqueue', 'zeus_status', 'zeus_wait', 'zeus_control', 'zeus_verify', 'zeus_session_list', 'zeus_session_request', 'zeus_files_list', 'zeus_cloud', 'zeus_workflow', 'zeus_files', 'zeus_artifacts', 'zeus_inbox']
+const EXPECTED = ['zeus_probe', 'zeus_enqueue', 'zeus_status', 'zeus_wait', 'zeus_control', 'zeus_verify', 'zeus_session_list', 'zeus_session_request', 'zeus_files_list', 'zeus_cloud', 'zeus_workflow', 'zeus_files', 'zeus_artifacts', 'zeus_inbox', 'zeus_sources']
 
 const fx = await startFixtures(0)
 const h = await startHarness({ home, fresh: true })
@@ -44,15 +44,15 @@ check('the Codex entry is a [mcp_servers.zeus] table with command, args and env'
 
 // ---- 2. the handshake the app itself runs
 const test = await h.post('/native/v1/mcp/test', {})
-check('the app\'s own connection test lists fourteen tools', test.ok && test.tool_count === 14, `${test.server?.name} ${test.server?.version}, ${test.ms} ms`)
-check('they are the fourteen tools of the catalogue', EXPECTED.every((n) => test.tools.some((t) => t.name === n)))
+check('the app\'s own connection test lists fifteen tools', test.ok && test.tool_count === 15, `${test.server?.name} ${test.server?.version}, ${test.ms} ms`)
+check('they are the fifteen tools of the catalogue', EXPECTED.every((n) => test.tools.some((t) => t.name === n)))
 
 // ---- 3. a real MCP client, started from the generated configuration
 const client = McpClient.start({ command: claude.mcpServers.zeus.command, args: claude.mcpServers.zeus.args, env: claude.mcpServers.zeus.env })
 const init = await client.initialize()
 check('an MCP client handshake succeeds', !!init.serverInfo?.name, `${init.serverInfo?.name} ${init.serverInfo?.version}, protocol ${init.protocolVersion}`)
 const tools = await client.listTools()
-check('tools/list returns the fourteen tools', tools.length === 14 && EXPECTED.every((n) => tools.some((t) => t.name === n)))
+check('tools/list returns the fifteen tools', tools.length === 15 && EXPECTED.every((n) => tools.some((t) => t.name === n)))
 const decides = tools.filter((t) => /approv|decid|grant|release|unlock/i.test(t.name))
 check('no listed tool can decide an approval', decides.length === 0, decides.map((t) => t.name).join(',') || 'none')
 

@@ -20,11 +20,14 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 use zeus_api::methods::queues::{
     LimiterDef, LimiterView, MAIN_QUEUE, MAX_LIMIT_KIB_S, MAX_QUEUED_JOBS, MAX_QUEUES,
-    MissedWindow, OnFinish, QUEUE_LABEL, QueueAction, QueueDef, QueueDefaults, QueueView,
-    StopBehaviour,
+    MissedWindow, NetworkCost, NetworkMode, NetworkView, OnFinish, QUEUE_LABEL, QueueAction,
+    QueueDef, QueueDefaults, QueueKind, QueueView, StopBehaviour, SyncFileView, SyncStatus,
 };
 use zeus_api::{ApiError, ApiResult};
 use zeus_types::{JobId, JobSpec, JobState};
+
+#[path = "queue_network.rs"]
+mod network;
 
 use crate::limiter::{Limits, fingerprint};
 use crate::queue_schedule::{Clock, parse_hm, parse_ymd, valid_days};
@@ -60,11 +63,51 @@ pub trait JobPort: Send + Sync {
     async fn retry(&self, id: JobId) -> bool;
     /// The kill switch is engaged.
     fn kill_switch(&self) -> bool;
-    /// Unfinished jobs that carry a queue label, for adopting the ones a crash left without membership.
+    /// Read the operating system network-cost hint.
+    async fn network_cost(&self) -> NetworkCost {
+        NetworkCost::Unknown
+    }
+    /// Incomplete jobs, including downloads outside named queues.
+    fn incomplete(&self) -> Vec<(JobId, JobState)> {
+        Vec::new()
+    }
+    /// Check whether a completed file has a new strongly identified representation.
+    async fn sync_probe(&self, _id: JobId) -> SyncCheck {
+        SyncCheck::status(SyncStatus::Unverifiable)
+    }
+    /// Enqueue a rename-only replacement under the original caller and destination.
+    async fn sync_enqueue(
+        &self,
+        _id: JobId,
+        _queue: &str,
+        _version: &str,
+    ) -> Option<(JobId, JobState)> {
+        None
+    }
+    /// Unfinished labelled jobs recovered after a crash.
     fn labelled(&self) -> Vec<(JobId, JobState, JobSpec)> {
         Vec::new()
     }
 }
+
+/// Bounded synchronization observation; the version key contains only a digest.
+pub struct SyncCheck {
+    /// Outcome of the validator comparison.
+    pub status: SyncStatus,
+    /// Digest identifying a changed representation.
+    pub version: Option<String>,
+}
+impl SyncCheck {
+    fn status(status: SyncStatus) -> Self {
+        Self {
+            status,
+            version: None,
+        }
+    }
+}
+
+/// Current requester permission and destination-root check for a new synchronized version.
+pub type SyncAdmission = dyn Fn(&JobSpec, &Path) -> bool + Send + Sync;
 
 /// [`JobPort`] over the real engine and journal.
 pub struct EnginePort {
@@ -72,6 +115,10 @@ pub struct EnginePort {
     pub engine: zeus_engine::Engine,
     /// Its journal.
     pub journal: zeus_journal::Journal,
+    /// Optional signed team restrictions also apply to scheduled effects.
+    pub team: crate::team::policy::Guard,
+    /// Check that the original requester remains authorized for this destination.
+    pub authorize_sync: Arc<SyncAdmission>,
 }
 
 #[async_trait]
@@ -97,6 +144,9 @@ impl JobPort for EnginePort {
     }
 
     async fn resume(&self, id: JobId) -> bool {
+        if self.team.admit("downloads").is_err() {
+            return false;
+        }
         self.engine
             .control(id, zeus_engine::api::ControlAction::Resume)
             .await
@@ -104,6 +154,9 @@ impl JobPort for EnginePort {
     }
 
     async fn retry(&self, id: JobId) -> bool {
+        if self.team.admit("downloads").is_err() {
+            return false;
+        }
         self.engine
             .control(id, zeus_engine::api::ControlAction::Retry)
             .await
@@ -117,6 +170,116 @@ impl JobPort for EnginePort {
             .unwrap_or(true)
     }
 
+    async fn network_cost(&self) -> NetworkCost {
+        network::detect().await
+    }
+
+    fn incomplete(&self) -> Vec<(JobId, JobState)> {
+        self.journal
+            .list_incomplete()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|r| (r.job.id, r.job.state))
+            .collect()
+    }
+
+    async fn sync_probe(&self, id: JobId) -> SyncCheck {
+        if self.team.admit("downloads").is_err() {
+            return SyncCheck::status(SyncStatus::PolicyBlocked);
+        }
+        let Some(job) = self.journal.job(id).ok().flatten().map(|r| r.job) else {
+            return SyncCheck::status(SyncStatus::Failed);
+        };
+        if !job
+            .result
+            .as_ref()
+            .is_some_and(|result| (self.authorize_sync)(&job.spec, Path::new(&result.path)))
+        {
+            return SyncCheck::status(SyncStatus::PolicyBlocked);
+        }
+        if job.state != JobState::Completed
+            || job.quarantined
+            || job.spec.expected_sha256.is_some()
+            || job.spec.expected_size.is_some()
+            || !job.spec.extra_headers.is_empty()
+        {
+            return SyncCheck::status(SyncStatus::Unverifiable);
+        }
+        let Some(old) = job.probe.as_ref().and_then(representation_key) else {
+            return SyncCheck::status(SyncStatus::Unverifiable);
+        };
+        let probe = self
+            .engine
+            .probe(zeus_engine::api::ProbeUrlRequest {
+                url: job.spec.url.clone(),
+                session_origin: job.spec.session_origin.clone(),
+                caller: sync_caller(&job.spec),
+            })
+            .await;
+        let Ok(probe) = probe else {
+            return SyncCheck::status(SyncStatus::Failed);
+        };
+        if probe.requires_session {
+            return SyncCheck::status(SyncStatus::NeedsSession);
+        }
+        if !(200..300).contains(&probe.status) || probe.interstitial_suspected {
+            return SyncCheck::status(SyncStatus::Failed);
+        }
+        let Some(new) = representation_key(&probe) else {
+            return SyncCheck::status(SyncStatus::Unverifiable);
+        };
+        if new == old {
+            SyncCheck::status(SyncStatus::Unchanged)
+        } else {
+            SyncCheck {
+                status: SyncStatus::Downloading,
+                version: Some(new),
+            }
+        }
+    }
+
+    async fn sync_enqueue(
+        &self,
+        id: JobId,
+        queue: &str,
+        version: &str,
+    ) -> Option<(JobId, JobState)> {
+        if self.team.admit("downloads").is_err() {
+            return None;
+        }
+        let job = self.journal.job(id).ok().flatten()?.job;
+        if !job
+            .result
+            .as_ref()
+            .is_some_and(|result| (self.authorize_sync)(&job.spec, Path::new(&result.path)))
+        {
+            return None;
+        }
+        if job.state != JobState::Completed
+            || job.quarantined
+            || job.spec.expected_sha256.is_some()
+            || job.spec.expected_size.is_some()
+            || !job.spec.extra_headers.is_empty()
+        {
+            return None;
+        }
+        let path = Path::new(&job.result.as_ref()?.path);
+        let mut spec = job.spec.clone();
+        spec.dest_dir = Some(path.parent()?.to_str()?.to_owned());
+        spec.filename = Some(path.file_name()?.to_str()?.to_owned());
+        spec.hint_url = None;
+        spec.labels.insert(QUEUE_LABEL.into(), queue.to_owned());
+        spec.overwrite = Some(zeus_types::Overwrite::Rename);
+        spec.idempotency_key = Some(format!("zeus-sync:{id}:{version}"));
+        let caller = sync_caller(&spec);
+        let outcome = self
+            .engine
+            .enqueue(zeus_engine::api::EnqueueRequest { spec, caller })
+            .await
+            .ok()?;
+        Some((outcome.job.id, outcome.job.state))
+    }
+
     fn labelled(&self) -> Vec<(JobId, JobState, JobSpec)> {
         self.journal
             .list_incomplete()
@@ -126,6 +289,32 @@ impl JobPort for EnginePort {
             .map(|r| (r.job.id, r.job.state, r.job.spec))
             .collect()
     }
+}
+
+fn sync_caller(spec: &JobSpec) -> zeus_engine::api::Caller {
+    zeus_engine::api::Caller {
+        client_id: spec
+            .source
+            .client_id
+            .clone()
+            .unwrap_or_else(|| "zeus-queue-sync".into()),
+        kind: zeus_types::ActorKind::System,
+    }
+}
+
+fn representation_key(probe: &zeus_types::ProbeResult) -> Option<String> {
+    let validator = if probe.validators.has_strong_etag() {
+        format!("etag:{}", probe.validators.etag.as_deref()?)
+    } else if probe.validators.last_modified_strong == Some(true) && probe.total_bytes.is_some() {
+        format!("modified:{}", probe.validators.last_modified.as_deref()?)
+    } else {
+        return None;
+    };
+    Some(
+        blake3::hash(format!("{validator}:{:?}", probe.total_bytes).as_bytes())
+            .to_hex()
+            .to_string(),
+    )
 }
 
 fn internal() -> ApiError {
@@ -220,12 +409,25 @@ struct Member {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+struct Watch {
+    queue: String,
+    #[serde(flatten)]
+    view: SyncFileView,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct Stored {
     version: u32,
     queues: Vec<StoredQueue>,
     limiter: LimiterDef,
     defaults: QueueDefaults,
     members: Vec<Member>,
+    #[serde(default)]
+    watches: Vec<Watch>,
+    #[serde(default)]
+    metered_held: Vec<JobId>,
+    #[serde(default)]
+    manual_paused: Vec<JobId>,
     #[serde(default)]
     last_tick_ms: i64,
 }
@@ -235,6 +437,7 @@ fn main_queue() -> QueueDef {
         id: MAIN_QUEUE.into(),
         name: "Main queue".into(),
         kind: Default::default(),
+        sync_every_hours: 24,
         max_concurrent: 3,
         retries: 0,
         retry_delay_s: 30,
@@ -252,6 +455,9 @@ impl Stored {
             limiter: LimiterDef::default(),
             defaults: QueueDefaults::default(),
             members: Vec::new(),
+            watches: Vec::new(),
+            metered_held: Vec::new(),
+            manual_paused: Vec::new(),
             last_tick_ms: 0,
         }
     }
@@ -273,10 +479,15 @@ struct Inner {
     prev_tick_ms: i64,
     last_saved_ms: i64,
     dirty: bool,
+    network_cost: NetworkCost,
+    network_checked_ms: Option<i64>,
 }
 
 /// Whether a queue definition is acceptable.
 pub fn validate_def(def: &QueueDef) -> ApiResult<()> {
+    if !(1..=720).contains(&def.sync_every_hours) {
+        return Err(invalid("sync_every_hours must be between 1 and 720"));
+    }
     let id_ok = !def.id.is_empty()
         && def.id.len() <= 32
         && def
@@ -366,6 +577,8 @@ pub struct Listing {
     pub now_ms: i64,
     /// Offset of the schedule clock from UTC in minutes.
     pub utc_offset_min: i32,
+    /// Actual network-cost policy observation.
+    pub network: NetworkView,
 }
 
 /// The queues' store and scheduler.
@@ -375,6 +588,7 @@ pub struct QueueService {
     limits: Arc<Limits>,
     port: OnceLock<Arc<dyn JobPort>>,
     now: Arc<dyn Fn() -> i64 + Send + Sync>,
+    tick_gate: Mutex<()>,
 }
 
 impl QueueService {
@@ -418,10 +632,13 @@ impl QueueService {
                 prev_tick_ms: prev,
                 last_saved_ms: started,
                 dirty: false,
+                network_cost: NetworkCost::Unknown,
+                network_checked_ms: None,
             }),
             limits,
             port: OnceLock::new(),
             now,
+            tick_gate: Mutex::new(()),
         });
         // Apply the stored limits and membership (the mutex is free: nothing else holds a reference yet).
         if let Ok(inner) = service.inner.try_lock() {
@@ -512,10 +729,26 @@ impl QueueService {
             },
             waiting: held.len() as u32,
             active: active as u32,
-            order: members.iter().map(|m| m.job_id).collect(),
+            order: members
+                .iter()
+                .map(|m| m.job_id)
+                .chain(
+                    stored
+                        .watches
+                        .iter()
+                        .filter(|w| w.queue == q.def.id && visible(w.view.job_id))
+                        .map(|w| w.view.job_id),
+                )
+                .collect(),
             held_job_ids: held,
             finished_at_ms: q.finished_at_ms,
             finish_action_pending: q.finish_action_pending,
+            sync_files: stored
+                .watches
+                .iter()
+                .filter(|w| w.queue == q.def.id && visible(w.view.job_id))
+                .map(|w| w.view.clone())
+                .collect(),
         }
     }
 
@@ -542,6 +775,7 @@ impl QueueService {
             defaults: s.defaults.clone(),
             now_ms: now,
             utc_offset_min: Self::clock(s).offset_minutes(now),
+            network: Self::network_view(&inner),
         }
     }
 
@@ -569,6 +803,9 @@ impl QueueService {
                 inner.stored.queues.push(StoredQueue::new(def.clone()));
             }
         }
+        if def.kind != QueueKind::Sync {
+            inner.stored.watches.retain(|w| w.queue != def.id);
+        }
         self.limits.set_queue(&def.id, def.limit_kib_s);
         self.settle(&mut inner, now, true).await
     }
@@ -584,6 +821,7 @@ impl QueueService {
             return Err(not_found("queue"));
         }
         inner.stored.queues.retain(|q| q.def.id != id);
+        inner.stored.watches.retain(|w| w.queue != id);
         let mut released = Vec::new();
         let limits = self.limits.clone();
         inner.stored.members.retain(|m| {
@@ -654,6 +892,22 @@ impl QueueService {
                     .queue_mut(&id)
                     .ok_or_else(|| not_found("queue"))?;
                 Self::start(q, now);
+                for watch in &mut inner.stored.watches {
+                    if watch.queue == id && watch.view.pending_job_id.is_none() {
+                        watch.view.next_check_ms = now.max(0) as u64;
+                    }
+                }
+                let members: Vec<_> = inner
+                    .stored
+                    .members
+                    .iter()
+                    .filter(|m| m.queue == id)
+                    .map(|m| m.job_id)
+                    .collect();
+                inner
+                    .stored
+                    .manual_paused
+                    .retain(|job| !members.contains(job));
                 // A paused member is waiting for this: hold it so that release order applies.
                 for m in &mut inner.stored.members {
                     if m.queue == id && !m.held && m.state == Some(JobState::Paused) {
@@ -686,6 +940,27 @@ impl QueueService {
                 }
                 for job_id in job_ids {
                     let observed = port.observe(job_id).ok_or_else(|| not_found("job"))?;
+                    if observed.state == JobState::Completed
+                        && inner
+                            .stored
+                            .queue(&id)
+                            .is_some_and(|q| q.def.kind == QueueKind::Sync)
+                    {
+                        if inner.stored.watches.len() >= MAX_QUEUED_JOBS
+                            && !inner.stored.watches.iter().any(|w| w.view.job_id == job_id)
+                        {
+                            return Err(invalid("too many watched downloads"));
+                        }
+                        if let Some(pos) =
+                            inner.stored.members.iter().position(|m| m.job_id == job_id)
+                        {
+                            let old = inner.stored.members.remove(pos);
+                            self.limits.set_member(&old.fingerprint, None);
+                        }
+                        Self::watch_completed(&mut inner.stored, &id, job_id, now);
+                        affected.push(job_id);
+                        continue;
+                    }
                     if matches!(observed.state, JobState::Completed | JobState::Canceled) {
                         return Err(invalid("a finished download cannot join a queue"));
                     }
@@ -700,6 +975,7 @@ impl QueueService {
                         return Err(invalid("too many queued downloads"));
                     }
                     self.limits.set_member(&fp, Some(&id));
+                    inner.stored.manual_paused.retain(|job| *job != job_id);
                     // A paused job that is assigned waits for its queue.
                     let held = observed.state == JobState::Paused;
                     inner.stored.members.push(Member {
@@ -730,6 +1006,9 @@ impl QueueService {
                     }
                 }
                 for job_id in job_ids {
+                    inner.stored.watches.retain(|w| {
+                        w.view.job_id != job_id && w.view.pending_job_id != Some(job_id)
+                    });
                     if let Some(pos) = inner.stored.members.iter().position(|m| m.job_id == job_id)
                     {
                         let gone = inner.stored.members.remove(pos);
@@ -834,12 +1113,255 @@ impl QueueService {
         q.had_work = false;
     }
 
+    fn network_view(inner: &Inner) -> NetworkView {
+        let cost = match inner.stored.defaults.network_mode {
+            NetworkMode::Auto => inner.network_cost,
+            NetworkMode::Unmetered => NetworkCost::Unmetered,
+            NetworkMode::Metered => NetworkCost::Metered,
+        };
+        NetworkView {
+            cost,
+            paused: inner.stored.defaults.pause_on_metered
+                && (cost == NetworkCost::Metered
+                    || (cost == NetworkCost::Unknown && !inner.stored.metered_held.is_empty())),
+            held_jobs: inner.stored.metered_held.len() as u32,
+        }
+    }
+
+    async fn refresh_network(&self) {
+        let now = (self.now)();
+        {
+            let inner = self.inner.lock().await;
+            if inner.stored.defaults.network_mode != NetworkMode::Auto
+                || inner
+                    .network_checked_ms
+                    .is_some_and(|last| now.saturating_sub(last) < 30_000)
+            {
+                return;
+            }
+        }
+        let cost = match self.port.get() {
+            Some(port) => port.network_cost().await,
+            None => NetworkCost::Unknown,
+        };
+        let mut inner = self.inner.lock().await;
+        inner.network_cost = cost;
+        inner.network_checked_ms = Some(now);
+    }
+
+    /// Forget automatic ownership when a caller explicitly pauses, cancels or resumes a job.
+    /// This is also called for an already-paused job, before the engine's idempotent control.
+    pub async fn on_explicit_control(&self, id: JobId, pause: bool) -> ApiResult<()> {
+        let mut inner = self.inner.lock().await;
+        inner.stored.metered_held.retain(|j| *j != id);
+        inner.stored.manual_paused.retain(|j| *j != id);
+        if pause {
+            inner.stored.manual_paused.push(id);
+            if let Some(member) = inner.stored.members.iter_mut().find(|m| m.job_id == id) {
+                member.held = false;
+            }
+        }
+        self.save(&mut inner, (self.now)())?;
+        Ok(())
+    }
+
+    async fn reconcile_network(
+        &self,
+        inner: &mut Inner,
+        port: &dyn JobPort,
+        kill: bool,
+        blocked: bool,
+    ) -> bool {
+        if kill {
+            // A global stop cannot later be undone by a network-cost change.
+            let changed = !inner.stored.metered_held.is_empty();
+            inner.stored.metered_held.clear();
+            return changed;
+        }
+        let before = inner.stored.metered_held.len();
+        inner.stored.metered_held.retain(|id| {
+            port.observe(*id)
+                .is_some_and(|o| o.state == JobState::Paused)
+        });
+        let mut changed = before != inner.stored.metered_held.len();
+        inner.stored.manual_paused.retain(|id| {
+            port.observe(*id).is_some_and(|o| {
+                !matches!(
+                    o.state,
+                    JobState::Completed | JobState::Canceled | JobState::Failed
+                )
+            })
+        });
+        if blocked {
+            for (id, state) in port.incomplete() {
+                if holdable(state)
+                    && !inner.stored.manual_paused.contains(&id)
+                    && !inner.stored.metered_held.contains(&id)
+                    && port.pause(id).await
+                {
+                    inner.stored.metered_held.push(id);
+                    changed = true;
+                }
+            }
+        } else {
+            for id in std::mem::take(&mut inner.stored.metered_held) {
+                changed = true;
+                let queue_holds = inner.stored.members.iter().any(|m| {
+                    m.job_id == id
+                        && (m.held
+                            || inner
+                                .stored
+                                .queue(&m.queue)
+                                .is_some_and(|q| !q.running || q.draining))
+                });
+                if !queue_holds
+                    && port
+                        .observe(id)
+                        .is_some_and(|o| o.state == JobState::Paused)
+                {
+                    let _ = port.resume(id).await;
+                }
+            }
+        }
+        changed
+    }
+
+    fn watch_completed(stored: &mut Stored, queue: &str, id: JobId, now: i64) {
+        if let Some(watch) = stored
+            .watches
+            .iter_mut()
+            .find(|w| w.view.pending_job_id == Some(id))
+        {
+            watch.view.job_id = id;
+            watch.view.pending_job_id = None;
+            watch.view.status = SyncStatus::Updated;
+            return;
+        }
+        if let Some(watch) = stored.watches.iter_mut().find(|w| w.view.job_id == id) {
+            watch.queue = queue.to_owned();
+            return;
+        }
+        if stored.watches.len() >= MAX_QUEUED_JOBS {
+            return;
+        }
+        stored.watches.push(Watch {
+            queue: queue.to_owned(),
+            view: SyncFileView {
+                job_id: id,
+                pending_job_id: None,
+                last_checked_ms: None,
+                next_check_ms: now.max(0) as u64,
+                status: SyncStatus::Waiting,
+            },
+        });
+    }
+
+    fn sync_running(stored: &Stored, queue: &StoredQueue, now: u64) -> bool {
+        queue.running
+            && !queue.draining
+            && queue.def.kind == QueueKind::Sync
+            && !queue
+                .last_started_ms
+                .and_then(|started| {
+                    Self::clock(stored).stop_after(&queue.def.schedule, started as i64)
+                })
+                .is_some_and(|stop| stop <= now as i64)
+    }
+
+    async fn sync_tick(&self) -> ApiResult<()> {
+        let Some(port) = self.port.get() else {
+            return Ok(());
+        };
+        let now = (self.now)().max(0) as u64;
+        let candidate = {
+            let inner = self.inner.lock().await;
+            if port.kill_switch() || Self::network_view(&inner).paused {
+                return Ok(());
+            }
+            inner
+                .stored
+                .watches
+                .iter()
+                .find(|w| {
+                    w.view.pending_job_id.is_none()
+                        && w.view.next_check_ms <= now
+                        && inner
+                            .stored
+                            .queue(&w.queue)
+                            .is_some_and(|q| Self::sync_running(&inner.stored, q, now))
+                })
+                .cloned()
+        };
+        let Some(watch) = candidate else {
+            return Ok(());
+        };
+        // One bounded probe per serialized tick; queue controls remain responsive while it runs.
+        let check = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            port.sync_probe(watch.view.job_id),
+        )
+        .await
+        .unwrap_or_else(|_| SyncCheck::status(SyncStatus::Failed));
+        let mut inner = self.inner.lock().await;
+        if port.kill_switch() || Self::network_view(&inner).paused {
+            return Ok(());
+        }
+        let Some(queue) = inner
+            .stored
+            .queue(&watch.queue)
+            .cloned()
+            .filter(|q| Self::sync_running(&inner.stored, q, now))
+        else {
+            return Ok(());
+        };
+        let Some(index) = inner.stored.watches.iter().position(|w| {
+            w.queue == watch.queue
+                && w.view.job_id == watch.view.job_id
+                && w.view.pending_job_id.is_none()
+        }) else {
+            return Ok(());
+        };
+        inner.stored.watches[index].view.last_checked_ms = Some(now);
+        inner.stored.watches[index].view.next_check_ms =
+            now.saturating_add(u64::from(queue.def.sync_every_hours) * 3_600_000);
+        inner.stored.watches[index].view.status = check.status;
+        if let Some(version) = check.version {
+            if inner.stored.members.len() >= MAX_QUEUED_JOBS {
+                inner.stored.watches[index].view.status = SyncStatus::Failed;
+            } else if let Some((id, state)) = port
+                .sync_enqueue(watch.view.job_id, &watch.queue, &version)
+                .await
+            {
+                inner.stored.watches[index].view.pending_job_id = Some(id);
+                let fp = port.fingerprint(id).unwrap_or_default();
+                self.limits.set_member(&fp, Some(&watch.queue));
+                if !inner.stored.members.iter().any(|m| m.job_id == id) {
+                    inner.stored.members.push(Member {
+                        job_id: id,
+                        queue: watch.queue,
+                        fingerprint: fp,
+                        held: state == JobState::Paused,
+                        retries_used: 0,
+                        retry_at_ms: None,
+                        state: Some(state),
+                    });
+                }
+            } else {
+                inner.stored.watches[index].view.status = SyncStatus::Failed;
+            }
+        }
+        self.save(&mut inner, now as i64)
+    }
+
     // ---------------------------------------------------------------- the scheduler
 
     /// One scheduler tick: scheduled starts and stops, holding and releasing, retries, finished queues. Returns how
     /// long to wait for the next one: a quarter of a second while a running queue still has downloads to release
     /// (so a finished download is replaced at once), a second otherwise.
     pub async fn tick(&self) -> ApiResult<std::time::Duration> {
+        let _tick = self.tick_gate.lock().await;
+        self.refresh_network().await;
+        self.sync_tick().await?;
         let mut inner = self.inner.lock().await;
         let now = (self.now)();
         self.apply_limiter(&inner.stored, now);
@@ -906,6 +1428,10 @@ impl QueueService {
         };
         let mut changed = false;
         let kill = port.kill_switch();
+        let blocked = Self::network_view(inner).paused;
+        changed |= self
+            .reconcile_network(inner, port.as_ref(), kill, blocked)
+            .await;
         let clock = Self::clock(&inner.stored);
 
         // 1. Refresh every member; drop the ones that are done or gone or that someone else started.
@@ -919,6 +1445,16 @@ impl QueueService {
                 .stored
                 .queue(&queue_id)
                 .map_or((0, 30), |q| (q.def.retries, q.def.retry_delay_s));
+            if observed
+                .as_ref()
+                .is_some_and(|o| o.state == JobState::Completed)
+                && inner
+                    .stored
+                    .queue(&queue_id)
+                    .is_some_and(|q| q.def.kind == QueueKind::Sync)
+            {
+                Self::watch_completed(&mut inner.stored, &queue_id, id, now);
+            }
             let m = &mut inner.stored.members[index];
             let mut remove = false;
             match &observed {
@@ -941,7 +1477,7 @@ impl QueueService {
                                         m.retry_at_ms = Some(now as u64 + u64::from(delay) * 1000);
                                         changed = true;
                                     }
-                                    Some(at) if now as u64 >= at && !kill => {
+                                    Some(at) if now as u64 >= at && !kill && !blocked => {
                                         m.retry_at_ms = None;
                                         m.retries_used += 1;
                                         changed = true;
@@ -966,6 +1502,12 @@ impl QueueService {
             }
             if remove {
                 let gone = inner.stored.members.remove(index);
+                for w in &mut inner.stored.watches {
+                    if w.view.pending_job_id == Some(gone.job_id) {
+                        w.view.pending_job_id = None;
+                        w.view.status = SyncStatus::Failed;
+                    }
+                }
                 self.limits.set_member(&gone.fingerprint, None);
                 changed = true;
             } else {
@@ -1004,8 +1546,13 @@ impl QueueService {
             if let Some(prev) = scheduled {
                 if !q.running && clock.start_due(&q.def.schedule, prev, now) {
                     Self::start(&mut q, now);
+                    let manual = inner.stored.manual_paused.clone();
                     for m in &mut inner.stored.members {
-                        if m.queue == id && !m.held && m.state == Some(JobState::Paused) {
+                        if m.queue == id
+                            && !m.held
+                            && m.state == Some(JobState::Paused)
+                            && !manual.contains(&m.job_id)
+                        {
                             m.held = true;
                         }
                     }
@@ -1040,7 +1587,7 @@ impl QueueService {
                     !m.held && m.state.is_some_and(uses_slot)
                 })
                 .count();
-            if q.running && !q.draining {
+            if q.running && !q.draining && !blocked {
                 // Release held members in order while slots are free.
                 for &i in &members {
                     if active >= q.def.max_concurrent as usize {
@@ -1119,7 +1666,12 @@ impl QueueService {
                 }
             }
             // A running queue with no members left, after doing work, has finished.
-            if q.running && !q.draining && members.is_empty() && q.had_work {
+            if q.running
+                && !q.draining
+                && members.is_empty()
+                && q.had_work
+                && !inner.stored.watches.iter().any(|w| w.queue == id)
+            {
                 q.running = false;
                 q.had_work = false;
                 q.finished_at_ms = Some(now.max(0) as u64);
@@ -1157,6 +1709,10 @@ mod tests {
         jobs: StdMutex<HashMap<JobId, (JobState, bool)>>,
         calls: StdMutex<Vec<(&'static str, JobId)>>,
         kill: StdMutex<bool>,
+        sync_changed: StdMutex<bool>,
+        block_probe: std::sync::atomic::AtomicBool,
+        probe_started: tokio::sync::Notify,
+        probe_release: tokio::sync::Notify,
     }
 
     impl Fake {
@@ -1183,6 +1739,38 @@ mod tests {
 
     #[async_trait]
     impl JobPort for Fake {
+        fn incomplete(&self) -> Vec<(JobId, JobState)> {
+            self.jobs
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|(id, (state, _))| (*id, *state))
+                .collect()
+        }
+        async fn sync_probe(&self, id: JobId) -> SyncCheck {
+            self.calls.lock().unwrap().push(("probe", id));
+            if self.block_probe.load(std::sync::atomic::Ordering::SeqCst) {
+                self.probe_started.notify_one();
+                self.probe_release.notified().await;
+            }
+            if *self.sync_changed.lock().unwrap() {
+                SyncCheck {
+                    status: SyncStatus::Downloading,
+                    version: Some("version-two".into()),
+                }
+            } else {
+                SyncCheck::status(SyncStatus::Unchanged)
+            }
+        }
+        async fn sync_enqueue(
+            &self,
+            id: JobId,
+            _queue: &str,
+            _version: &str,
+        ) -> Option<(JobId, JobState)> {
+            self.calls.lock().unwrap().push(("sync_enqueue", id));
+            Some((self.add(JobState::Queued), JobState::Queued))
+        }
         fn observe(&self, id: JobId) -> Option<Observed> {
             self.jobs
                 .lock()
@@ -1323,6 +1911,202 @@ mod tests {
                 .await
                 .unwrap();
         }
+    }
+
+    #[tokio::test]
+    async fn metered_holds_only_its_own_jobs_and_never_releases_a_global_stop() {
+        let h = harness().await;
+        let active = h.fake.add(JobState::Downloading);
+        let manual = h.fake.add(JobState::Paused);
+        let explicit = h.fake.add(JobState::Downloading);
+        h.service
+            .configure(
+                None,
+                Some(QueueDefaults {
+                    network_mode: NetworkMode::Metered,
+                    ..Default::default()
+                }),
+            )
+            .await
+            .unwrap();
+        h.service.tick().await.unwrap();
+        assert_eq!(h.fake.state(active), JobState::Paused);
+        assert_eq!(h.service.list(&all).await.network.held_jobs, 2);
+        h.service.on_explicit_control(explicit, true).await.unwrap();
+        h.service
+            .configure(None, Some(QueueDefaults::default()))
+            .await
+            .unwrap();
+        h.service.tick().await.unwrap();
+        assert_eq!(
+            h.service.list(&all).await.network.cost,
+            NetworkCost::Unknown
+        );
+        assert!(h.service.list(&all).await.network.paused);
+        assert_eq!(h.fake.state(active), JobState::Paused);
+
+        h.service
+            .configure(
+                None,
+                Some(QueueDefaults {
+                    network_mode: NetworkMode::Unmetered,
+                    ..Default::default()
+                }),
+            )
+            .await
+            .unwrap();
+        h.service.tick().await.unwrap();
+        assert_eq!(h.fake.state(active), JobState::Downloading);
+        assert_eq!(h.fake.state(manual), JobState::Paused);
+        assert_eq!(h.fake.state(explicit), JobState::Paused);
+        h.service
+            .configure(
+                None,
+                Some(QueueDefaults {
+                    network_mode: NetworkMode::Metered,
+                    ..Default::default()
+                }),
+            )
+            .await
+            .unwrap();
+        h.service.tick().await.unwrap();
+        *h.fake.kill.lock().unwrap() = true;
+        h.service.tick().await.unwrap();
+        *h.fake.kill.lock().unwrap() = false;
+        h.service
+            .configure(
+                None,
+                Some(QueueDefaults {
+                    network_mode: NetworkMode::Unmetered,
+                    ..Default::default()
+                }),
+            )
+            .await
+            .unwrap();
+        h.service.tick().await.unwrap();
+        assert_eq!(h.fake.state(active), JobState::Paused);
+    }
+
+    #[tokio::test]
+    async fn stopping_during_a_probe_prevents_its_new_download_without_blocking_controls() {
+        let h = harness().await;
+        h.service
+            .put(QueueDef {
+                id: "watch".into(),
+                kind: QueueKind::Sync,
+                ..main_queue()
+            })
+            .await
+            .unwrap();
+        let old = h.fake.add(JobState::Completed);
+        h.service
+            .control(
+                QueueAction::Assign {
+                    id: "watch".into(),
+                    job_ids: vec![old],
+                },
+                &all,
+            )
+            .await
+            .unwrap();
+        h.service
+            .control(QueueAction::Start { id: "watch".into() }, &all)
+            .await
+            .unwrap();
+        *h.fake.sync_changed.lock().unwrap() = true;
+        h.fake
+            .block_probe
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let service = h.service.clone();
+        let tick = tokio::spawn(async move {
+            service.tick().await.unwrap();
+        });
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            h.fake.probe_started.notified(),
+        )
+        .await
+        .unwrap();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            h.service
+                .control(QueueAction::Stop { id: "watch".into() }, &all),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        h.fake.probe_release.notify_one();
+        tick.await.unwrap();
+        assert_eq!(h.fake.calls("sync_enqueue"), 0);
+        assert!(!h.view("watch").await.running);
+    }
+
+    #[tokio::test]
+    async fn sync_watches_are_durable_bounded_and_keep_the_previous_version_on_failure() {
+        let h = harness().await;
+        h.service
+            .put(QueueDef {
+                id: "watch".into(),
+                kind: QueueKind::Sync,
+                sync_every_hours: 1,
+                ..main_queue()
+            })
+            .await
+            .unwrap();
+        let old = h.fake.add(JobState::Completed);
+        h.service
+            .control(
+                QueueAction::Assign {
+                    id: "watch".into(),
+                    job_ids: vec![old],
+                },
+                &all,
+            )
+            .await
+            .unwrap();
+        h.service.tick().await.unwrap();
+        assert_eq!(h.fake.calls("probe"), 0);
+        h.service
+            .control(QueueAction::Start { id: "watch".into() }, &all)
+            .await
+            .unwrap();
+        h.service.tick().await.unwrap();
+        assert_eq!(
+            h.view("watch").await.sync_files[0].status,
+            SyncStatus::Unchanged
+        );
+        h.service.tick().await.unwrap();
+        assert_eq!(h.fake.calls("probe"), 1);
+        let reopened = QueueService::open(h._dir.path(), Limits::new()).unwrap();
+        assert_eq!(
+            reopened.queue_view("watch", &all).await.unwrap().sync_files[0].job_id,
+            old
+        );
+        *h.fake.sync_changed.lock().unwrap() = true;
+        h.advance(3_600_000);
+        h.service.tick().await.unwrap();
+        let pending = h.view("watch").await.sync_files[0].pending_job_id.unwrap();
+        assert_ne!(pending, old);
+        assert_eq!(h.fake.state(old), JobState::Completed);
+        h.fake.set(pending, JobState::Failed, false);
+        h.service.tick().await.unwrap();
+        let watch = h.view("watch").await.sync_files[0].clone();
+        assert_eq!(watch.job_id, old);
+        assert_eq!(watch.status, SyncStatus::Failed);
+        assert!(watch.pending_job_id.is_none());
+        h.advance(3_600_000);
+        h.service
+            .configure(
+                None,
+                Some(QueueDefaults {
+                    network_mode: NetworkMode::Metered,
+                    ..Default::default()
+                }),
+            )
+            .await
+            .unwrap();
+        h.service.tick().await.unwrap();
+        assert_eq!(h.fake.calls("probe"), 2);
     }
 
     #[tokio::test]

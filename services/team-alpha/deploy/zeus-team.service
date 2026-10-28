@@ -1,0 +1,39 @@
+[Unit]
+Description=Zeus optional team metadata service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=zeus-team
+Group=zeus-team
+WorkingDirectory=/opt/zeus-team/current
+Environment=NODE_ENV=production
+Environment=ZEUS_TEAM_CONFIG=/etc/zeus-team/config.json
+EnvironmentFile=/etc/zeus-team/oidc.env
+ExecStart=/opt/zeus-team/runtime/bin/node --disable-proto=throw --max-old-space-size=192 src/server.mjs
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+UMask=0077
+StateDirectory=zeus-team
+StateDirectoryMode=0700
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadWritePaths=/var/lib/zeus-team
+MemoryMax=384M
+TasksMax=64
+LimitNOFILE=1024
+
+[Install]
+WantedBy=multi-user.target

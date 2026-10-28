@@ -244,6 +244,7 @@ MVP unless marked later.
 | `jobs` | `probe`, `enqueue` (batch up to 100, `dry_run`), `list`, `get`, `wait` (timeout at most 60 s), `control` (`pause`, `resume`, `cancel`, `retry`, `reprioritize`), `verify` |
 | `queues` | `list`, `put`, `delete`, `control` (`start`, `stop`, `assign`, `unassign`, `move`, `ack_finish`), `configure` (speed limiter and scheduler defaults); queues hold downloads (label `zeus.queue`), run on a schedule, release up to `max_concurrent` and pace them at the queue's and the global limit; spec 05 section 9.14 |
 | `cloud` | `accounts.list`, `accounts.configure` and `accounts.revoke` (verified physical terminal), `plan`, `submit`, `list`, `get`, `control`; approval-bound delivery contracts in spec 14 |
+| `sources` | `accounts.list`, `accounts.configure` and `accounts.revoke` (verified physical terminal), `inspect`, `submit`, `list`, `get`, `control`; immutable source scopes, owner-bound budgets and publication receipts in [R05](alpha-0.1/SOURCE-ADAPTERS-PLAN.md) |
 | `events` | `subscribe` (since_seq, type filter, job filter, progress interval), `unsubscribe` |
 | `sessions` | `list` (grants and lease counts, never material), `request` (raises an approval, never blocks on it), `revoke` (human) |
 | `approvals` | `list`, `get`, `decide` (human, channel evidence, request hash) |
@@ -275,7 +276,7 @@ Server-to-client notifications: `events.event` (`{subscription_id, event}`), `ev
 
 Spec 06 ([`spec/06-mcp-tools-v1.md`](spec/06-mcp-tools-v1.md), Draft 1, 2026-10-06) is now normative and supersedes this section where they differ.
 
-Thirteen implemented tools, each a thin projection of daemon methods (ADR 0003 and ADR 0013).
+Fifteen implemented tools, each a thin projection of daemon methods (ADR 0003 and ADR 0013).
 
 **Protocol revision (finding of research doc 10, 2026-10-05).** MCP 2026-07-28 is final and stateless. It removes `initialize`, `Mcp-Session-Id`, the GET stream and SSE resumability. It carries the protocol version and client capabilities in every request's `_meta`, adds `server/discover`, and deprecates Sampling, Roots and Logging. `rmcp` 3.5.1 implements it and stays compatible with 2025-11-25. Spec 06 targets 2026-07-28 and decides how far 2025-11-25 clients are still served. Statements below that cite 2025-11-25 must be re-verified against 2026-07-28.
 
@@ -296,6 +297,8 @@ Names, daemon methods and annotations:
 | `zeus_workflow` | Plan, preview, run, get/list, control, manifest | yes | false, true, true, true |
 | `zeus_files` | Organize/undo with human review | yes | false, true, true, false |
 | `zeus_artifacts` | Get/list/lineage/ingest | ingest | false, false, true, false |
+| `zeus_sources` | Configured accounts, immutable review/submit, owned list/get/control | yes | false, true, true, true |
+| `zeus_inbox` | Durable URL packages, preview, submit and owned receipts | yes | false, true, true, true |
 
 Later: `zeus_convert`. Resources include `zeus://jobs/{id}`, `zeus://runs/{id}/manifest`, `zeus://audit/today` and the on-demand `zeus://workflow/plan-schema`; prompt `rescue-failed-download`. Tool-name charset: `[a-z0-9_]`, at most 64 characters (00 section 3).
 

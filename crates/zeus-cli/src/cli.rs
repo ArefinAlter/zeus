@@ -319,6 +319,9 @@ pub enum ConfigCommand {
 /// The commands.
 #[derive(Debug, Clone, Subcommand)]
 pub enum Command {
+    /// Review and acquire immutable S3, Hugging Face and bounded torrent sources.
+    #[command(subcommand)]
+    Sources(crate::sources::SourcesCommand),
     /// Retain URL collections and review or recover bounded download batches.
     #[command(subcommand)]
     Inbox(crate::inbox::InboxCommand),

@@ -404,6 +404,7 @@ impl WorkflowStore {
 }
 /// One workflow service; create before the engine, inject its factory, then attach the engine.
 pub struct WorkflowService {
+    team: crate::team::policy::Guard,
     store: Arc<WorkflowStore>,
     network: Arc<crate::workflow_network::WorkflowNetwork>,
     journal: zeus_journal::Journal,
@@ -436,6 +437,7 @@ impl WorkflowService {
             journal.clone(),
         ));
         Ok(Arc::new(Self {
+            team: crate::team::policy::Guard::new(path.parent().ok_or_else(fail)?, "workflows"),
             store,
             network,
             journal,
@@ -1579,6 +1581,10 @@ impl WorkflowService {
                     .map_err(|_| runtime_fail())?;
                 continue;
             }
+            self.team
+                .admit("workflows")
+                .and_then(|()| self.team.admit("downloads"))
+                .map_err(|_| RuntimeError::Policy("team.policy_held"))?;
             // Intent reservations are durable before admission; deterministic keys close the crash-after-enqueue gap.
             intent.spec.source.client_id = Some(row.owner.clone());
             let outcome = self
@@ -1671,6 +1677,10 @@ impl RuntimePort for WorkflowService {
         Ok(())
     }
     async fn fetch(&self, request: FetchRequest) -> RuntimeResult<Document> {
+        self.team
+            .admit("workflows")
+            .and_then(|()| self.team.admit("downloads"))
+            .map_err(|_| RuntimeError::Policy("team.policy_held"))?;
         let row = self
             .store
             .run(request.run_id)

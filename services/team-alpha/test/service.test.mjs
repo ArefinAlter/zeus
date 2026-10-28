@@ -135,8 +135,20 @@ test('signed policy and client-reported provenance use separate pinned DSSE doma
 test('metadata rejects secret-bearing fields and disabled sync before mutation', async t => {
   const f = await fixture(t), admin = f.actor('admin')
   for (const value of [{ label: 'Tag', color: '#112233', url: 'https://secret.invalid/?token=CANARY' }, { label: 'Tag', color: '#112233', cookie: 'CANARY' }]) assert.throws(() => f.app.store.put('alpha', admin, 'tags', 'bad', 0, value, false, 'reject-' + Object.keys(value).at(-1)))
+  assert.throws(() => f.app.store.put('alpha', admin, 'tags', 'ZEUS-CANARY-record', 0, { label: 'Tag', color: '#112233' }, false, 'bad-record'))
   const features = { ...enabled(), metadata_sync: false }
   f.app.store.setFeatures('alpha', admin, 1, features, 'disable-sync')
   assert.throws(() => f.app.store.put('alpha', admin, 'tags', 'tag', 0, { label: 'Tag', color: '#112233' }, false, 'after-disable'), { code: 'team.feature_disabled' })
   assert.equal(f.app.store.team('alpha').seq, 0)
+})
+
+
+test('disabled metadata policy denies reads as well as writes and preserves local approval boundaries', async t => {
+  const f = await fixture(t), token = f.token('admin'), who = f.actor('admin')
+  f.app.store.put('alpha', who, 'tags', 'one', 0, { label: 'One', color: '#112233' }, false, 'create-one')
+  f.app.store.setFeatures('alpha', who, 1, { ...enabled(), metadata_sync: false }, 'disable-sync')
+  assert.equal((await f.request('/v1/teams/alpha/changes?after=0', { token })).status, 403)
+  assert.equal((await f.request('/v1/teams/alpha/policy', { token })).status, 200)
+  assert.equal((await f.request('/v1/teams/alpha/approvals', { token, method: 'POST', body: { outcome: 'approve' } })).status, 404)
+  assert.equal((await f.request('/v1/teams/alpha/provenance', { token, method: 'POST', body: { sha256: 'a'.repeat(64), size_bytes: 1, source_kind: 'http', url: 'https://example.com/' }, headers: { 'idempotency-key': 'extra-field' } })).status, 400)
 })

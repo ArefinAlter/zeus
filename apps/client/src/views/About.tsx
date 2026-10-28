@@ -1,5 +1,4 @@
-// About: what this release is, plainly. It runs on sample data with no daemon behind it; the interface and the rules
-// are real, the data and the agent's replies are prepared.
+// About describes the selected backend: native desktop, hosted sandbox or sample-only preview.
 
 import { HOSTED, LIVE, NATIVE } from '../backend/live'
 import { backend } from '../backend/remote'
@@ -13,7 +12,7 @@ const REAL: [string, string][] = [
   ['Job states and controls', 'The twelve states of spec 01 and the pause, resume, retry and cancel rules, as zeusd applies them.'],
   ['Link review', 'The two-step Preview downloads, Start reviewed downloads flow of the desktop client, with its 50-link and 64 KiB limits.'],
   ['Approvals', 'Facts in a fixed order, the scopes a kind allows, the request hash and bind code, the 750 ms arming delay, typed codes, and refusal when the facts changed.'],
-  ['Agent tools', 'The fourteen MCP tools of zeus-mcp with their access levels; no tool decides an approval, at any level.'],
+  ['Agent tools', 'The fifteen MCP tools of zeus-mcp with their access levels; no tool decides an approval, at any level.'],
   ['Search syntax and schedules', 'The file search syntax and the queue and limiter rules, covered by tests in this app.'],
 ]
 
@@ -57,7 +56,7 @@ export function About() {
           <div>
             <div class="about-name">Zeus</div>
             <div class="muted">
-              <Chip tone="accent">Pre-alpha release</Chip> version {__APP_VERSION__}
+              <Chip tone="accent">Alpha release</Chip> version {__APP_VERSION__}
             </div>
           </div>
         </div>
@@ -131,12 +130,14 @@ function Rows({ rows }: { rows: [string, string][] }) {
 
 const NATIVE_REAL: [string, string][] = [
   ['The engine', 'zeusd, set up and run by this app in its own folder, started when you open Zeus and stopped when you quit. It restarts if it dies and resumes interrupted downloads from the bytes already saved.'],
-  ['Downloads', 'Parallel parts that resume, retries that honour Retry-After, redirects, server-given names, SHA-256 and BLAKE3 for every file, quarantine of programs and scripts.'],
+  ['Downloads', 'Adaptive parallel parts that resume, retries that honour Retry-After, redirects, server-given names, SHA-256 and BLAKE3, and quarantine of programs and scripts. Media review supports bounded HLS and DASH acquisition with optional muxing.'],
   ['Queues, scheduler and speed limiter', 'Held and run by zeusd: start and stop times, days, how many at a time, what to do when a queue finishes, retries; a global limit, a limit per queue and a time window.'],
-  ['Files', 'An index of your download folders kept up to date by a file watcher, instant search with the operators of a file-search tool, a preview of text and pictures, rename, move and delete on your click.'],
+  ['Files', 'Search in folders you explicitly add, two-pane browsing, text and image preview, copy and move, collision review, archive handling and duplicate inspection. The optional Everything helper queries only the configured scope.'],
   ['Link grabber and site grabber', 'Online check of many links at once, a reviewed batch started once, duplicate handling; a polite crawler that reads robots.txt and keeps to the host you name.'],
-  ['Agent', 'Threads with your own model keys (Anthropic, OpenAI-compatible providers, Gemini, local Ollama). Keys stay in the operating system credential store and never reach this window. Nothing is sent to a provider until you allow it for that provider.'],
-  ['Connect', 'The fourteen Zeus tools for Claude Code, Cursor and Codex through the bundled zeus program, and the browser extension with its native-messaging host.'],
+  ['Workflow runs', 'Edit and save exact plans for public pages, validate selectors, review a dry run, request human approval, follow progress and export manifests.'],
+  ['Uploads and sources', 'Review cloud uploads and their receipts. Connected sources support an authorized S3 scope, pinned Hugging Face files and selected torrent files from explicit peers. Source access is configured in a separate human terminal.'],
+  ['Agent', 'Use your own provider keys or supported installed Claude Code, Codex, Cursor, Antigravity and Grok CLIs. The official CLI retains its sign-in; Zeus does not read browser cookies or CLI tokens. Provider requests begin only after you enable the connection.'],
+  ['Connect', 'The fifteen Zeus tools for Claude Code, Cursor and Codex through the bundled zeus program, and the browser extension with its native-messaging host.'],
 ]
 
 const NATIVE_LIMITS: [string, string][] = [
@@ -144,7 +145,7 @@ const NATIVE_LIMITS: [string, string][] = [
   ['The browser extension', 'It loads as a development extension with a fixed development id. A store version, and decisions from the extension popup for it, wait for publication.'],
   ['Installers', 'Unsigned: Windows SmartScreen warns before the first run. There is no automatic update; Settings can ask GitHub for the latest release name.'],
   ['Settings that do not apply', 'Rows marked planned have no effect yet (metered connections, IPv6, a SOCKS proxy, cleanup schedules). They are switched off rather than pretending.'],
-  ['Platforms', 'Windows x64 and Linux x64. macOS builds come later.'],
+  ['Platforms', 'This alpha provides Windows x64 binaries. Previous Linux downloads remain separately versioned; Windows checks do not establish Linux desktop acceptance.'],
 ]
 
 function AboutNative({ version }: { version: string | null }) {
@@ -159,12 +160,12 @@ function AboutNative({ version }: { version: string | null }) {
           <div>
             <div class="about-name">Zeus</div>
             <div class="muted">
-              <Chip tone="accent">Pre-alpha release</Chip> version {__APP_VERSION__}
+              <Chip tone="accent">Alpha release</Chip> version {__APP_VERSION__}
             </div>
           </div>
         </div>
         <p>
-          Zeus is a download manager and file search tool that your AI assistant can use, and that asks you before it uses a login. This is the standalone app: one installer, no daemon to start, no account, and nothing leaves your computer except the downloads you ask for and the model requests you allow.
+          Zeus manages downloads, files and uploads on this computer. Its bundled engine starts with the app. Connecting a source, drive or AI provider sends the requests and selected data required by that connection; the review screens show the scope before you proceed.
         </p>
         <Kv
           rows={[
@@ -207,7 +208,7 @@ function AboutLive({ os, expires, hosts, version }: { os: ReturnType<typeof desk
           <div>
             <div class="about-name">Zeus</div>
             <div class="muted">
-              <Chip tone="accent">Pre-alpha release</Chip> version {__APP_VERSION__}
+              <Chip tone="accent">Alpha release</Chip> version {__APP_VERSION__}
             </div>
           </div>
         </div>

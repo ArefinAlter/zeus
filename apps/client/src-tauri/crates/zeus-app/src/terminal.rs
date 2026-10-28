@@ -15,6 +15,8 @@ fn arguments(action: &str, id: &str) -> Result<Vec<String>> {
             .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_');
     let args = match action {
         "configure" if id.is_empty() => vec!["cloud", "accounts", "configure"],
+        "source-configure" if id.is_empty() => vec!["sources", "accounts", "configure"],
+        "source-revoke" if valid_id => vec!["sources", "accounts", "revoke", id],
         "oauth-login" if id.is_empty() => vec!["cloud", "auth", "login"],
         "oauth-status" if valid_id => vec!["cloud", "auth", "status", id],
         "oauth-refresh" if valid_id => vec!["cloud", "auth", "refresh", id],
@@ -159,6 +161,14 @@ mod tests {
             ["cloud", "accounts", "configure"]
         );
         assert_eq!(
+            arguments("source-configure", "").unwrap(),
+            ["sources", "accounts", "configure"]
+        );
+        assert_eq!(
+            arguments("source-revoke", "dataset_1").unwrap(),
+            ["sources", "accounts", "revoke", "dataset_1"]
+        );
+        assert_eq!(
             arguments("approve", "01AB-CD").unwrap(),
             ["approvals", "approve", "01AB-CD"]
         );
@@ -171,6 +181,9 @@ mod tests {
             ["cloud", "auth", "disconnect", "research", "--revoke-remote"]
         );
         for (action, id) in [
+            ("source-configure", "extra"),
+            ("source-revoke", "--all"),
+            ("source-revoke", "a;echo x"),
             ("oauth-login", "extra"),
             ("oauth-refresh", "--help"),
             ("oauth-status", "a;echo x"),

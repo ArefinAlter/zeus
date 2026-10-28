@@ -122,7 +122,7 @@ if (process.argv.includes('--json')) {
   console.log(JSON.stringify(report, null, 2));
   if (process.argv.includes('--check')) {
     const problems = [];
-    const expectedNames = ['zeus_probe', 'zeus_enqueue', 'zeus_status', 'zeus_wait', 'zeus_control', 'zeus_verify', 'zeus_session_list', 'zeus_session_request', 'zeus_files_list', 'zeus_cloud', 'zeus_workflow', 'zeus_files', 'zeus_artifacts', 'zeus_inbox'];
+    const expectedNames = ['zeus_probe', 'zeus_enqueue', 'zeus_status', 'zeus_wait', 'zeus_control', 'zeus_verify', 'zeus_session_list', 'zeus_session_request', 'zeus_files_list', 'zeus_cloud', 'zeus_workflow', 'zeus_files', 'zeus_artifacts', 'zeus_inbox', 'zeus_sources'];
     if (JSON.stringify(tools.map(tool => tool.name)) !== JSON.stringify(expectedNames)) problems.push('the original nine tools and appended cloud tool must retain their catalogue order');
     const cloud = tools.find(tool => tool.name === 'zeus_cloud');
     if (!cloud || !cloud.annotations.destructiveHint || cloud.annotations.readOnlyHint || !cloud.annotations.idempotentHint || !cloud.annotations.openWorldHint) problems.push('cloud annotations do not describe its mutation/cancellation surface');

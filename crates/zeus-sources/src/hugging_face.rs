@@ -102,10 +102,25 @@ pub fn metadata(headers: &HeaderMap, commit: &str) -> SourceResult<ObjectMetadat
     if text("x-repo-commit").is_some_and(|observed| !observed.eq_ignore_ascii_case(commit)) {
         return Err(SourceError::Changed);
     }
-    let bytes = text("x-linked-size")
-        .or_else(|| text("content-length"))
-        .and_then(|value| value.parse::<u64>().ok())
-        .ok_or(SourceError::Protocol)?;
+    // A ranged response's Content-Length describes this body, not the immutable
+    // object. Hub redirects carry x-linked-size; direct 206 responses carry the
+    // whole-object length in Content-Range.
+    let bytes = if let Some(value) = text("x-linked-size") {
+        value.parse::<u64>().map_err(|_| SourceError::Protocol)?
+    } else if headers.contains_key("content-range") {
+        match zeus_http::parse_content_range(text("content-range").ok_or(SourceError::Protocol)?)
+            .map_err(|_| SourceError::Protocol)?
+        {
+            zeus_http::ContentRange::Satisfied {
+                total: Some(total), ..
+            } => total,
+            _ => return Err(SourceError::Protocol),
+        }
+    } else {
+        text("content-length")
+            .and_then(|value| value.parse::<u64>().ok())
+            .ok_or(SourceError::Protocol)?
+    };
     let etag = text("x-linked-etag").or_else(|| text("etag"));
     let raw = etag.map(|value| value.trim_matches('"'));
     let sha256 = raw
@@ -177,6 +192,28 @@ mod tests {
         ] {
             assert!(!allowed_location(&Url::parse(url).unwrap()));
         }
+    }
+    #[test]
+    fn range_metadata_retains_the_whole_object_size() {
+        let mut headers = HeaderMap::new();
+        headers.insert("content-length", "1".parse().unwrap());
+        headers.insert("content-range", "bytes 0-0/524288".parse().unwrap());
+        assert_eq!(metadata(&headers, &"a".repeat(40)).unwrap().bytes, 524288);
+        for invalid in [
+            "bytes 0-0/*",
+            "bytes */524288",
+            "bytes 0-524288/524288",
+            "bad",
+        ] {
+            headers.insert("content-range", invalid.parse().unwrap());
+            assert_eq!(
+                metadata(&headers, &"a".repeat(40)),
+                Err(SourceError::Protocol)
+            );
+        }
+        headers.remove("content-range");
+        headers.insert("x-linked-size", "524288".parse().unwrap());
+        assert_eq!(metadata(&headers, &"a".repeat(40)).unwrap().bytes, 524288);
     }
     #[test]
     fn git_blob_and_lfs_checksums_have_distinct_semantics() {

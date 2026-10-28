@@ -2,7 +2,7 @@
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Zeus",
   "mainBinaryName": "zeus-client",
-  "version": "0.0.1-beta.1",
+  "version": "0.1.0-alpha.1",
   "identifier": "dev.verne.zeus.client",
   "build": {
     "frontendDist": "../dist/web",
@@ -37,7 +37,7 @@
     "publisher": "Verne Ltd.",
     "copyright": "Copyright 2026 Verne Ltd. Apache-2.0.",
     "shortDescription": "Zeus: a desktop file, download and upload manager",
-    "longDescription": "Zeus 0.0.1c pre-alpha release: manages its own engine for resumable downloads, queues, schedules, file search and file operations in folders you choose. Review uploads to connected drives and file hosts before human approval. Agent connections can use API keys or supported installed-agent sign-ins. Uploads and cloud model requests send selected data to the connected provider.",
+    "longDescription": "Zeus 0.1 alpha release: manages its own engine for resumable downloads, queues, schedules, file search and file operations in folders you choose. Review uploads to connected drives and file hosts before human approval. Agent connections can use API keys or supported installed-agent sign-ins. Uploads and cloud model requests send selected data to the connected provider.",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

@@ -39,7 +39,7 @@ export function NativeProviders() {
   if (!cfg || !draft) return <PageHead title="Providers" sub="Starting the engine…" />
   const view = cfg.providers.find((p) => p.id === draft.providers[sel]?.id)
   const cur = draft.providers[sel]
-  const subscription = ['codex', 'claude', 'cursor', 'antigravity'].includes(cur?.kind ?? '')
+  const subscription = ['codex', 'claude', 'cursor', 'antigravity', 'grok'].includes(cur?.kind ?? '')
 
   const save = (next: AgentConfigWrite) => {
     setDraft(next)
@@ -80,6 +80,10 @@ export function NativeProviders() {
   return (
     <>
       <PageHead title="Providers" sub="Use an existing agent sign-in or an API key. Installed agents use their own account and plan limits. Files and transfers work without a model." />
+      <SettingsGroup title="Installed agent connections" note="Discovery checks for the official CLI executable. It does not read account credentials, start a model call or confirm subscription access. Add a provider below and test it after signing in.">
+        {cfg.kinds.filter(k => typeof k.installed === 'boolean').map(k => <SettingRow key={k.kind} title={k.label} desc={k.kind === 'grok' ? 'Uses a separate official login in a dedicated Verne profile.' : 'Uses the account already signed in through the official CLI.'}><Chip tone={k.installed ? 'ok' : 'info'}>{k.installed ? 'CLI found' : 'CLI not found'}</Chip></SettingRow>)}
+        <div class="row"><button class="btn" disabled={busy !== null} onClick={() => void run('discovery', async () => { await refreshConfig() })}>Refresh installed agents</button></div>
+      </SettingsGroup>
       <SettingsGroup title="Safety switches" note="Consent and Offline apply to every connection. API spending caps apply to API-key providers. Installed agents use their provider’s plan limits and extra-usage settings. A cap of zero disables calls.">
         <SettingRow title="Offline" desc="No model is called at all, local ones included. The agent says so instead of trying.">
           <Switch label="Offline" checked={draft.offline} onChange={(v) => save({ ...draft, offline: v })} />
@@ -153,14 +157,14 @@ export function NativeProviders() {
                 class="preset"
                 onClick={() => {
                   const id = `p-${k.kind}-${Date.now().toString(36).slice(-4)}`
-                  save({ ...draft, providers: [...draft.providers, { id, name: k.label, kind: k.kind, enabled: false, base_url: '', model: ['codex', 'claude', 'cursor', 'antigravity'].includes(k.kind) ? 'default' : '', consent: false, monthly_cap_usd: 10, tools_mode: 'native', price_in_per_mtok: ['ollama', 'codex', 'claude', 'cursor', 'antigravity'].includes(k.kind) ? 0 : null, price_out_per_mtok: ['ollama', 'codex', 'claude', 'cursor', 'antigravity'].includes(k.kind) ? 0 : null }] })
+                  save({ ...draft, providers: [...draft.providers, { id, name: k.label, kind: k.kind, enabled: false, base_url: '', model: ['codex', 'claude', 'cursor', 'antigravity', 'grok'].includes(k.kind) ? 'default' : '', consent: false, monthly_cap_usd: 10, tools_mode: 'native', price_in_per_mtok: ['ollama', 'codex', 'claude', 'cursor', 'antigravity', 'grok'].includes(k.kind) ? 0 : null, price_out_per_mtok: ['ollama', 'codex', 'claude', 'cursor', 'antigravity', 'grok'].includes(k.kind) ? 0 : null }] })
                   setSel(draft.providers.length)
                   setAdding(false)
                 }}
               >
                 <span class="preset-name">{k.label}</span>
                 <span class="preset-meta">
-                  <span class="mono">{['codex', 'claude', 'cursor', 'antigravity'].includes(k.kind) ? 'Uses your installed agent sign-in' : k.default_base_url ? k.default_base_url.replace(/^https?:\/\//, '') : 'your own address'}</span>
+                  <span class="mono">{k.kind === 'grok' ? 'Official CLI · dedicated sign-in' : ['codex', 'claude', 'cursor', 'antigravity'].includes(k.kind) ? 'Uses your installed agent sign-in' : k.default_base_url ? k.default_base_url.replace(/^https?:\/\//, '') : 'your own address'}</span>
                   {k.needs_key ? null : <Chip tone="ok">no key needed</Chip>}
                 </span>
               </button>
@@ -229,7 +233,7 @@ export function NativeProviders() {
                   {!subscription ? (<label class="field wide">
                     Base URL <span class="muted small">https, or http to this computer or your own network</span>
                     <input class="mono" value={cur.base_url} placeholder={view.effective_base_url || 'https://…'} onInput={(e) => edit({ base_url: (e.target as HTMLInputElement).value.trim() })} />
-                  </label>) : <p class="muted small">Uses the installed agent’s sign-in. Sign in with that provider first. Your plan controls model access, quotas and any extra usage.</p>}
+                  </label>) : <div class="muted small"><p>{cur.kind === 'grok' ? 'Uses the official Grok Build CLI with a dedicated profile. Complete one sign-in in that profile first.' : 'Uses the installed agent’s sign-in. Sign in with that provider first.'} Your plan controls model access, quotas and any extra usage.</p>{cur.kind === 'grok' && <><p>In Windows PowerShell:</p><pre>{'$env:GROK_HOME = "$env:USERPROFILE/.verne/local-agents/grok"\ngrok login\nRemove-Item Env:GROK_HOME'}</pre><p>On Linux:</p><pre>{'GROK_HOME="$HOME/.verne/local-agents/grok" grok login'}</pre><p>Keep this profile dedicated to Verne without hooks, plugins or custom settings. Zeus does not copy tokens from another profile.</p></>}</div>}
                   <label class="field wide">
                     Model
                     <span class="inline">

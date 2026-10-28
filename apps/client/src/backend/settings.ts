@@ -79,6 +79,8 @@ export interface Settings {
   connection: {
     type: 'auto' | 'lan' | 'cellular'
     meteredPause: boolean
+    cost?: 'unknown' | 'unmetered' | 'metered'
+    policyHeld?: number
     proxy: 'system' | 'none' | 'http' | 'socks5'
     proxyHost: string
     proxyPort: number

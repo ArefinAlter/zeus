@@ -6,8 +6,8 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use zeus_api::methods::*;
 use zeus_api::methods::artifacts::ArtifactsLifecyclePreviewResult;
+use zeus_api::methods::*;
 use zeus_api::{ApiError, Client};
 
 use crate::output::NextStep;
@@ -111,6 +111,11 @@ pub struct FilesArgs {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
 pub enum FilesRequest {
+    /// Read durable progress for an operation visible to this caller.
+    Status {
+        /// Operation ID returned by organize or undo.
+        operation_id: String,
+    },
     /// Preview deterministic organizer rules; applying requests human review.
     Organize {
         /// Directory inside a permitted write root.
@@ -436,6 +441,16 @@ pub async fn workflow<C: Client>(
 pub async fn files<C: Client>(client: &C, args: FilesArgs) -> Result<WorkspaceOutput, ToolOutcome> {
     key(&args.idempotency_key)?;
     let (method, data, next) = match args.request {
+        FilesRequest::Status { operation_id } => (
+            "files.operation.get",
+            rpc::<FilesOperationGet, _>(
+                client,
+                json!({"operation_id": operation_id}),
+                &args.idempotency_key,
+            )
+            .await?,
+            "none",
+        ),
         FilesRequest::Organize {
             dir,
             rules,

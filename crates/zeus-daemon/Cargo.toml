@@ -26,6 +26,11 @@ default = []
 a2a = ["dep:zeus-a2a"]
 
 [dependencies]
+rand.workspace = true
+ed25519-dalek.workspace = true
+sha2.workspace = true
+zeus-sources = { workspace = true, features = ["s3", "hugging-face", "torrent"] }
+base64.workspace = true
 zeus-api.workspace = true
 zeus-cloud = { workspace = true, features = ["os-keyring"] }
 tokio-util = { workspace = true, features = ["io"] }
@@ -82,3 +87,6 @@ tempfile.workspace = true
 proptest.workspace = true
 assert_cmd.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true

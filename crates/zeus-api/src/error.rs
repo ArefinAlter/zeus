@@ -94,6 +94,23 @@ pub mod codes {
             ErrorClass::Conflict,
             false,
         ),
+        // Immutable source retries must reconcile retained scope/budget; none renew authority.
+        ("sources.denied", ErrorClass::PolicyDenied, false),
+        ("sources.budget", ErrorClass::PolicyDenied, false),
+        ("sources.changed", ErrorClass::Conflict, false),
+        ("sources.integrity", ErrorClass::Integrity, false),
+        ("sources.canceled", ErrorClass::PolicyDenied, false),
+        ("sources.credential", ErrorClass::AuthExpired, false),
+        ("sources.unsupported", ErrorClass::Unsupported, false),
+        ("sources.failed", ErrorClass::Unavailable, false),
+        ("sources.capacity", ErrorClass::Unavailable, false),
+        ("sources.destination_exists", ErrorClass::Conflict, false),
+        (
+            "sources.restart_review_required",
+            ErrorClass::Conflict,
+            false,
+        ),
+        ("sources.transfer_failed", ErrorClass::Unavailable, false),
         // Cloud mutations can have succeeded remotely before a local error. None authorizes
         // blind transport retry; inspect the durable delivery/checkpoint first (spec 14).
         ("cloud.unsupported", ErrorClass::Unsupported, false),

@@ -1,6 +1,6 @@
-# R05 source adapters: proposed implementation boundary
+# R05 source adapters: immutable acquisition boundary
 
-This is an architecture proposal, not completed release evidence. It follows the native media milestone and covers feature-gated S3, Hugging Face and torrent acquisition. Android/iOS are excluded by the owner.
+This document records the source-adapter boundary and its implementation evidence. It covers feature-gated S3, Hugging Face and torrent acquisition. Android/iOS are excluded by the owner.
 
 ## Primary evidence and dependency choice
 
@@ -9,7 +9,7 @@ This is an architecture proposal, not completed release evidence. It follows the
 - `librqbit` 9.0.1 is published under Apache-2.0 and exposes custom storage, cancellation, rate limits, listener options and a compile-gated `disable-upload` option. Upstream's piece-request handler explicitly rejects uploads when that option is active; absence of a bitfield alone would not prove it. Defaults enable discovery and permit uploads, so explicit configuration is essential. [Published crate](https://docs.rs/crate/librqbit/9.0.1), [session configuration](https://github.com/ikatson/rqbit/blob/main/crates/librqbit/src/session.rs), [piece request guard](https://github.com/ikatson/rqbit/blob/main/crates/librqbit/src/torrent_state/live/mod.rs).
 - Rust 1.90 is installed on the native builder. Upstream rqbit does not declare a minimum Rust version in the inspected manifest. Its selected dependency graph must actually pass that toolchain before adoption; edition 2024 alone is insufficient evidence. Existing cached HMAC/SHA crates can support SigV4 without pulling the complete AWS SDK. New downloads/cache data must go on D:.
 
-## Proposed code ownership
+## Implementation boundary
 
 1. New `crates/zeus-sources` library with `s3`, `hugging_face`, `torrent` feature gates and typed capability/limit errors. Reuse existing reqwest, URL, crypto, filesystem and verification components. Keep provider credentials outside serializable public descriptors. A small credential-store port allows hermetic tests and operator-owned keyring integration.
 2. New source API types/module, a daemon source-operation service, CLI review/status/cancel commands and a native source review. Public parameters select provider/account references, immutable objects, file destinations and budgets. They cannot supply arbitrary authorization headers, helper arguments or an ambient credential profile.
@@ -17,16 +17,38 @@ This is an architecture proposal, not completed release evidence. It follows the
 4. Torrent networking remains a separately bounded operation. Configure no incoming peer listener, no UPnP/LSD/DHT by default, explicit peer/rate/time limits and disabled payload upload. A reviewed operation must disclose peer/tracker traffic and any supported sharing policy. Custom storage confines untrusted torrent paths to private staging; selected pieces are checked before final materialization. Avoid advertising a fake HTTP network path for local staged bytes.
 5. Persist source operation identity, immutable target, account revision, limits, original requester, actual stage progress, integrity evidence and final lineage. Raw source secrets and private tracker credentials must not reach events, logs, agent output or ordinary GUI snapshots. Cancellation/restart never silently widens scope or starts seeding.
 
-## Coordinated shared-file windows
-
-The parent owns core engine, MCP HTTP/App views, artifacts and general CLI administration. `file_workspace` owns inbox/packages. `reference_analysis` owns cloud OAuth and later team policy. Before editing shared method/policy/catalogue/runtime/CLI files, agree the exact additions and merge the new source descriptors with those owners. Source implementation can proceed in its own library and focused modules after this boundary is accepted.
-
 ## Acceptance required
 
 SigV4 published vectors and actual loopback HEAD/range requests; S3 validator/version/checksum and wrong-scope failures; Hub commit pinning, token stripping on CDN redirects and LFS/Git checksum distinctions; torrent path containment, bad-piece rejection, explicit discovery/listener controls, verified zero payload uploads, bounded peers/time/bytes, restart and cancellation. Use injected loopback endpoints/storage and test-only credentials. Record live public-Hub or real account evidence separately; fixtures cannot establish provider registration or account acceptance. Test the selected feature graph on Rust 1.90 and the supported native targets before claiming it supported.
 
 ## Executable library checkpoint, 28 October 2026
 
-The library now passes12 native Windows tests (5 unit,3 HTTP wire,4 real-peer/metainfo), strict Clippy with all features/targets plus separate types-only/S3-only/Hub-only/torrent-only builds, and an actual Rust1.90 all-feature/all-target check. Logs: `D:/zeus-alpha/logs/sources-{tests,strict}.log` and `msrv-sources-check.log`. The peer fixture delivers valid pieces before sending an unsolicited upload request: the pinned SDK intentionally disconnects peers that request uploads. A separate always-corrupt peer receives no verified receipt; cancellation/revocation and malformed metainfo/path/IP scopes are also covered.
+The library now passes 12 native Windows tests (5 unit,3 HTTP wire,4 real-peer/metainfo), strict Clippy with all features/targets plus separate types-only/S3-only/Hub-only/torrent-only builds, and an actual Rust 1.90 all-feature/all-target check. Logs: `D:/zeus-alpha/logs/sources-{tests,strict}.log` and `msrv-sources-check.log`. The peer fixture delivers valid pieces before sending an unsolicited upload request: the pinned SDK intentionally disconnects peers that request uploads. A separate always-corrupt peer receives no verified receipt; cancellation/revocation and malformed metainfo/path/IP scopes are also covered.
 
-This is not completed R05 integration. Account/revision persistence, identity-bound daemon transport registration, held-job admission, CLI/native/MCP review and publication/restart receipts still need wiring and acceptance. Torrent discovery is limited to explicitly reviewed numeric peers; no tracker/magnet/DHT support is claimed. Storage callbacks enforce accepted piece-write budgets, while SDK buffers/control traffic are distinct from a strict wire-byte meter. No source adapter has been deployed or used with a live provider account.
+Torrent discovery is limited to explicitly reviewed numeric peers; no tracker/magnet/DHT support is claimed. Storage callbacks enforce accepted piece-write budgets, while SDK buffers/control traffic are distinct from a strict wire-byte meter. No source adapter has been deployed or used with a live provider account.
+
+
+## Daemon and client integration, 29 October 2026
+
+The daemon owns a bounded private source database, explicit OS-keyring credentials, account revisions, requester grants, immutable reviews and cumulative receive budgets. Account setup/revocation requires a verified human terminal. The native Sources page and CLI use the same typed API; `zeus_sources` exposes only account listing, inspect, submit, list, get and control. It cannot configure an account, enter credentials, grant scope or approve a request.
+
+S3 and Hub acquisitions enter the shared HTTP engine through a durably paused job. The source operation records the exact authenticated requester and job identity before scheduling starts. Every transport/commit check revalidates the account revision, requester, destination identity, original deadline and private binding; labels cannot create source authority. Provider Content-Disposition cannot replace the reviewed final filename. Receive-byte reservations are atomic and include retry bodies. Pause/cancel preserve those counters and publication evidence.
+
+Torrent acquisition has its own bounded worker and private numeric staging names. The review exposes a bounded metainfo file table for selecting exact indices. Multiple files require a reviewed leaf-name mapping. Publication verifies each selected file's local SHA-256, retains the destination directory handle, refuses overwrite and records actual per-file receipts. Interrupted operations reopen paused and require explicit resume inside their original account, deadline, budget and destination identity. No restart starts seeding or expands peers.
+
+### Operator flow
+
+1. Run `zeus sources accounts configure` in a terminal. Choose S3, Hugging Face or torrent; enter the provider's exact scope and budget. Select explicitly listed client names/IDs, including the desktop app if it should use the account. A blank client selection cancels. Secrets use hidden terminal input and the OS keyring.
+2. Review `zeus sources accounts list`. In the desktop Sources page, choose the configured account and exact immutable target. The CLI equivalent is `zeus sources inspect --account hub --revision 1 --target-json target.json --max-bytes 1073741824 --max-seconds 1800`.
+3. Review the returned provider revision, size, integrity semantics, notices and destination. Submit with `zeus sources submit srcplan_... model.bin --dest D:\Downloads`. A review expires after ten minutes. Torrent selection additionally supplies explicit `.torrent` bytes and numeric peers; multi-file CLI submissions use `--torrent-names-json names.json`.
+4. Read `zeus sources list` / `get srcop_...`; use `control srcop_... pause|resume|cancel`. Account changes invalidate earlier operation authority. Revocation is `zeus sources accounts revoke hub` with a human terminal review.
+
+Account grants authorize only the configured source and selected authenticated clients. They do not grant a new filesystem root. New source credentials are never discovered from other applications. Public results omit keyring references, tokens, signed addresses and raw metainfo. MCP results are capped at 32 KiB, with at most 20 operation rows and 64 metainfo/publication rows; truncation is explicit and the native review retains the complete bounded table.
+
+### Final native integration evidence, 29 October 2026
+
+The integrated Windows gates passed: 90 API tests (including schema regeneration), all 208 daemon tests, all 49 MCP tests, two focused CLI account-setup tests, and all 13 source-library tests (six unit, three real HTTP, four real peer/metainfo). Strict Clippy passed for the source library with every feature/target and for daemon/CLI/MCP with all targets. The combined spec check passed 261 documents and the 15-tool catalogue remains within its byte budgets. Evidence is under `D:/zeus-alpha/logs/source-integration-*.log`; the final queue/spec receipt is `D:/verne-build/alpha-release/zeus-queues/spec-check.log`.
+
+The full daemon suite includes immutable review/held admission/verified publication, account revision/revocation and requester scope, forged private job bindings, exact human configuration retries, concurrent cumulative byte charging, restart controls, destination identity replacement, and interrupted torrent publication. The admission fixture exposed a real Hub range-metadata defect: a 206 response's Content-Length described only that range. Metadata now derives the immutable object's total size from Content-Range; a separate regression rejects malformed or unknown range totals. The full transfer completes under the reviewed identity and final filename.
+
+Current debug acceptance binaries are `D:/verne-build/zeus/cargo-target/debug/zeusd.exe` (SHA-256 `7a1244cc4116f4f87a9b7071a6d46639f54778edcfe36e481f74fb5bdf0ff49d`) and `zeus.exe` (`a30d4ff02ae8e095e13a6a21a5f1f4ef2f654cd5972a07611d5de9212365a187`); both report `0.1.0-alpha.1`. These hashes identify acceptance binaries, not the release installer. The parent release workflow records final native UI and packaged-binary evidence separately. No live provider account, tracker/magnet/DHT discovery, unbounded torrent networking or payload upload is claimed by these fixtures.

@@ -75,8 +75,8 @@ export async function startHarness({ home, fresh = false, env = {} } = {}) {
     async stop({ kill = false } = {}) {
       if (kill) child.kill()
       else {
-        await fetch(info.url + '/__harness/shutdown', { method: 'POST', headers: { authorization: `Bearer ${info.token}` } }).catch(() => undefined)
         setTimeout(() => child.kill(), 30000).unref()
+        await fetch(info.url + '/__harness/shutdown', { method: 'POST', headers: { authorization: `Bearer ${info.token}` }, signal: AbortSignal.timeout(5000) }).catch(() => undefined)
       }
       await new Promise((r) => (child.exitCode !== null ? r() : child.once('exit', r)))
     },

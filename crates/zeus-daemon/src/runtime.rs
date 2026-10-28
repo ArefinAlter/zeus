@@ -12,7 +12,7 @@ use std::{
 use tokio::sync::Mutex;
 use zeus_api::methods::{
     admin::*, artifacts::*, cloud::*, cloud_oauth::*, daemon::*, events::*, files::*, inbox::*,
-    jobs::*, queues::*, sessions::*, workflows::*,
+    jobs::*, queues::*, sessions::*, sources::*, workflows::*,
 };
 use zeus_api::{ApiError, ApiResult, CallContext, Page};
 use zeus_engine::{Engine, EngineBuilder, EngineConfig, TransferTuning};
@@ -70,11 +70,13 @@ pub struct RuntimeBackend {
     outbox: Arc<std::sync::Mutex<crate::outbox::Outbox>>,
     pub(crate) workflows: Arc<crate::workflows::WorkflowService>,
     pub(crate) cloud: Arc<crate::cloud::CloudService>,
+    sources: Arc<crate::sources::SourceService>,
     /// Download queues, their scheduler and the speed limiter's settings.
     pub(crate) queues: Arc<crate::queues::QueueService>,
     subscriptions: Mutex<HashMap<String, (zeus_types::ConnectionId, tokio::task::AbortHandle)>>,
     deferred_audit: crate::deferred_audit::DeferredAudit,
     state_dir: PathBuf,
+    team: crate::team::policy::Guard,
     credentials: Arc<crate::provision::FileCredentialStore>,
     /// Authenticated connections and their credential, for `clients.revoke`.
     connections: std::sync::Mutex<HashMap<zeus_types::ConnectionId, zeus_api::auth::CredentialId>>,
@@ -88,6 +90,26 @@ pub struct RuntimeBackend {
 }
 
 impl RuntimeBackend {
+    fn team_approval(&self, id: zeus_types::ApprovalId) -> ApiResult<()> {
+        if !self.team.configured() {
+            return Ok(());
+        }
+        let approval = self
+            .journal
+            .read(|tx| tx.approval(id))
+            .map_err(error)?
+            .ok_or_else(|| ApiError::invalid_params("Unknown approval"))?;
+        for feature in crate::team::approval_features(approval.kind)? {
+            self.team.admit(feature).map_err(|_| {
+                ApiError::new(
+                    zeus_api::error::codes::PERMISSION_DENIED,
+                    "Team policy does not allow this approval's effect.",
+                )
+            })?;
+        }
+        Ok(())
+    }
+
     /// Open persistent state and recover unfinished transfers before accepting clients.
     pub async fn open(state_dir: PathBuf, config: DaemonConfig) -> ApiResult<Arc<Self>> {
         config
@@ -190,8 +212,47 @@ impl RuntimeBackend {
         let default_transport: Arc<dyn zeus_http::HttpTransport> = Arc::new(
             zeus_http::ReqwestTransport::new(&engine_config.http).map_err(|_| internal())?,
         );
+        let requester_records = credentials.clone();
+        let source_roots = credentials.clone();
+        let configured_roots = config.effective_write_roots();
+        let sources = crate::sources::SourceService::open(
+            &state_dir,
+            journal.clone(),
+            Arc::new(zeus_cloud::OsCredentialStore {
+                service: "dev.zeus".into(),
+            }),
+            default_transport.clone(),
+            config.effective_write_roots(),
+            Arc::new(move |id| {
+                zeus_api::auth::CredentialId::parse(id)
+                    .ok()
+                    .and_then(|id| requester_records.record(&id))
+                    .is_some_and(|record| {
+                        !record.revoked
+                            && record
+                                .permissions
+                                .contains(&zeus_api::Permission::JobsWrite)
+                    })
+            }),
+            Arc::new(move |id| {
+                let Ok(id) = zeus_api::auth::CredentialId::parse(id) else {
+                    return vec![];
+                };
+                let Some(record) = source_roots.record(&id) else {
+                    return vec![];
+                };
+                if record.revoked {
+                    return vec![];
+                }
+                if record.kind == zeus_api::ClientKind::Service {
+                    source_roots.roots(&id)
+                } else {
+                    configured_roots.clone()
+                }
+            }),
+        )?;
         let transports = Arc::new(crate::limiter::LimitedFactory::new(
-            workflows.transport_factory(),
+            sources.transport_factory(workflows.transport_factory()),
             default_transport,
             limits,
         ));
@@ -210,11 +271,45 @@ impl RuntimeBackend {
             .build()
             .await
             .map_err(error)?;
+        let queue_credentials = credentials.clone();
         queues.attach(Arc::new(crate::queues::EnginePort {
             engine: engine.clone(),
             journal: journal.clone(),
+            team: crate::team::policy::Guard::new(&state_dir, "queues"),
+            authorize_sync: Arc::new(move |spec, path| {
+                let Some(id) = spec
+                    .source
+                    .client_id
+                    .as_deref()
+                    .and_then(|id| zeus_api::auth::CredentialId::parse(id).ok())
+                else {
+                    return false;
+                };
+                let Some(record) = queue_credentials.record(&id) else {
+                    return false;
+                };
+                if record.revoked
+                    || !record
+                        .permissions
+                        .contains(&zeus_api::Permission::JobsWrite)
+                {
+                    return false;
+                }
+                if record.kind != zeus_api::ClientKind::Service {
+                    return true;
+                }
+                let Some(parent) = path.parent().and_then(|p| p.canonicalize().ok()) else {
+                    return false;
+                };
+                queue_credentials
+                    .roots(&id)
+                    .iter()
+                    .filter_map(|root| root.canonicalize().ok())
+                    .any(|root| parent.starts_with(root))
+            }),
         }));
         workflows.attach_engine(engine.clone())?;
+        sources.attach_engine(engine.clone())?;
         let trust = crate::trust::TrustedPrograms::load_or_initialize(&state_dir)?;
         let receipts = crate::mutations::MutationStore::open(&state_dir.join("api-receipts.redb"))?;
         let inbox = crate::inbox::InboxStore::open(&state_dir.join("inbox.redb"))?;
@@ -262,6 +357,7 @@ impl RuntimeBackend {
             outbox,
             workflows,
             cloud,
+            sources,
             queues,
             info: DaemonInfo {
                 version: env!("CARGO_PKG_VERSION").into(),
@@ -273,6 +369,7 @@ impl RuntimeBackend {
             mutations: Mutex::new(()),
             subscriptions: Mutex::new(HashMap::new()),
             deferred_audit,
+            team: crate::team::policy::Guard::new(&state_dir, "daemon"),
             state_dir,
             credentials,
             connections: Default::default(),
@@ -404,6 +501,9 @@ impl RuntimeBackend {
 
 #[async_trait]
 impl Backend for RuntimeBackend {
+    fn team_admit(&self, method: &str, params: &serde_json::Value) -> ApiResult<()> {
+        crate::team::admit(&self.team, method, params)
+    }
     async fn inbox_package_put(
         &self,
         ctx: &CallContext,
@@ -538,6 +638,75 @@ impl Backend for RuntimeBackend {
     ) -> ApiResult<CloudOAuthDisconnectResult> {
         let actor = self.model_human(ctx)?;
         self.cloud.oauth_disconnect(&ctx.identity, actor, p).await
+    }
+    async fn sources_accounts(
+        &self,
+        ctx: &CallContext,
+        _p: SourcesReadParams,
+    ) -> ApiResult<SourcesAccountsResult> {
+        self.sources.accounts(&ctx.identity)
+    }
+    async fn sources_configure(
+        &self,
+        ctx: &CallContext,
+        p: SourcesAccountConfigureParams,
+    ) -> ApiResult<SourcesAccountMutationResult> {
+        let actor = self.model_human(ctx)?;
+        self.sources.configure(&ctx.identity, actor, p).await
+    }
+    async fn sources_revoke(
+        &self,
+        ctx: &CallContext,
+        p: SourcesAccountRevokeParams,
+    ) -> ApiResult<SourcesAccountMutationResult> {
+        let actor = self.model_human(ctx)?;
+        self.sources.revoke(&ctx.identity, actor, p).await
+    }
+    async fn sources_inspect(
+        &self,
+        ctx: &CallContext,
+        p: SourcesInspectParams,
+    ) -> ApiResult<SourcePlanView> {
+        self.sources.inspect(&ctx.identity, p).await
+    }
+    async fn sources_submit(
+        &self,
+        ctx: &CallContext,
+        p: SourcesSubmitParams,
+    ) -> ApiResult<SourceOperationView> {
+        self.sources.submit(&ctx.identity, p).await
+    }
+    async fn sources_list(
+        &self,
+        ctx: &CallContext,
+        _p: SourcesReadParams,
+    ) -> ApiResult<SourcesListResult> {
+        self.sources.list(&ctx.identity)
+    }
+    async fn sources_get(
+        &self,
+        ctx: &CallContext,
+        p: SourcesGetParams,
+    ) -> ApiResult<SourceOperationView> {
+        self.sources.get(&ctx.identity, p)
+    }
+    async fn sources_control(
+        &self,
+        ctx: &CallContext,
+        p: SourcesControlParams,
+    ) -> ApiResult<SourceOperationView> {
+        let operation = self.sources.get(
+            &ctx.identity,
+            SourcesGetParams {
+                operation_id: p.operation_id.clone(),
+            },
+        )?;
+        if let Some(job_id) = operation.job_id {
+            self.queues
+                .on_explicit_control(job_id, p.action == SourceControlAction::Pause)
+                .await?;
+        }
+        self.sources.control(&ctx.identity, p).await
     }
     async fn cloud_accounts_list(
         &self,
@@ -1075,6 +1244,14 @@ impl Backend for RuntimeBackend {
         p: JobsControlParams,
     ) -> ApiResult<JobsControlResult> {
         self.require_jobs_visible(ctx, &[p.job_id])?;
+        if matches!(
+            p.action,
+            ControlAction::Pause | ControlAction::Cancel | ControlAction::Resume
+        ) {
+            self.queues
+                .on_explicit_control(p.job_id, matches!(p.action, ControlAction::Pause))
+                .await?;
+        }
         let _gate = self.mutations.lock().await;
         let action = match p.action {
             ControlAction::Pause => zeus_engine::api::ControlAction::Pause,
@@ -1267,6 +1444,7 @@ impl Backend for RuntimeBackend {
             .trust
             .terminal_evidence(ctx, p.channel, p.confirmation)?;
         if p.outcome == DecideOutcome::Approve {
+            self.team_approval(p.approval_id)?;
             self.admit()?;
         }
         let (approval, grant) = self.consent.decide(&ctx.identity, &p, evidence).await?;
@@ -1601,6 +1779,14 @@ impl Backend for RuntimeBackend {
         p: FilesOrganizeParams,
     ) -> ApiResult<FilesOrganizeResult> {
         self.organize(ctx, p).await
+    }
+    async fn files_operation_get(
+        &self,
+        ctx: &CallContext,
+        p: FilesOperationGetParams,
+    ) -> ApiResult<FilesOperationGetResult> {
+        self.organizer
+            .operation_view(&ctx.identity, &self.visible_roots(ctx), &p.operation_id)
     }
     async fn files_undo(
         &self,

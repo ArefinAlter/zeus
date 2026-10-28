@@ -1,6 +1,6 @@
 // Builds every Windows or Linux release asset of the Zeus desktop app from this checkout:
 //
-//   node scripts/build-release.mjs --out <dir> [--version 0.0.1c] [--skip-daemon] [--skip-extension] [--bundles nsis|deb,appimage]
+//   node scripts/build-release.mjs --out <dir> [--version 0.1.0-alpha.1] [--skip-daemon] [--skip-extension] [--bundles nsis|deb,appimage]
 //
 //  1. the browser extension package (scripts/package-extension.mjs; needs the zeus-extension checkout beside this one)
 //  2. zeusd, zeus, zeus-native-host and zeus-web-bridge in release mode (the daemon workspace, then the bridge)
@@ -29,8 +29,8 @@ const arg = (n, d) => {
 }
 const flag = (n) => process.argv.includes(n)
 const out = resolve(arg('--out', join(client, 'dist', 'release')))
-const version = arg('--version', '0.0.1c')
 const semver = JSON.parse(readFileSync(join(shell, 'tauri.conf.json'), 'utf8')).version
+const version = arg('--version', semver)
 const bundles = arg('--bundles', win ? 'nsis' : 'deb,appimage')
 const triple = win ? 'x86_64-pc-windows-msvc' : 'x86_64-unknown-linux-gnu'
 const exe = win ? '.exe' : ''
@@ -72,8 +72,18 @@ const bin = join(shell, 'binaries')
 mkdirSync(bin, { recursive: true })
 for (const name of ['zeusd', 'zeus', 'zeus-native-host']) copyFileSync(release(name), join(bin, `${name}-${triple}${exe}`))
 
+// The optional Everything bridge is source-built and shipped with its SDK license. Merely
+// installing it does not query Everything or enable access to any new folder.
+let everything
+if (win) {
+  const directory = join(out, 'everything-broker')
+  run(process.env.ZEUS_PYTHON ?? 'python', [join(repo, 'tools', 'everything-broker', 'build.py'), '--cc', process.env.ZEUS_MINGW_CC ?? 'gcc', '--out', directory])
+  everything = join(directory, 'zeus-everything-query.exe')
+  copyFileSync(everything, join(bin, `zeus-everything-query-${triple}.exe`))
+}
+
 run('npm', ['run', 'build'], { cwd: client })
-run('npx', ['tauri', 'build', '--config', 'src-tauri/tauri.bundle.conf.json', '--bundles', bundles], { cwd: client })
+run('npx', ['tauri', 'build', '--config', win ? 'src-tauri/tauri.bundle.windows.conf.json' : 'src-tauri/tauri.bundle.conf.json', '--bundles', bundles], { cwd: client })
 
 // The installer's default folder. Tauri's per-user default is %LOCALAPPDATA%\Zeus, which is also where zeusd keeps its
 // own state when it runs on its own (spec 03 section 3.1), so a person with the command-line Zeus would find the app
@@ -122,9 +132,11 @@ if (win) {
   mkdirSync(join(dir, 'ZeusData'), { recursive: true })
   copyFileSync(appExe, join(dir, 'zeus-client.exe'))
   for (const name of ['zeusd', 'zeus', 'zeus-native-host']) copyFileSync(release(name), join(dir, `${name}.exe`))
+  copyFileSync(everything, join(dir, 'zeus-everything-query.exe'))
+  copyFileSync(join(repo, 'tools', 'everything-broker', 'LICENSE-SDK.txt'), join(dir, 'LICENSE-EVERYTHING-SDK.txt'))
   copyFileSync(join(repo, 'LICENSE'), join(dir, 'LICENSE'))
   copyFileSync(join(repo, 'NOTICE'), join(dir, 'NOTICE'))
-  writeFileSync(join(dir, 'README.txt'), 'Zeus 0.0.1c, portable. Run zeus-client.exe. Everything the app keeps is in the ZeusData folder next to it; delete the folder to remove it.\nUnsigned: Windows SmartScreen warns before the first run (More info, Run anyway). Check SHA256SUMS.txt.\n')
+  writeFileSync(join(dir, 'README.txt'), `Zeus ${version}, portable. Run zeus-client.exe. Zeus keeps its local profile in the ZeusData folder next to it. Provider API keys use the OS credential store; installed agent CLIs retain their own sign-in and provider-managed state. Back up ZeusData before removing it.\nThis build is unsigned; Windows may show a SmartScreen warning. Check SHA256SUMS.txt before running it.\nThe Everything query helper is optional and requires explicit setup in Files. Its SDK license is included.\n`)
   const zip = join(out, `zeus-client-${version}-${OS}-portable.zip`)
   rmSync(zip, { force: true })
   run('powershell', ['-NoProfile', '-Command', `Compress-Archive -Path '${dir}' -DestinationPath '${zip}' -CompressionLevel Optimal`])
@@ -139,6 +151,10 @@ if (win) {
   rmSync(dir, { recursive: true, force: true })
   mkdirSync(dir, { recursive: true })
   for (const n of ['zeus', 'zeusd', 'zeus-native-host']) copyFileSync(release(n), join(dir, `${n}${exe}`))
+  if (everything) {
+    copyFileSync(everything, join(dir, 'zeus-everything-query.exe'))
+    copyFileSync(join(repo, 'tools', 'everything-broker', 'LICENSE-SDK.txt'), join(dir, 'LICENSE-EVERYTHING-SDK.txt'))
+  }
   const bridge = join(bridgeTarget, 'release', `zeus-web-bridge${exe}`)
   if (existsSync(bridge)) copyFileSync(bridge, join(dir, `zeus-web-bridge${exe}`))
   copyFileSync(join(repo, 'LICENSE'), join(dir, 'LICENSE'))

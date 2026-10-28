@@ -1,6 +1,6 @@
 //! The closed tool table and how the agent runs it.
 //!
-//! The table is the fourteen tools of `zeus-mcp` and nothing else: no tool decides an approval, creates or widens a
+//! The table is the fifteen tools of `zeus-mcp` and nothing else: no tool decides an approval, creates or widens a
 //! grant, reads a cookie, runs a shell command or opens a file, so no access level, skill or instruction can add one.
 //! Calls run in this process through `zeus_mcp::ZeusTools` over a separate daemon connection that holds the
 //! installation's `agent` credential: exactly the authority any external MCP client has, never the app's own.
@@ -107,9 +107,29 @@ pub const TABLE: &[ToolAccess] = &[
         ],
     ),
     ("zeus_enqueue", Access::Download, &[]),
+    (
+        "zeus_sources",
+        Access::Read,
+        &[
+            ("accounts", Access::Read),
+            ("list", Access::Read),
+            ("get", Access::Read),
+            ("inspect", Access::Download),
+            ("submit", Access::Download),
+            ("control", Access::Download),
+        ],
+    ),
     ("zeus_control", Access::Download, &[]),
     ("zeus_session_request", Access::Download, &[]),
-    ("zeus_files", Access::Organize, &[]),
+    (
+        "zeus_files",
+        Access::Organize,
+        &[
+            ("status", Access::Read),
+            ("organize", Access::Organize),
+            ("undo", Access::Organize),
+        ],
+    ),
     ("zeus_workflow", Access::Organize, &[]),
     ("zeus_cloud", Access::Organize, &[]),
 ];
@@ -200,6 +220,20 @@ impl Policy {
             {
                 return Err("the agent cannot select another inbox owner".into());
             }
+        }
+        if name == "zeus_files"
+            && action
+                .as_deref()
+                .is_none_or(|a| !actions.iter().any(|(known, _)| *known == a))
+        {
+            return Err("there is no such file action".into());
+        }
+        if name == "zeus_sources"
+            && action
+                .as_deref()
+                .is_none_or(|a| !actions.iter().any(|(known, _)| *known == a))
+        {
+            return Err("there is no such source action".into());
         }
         if !self.enabled.iter().any(|e| e == name) {
             return Err("it is switched off in Settings, Agent".into());
@@ -343,6 +377,8 @@ pub fn input_preview(value: &Value) -> Value {
                                 | "password"
                                 | "token"
                                 | "client_secret"
+                                | "metainfo_base64"
+                                | "credential"
                         ) {
                             Value::String("[private request material]".into())
                         } else if matches!(lower.as_str(), "request" | "parameters")
@@ -727,13 +763,78 @@ mod tests {
     }
 
     #[test]
+    fn organization_status_is_read_only_but_mutations_are_not() {
+        let read = policy(Access::Read);
+        assert!(
+            read.check(
+                "zeus_files",
+                &json!({"request":{"action":"status","operation_id":"fop_fixture"}})
+            )
+            .is_ok()
+        );
+        assert!(
+            read.check("zeus_files", &json!({"request":{"action":"organize"}}))
+                .is_err()
+        );
+        assert!(
+            policy(Access::Organize)
+                .check("zeus_files", &json!({"request":{"action":"unknown"}}))
+                .is_err()
+        );
+    }
+
+    #[test]
     fn the_table_is_exactly_the_mcp_catalogue() {
         let mut ours: Vec<&str> = TABLE.iter().map(|(n, _, _)| *n).collect();
         let mut theirs: Vec<&str> = zeus_mcp::catalogue().iter().map(|t| t.name).collect();
         ours.sort_unstable();
         theirs.sort_unstable();
         assert_eq!(ours, theirs);
-        assert_eq!(TABLE.len(), 14);
+        assert_eq!(TABLE.len(), 15);
+    }
+
+    #[test]
+    fn source_authority_and_private_metainfo_are_not_broadened_by_tools() {
+        for action in ["accounts", "list", "get"] {
+            assert!(
+                policy(Access::Read)
+                    .check(
+                        "zeus_sources",
+                        &json!({"request":{"action":action,"parameters":{}}})
+                    )
+                    .is_ok()
+            );
+        }
+        for action in ["inspect", "submit", "control"] {
+            let params = json!({"request":serde_json::to_string(&json!({"action":action,"parameters":{}})).unwrap()});
+            assert!(policy(Access::Read).check("zeus_sources", &params).is_err());
+            assert!(
+                policy(Access::Download)
+                    .check("zeus_sources", &params)
+                    .is_ok()
+            );
+        }
+        for action in [
+            "configure",
+            "revoke",
+            "accounts.configure",
+            "approve",
+            "unknown",
+        ] {
+            assert!(
+                policy(Access::Organize)
+                    .check("zeus_sources", &json!({"request":{"action":action}}))
+                    .is_err()
+            );
+        }
+        let input = json!({"request":{"action":"inspect","parameters":{"metainfo_base64":"private-torrent-canary","credential":"private-credential-canary"}}});
+        let shown = serde_json::to_string(&input_preview(&input)).unwrap();
+        assert!(!shown.contains("private-torrent-canary"));
+        assert!(!shown.contains("private-credential-canary"));
+        assert_eq!(
+            input["request"]["parameters"]["metainfo_base64"],
+            "private-torrent-canary"
+        );
     }
 
     #[test]

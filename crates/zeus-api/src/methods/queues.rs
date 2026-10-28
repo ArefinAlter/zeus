@@ -25,13 +25,15 @@ pub const MAX_QUEUED_JOBS: usize = 5_000;
 /// Largest speed limit accepted, in KiB/s (about 10 GiB/s).
 pub const MAX_LIMIT_KIB_S: u32 = 10_000_000;
 
-/// What a queue does. Only downloads exist today.
+/// What a queue does.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum QueueKind {
     /// Downloads each file once.
     #[default]
     Download,
+    /// Keeps checking completed downloads for a new strongly identified version.
+    Sync,
 }
 
 /// How a start time repeats.
@@ -120,6 +122,10 @@ fn default_retry_delay_s() -> u32 {
     30
 }
 
+fn default_sync_hours() -> u32 {
+    24
+}
+
 /// A queue's settings, as stored and as sent to `queues.put`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct QueueDef {
@@ -130,6 +136,9 @@ pub struct QueueDef {
     /// What the queue does.
     #[serde(default)]
     pub kind: QueueKind,
+    /// Hours between synchronization checks, 1 to 720.
+    #[serde(default = "default_sync_hours")]
+    pub sync_every_hours: u32,
     /// Downloads released at once, 1 to 16.
     #[serde(default = "default_max_concurrent")]
     pub max_concurrent: u32,
@@ -178,6 +187,88 @@ pub struct QueueView {
     pub finished_at_ms: Option<u64>,
     /// `on_finish` has not been acknowledged yet (`queues.control` `ack_finish`).
     pub finish_action_pending: bool,
+    /// Completed files watched by this synchronization queue.
+    #[serde(default)]
+    pub sync_files: Vec<SyncFileView>,
+}
+
+/// Result of the last synchronization check; no URL or credential is exposed.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SyncStatus {
+    /// The first check has not run.
+    #[default]
+    Waiting,
+    /// Strong representation validators matched.
+    Unchanged,
+    /// A new version is downloading beside the previous file.
+    Downloading,
+    /// A new version completed.
+    Updated,
+    /// Strong validators or a compatible unpinned request are unavailable.
+    Unverifiable,
+    /// The provider requires a current session grant.
+    NeedsSession,
+    /// Signed team restrictions or requester permissions currently prohibit a new transfer.
+    PolicyBlocked,
+    /// The check or new download failed; the old version remains intact.
+    Failed,
+}
+
+/// A durable synchronization watch.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct SyncFileView {
+    /// Latest completed version, whose destination is retained for the next version.
+    pub job_id: JobId,
+    /// New version in progress, if any.
+    pub pending_job_id: Option<JobId>,
+    /// Last probe time in Unix milliseconds.
+    pub last_checked_ms: Option<u64>,
+    /// Earliest next probe time in Unix milliseconds.
+    pub next_check_ms: u64,
+    /// Last known outcome.
+    pub status: SyncStatus,
+}
+
+/// Source of network-cost information.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum NetworkMode {
+    /// Use the operating system's cost hint.
+    #[default]
+    Auto,
+    /// Treat this connection as unmetered.
+    Unmetered,
+    /// Treat this connection as metered.
+    Metered,
+}
+
+/// The current operating-system or explicit network-cost hint.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum NetworkCost {
+    /// No trustworthy cost hint is available; this does not assert an unmetered connection.
+    #[default]
+    Unknown,
+    /// Transfer volume is not reported as restricted.
+    Unmetered,
+    /// Metered, roaming or over the data limit.
+    Metered,
+}
+
+/// Current policy observation.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct NetworkView {
+    /// Observed or explicitly selected cost.
+    pub cost: NetworkCost,
+    /// The policy is holding downloads and synchronization probes.
+    pub paused: bool,
+    /// Number of jobs held by this policy, excluding manual pauses.
+    pub held_jobs: u32,
+}
+
+fn default_pause_metered() -> bool {
+    true
 }
 
 /// The global speed limiter.
@@ -290,6 +381,12 @@ pub struct QueueDefaults {
     /// The queue a download joins when its sender names none and queueing is wanted.
     #[serde(default = "default_queue")]
     pub default_queue: String,
+    /// How to determine network cost.
+    #[serde(default)]
+    pub network_mode: NetworkMode,
+    /// Hold active downloads while the cost is metered.
+    #[serde(default = "default_pause_metered")]
+    pub pause_on_metered: bool,
 }
 
 fn default_queue() -> String {
@@ -303,6 +400,8 @@ impl Default for QueueDefaults {
             missed_window: MissedWindow::Skip,
             stop_behaviour: StopBehaviour::Pause,
             default_queue: default_queue(),
+            network_mode: NetworkMode::Auto,
+            pause_on_metered: true,
         }
     }
 }
@@ -326,6 +425,9 @@ pub struct QueuesListResult {
     pub utc_offset_min: i32,
     /// The kill switch is engaged: no queue releases anything until a person releases it.
     pub kill_switch_engaged: bool,
+    /// Actual cost observation and policy hold state.
+    #[serde(default)]
+    pub network: NetworkView,
 }
 
 /// `queues.put` parameters: create a queue or replace its settings.
@@ -540,6 +642,7 @@ mod tests {
             held_job_ids: Vec::new(),
             finished_at_ms: None,
             finish_action_pending: false,
+            sync_files: Vec::new(),
         };
         let json = serde_json::to_value(&view).unwrap();
         assert_eq!(json["id"], "main");

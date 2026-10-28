@@ -524,7 +524,7 @@ function queueFromDaemon(q: QueuesList['queues'][number]): Queue {
   return {
     id: q.id,
     name: q.name,
-    kind: 'download',
+    kind: q.kind,
     builtin: q.builtin,
     running: q.running,
     maxConcurrent: q.max_concurrent,
@@ -540,7 +540,8 @@ function queueFromDaemon(q: QueuesList['queues'][number]): Queue {
     },
     onFinish: q.on_finish,
     limitKiBps: q.limit_kib_s,
-    syncEveryHours: 24,
+    syncEveryHours: q.sync_every_hours ?? 24,
+    syncFiles: q.sync_files ?? [],
     order: q.order,
     ...(q.last_started_ms ? { lastStarted: q.last_started_ms } : {}),
   }
@@ -551,7 +552,8 @@ export function queueToDaemon(q: Queue): Record<string, unknown> {
   return {
     id: q.id,
     name: q.name,
-    kind: 'download',
+    kind: q.kind,
+    sync_every_hours: q.syncEveryHours,
     max_concurrent: q.maxConcurrent,
     retries: q.retries,
     retry_delay_s: 60,
@@ -598,15 +600,16 @@ export async function pollQueues(): Promise<void> {
       days: r.limiter.days as typeof prev.limiter.days,
     }
     // The scheduler's defaults live in zeusd: it is the source of truth, the Settings page shows and edits them.
-    const fromDaemon = { defaultQueue: r.defaults.default_queue, timezone: r.defaults.timezone, missedWindow: r.defaults.missed_window, stopBehaviour: r.defaults.stop_behaviour }
+    const fromDaemon = { defaultQueue: r.defaults.default_queue, timezone: r.defaults.timezone, missedWindow: r.defaults.missed_window, stopBehaviour: r.defaults.stop_behaviour, connection: r.defaults.network_mode === 'metered' ? 'cellular' as const : r.defaults.network_mode === 'unmetered' ? 'lan' as const : 'auto' as const, meteredPause: r.defaults.pause_on_metered ?? true }
     const daemonKey = JSON.stringify(fromDaemon)
     let settings = prev.settings
     if (daemonKey !== lastDefaultsKey && !defaultsBusy) {
       lastDefaultsKey = daemonKey
-      if (JSON.stringify({ defaultQueue: settings.scheduler.defaultQueue, timezone: settings.scheduler.timezone, missedWindow: settings.scheduler.missedWindow, stopBehaviour: settings.scheduler.stopBehaviour }) !== daemonKey) {
-        settings = { ...settings, scheduler: { ...settings.scheduler, ...fromDaemon } }
+      if (JSON.stringify({ defaultQueue: settings.scheduler.defaultQueue, timezone: settings.scheduler.timezone, missedWindow: settings.scheduler.missedWindow, stopBehaviour: settings.scheduler.stopBehaviour, connection: settings.connection.type, meteredPause: settings.connection.meteredPause }) !== daemonKey) {
+        settings = { ...settings, scheduler: { ...settings.scheduler, defaultQueue: fromDaemon.defaultQueue, timezone: fromDaemon.timezone, missedWindow: fromDaemon.missedWindow, stopBehaviour: fromDaemon.stopBehaviour }, connection: { ...settings.connection, type: fromDaemon.connection, meteredPause: fromDaemon.meteredPause } }
       }
     }
+    settings = { ...settings, connection: { ...settings.connection, cost: r.network?.cost ?? 'unknown', policyHeld: r.network?.held_jobs ?? 0 } }
     S.set({ queues, limiter, settings, killSwitch: r.kill_switch_engaged || prev.killSwitch })
     rebuildJobs()
     for (const q of r.queues) {
@@ -673,7 +676,7 @@ export async function configureLimiter(limiter: { enabled: boolean; limitKiBps: 
 }
 
 export async function configureDefaults(d: { timezone: 'local' | 'utc'; missedWindow: 'skip' | 'run_once'; stopBehaviour: 'pause' | 'finish_current'; defaultQueue: string }): Promise<void> {
-  await native.queueOp('configure', { defaults: { timezone: d.timezone, missed_window: d.missedWindow, stop_behaviour: d.stopBehaviour, default_queue: d.defaultQueue } })
+  await native.queueOp('configure', { defaults: { timezone: d.timezone, missed_window: d.missedWindow, stop_behaviour: d.stopBehaviour, default_queue: d.defaultQueue, network_mode: S.get().settings.connection.type === 'cellular' ? 'metered' : S.get().settings.connection.type === 'lan' ? 'unmetered' : 'auto', pause_on_metered: S.get().settings.connection.meteredPause } })
   await pollQueues()
 }
 
@@ -754,7 +757,7 @@ function watchEngineSettings(): void {
     if (!s.live?.loaded || !s.live) return
     // A change of the scheduler's defaults goes to zeusd at once.
     const sc = s.settings.scheduler
-    const wanted = JSON.stringify({ defaultQueue: sc.defaultQueue, timezone: sc.timezone, missedWindow: sc.missedWindow, stopBehaviour: sc.stopBehaviour })
+    const wanted = JSON.stringify({ defaultQueue: sc.defaultQueue, timezone: sc.timezone, missedWindow: sc.missedWindow, stopBehaviour: sc.stopBehaviour, connection: s.settings.connection.type, meteredPause: s.settings.connection.meteredPause })
     if (lastDefaultsKey && wanted !== lastDefaultsKey && !defaultsBusy) {
       defaultsBusy = true
       void configureDefaults({ timezone: sc.timezone, missedWindow: sc.missedWindow, stopBehaviour: sc.stopBehaviour, defaultQueue: sc.defaultQueue })

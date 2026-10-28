@@ -303,7 +303,8 @@ mod tests {
         )
         .await;
         let tools = catalogue["result"]["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 14);
+        assert_eq!(tools.len(), 15);
+        assert!(tools.iter().any(|tool| tool["name"] == "zeus_sources"));
         assert!(
             !tools
                 .iter()

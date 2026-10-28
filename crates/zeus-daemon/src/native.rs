@@ -157,6 +157,7 @@ impl RuntimeBackend {
                     DecideOutcome::Deny
                 };
                 if outcome == DecideOutcome::Approve {
+                    self.team_approval(p.approval_id)?;
                     self.admit()?;
                 }
                 let confirmation = match p.confirmation.unwrap_or(nm::ConfirmationLevel::Gesture) {
@@ -195,6 +196,7 @@ impl RuntimeBackend {
                 return Ok(None);
             }
             nm::ExtensionBody::HandoffOffer(p) => {
+                crate::team::admit(&self.team, "jobs_enqueue", &serde_json::json!({}))?;
                 self.admit()?;
                 if !c.trusted {
                     return Err(ApiError::human_required("verified browser handoff"));

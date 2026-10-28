@@ -382,6 +382,8 @@ impl SourceTransport {
             }
             response.url = self.virtual_url.clone();
             response.headers.remove("location");
+            // The daemon reviewed the final filename; provider headers cannot replace it.
+            response.headers.remove("content-disposition");
             return Ok((response, hub_metadata));
         }
         Err(SourceError::Protocol)

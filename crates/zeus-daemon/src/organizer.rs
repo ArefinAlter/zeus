@@ -387,6 +387,62 @@ impl Organizer {
             .transpose()
     }
 
+    /// Read a bounded progress projection; never disclose another agent's operation.
+    pub(crate) fn operation_view(
+        &self,
+        identity: &ClientIdentity,
+        roots: &[PathBuf],
+        id: &str,
+    ) -> ApiResult<zeus_api::methods::files::FilesOperationGetResult> {
+        if id.is_empty()
+            || id.len() > 64
+            || !id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+        {
+            return Err(invalid("operation_id is a bounded operation identifier"));
+        }
+        let missing = || ApiError::new("api.not_found", "file operation not found");
+        let record = self.get(id)?.ok_or_else(missing)?;
+        if !identity.kind.is_human_capable() && record.owner != identity.credential_id.as_str() {
+            return Err(missing());
+        }
+        // Plans store canonical paths (including Windows verbatim prefixes). Compare them
+        // with canonical current roots, not the user's unnormalized configuration spelling.
+        // The historical directory need not still exist to read its operation receipt.
+        let visible = zeus_fs::WriteRoots::open(roots).map_err(|_| missing())?;
+        if !visible
+            .roots()
+            .iter()
+            .any(|root| record.dir.starts_with(root.path()))
+        {
+            return Err(missing());
+        }
+        let (state, reason) = match &record.state {
+            OperationState::AwaitingApproval => ("awaiting_approval", None),
+            OperationState::Applying => ("applying", None),
+            OperationState::Applied => ("applied", None),
+            OperationState::Dropped { reason } => ("dropped", Some(reason.clone())),
+            OperationState::Stopped { reason } => ("stopped", Some(reason.clone())),
+        };
+        let count = |test: fn(&StepState) -> bool| {
+            record.outcomes.iter().filter(|s| test(s)).count() as u32
+        };
+        Ok(zeus_api::methods::files::FilesOperationGetResult {
+            operation_id: record.operation_id,
+            state: state.into(),
+            reason,
+            steps: record
+                .steps
+                .iter()
+                .map(|step| view(&record.root, step))
+                .collect(),
+            completed: count(|s| matches!(s, StepState::Done { .. })),
+            skipped: count(|s| matches!(s, StepState::Skipped { .. })),
+            pending: count(|s| matches!(s, StepState::Pending | StepState::Started)),
+            approval_id: record.approval_id,
+            undone_by: record.undone_by,
+        })
+    }
+
     fn put(&self, record: &OperationRecord) -> ApiResult<()> {
         let bytes = serde_json::to_vec(record).map_err(|_| fail())?;
         let mut tx = self.db.begin_write().map_err(|_| fail())?;

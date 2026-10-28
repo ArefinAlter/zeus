@@ -24,7 +24,11 @@ export function text(value, max = 128, pattern) {
   if (typeof value !== 'string' || value.length < 1 || value.length > max || /[\x00-\x1f\x7f]/u.test(value) || (pattern && !pattern.test(value))) fail('team.invalid_text')
   return value
 }
-export const id = value => text(value, 64, /^[A-Za-z0-9][A-Za-z0-9_-]*$/u)
+export function id(value) {
+  text(value, 64, /^[A-Za-z0-9][A-Za-z0-9_-]*$/u)
+  if (/^(?:sk-|sk_ant_|AIza|AKIA|Bearer|ZEUS-CANARY-)/iu.test(value)) fail('team.sensitive_metadata')
+  return value
+}
 export function label(value) {
   text(value, 128, /^[\p{L}\p{N}][\p{L}\p{N} ._()\-]*$/u)
   if (/\b(?:sk-|AIza|AKIA|Bearer|password|secret|token)[A-Za-z0-9_=-]*/iu.test(value)) fail('team.sensitive_metadata')

@@ -60,6 +60,7 @@ impl RuntimeBackend {
         let visible = |id: zeus_types::JobId| scope.job_id(id, &self.journal);
         let listing = self.queues.list(&visible).await;
         Ok(QueuesListResult {
+            network: listing.network,
             queues: listing.queues,
             limiter: listing.limiter,
             defaults: listing.defaults,

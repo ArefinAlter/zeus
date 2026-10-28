@@ -4470,6 +4470,87 @@
       },
       "type": "object"
     },
+    "FilesOperationGetParams": {
+      "additionalProperties": false,
+      "description": "Read one durable organizer operation visible to the caller.",
+      "properties": {
+        "operation_id": {
+          "description": "Operation identifier returned by organize or undo.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "operation_id"
+      ],
+      "type": "object"
+    },
+    "FilesOperationGetResult": {
+      "description": "Current organization progress. Read-only; no file paths outside the caller's view.",
+      "properties": {
+        "approval_id": {
+          "description": "Human request associated with the exact operation.",
+          "pattern": "^ap_[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+          "type": "string"
+        },
+        "completed": {
+          "description": "Completed effects, including partial success before a stop.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "operation_id": {
+          "description": "Durable operation identity.",
+          "type": "string"
+        },
+        "pending": {
+          "description": "Steps not yet started or reconciled.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "reason": {
+          "description": "Terminal stop/refusal reason, when present.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "skipped": {
+          "description": "Steps skipped because their preconditions changed.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "state": {
+          "description": "awaiting_approval, applying, applied, dropped or stopped.",
+          "type": "string"
+        },
+        "steps": {
+          "description": "Exact originally reviewed steps.",
+          "items": {
+            "$ref": "#/$defs/FileStep"
+          },
+          "type": "array"
+        },
+        "undone_by": {
+          "description": "Existing inverse operation, if requested.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "operation_id",
+        "state",
+        "steps",
+        "completed",
+        "skipped",
+        "pending",
+        "approval_id"
+      ],
+      "type": "object"
+    },
     "FilesOrganizeParams": {
       "description": "`files.organize` parameters.",
       "properties": {
@@ -5114,6 +5195,26 @@
         {
           "const": "h3",
           "description": "HTTP/3.",
+          "type": "string"
+        }
+      ]
+    },
+    "HubRepositoryType": {
+      "description": "Hub URL family. These have distinct canonical resolve prefixes.",
+      "oneOf": [
+        {
+          "const": "model",
+          "description": "Models use the root repository namespace.",
+          "type": "string"
+        },
+        {
+          "const": "dataset",
+          "description": "Datasets use /datasets/.",
+          "type": "string"
+        },
+        {
+          "const": "space",
+          "description": "Spaces use /spaces/.",
           "type": "string"
         }
       ]
@@ -7912,6 +8013,71 @@
         }
       ]
     },
+    "NetworkCost": {
+      "description": "The current operating-system or explicit network-cost hint.",
+      "oneOf": [
+        {
+          "const": "unknown",
+          "description": "No trustworthy cost hint is available; this does not assert an unmetered connection.",
+          "type": "string"
+        },
+        {
+          "const": "unmetered",
+          "description": "Transfer volume is not reported as restricted.",
+          "type": "string"
+        },
+        {
+          "const": "metered",
+          "description": "Metered, roaming or over the data limit.",
+          "type": "string"
+        }
+      ]
+    },
+    "NetworkMode": {
+      "description": "Source of network-cost information.",
+      "oneOf": [
+        {
+          "const": "auto",
+          "description": "Use the operating system's cost hint.",
+          "type": "string"
+        },
+        {
+          "const": "unmetered",
+          "description": "Treat this connection as unmetered.",
+          "type": "string"
+        },
+        {
+          "const": "metered",
+          "description": "Treat this connection as metered.",
+          "type": "string"
+        }
+      ]
+    },
+    "NetworkView": {
+      "description": "Current policy observation.",
+      "properties": {
+        "cost": {
+          "$ref": "#/$defs/NetworkCost",
+          "description": "Observed or explicitly selected cost."
+        },
+        "held_jobs": {
+          "description": "Number of jobs held by this policy, excluding manual pauses.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "paused": {
+          "description": "The policy is holding downloads and synchronization probes.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "cost",
+        "paused",
+        "held_jobs"
+      ],
+      "type": "object"
+    },
     "NewJob": {
       "description": "One download to enqueue. Mirrors the caller-settable fields of a `JobSpec` (01 section 3.2); the daemon fills\nin the source from the authenticated connection, never from the request.",
       "properties": {
@@ -8100,6 +8266,46 @@
         "provider",
         "client_id",
         "scopes"
+      ],
+      "type": "object"
+    },
+    "ObjectMetadata": {
+      "additionalProperties": false,
+      "description": "Public evidence for an immutable reviewed object, without signed CDN addresses.",
+      "properties": {
+        "bytes": {
+          "description": "Exact complete object length.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "immutable_revision": {
+          "description": "Exact provider version or Hub commit pinned during review.",
+          "type": "string"
+        },
+        "integrity_kind": {
+          "description": "Plain description of how the digest was interpreted.",
+          "type": "string"
+        },
+        "sha256": {
+          "description": "Publisher-declared whole-object SHA-256, only when its semantics are known.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "strong_etag": {
+          "description": "Strong entity validator. It is not automatically a content digest.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "bytes",
+        "immutable_revision",
+        "integrity_kind"
       ],
       "type": "object"
     },
@@ -9589,6 +9795,13 @@
             "stop_time": "06:00"
           },
           "description": "Start and stop times."
+        },
+        "sync_every_hours": {
+          "default": 24,
+          "description": "Hours between synchronization checks, 1 to 720.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
         }
       },
       "required": [
@@ -9610,6 +9823,16 @@
           "default": "skip",
           "description": "What to do about a start missed while the daemon was off."
         },
+        "network_mode": {
+          "$ref": "#/$defs/NetworkMode",
+          "default": "auto",
+          "description": "How to determine network cost."
+        },
+        "pause_on_metered": {
+          "default": true,
+          "description": "Hold active downloads while the cost is metered.",
+          "type": "boolean"
+        },
         "stop_behaviour": {
           "$ref": "#/$defs/StopBehaviour",
           "default": "pause",
@@ -9624,11 +9847,16 @@
       "type": "object"
     },
     "QueueKind": {
-      "description": "What a queue does. Only downloads exist today.",
+      "description": "What a queue does.",
       "oneOf": [
         {
           "const": "download",
           "description": "Downloads each file once.",
+          "type": "string"
+        },
+        {
+          "const": "sync",
+          "description": "Keeps checking completed downloads for a new strongly identified version.",
           "type": "string"
         }
       ]
@@ -9816,6 +10044,21 @@
             "stop_time": "06:00"
           },
           "description": "Start and stop times."
+        },
+        "sync_every_hours": {
+          "default": 24,
+          "description": "Hours between synchronization checks, 1 to 720.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "sync_files": {
+          "default": [],
+          "description": "Completed files watched by this synchronization queue.",
+          "items": {
+            "$ref": "#/$defs/SyncFileView"
+          },
+          "type": "array"
         },
         "waiting": {
           "description": "Members waiting for a turn (held by the daemon).",
@@ -10132,6 +10375,15 @@
         "limiter": {
           "$ref": "#/$defs/LimiterView",
           "description": "The global speed limiter."
+        },
+        "network": {
+          "$ref": "#/$defs/NetworkView",
+          "default": {
+            "cost": "unknown",
+            "held_jobs": 0,
+            "paused": false
+          },
+          "description": "Actual cost observation and policy hold state."
         },
         "now_ms": {
           "description": "The daemon's clock (milliseconds since the Unix epoch).",
@@ -11835,6 +12087,198 @@
         }
       ]
     },
+    "SourceAccountConfig": {
+      "description": "Explicit account scope. Human configuration separately binds who may use it.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Amazon's native HTTPS S3 API; arbitrary endpoints are unavailable.",
+          "properties": {
+            "bucket": {
+              "description": "One allowed bucket.",
+              "type": "string"
+            },
+            "key_prefix": {
+              "description": "Exact key prefix. Empty allows the complete configured bucket.",
+              "type": "string"
+            },
+            "provider": {
+              "const": "s3",
+              "type": "string"
+            },
+            "region": {
+              "description": "AWS signing region, e.g. eu-west-1.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "provider",
+            "region",
+            "bucket",
+            "key_prefix"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Canonical Hub HTTPS API, restricted to one repository.",
+          "properties": {
+            "provider": {
+              "const": "hugging_face",
+              "type": "string"
+            },
+            "repository": {
+              "description": "Exactly owner/repository.",
+              "type": "string"
+            },
+            "repository_type": {
+              "$ref": "#/$defs/HubRepositoryType",
+              "description": "Repository family."
+            }
+          },
+          "required": [
+            "provider",
+            "repository_type",
+            "repository"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Torrent metadata requires explicit peer/tracker network review.",
+          "properties": {
+            "allowed_peer_ips": {
+              "description": "Exact IPv4/IPv6 peer addresses. Discovery cannot escape these IPs.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "max_download_bytes_per_second": {
+              "description": "Receive-rate ceiling. Zero/unlimited is unavailable.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "max_peers": {
+              "description": "Maximum peer connections, one through thirty-two.",
+              "format": "uint16",
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "provider": {
+              "const": "torrent",
+              "type": "string"
+            }
+          },
+          "required": [
+            "provider",
+            "max_peers",
+            "max_download_bytes_per_second",
+            "allowed_peer_ips"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "SourceAccountView": {
+      "additionalProperties": false,
+      "description": "Nonsecret configured acquisition scope. Changes revoke prior operation authority.",
+      "properties": {
+        "account_id": {
+          "description": "Human-selected alias, bounded to letters/digits/dash/underscore.",
+          "type": "string"
+        },
+        "allowed_credential_ids": {
+          "description": "Credentials explicitly allowed to use this source, configured only by a human.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "budget_ceiling": {
+          "$ref": "#/$defs/SourceBudget",
+          "description": "Maximum per-operation bytes and elapsed time."
+        },
+        "config": {
+          "$ref": "#/$defs/SourceAccountConfig",
+          "description": "Exact provider scope; never private credential/keyring references."
+        },
+        "credential_configured": {
+          "description": "Credential material is configured, without exposing its value or reference.",
+          "type": "boolean"
+        },
+        "revision": {
+          "description": "Monotonic revision required by plans and in-flight transfers.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "revoked": {
+          "description": "Explicit local revocation stops reads, including commit-time validation.",
+          "type": "boolean"
+        },
+        "untrusted_label": {
+          "description": "Untrusted display name.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "account_id",
+        "untrusted_label",
+        "config",
+        "revision",
+        "allowed_credential_ids",
+        "budget_ceiling",
+        "credential_configured",
+        "revoked"
+      ],
+      "type": "object"
+    },
+    "SourceBudget": {
+      "additionalProperties": false,
+      "description": "A whole task's cumulative network budget, including retry bytes.",
+      "properties": {
+        "max_received_bytes": {
+          "description": "At most one TiB; not merely the final file's length.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "timeout_ms": {
+          "description": "At most twenty-four hours, measured from reviewed operation creation.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "max_received_bytes",
+        "timeout_ms"
+      ],
+      "type": "object"
+    },
+    "SourceControlAction": {
+      "description": "Explicit lifecycle action. Resume never broadens an expired or revoked budget.",
+      "oneOf": [
+        {
+          "const": "pause",
+          "description": "Cooperatively pause and preserve verified bytes.",
+          "type": "string"
+        },
+        {
+          "const": "resume",
+          "description": "Explicitly resume within the original deadline/account authority.",
+          "type": "string"
+        },
+        {
+          "const": "cancel",
+          "description": "Stop and cancel this source's engine job/peer operation.",
+          "type": "string"
+        }
+      ]
+    },
     "SourceKind": {
       "description": "Who asked, by which route (01 section 3.3).",
       "oneOf": [
@@ -11859,6 +12303,331 @@
           "type": "string"
         }
       ]
+    },
+    "SourceOperationView": {
+      "description": "Redacted identity-bound source progress and final lineage.",
+      "properties": {
+        "account_id": {
+          "description": "Configured source account.",
+          "type": "string"
+        },
+        "account_revision": {
+          "description": "Exact account revision retained for all request/commit checks.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "budget": {
+          "$ref": "#/$defs/SourceBudget",
+          "description": "Reviewed operation limits."
+        },
+        "error_code": {
+          "description": "Fixed safe failure code without upstream diagnostics.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "files": {
+          "default": [],
+          "description": "Verified final torrent files; empty until publication succeeds.",
+          "items": {
+            "$ref": "#/$defs/SourcePublishedFile"
+          },
+          "type": "array"
+        },
+        "job_id": {
+          "description": "Engine download identity, bound durably before scheduling HTTP work.",
+          "pattern": "^job_[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "metadata": {
+          "$ref": "#/$defs/ObjectMetadata",
+          "description": "Exact provider version/commit and integrity semantics."
+        },
+        "operation_id": {
+          "description": "Durable prefixed ULID.",
+          "type": "string"
+        },
+        "output_sha256": {
+          "description": "Local final output SHA-256, only after verified publication.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "payload_uploaded_bytes": {
+          "description": "Torrent piece payload uploaded; source adapters never auto-seed.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "plan_id": {
+          "description": "Immutable source review.",
+          "type": "string"
+        },
+        "received_bytes": {
+          "description": "Cumulative network body bytes reserved durably, including retry bytes.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "state": {
+          "description": "queued, running, paused, completed, failed or canceled.",
+          "type": "string"
+        },
+        "untrusted_label": {
+          "description": "Untrusted source name, never signed URLs or tracker credentials.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "operation_id",
+        "plan_id",
+        "account_id",
+        "account_revision",
+        "state",
+        "untrusted_label",
+        "received_bytes",
+        "payload_uploaded_bytes",
+        "budget",
+        "metadata"
+      ],
+      "type": "object"
+    },
+    "SourcePlanView": {
+      "description": "A validated, immutable review. Remote-derived strings remain explicitly untrusted.",
+      "properties": {
+        "account_id": {
+          "description": "Account/revision whose authority remains required.",
+          "type": "string"
+        },
+        "account_revision": {
+          "description": "Exact account configuration revision.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "budget": {
+          "$ref": "#/$defs/SourceBudget",
+          "description": "Explicit cumulative receive/time ceiling."
+        },
+        "expires_at": {
+          "description": "Last moment at which this unchanged review may be submitted.",
+          "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:([0-5][0-9]|60)\\.[0-9]{3}Z$",
+          "type": "string"
+        },
+        "metadata": {
+          "$ref": "#/$defs/ObjectMetadata",
+          "description": "Immutable provider bytes/revision and digest semantics."
+        },
+        "notices": {
+          "description": "Honest networking and capability limits, including torrent control traffic.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "plan_id": {
+          "description": "Stable prefixed ULID; not a secret or approval token.",
+          "type": "string"
+        },
+        "torrent_files": {
+          "default": [],
+          "description": "Bounded metainfo file table for selecting exact indices; empty for HTTP sources.",
+          "items": {
+            "$ref": "#/$defs/SourceTorrentFileView"
+          },
+          "type": "array"
+        },
+        "untrusted_label": {
+          "description": "Untrusted source path/name for review, without bearer addresses or tracker credentials.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "plan_id",
+        "account_id",
+        "account_revision",
+        "untrusted_label",
+        "metadata",
+        "budget",
+        "expires_at",
+        "notices"
+      ],
+      "type": "object"
+    },
+    "SourcePublishedFile": {
+      "description": "One verified torrent output, with no source tracker or credential data.",
+      "properties": {
+        "bytes": {
+          "description": "Verified file length.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "filename": {
+          "description": "Reviewed destination leaf name.",
+          "type": "string"
+        },
+        "index": {
+          "description": "Selected metainfo file index.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "sha256": {
+          "description": "SHA-256 of published bytes.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "index",
+        "filename",
+        "bytes",
+        "sha256"
+      ],
+      "type": "object"
+    },
+    "SourceTarget": {
+      "description": "Immutable object selection. No bearer URL or authorization header exists here.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Amazon S3 object. Review pins a version or a strong entity validator.",
+          "properties": {
+            "bucket": {
+              "description": "DNS-compatible bucket name, never an endpoint or URL.",
+              "type": "string"
+            },
+            "key": {
+              "description": "Exact object key within the configured account prefix.",
+              "type": "string"
+            },
+            "provider": {
+              "const": "s3",
+              "type": "string"
+            },
+            "version_id": {
+              "description": "Explicit object version, when versioning is used.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "provider",
+            "bucket",
+            "key"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "One immutable Hugging Face repository file.",
+          "properties": {
+            "commit": {
+              "description": "Full forty-hex Git commit, never a moving branch/tag.",
+              "type": "string"
+            },
+            "path": {
+              "description": "Exact file path in that commit.",
+              "type": "string"
+            },
+            "provider": {
+              "const": "hugging_face",
+              "type": "string"
+            },
+            "repository": {
+              "description": "Exactly owner/repository.",
+              "type": "string"
+            },
+            "repository_type": {
+              "$ref": "#/$defs/HubRepositoryType",
+              "description": "Repository family."
+            }
+          },
+          "required": [
+            "provider",
+            "repository_type",
+            "repository",
+            "commit",
+            "path"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "A reviewed metainfo file, retained privately by the daemon.",
+          "properties": {
+            "file_indices": {
+              "description": "Exact selected file indices from the bounded review.",
+              "items": {
+                "format": "uint",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "type": "array"
+            },
+            "initial_peers": {
+              "description": "Explicit peer IP:port endpoints inside the configured IP allowlist.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "metainfo_sha256": {
+              "description": "SHA-256 of the metainfo bytes; not an arbitrary local path.",
+              "type": "string"
+            },
+            "provider": {
+              "const": "torrent",
+              "type": "string"
+            }
+          },
+          "required": [
+            "provider",
+            "metainfo_sha256",
+            "file_indices",
+            "initial_peers"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "SourceTorrentFileView": {
+      "description": "Untrusted metainfo file metadata, without trackers or credential-bearing URLs.",
+      "properties": {
+        "bytes": {
+          "description": "Declared file length.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "index": {
+          "description": "Stable metainfo file index.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "untrusted_path": {
+          "description": "Validated relative path components, displayed as untrusted data.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "index",
+        "untrusted_path",
+        "bytes"
+      ],
+      "type": "object"
     },
     "SourceVia": {
       "description": "The channel a job request arrived on.",
@@ -11899,6 +12668,278 @@
           "type": "string"
         }
       ]
+    },
+    "SourcesAccountConfigureParams": {
+      "additionalProperties": false,
+      "description": "Human-terminal account setup; this grants only the declared immutable source scope.",
+      "properties": {
+        "account_id": {
+          "description": "Alias to configure.",
+          "type": "string"
+        },
+        "allowed_credential_ids": {
+          "description": "Authenticated credentials allowed to use it; no caller-side owner override.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "budget_ceiling": {
+          "$ref": "#/$defs/SourceBudget",
+          "description": "Reviewed cumulative receive/time ceiling."
+        },
+        "config": {
+          "$ref": "#/$defs/SourceAccountConfig",
+          "description": "Native source and exact resource scope."
+        },
+        "credential": {
+          "description": "Write-only explicit token or S3 credential JSON; never discover another application's secrets.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "x-zeus-secret": true
+        },
+        "expected_revision": {
+          "description": "Reviewed revision when replacing an existing account.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "idempotency_key": {
+          "description": "Exact request retry key; bound without persisting this secret payload.",
+          "type": "string"
+        },
+        "untrusted_label": {
+          "description": "Untrusted human label.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "account_id",
+        "untrusted_label",
+        "config",
+        "allowed_credential_ids",
+        "budget_ceiling",
+        "idempotency_key"
+      ],
+      "type": "object"
+    },
+    "SourcesAccountMutationResult": {
+      "description": "Configuration/revocation receipt.",
+      "properties": {
+        "account": {
+          "$ref": "#/$defs/SourceAccountView",
+          "description": "Current nonsecret account scope."
+        },
+        "replayed": {
+          "description": "Exact prior request replayed.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "account",
+        "replayed"
+      ],
+      "type": "object"
+    },
+    "SourcesAccountRevokeParams": {
+      "additionalProperties": false,
+      "description": "Only human terminal configuration/revocation may change credential scope.",
+      "properties": {
+        "account_id": {
+          "description": "Configured alias.",
+          "type": "string"
+        },
+        "expected_revision": {
+          "description": "Exact reviewed revision.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "idempotency_key": {
+          "description": "Request retry binding.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "account_id",
+        "expected_revision",
+        "idempotency_key"
+      ],
+      "type": "object"
+    },
+    "SourcesAccountsResult": {
+      "description": "Accounts visible to this authenticated requester.",
+      "properties": {
+        "accounts": {
+          "description": "Exact public scopes and live revisions.",
+          "items": {
+            "$ref": "#/$defs/SourceAccountView"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "accounts"
+      ],
+      "type": "object"
+    },
+    "SourcesControlParams": {
+      "additionalProperties": false,
+      "description": "Owner-bound lifecycle control with durable retry semantics.",
+      "properties": {
+        "action": {
+          "$ref": "#/$defs/SourceControlAction",
+          "description": "Requested lifecycle action."
+        },
+        "idempotency_key": {
+          "description": "Exact control retry key.",
+          "type": "string"
+        },
+        "operation_id": {
+          "description": "Existing operation identity.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "operation_id",
+        "action",
+        "idempotency_key"
+      ],
+      "type": "object"
+    },
+    "SourcesGetParams": {
+      "additionalProperties": false,
+      "description": "Inspect one source operation belonging to this requester.",
+      "properties": {
+        "operation_id": {
+          "description": "Stable source identity.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "operation_id"
+      ],
+      "type": "object"
+    },
+    "SourcesInspectParams": {
+      "additionalProperties": false,
+      "description": "Inspect one immutable source under an existing human-configured scope.",
+      "properties": {
+        "account_id": {
+          "description": "Configured source alias.",
+          "type": "string"
+        },
+        "account_revision": {
+          "description": "Revision reviewed by the requester.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "budget": {
+          "$ref": "#/$defs/SourceBudget",
+          "description": "One whole task's receive/time ceiling, within the account's grant."
+        },
+        "idempotency_key": {
+          "description": "Exact inspect retry key.",
+          "type": "string"
+        },
+        "metainfo_base64": {
+          "description": "Private base64 .torrent bytes when reviewing a new metainfo digest.\nThis is never an arbitrary file path or magnet parser with hidden discovery.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "x-zeus-secret": true
+        },
+        "target": {
+          "$ref": "#/$defs/SourceTarget",
+          "description": "Exact immutable object or selected torrent files."
+        }
+      },
+      "required": [
+        "account_id",
+        "account_revision",
+        "target",
+        "budget",
+        "idempotency_key"
+      ],
+      "type": "object"
+    },
+    "SourcesListResult": {
+      "description": "Own operations only; no mutation accepts an arbitrary owner selector.",
+      "properties": {
+        "operations": {
+          "description": "Bounded durable history, at most one hundred entries.",
+          "items": {
+            "$ref": "#/$defs/SourceOperationView"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "operations"
+      ],
+      "type": "object"
+    },
+    "SourcesReadParams": {
+      "additionalProperties": false,
+      "description": "Empty authenticated source query.",
+      "type": "object"
+    },
+    "SourcesSubmitParams": {
+      "additionalProperties": false,
+      "description": "Submit a reviewed source to a configured destination without credential/header input.",
+      "properties": {
+        "dest_dir": {
+          "description": "Destination within current write roots and the requester's service scope.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "filename": {
+          "description": "Safe final filename; multi-file torrents require their dedicated selected-file mapping.",
+          "type": "string"
+        },
+        "idempotency_key": {
+          "description": "Durable exact-submit retry key.",
+          "type": "string"
+        },
+        "max_connections": {
+          "description": "One through thirty-two engine range connections, independently bounded by scheduler limits.",
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "plan_id": {
+          "description": "Exact review owned by this authenticated requester.",
+          "type": "string"
+        },
+        "torrent_filenames": {
+          "additionalProperties": false,
+          "default": {},
+          "description": "Exact final leaf names by selected torrent file index; required for multiple files.",
+          "patternProperties": {
+            "^\\d+$": {
+              "type": "string"
+            }
+          },
+          "type": "object"
+        }
+      },
+      "required": [
+        "plan_id",
+        "filename",
+        "max_connections",
+        "idempotency_key"
+      ],
+      "type": "object"
     },
     "SpendCaps": {
       "description": "Hard caps. Zero means \"no spending allowed\", not \"unlimited\".",
@@ -12449,6 +13490,94 @@
         {
           "const": "jsonrpc",
           "description": "Raw local JSON-RPC.",
+          "type": "string"
+        }
+      ]
+    },
+    "SyncFileView": {
+      "description": "A durable synchronization watch.",
+      "properties": {
+        "job_id": {
+          "description": "Latest completed version, whose destination is retained for the next version.",
+          "pattern": "^job_[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+          "type": "string"
+        },
+        "last_checked_ms": {
+          "description": "Last probe time in Unix milliseconds.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "next_check_ms": {
+          "description": "Earliest next probe time in Unix milliseconds.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "pending_job_id": {
+          "description": "New version in progress, if any.",
+          "pattern": "^job_[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "$ref": "#/$defs/SyncStatus",
+          "description": "Last known outcome."
+        }
+      },
+      "required": [
+        "job_id",
+        "next_check_ms",
+        "status"
+      ],
+      "type": "object"
+    },
+    "SyncStatus": {
+      "description": "Result of the last synchronization check; no URL or credential is exposed.",
+      "oneOf": [
+        {
+          "const": "waiting",
+          "description": "The first check has not run.",
+          "type": "string"
+        },
+        {
+          "const": "unchanged",
+          "description": "Strong representation validators matched.",
+          "type": "string"
+        },
+        {
+          "const": "downloading",
+          "description": "A new version is downloading beside the previous file.",
+          "type": "string"
+        },
+        {
+          "const": "updated",
+          "description": "A new version completed.",
+          "type": "string"
+        },
+        {
+          "const": "unverifiable",
+          "description": "Strong validators or a compatible unpinned request are unavailable.",
+          "type": "string"
+        },
+        {
+          "const": "needs_session",
+          "description": "The provider requires a current session grant.",
+          "type": "string"
+        },
+        {
+          "const": "policy_blocked",
+          "description": "Signed team restrictions or requester permissions currently prohibit a new transfer.",
+          "type": "string"
+        },
+        {
+          "const": "failed",
+          "description": "The check or new download failed; the old version remains intact.",
           "type": "string"
         }
       ]
@@ -13388,6 +14517,14 @@
         "$ref": "#/$defs/Page6"
       }
     },
+    "files.operation.get": {
+      "params": {
+        "$ref": "#/$defs/FilesOperationGetParams"
+      },
+      "result": {
+        "$ref": "#/$defs/FilesOperationGetResult"
+      }
+    },
     "files.organize": {
       "params": {
         "$ref": "#/$defs/FilesOrganizeParams"
@@ -13658,6 +14795,70 @@
       },
       "result": {
         "$ref": "#/$defs/SessionsRevokeResult"
+      }
+    },
+    "sources.accounts.configure": {
+      "params": {
+        "$ref": "#/$defs/SourcesAccountConfigureParams"
+      },
+      "result": {
+        "$ref": "#/$defs/SourcesAccountMutationResult"
+      }
+    },
+    "sources.accounts.list": {
+      "params": {
+        "$ref": "#/$defs/SourcesReadParams"
+      },
+      "result": {
+        "$ref": "#/$defs/SourcesAccountsResult"
+      }
+    },
+    "sources.accounts.revoke": {
+      "params": {
+        "$ref": "#/$defs/SourcesAccountRevokeParams"
+      },
+      "result": {
+        "$ref": "#/$defs/SourcesAccountMutationResult"
+      }
+    },
+    "sources.control": {
+      "params": {
+        "$ref": "#/$defs/SourcesControlParams"
+      },
+      "result": {
+        "$ref": "#/$defs/SourceOperationView"
+      }
+    },
+    "sources.get": {
+      "params": {
+        "$ref": "#/$defs/SourcesGetParams"
+      },
+      "result": {
+        "$ref": "#/$defs/SourceOperationView"
+      }
+    },
+    "sources.inspect": {
+      "params": {
+        "$ref": "#/$defs/SourcesInspectParams"
+      },
+      "result": {
+        "$ref": "#/$defs/SourcePlanView"
+      }
+    },
+    "sources.list": {
+      "params": {
+        "$ref": "#/$defs/SourcesReadParams"
+      },
+      "result": {
+        "$ref": "#/$defs/SourcesListResult"
+      }
+    },
+    "sources.submit": {
+      "params": {
+        "$ref": "#/$defs/SourcesSubmitParams"
+      },
+      "result": {
+        "$ref": "#/$defs/SourceOperationView"
       }
     },
     "workflows.control": {

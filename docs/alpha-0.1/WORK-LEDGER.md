@@ -8,7 +8,7 @@ This is a work ledger, not release evidence. An item is complete only after its 
 
 Owner clarification on28 October: **implement everything except Android/iOS apps**. Desktop feature work, R05 optional source adapters, R06 team/sync/SSO service capabilities and release tooling remain in scope. The Go TUI/device-wide takeover is a separate feasibility assessment as originally requested; the report does not claim a Go client or interception driver is implemented. External account registration, real signing identities, hosted CI billing and physical trust-surface acceptance require their actual operational evidence.
 
-## Latest validation checkpoint
+## Initial validation checkpoint (28 October)
 
 - Core adaptive transfer/control/HTTP:99 native Windows tests passed (51 control,34 engine,14 HTTP), plus strict Clippy. The paced64MiB1/4/16-connection benchmark completed with exact SHA-256; see TRANSFER-EVIDENCE.md. New identity-bound source hooks, held admission and header-latency estimator changes require their next rerun.
 - Native file index/archive/Everything:46 Windows tests and strict Clippy passed;11 native file-UI checks and5 real isolated Everything SDK broker checks passed. Inbox runtime and newly added agent policy checks are queued separately.
@@ -80,3 +80,15 @@ Validation passes62 native file/index/archive/preview tests, strict Clippy, Rust
 
 
 29 October: retained index scans/watchers/listings/Everything result filtering completed. Core `a944e43` is pushed; native63 tests, strict Clippy, MSRV checks and12 native index +20 two-pane UI checks pass. See FILE-WORKSPACE.md. Engine/delete conversion remains separate.
+
+
+## R06 native integration checkpoint · 29 October
+
+The optional team service and native Team page are implemented. Eight Node24 loopback service tests, ten native Windows desktop team tests, frontend typecheck/build and59 frontend tests pass. Shared pinned DSSE verification covers durable rollback/equivocation/expiry handling, cross-language service fixtures and safe file publication. Daemon dispatch, browser handoff and queue/workflow background admission have additive guards; local approvals are classified from stored kinds. Ten native daemon team tests, desktop strict Clippy and15 fresh-profile native UI/CLI checks also pass; the combined daemon strict gate includes concurrent R05 source work. The owner selected existing Ogun Dex + owner for rollout; live interactive IdP acceptance is separate. [TEAM-SERVICE.md](TEAM-SERVICE.md) records exact scope, artifacts and live IdP/TLS activation requirements; no live SSO deployment is claimed.
+
+
+## Coordinated alpha integration · 29 October
+
+Workflow Runs, connected Sources, artifact Library/rules and optional Team are now connected to native paths. Queue synchronization and network-cost controls are implemented. The current generated MCP catalogue has15 tools and39,428 bytes. API90, daemon208, MCP49, focused CLI2 and source-library13 tests pass; source and combined daemon/CLI/MCP strict checks pass. Desktop app/agent/integration checks and59 frontend tests/builds pass. See NATIVE-DESKTOP-ALPHA.md for the actual native UI/restart evidence and the final compact-grid correction under validation.
+
+Dynodoc, Asten and Ogun Windows0.1.0-alpha.1 prereleases are published and their public binary hashes verified. Zeus core PR11 and extension PR4 are merged. Zeus's installer and VPS deployment remain in progress; this entry is not a complete-roadmap or all-platform sign-off. The user selected existing Ogun Dex plus their existing owner account for initial Zeus team administration. No account password or private signing key belongs in this repository.

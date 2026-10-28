@@ -97,7 +97,7 @@ export class Store {
     })
   }
   pull(team, identity, after, snapshot, limit) {
-    this.admit(team, identity, 'reader'); integer(after); integer(snapshot); integer(limit, 1, 100)
+    this.admit(team, identity, 'reader', 'metadata_sync'); integer(after); integer(snapshot); integer(limit, 1, 100)
     const rows = this.db.prepare('SELECT * FROM changes WHERE team=? AND seq>? AND seq<=? ORDER BY seq LIMIT ?').all(team, after, snapshot, limit + 1)
     return { records: rows.slice(0, limit).map(result), more: rows.length > limit, snapshot_sequence: snapshot }
   }

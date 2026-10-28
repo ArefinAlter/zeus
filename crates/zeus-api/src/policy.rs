@@ -129,6 +129,18 @@ pub const METHODS: &[MethodSpec] = &[
     MethodSpec::needs("cloud.oauth.disconnect", ConfigWrite)
         .mutates()
         .human(),
+    MethodSpec::needs("sources.accounts.list", JobsRead),
+    MethodSpec::needs("sources.accounts.configure", ConfigWrite)
+        .mutates()
+        .human(),
+    MethodSpec::needs("sources.accounts.revoke", ConfigWrite)
+        .mutates()
+        .human(),
+    MethodSpec::needs("sources.inspect", JobsWrite).mutates(),
+    MethodSpec::needs("sources.submit", JobsWrite).mutates(),
+    MethodSpec::needs("sources.list", JobsRead),
+    MethodSpec::needs("sources.get", JobsRead),
+    MethodSpec::needs("sources.control", JobsControl).mutates(),
     MethodSpec::needs("cloud.accounts.list", JobsRead),
     MethodSpec::needs("cloud.accounts.configure", ConfigWrite)
         .mutates()
@@ -177,6 +189,7 @@ pub const METHODS: &[MethodSpec] = &[
         .mutates()
         .human(),
     MethodSpec::needs("files.list", FilesRead),
+    MethodSpec::needs("files.operation.get", FilesRead).gated("files.organize"),
     MethodSpec::needs("files.organize", FilesWrite)
         .gated("files.organize")
         .mutates()
@@ -479,6 +492,9 @@ mod tests {
             "cloud.plan",
             "cloud.submit",
             "cloud.control",
+            "sources.inspect",
+            "sources.submit",
+            "sources.control",
             "jobs.enqueue",
             "jobs.control",
             "queues.put",

@@ -29,6 +29,7 @@ pub mod inbox;
 pub mod mcp_http;
 pub mod output;
 pub mod queues;
+pub mod sources;
 mod terminal_os;
 pub mod trust;
 pub mod tui;

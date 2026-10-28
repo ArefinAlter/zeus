@@ -17,7 +17,7 @@ members = ["."]
 [package]
 name = "zeus-web-bridge"
 description = "HTTP bridge to zeusd for the Zeus pre-alpha client: typed jobs, link review, files, artifacts, approvals listing and workflow reports."
-version = "0.0.1-beta.1"
+version = "0.1.0-alpha.1"
 edition = "2024"
 rust-version = "1.90"
 license = "Apache-2.0"

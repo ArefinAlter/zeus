@@ -5368,7 +5368,7 @@ dependencies = [
 
 [[package]]
 name = "zeus-api"
-version = "0.0.1-beta.1"
+version = "0.1.0-alpha.1"
 dependencies = [
  "async-trait",
  "blake3",
@@ -5396,7 +5396,7 @@ dependencies = [
 
 [[package]]
 name = "zeus-cloud"
-version = "0.0.1-beta.1"
+version = "0.1.0-alpha.1"
 dependencies = [
  "async-trait",
  "bytes",
@@ -5418,7 +5418,7 @@ dependencies = [
 
 [[package]]
 name = "zeus-desktop"
-version = "0.0.1-beta.1"
+version = "0.1.0-alpha.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -5431,7 +5431,7 @@ dependencies = [
 
 [[package]]
 name = "zeus-llm"
-version = "0.0.1-beta.1"
+version = "0.1.0-alpha.1"
 dependencies = [
  "async-trait",
  "base64 0.23.1",
@@ -5465,7 +5465,7 @@ dependencies = [
 
 [[package]]
 name = "zeus-workflow"
-version = "0.0.1-beta.1"
+version = "0.1.0-alpha.1"
 dependencies = [
  "async-trait",
  "blake3",

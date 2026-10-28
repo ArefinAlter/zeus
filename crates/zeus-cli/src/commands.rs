@@ -211,6 +211,7 @@ pub async fn run_remote<C: Client + ?Sized>(
 ) -> ApiResult<CmdOutput> {
     match command {
         Command::Inbox(command) => crate::inbox::run(command, client, global.dry_run).await,
+        Command::Sources(command) => crate::sources::run(command, client, global.dry_run).await,
         Command::Cloud(command) => crate::cloud::run(command, client, global.dry_run).await,
         Command::Workflow(command) => crate::workflow::run(command, client, global.dry_run).await,
         Command::Files(command) => crate::files::run(command, client, global.dry_run).await,

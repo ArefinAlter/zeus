@@ -6836,7 +6836,7 @@ dependencies = [
 
 [[package]]
 name = "zeus-api"
-version = "0.0.1-beta.1"
+version = "0.1.0-alpha.1"
 dependencies = [
  "async-trait",
  "blake3",
@@ -6858,17 +6858,21 @@ dependencies = [
  "zeroize",
  "zeus-cloud",
  "zeus-llm",
+ "zeus-sources",
  "zeus-types",
  "zeus-workflow",
 ]
 
 [[package]]
 name = "zeus-app"
-version = "0.0.1-beta.1"
+version = "0.1.0-alpha.1"
 dependencies = [
  "axum",
+ "base64 0.23.1",
  "directories",
+ "ed25519-dalek",
  "hex",
+ "libc",
  "rand 0.10.3",
  "reqwest",
  "serde",
@@ -6876,17 +6880,19 @@ dependencies = [
  "sha2 0.11.1",
  "tempfile",
  "thiserror 2.0.21",
+ "time",
  "tokio",
  "toml 1.1.6+spec-1.1.0",
  "tracing",
  "url",
+ "zeroize",
  "zeus-api",
  "zeus-types",
 ]
 
 [[package]]
 name = "zeus-app-agent"
-version = "0.0.1-beta.1"
+version = "0.1.0-alpha.1"
 dependencies = [
  "argon2",
  "base64 0.23.1",
@@ -6915,7 +6921,7 @@ dependencies = [
 
 [[package]]
 name = "zeus-app-ext"
-version = "0.0.1-beta.1"
+version = "0.1.0-alpha.1"
 dependencies = [
  "hex",
  "rand 0.10.3",
@@ -6929,7 +6935,7 @@ dependencies = [
 
 [[package]]
 name = "zeus-app-grab"
-version = "0.0.1-beta.1"
+version = "0.1.0-alpha.1"
 dependencies = [
  "axum",
  "hex",
@@ -6953,7 +6959,7 @@ dependencies = [
 
 [[package]]
 name = "zeus-app-index"
-version = "0.0.1-beta.1"
+version = "0.1.0-alpha.1"
 dependencies = [
  "base64 0.23.1",
  "hex",
@@ -6977,7 +6983,7 @@ dependencies = [
 
 [[package]]
 name = "zeus-app-integration"
-version = "0.0.1-beta.1"
+version = "0.1.0-alpha.1"
 dependencies = [
  "directories",
  "hex",
@@ -6999,7 +7005,7 @@ dependencies = [
 
 [[package]]
 name = "zeus-client"
-version = "0.0.1-beta.1"
+version = "0.1.0-alpha.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -7016,7 +7022,7 @@ dependencies = [
 
 [[package]]
 name = "zeus-cloud"
-version = "0.0.1-beta.1"
+version = "0.1.0-alpha.1"
 dependencies = [
  "async-trait",
  "base64 0.23.1",
@@ -7039,6 +7045,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "zeus-control"
+version = "0.1.0"
+dependencies = [
+ "rand 0.10.3",
+ "serde",
+ "thiserror 2.0.21",
+ "zeus-types",
+]
+
+[[package]]
 name = "zeus-fs"
 version = "0.1.0"
 dependencies = [
@@ -7058,8 +7074,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "zeus-http"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "bytes",
+ "futures",
+ "http",
+ "httpdate",
+ "percent-encoding",
+ "reqwest",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "url",
+ "zeus-control",
+ "zeus-session",
+ "zeus-types",
+]
+
+[[package]]
 name = "zeus-llm"
-version = "0.0.1-beta.1"
+version = "0.1.0-alpha.1"
 dependencies = [
  "async-trait",
  "base64 0.23.1",
@@ -7079,7 +7117,7 @@ dependencies = [
 
 [[package]]
 name = "zeus-mcp"
-version = "0.0.1-beta.1"
+version = "0.1.0-alpha.1"
 dependencies = [
  "async-trait",
  "blake3",
@@ -7102,7 +7140,7 @@ dependencies = [
 
 [[package]]
 name = "zeus-native-host"
-version = "0.0.1-beta.1"
+version = "0.1.0-alpha.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -7112,6 +7150,49 @@ dependencies = [
  "windows-sys 0.61.2",
  "winreg 0.56.0",
  "zeus-api",
+ "zeus-types",
+]
+
+[[package]]
+name = "zeus-session"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "base64 0.23.1",
+ "bytes",
+ "futures",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+ "url",
+ "zeroize",
+ "zeus-control",
+ "zeus-types",
+]
+
+[[package]]
+name = "zeus-sources"
+version = "0.1.0-alpha.1"
+dependencies = [
+ "async-trait",
+ "bytes",
+ "futures",
+ "hex",
+ "http",
+ "schemars 1.2.2",
+ "serde",
+ "serde_json",
+ "sha2 0.11.1",
+ "thiserror 2.0.21",
+ "time",
+ "tokio",
+ "tokio-util",
+ "url",
+ "zeroize",
+ "zeus-fs",
+ "zeus-http",
  "zeus-types",
 ]
 
@@ -7147,7 +7228,7 @@ dependencies = [
 
 [[package]]
 name = "zeus-workflow"
-version = "0.0.1-beta.1"
+version = "0.1.0-alpha.1"
 dependencies = [
  "async-trait",
  "blake3",

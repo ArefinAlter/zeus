@@ -1,0 +1,10 @@
+{
+  "payloadType": "application/vnd.verne.zeus.team-policy+json;version=1",
+  "payload": "eyJleHBpcmVzX2F0IjoiMjAyNy0wMS0xNVQwODoxNTowMC4wMDBaIiwiZmVhdHVyZXMiOnsiY2xvdWRfZGVsaXZlcnkiOnRydWUsImRvd25sb2FkcyI6ZmFsc2UsIm1ldGFkYXRhX3N5bmMiOnRydWUsInByb3ZlbmFuY2UiOnRydWUsIndvcmtmbG93cyI6dHJ1ZX0sImlzc3VlZF9hdCI6IjIwMjctMDEtMTVUMDg6MDA6MDAuMDAwWiIsImlzc3VlciI6Imh0dHBzOi8vdGVhbS5leGFtcGxlLmNvbSIsIm1pbl9wb2xpY3lfbGV2ZWwiOjEsInNjaGVtYV92ZXJzaW9uIjoxLCJzZXF1ZW5jZSI6NCwidGVuYW50X2lkIjoiYWxwaGEifQ==",
+  "signatures": [
+    {
+      "keyid": "fixture",
+      "sig": "q9xCInAPvTw80Y26W+8cwKEHI+BE7AC0LyIotjyQwjSbkbozJcvdCv9YpHMjb8iSlZ1RTl44CL7A6BajuvbeAg=="
+    }
+  ]
+}

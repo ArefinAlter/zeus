@@ -6632,7 +6632,7 @@ dependencies = [
 
 [[package]]
 name = "zeus-a2a"
-version = "0.0.1-beta.1"
+version = "0.1.0-alpha.1"
 dependencies = [
  "jsonschema",
  "proptest",
@@ -6646,7 +6646,7 @@ dependencies = [
 
 [[package]]
 name = "zeus-a2a-bridge"
-version = "0.0.1-beta.1"
+version = "0.1.0-alpha.1"
 dependencies = [
  "async-trait",
  "blake3",
@@ -6665,7 +6665,7 @@ dependencies = [
 
 [[package]]
 name = "zeus-api"
-version = "0.0.1-beta.1"
+version = "0.1.0-alpha.1"
 dependencies = [
  "async-trait",
  "blake3",
@@ -6690,6 +6690,7 @@ dependencies = [
  "zeroize",
  "zeus-cloud",
  "zeus-llm",
+ "zeus-sources",
  "zeus-types",
  "zeus-workflow",
 ]
@@ -6710,11 +6711,12 @@ dependencies = [
 
 [[package]]
 name = "zeus-cli"
-version = "0.0.1-beta.1"
+version = "0.1.0-alpha.1"
 dependencies = [
  "anyhow",
  "assert_cmd",
  "async-trait",
+ "base64 0.23.1",
  "blake3",
  "clap",
  "clap_complete",
@@ -6750,7 +6752,7 @@ dependencies = [
 
 [[package]]
 name = "zeus-cloud"
-version = "0.0.1-beta.1"
+version = "0.1.0-alpha.1"
 dependencies = [
  "async-trait",
  "axum",
@@ -6787,27 +6789,32 @@ dependencies = [
 
 [[package]]
 name = "zeus-daemon"
-version = "0.0.1-beta.1"
+version = "0.1.0-alpha.1"
 dependencies = [
  "anyhow",
  "assert_cmd",
  "async-trait",
  "axum",
+ "base64 0.23.1",
  "blake3",
  "bytes",
  "chrono",
  "directories",
+ "ed25519-dalek",
  "futures",
  "hex",
  "http",
+ "libc",
  "md-5",
  "proptest",
+ "rand 0.10.3",
  "redb",
  "regex",
  "reqwest",
  "schemars 1.2.2",
  "serde",
  "serde_json",
+ "sha2 0.11.0",
  "tempfile",
  "thiserror 2.0.21",
  "time",
@@ -6833,6 +6840,7 @@ dependencies = [
  "zeus-journal",
  "zeus-llm",
  "zeus-session",
+ "zeus-sources",
  "zeus-types",
  "zeus-verify",
  "zeus-workflow",
@@ -6920,7 +6928,7 @@ dependencies = [
 
 [[package]]
 name = "zeus-llm"
-version = "0.0.1-beta.1"
+version = "0.1.0-alpha.1"
 dependencies = [
  "async-trait",
  "base64 0.23.1",
@@ -6949,7 +6957,7 @@ dependencies = [
 
 [[package]]
 name = "zeus-mcp"
-version = "0.0.1-beta.1"
+version = "0.1.0-alpha.1"
 dependencies = [
  "async-trait",
  "axum",
@@ -6980,7 +6988,7 @@ dependencies = [
 
 [[package]]
 name = "zeus-native-host"
-version = "0.0.1-beta.1"
+version = "0.1.0-alpha.1"
 dependencies = [
  "assert_cmd",
  "predicates",
@@ -7018,7 +7026,7 @@ dependencies = [
 
 [[package]]
 name = "zeus-sources"
-version = "0.0.1-beta.1"
+version = "0.1.0-alpha.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -7079,7 +7087,7 @@ dependencies = [
 
 [[package]]
 name = "zeus-workflow"
-version = "0.0.1-beta.1"
+version = "0.1.0-alpha.1"
 dependencies = [
  "async-trait",
  "blake3",

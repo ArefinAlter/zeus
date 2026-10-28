@@ -150,7 +150,8 @@ mod tests {
                 "zeus_workflow",
                 "zeus_files",
                 "zeus_artifacts",
-                "zeus_inbox"
+                "zeus_inbox",
+                "zeus_sources"
             ]
         );
     }

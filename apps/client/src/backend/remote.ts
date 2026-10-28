@@ -446,7 +446,9 @@ export interface EngineSettings {
 export interface QueueView {
   id: string
   name: string
-  kind: string
+  kind: 'download' | 'sync'
+  sync_every_hours?: number
+  sync_files?: { job_id: string; pending_job_id: string | null; last_checked_ms: number | null; next_check_ms: number; status: string }[]
   max_concurrent: number
   retries: number
   retry_delay_s: number
@@ -469,7 +471,8 @@ export interface QueueView {
 export interface QueuesList {
   queues: QueueView[]
   limiter: { enabled: boolean; limit_kib_s: number; schedule_enabled: boolean; from: string; to: string; days: number[]; active_now?: boolean }
-  defaults: { timezone: 'local' | 'utc'; missed_window: 'skip' | 'run_once'; stop_behaviour: 'pause' | 'finish_current'; default_queue: string }
+  defaults: { timezone: 'local' | 'utc'; missed_window: 'skip' | 'run_once'; stop_behaviour: 'pause' | 'finish_current'; default_queue: string; network_mode?: 'auto' | 'unmetered' | 'metered'; pause_on_metered?: boolean }
+  network?: { cost: 'unknown' | 'unmetered' | 'metered'; paused: boolean; held_jobs: number }
   now_ms: number
   utc_offset_min?: number
   kill_switch_engaged: boolean

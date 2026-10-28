@@ -133,6 +133,37 @@ pub struct FilesOrganizeResult {
     pub operation_id: Option<String>,
 }
 
+/// Read one durable organizer operation visible to the caller.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct FilesOperationGetParams {
+    /// Operation identifier returned by organize or undo.
+    pub operation_id: String,
+}
+
+/// Current organization progress. Read-only; no file paths outside the caller's view.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct FilesOperationGetResult {
+    /// Durable operation identity.
+    pub operation_id: String,
+    /// awaiting_approval, applying, applied, dropped or stopped.
+    pub state: String,
+    /// Terminal stop/refusal reason, when present.
+    pub reason: Option<String>,
+    /// Exact originally reviewed steps.
+    pub steps: Vec<FileStep>,
+    /// Completed effects, including partial success before a stop.
+    pub completed: u32,
+    /// Steps skipped because their preconditions changed.
+    pub skipped: u32,
+    /// Steps not yet started or reconciled.
+    pub pending: u32,
+    /// Human request associated with the exact operation.
+    pub approval_id: ApprovalId,
+    /// Existing inverse operation, if requested.
+    pub undone_by: Option<String>,
+}
+
 /// `files.convert` parameters.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct FilesConvertParams {

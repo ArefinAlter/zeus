@@ -159,6 +159,9 @@ pub struct SourcePlanView {
     pub expires_at: Timestamp,
     /// Honest networking and capability limits, including torrent control traffic.
     pub notices: Vec<String>,
+    /// Bounded metainfo file table for selecting exact indices; empty for HTTP sources.
+    #[serde(default)]
+    pub torrent_files: Vec<SourceTorrentFileView>,
 }
 /// Submit a reviewed source to a configured destination without credential/header input.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -172,6 +175,9 @@ pub struct SourcesSubmitParams {
     pub filename: String,
     /// One through thirty-two engine range connections, independently bounded by scheduler limits.
     pub max_connections: u8,
+    /// Exact final leaf names by selected torrent file index; required for multiple files.
+    #[serde(default)]
+    pub torrent_filenames: std::collections::BTreeMap<usize, String>,
     /// Durable exact-submit retry key.
     pub idempotency_key: String,
 }
@@ -202,6 +208,9 @@ pub struct SourceOperationView {
     pub metadata: ObjectMetadata,
     /// Local final output SHA-256, only after verified publication.
     pub output_sha256: Option<String>,
+    /// Verified final torrent files; empty until publication succeeds.
+    #[serde(default)]
+    pub files: Vec<SourcePublishedFile>,
     /// Fixed safe failure code without upstream diagnostics.
     pub error_code: Option<String>,
 }
@@ -239,4 +248,33 @@ pub struct SourcesControlParams {
     pub action: SourceControlAction,
     /// Exact control retry key.
     pub idempotency_key: String,
+}
+
+/// Empty authenticated source query.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SourcesReadParams {}
+
+/// One verified torrent output, with no source tracker or credential data.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SourcePublishedFile {
+    /// Selected metainfo file index.
+    pub index: usize,
+    /// Reviewed destination leaf name.
+    pub filename: String,
+    /// Verified file length.
+    pub bytes: u64,
+    /// SHA-256 of published bytes.
+    pub sha256: String,
+}
+
+/// Untrusted metainfo file metadata, without trackers or credential-bearing URLs.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SourceTorrentFileView {
+    /// Stable metainfo file index.
+    pub index: usize,
+    /// Validated relative path components, displayed as untrusted data.
+    pub untrusted_path: Vec<String>,
+    /// Declared file length.
+    pub bytes: u64,
 }

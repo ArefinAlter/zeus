@@ -19,16 +19,17 @@
 
 #![forbid(unsafe_code)]
 
-pub mod args;
 pub mod apps;
+pub mod args;
 pub mod catalogue;
+pub mod cloud;
 #[cfg(feature = "http")]
 pub mod http_bridge;
-pub mod cloud;
-pub mod output;
 pub mod inbox;
+pub mod output;
 pub mod resources;
 pub mod server;
+pub mod sources;
 pub mod transport;
 pub mod workspace;
 

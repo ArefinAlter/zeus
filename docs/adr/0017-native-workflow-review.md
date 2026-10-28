@@ -1,0 +1,11 @@
+# 0017: Native workflow planning and run controls
+
+Status: accepted for the owner's requested 0.1 desktop implementation, 29 October 2026.
+
+The desktop Runs page uses the existing daemon workflow service through seven named routes: plan, dry-run, run, list, get, control and manifest. It uses the app credential, never the CLI token. Plans are sampled and validated by the daemon; a complete dry run of the same plan hash is required before requesting a run. Execution waits for an approval made through the existing verified terminal. The desktop cannot send approval decisions or create grants.
+
+Add `WorkflowsRun` to the shipped app permission set. This allows requesting an approval-bound run and pausing, resuming or canceling that identity's runs. Only a non-revoked Agent/Gui record named `app` with the exact previous shipped permissions receives the migration. Narrowed/custom records and other GUI credentials retain their permissions. The upgrade preserves tokens, verifiers and identities, so old plans/runs retain ownership. Configuration writes and human-only permissions remain absent. ADR0018 separately adds the file-write capability needed for the explicit artifact and organizer surface. Loading a credential store applies the exact migration in memory; idempotent provisioning persists it.
+
+The UI saves at most thirty exact validated plans in the existing private atomic state store. Saved data never constitutes permission to execute: reopening requires revalidation and a fresh dry run. Edits invalidate the UI review, and validation reuses stored page samples only when their input URL list is unchanged. Mutation requests carry retry keys; failures preserve the key for the same action. Run lists are paged, with failures visible and the last successful list retained. Reports and manifest contents are rendered as text. The legacy runs endpoint now refuses an incomplete bounded list instead of turning read failures into an empty result.
+
+This page exposes implemented public-page workflows. It does not claim authenticated document rendering, infinite-scroll discovery, workflow conversion or revised-plan continuation. Native acceptance records these boundaries separately from daemon fixture execution tests.

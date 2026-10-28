@@ -41,6 +41,8 @@ export async function openUi(h, { width = 1360, height = 880, theme } = {}) {
   const browser = await chromium.launch({ headless: true })
   const context = await browser.newContext({ viewport: { width, height }, ...(theme ? { colorScheme: theme } : {}) })
   const page = await context.newPage()
+  page.setDefaultTimeout(15000)
+  page.setDefaultNavigationTimeout(30000)
   const errors = []
   page.on('pageerror', (e) => errors.push(String(e)))
   page.on('console', (m) => m.type() === 'error' && errors.push(`${m.text()} ${m.location()?.url ?? ''}`))

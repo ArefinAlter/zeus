@@ -1598,3 +1598,26 @@ An unresolved dispatch fences package edits. Its durable intent precedes `jobs.e
 ```json validate=daemon-api.v1#/$defs/InboxPackagesPutRequest
 {"jsonrpc":"2.0","id":600,"method":"inbox.packages.put","params":{"untrusted_name":"Research package","default_dest_dir":null,"idempotency_key":"research-package-1"}}
 ```
+
+
+## Immutable source acquisition extension (alpha 0.1)
+
+The normative shapes are `schema/sources.v1.schema.json`; daemon request/response envelopes are also registered in `schema/daemon-api.v1.schema.json`. This extension does not add a listener or a new caller-selected identity.
+
+| Method | Permission | Boundary |
+|---|---|---|
+| `sources.accounts.list` | `jobs.read` | Public configured scopes visible to this requester; human terminals may inspect all scopes. |
+| `sources.accounts.configure` / `sources.accounts.revoke` | `config.write`, human-only | Verified terminal, exact reviewed revision, explicit authenticated client IDs, hidden write-only credentials. |
+| `sources.inspect` / `sources.submit` | `jobs.write` | Durable retry key; account revision, immutable object, requester, budgets and reviewed destination remain bound. |
+| `sources.list` / `sources.get` | `jobs.read` | Own operations only; no owner override. |
+| `sources.control` | `jobs.control` | Owner-bound pause/resume/cancel; resume cannot renew the original deadline, grant or byte ceiling. |
+
+An inspect request names an existing S3, Hugging Face or torrent account and its exact revision. S3 binds a version or strong entity validator; Hub requires a full commit. Torrent input is explicit bounded metainfo plus selected file indices and numeric peers. Reviews expire after ten minutes and expose provider integrity semantics, size, notices and a bounded metainfo file table. Raw credentials, signed URLs and metainfo never appear in results.
+
+Submit persists an owned operation before starting network work. HTTP jobs use held admission with an exact private operation/job/owner binding; public labels do not create source authority. Byte charges are cumulative and durable, including retries. The daemon rechecks the account revision, credential validity/permission, kill switch, original deadline and destination identity before reads/commits. Torrent publication uses verified private staging, retained directory capabilities, no-overwrite rename and per-file SHA-256 receipts. Interrupted work opens paused; successful final publication is distinct from provider acceptance.
+
+Account configuration grants only the named source scope to explicitly selected client IDs. It does not grant arbitrary write roots or authorize another account. Agents cannot configure/revoke source accounts. Human account changes revoke prior operation authority. Retained serialized records are bounded to 4096 entries and 256 MiB, preserving headroom for existing operation transitions; exhaustion is an explicit refusal. Database allocation and temporary staging add filesystem overhead beyond that payload cap.
+
+Torrent tracker, magnet and DHT discovery, inbound peer listeners and payload upload are disabled. The receive counter counts piece writes, including corrupt/retried data; handshake/control overhead is separately constrained by peer/rate/time limits. The alpha does not claim this is a strict whole-network billing meter. See [R05 evidence and operator flow](../alpha-0.1/SOURCE-ADAPTERS-PLAN.md).
+
+Source errors use the same stable envelope: `sources.denied`, `sources.budget` and `sources.canceled` are `policy_denied`; `sources.changed`, `sources.destination_exists` and `sources.restart_review_required` are `conflict`; `sources.integrity` is `integrity`; `sources.credential` is `auth_expired`; `sources.unsupported` is `unsupported`; `sources.failed`, `sources.capacity` and `sources.transfer_failed` are `unavailable`. They are not blindly retryable: the caller must reconcile the durable operation and existing authority before resuming.

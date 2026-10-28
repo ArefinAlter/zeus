@@ -92,7 +92,7 @@ function planNote(l: GrabberLink, plan: PlanRow | undefined, collides: boolean) 
 
 export function Grabber() {
   const links = useStore((s) => s.grabber)
-  const queues = useStore((s) => s.queues.filter((q) => q.kind === 'download'))
+  const queues = useStore((s) => s.queues.filter((q) => NATIVE || q.kind === 'download'))
   const roots = useStore((s) => s.settings.saveTo.writeRoots)
   const defaultOverwrite = useStore((s) => s.settings.downloads.duplicates)
   const [text, setText] = useState('')

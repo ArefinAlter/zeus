@@ -1,4 +1,4 @@
-// Scenario 10: the in-app agent with BYOK providers calling the fourteen MCP tools through the closed tool table.
+// Scenario 10: the in-app agent with BYOK providers calling the fifteen MCP tools through the closed tool table.
 //
 // Against a local provider that speaks the real OpenAI and Anthropic wire formats (tests/providers-mock.mjs), a real
 // zeusd, and the real interface in Chromium. A canary string stands in for the person's key.
@@ -92,7 +92,7 @@ try {
   // ------------------------------------------------------------ consent
   const before = requests()
   const pv = await call('POST', `${B}/preview`, body('th_consent', 'download http://127.0.0.1:1/x.bin', 'download'))
-  check('the preview lists what would be sent and says consent is missing', pv.blocker?.code === 'needs_consent' && pv.tools.length === 14 && pv.system.includes('You cannot approve anything') && pv.estimate.total_input_tokens > 100, `${pv.estimate.total_input_tokens} tokens in`)
+  check('the preview lists what would be sent and says consent is missing', pv.blocker?.code === 'needs_consent' && pv.tools.length === 15 && pv.system.includes('You cannot approve anything') && pv.estimate.total_input_tokens > 100, `${pv.estimate.total_input_tokens} tokens in`)
   check('the preview names what is never sent', pv.never_sends.some((s) => /file contents/.test(s)) && !JSON.stringify(pv).includes('ZEUS-CANARY'))
   const blocked = await run(body('th_consent', 'hello', 'download'))
   check('without permission no request is made to the provider', requests() === before && doneOf(blocked.events)?.reason === 'needs_consent', doneOf(blocked.events)?.reason)
@@ -113,7 +113,7 @@ try {
   const usage = r1.events.filter((e) => e.type === 'usage')
   check('usage and spend are recorded per call and per thread', usage.length === 2 && usage[1].thread.input_tokens === 240 && usage[1].thread.usd > 0, `thread ${usage[1]?.thread.input_tokens} in, ${usage[1]?.thread.output_tokens} out, $${usage[1]?.thread.usd}`)
   const wire = prov.completions().at(-2)
-  check('the request carried the key in a header, the 14 tools and the system prompt; the key was in no body or URL', wire.headers.authorization === `Bearer ${CANARY}` && wire.body.tools.length === 14 && wire.body.messages[0].role === 'system' && !JSON.stringify(wire.body).includes('ZEUS-CANARY') && !wire.path.includes('ZEUS'))
+  check('the request carried the key in a header, the 15 tools and the system prompt; the key was in no body or URL', wire.headers.authorization === `Bearer ${CANARY}` && wire.body.tools.length === 15 && wire.body.messages[0].role === 'system' && !JSON.stringify(wire.body).includes('ZEUS-CANARY') && !wire.path.includes('ZEUS'))
   const secondWire = prov.completions().at(-1)
   const toolMsg = secondWire.body.messages.find((m) => m.role === 'tool')
   check('the tool result went back to the model labelled as data', !!toolMsg && /not instructions/.test(toolMsg.content))
@@ -126,7 +126,7 @@ try {
   const jobA = rA.events.find((e) => e.type === 'card' && e.card.type === 'job')
   const doneA = await until(async () => { const j = (await jobsList()).find((x) => x.id === jobA?.card.id); return j && j.state === 'completed' ? j : false }, { timeoutMs: 60000, what: 'the Anthropic-wire download' })
   const wireA = prov.completions().filter((r) => r.path.endsWith('/messages'))[0]
-  check('the Anthropic wire works end to end (tool_use, tool_result, x-api-key, version header)', doneA.sha256 === sha256(32, size) && wireA.headers['x-api-key'] === CANARY && wireA.headers['anthropic-version'] === '2023-06-01' && wireA.body.tools.length === 14)
+  check('the Anthropic wire works end to end (tool_use, tool_result, x-api-key, version header)', doneA.sha256 === sha256(32, size) && wireA.headers['x-api-key'] === CANARY && wireA.headers['anthropic-version'] === '2023-06-01' && wireA.body.tools.length === 15)
 
   // ------------------------------------------------------------ refusals
   const jobsBefore = (await jobsList()).length

@@ -138,6 +138,12 @@ impl<C: Client> ZeusTools<C> {
                 })
                 .await
             }
+            "zeus_sources" => {
+                self.run(arguments, |a: crate::sources::SourcesArgs| {
+                    crate::sources::dispatch(self.client.as_ref(), a)
+                })
+                .await
+            }
             "zeus_cloud" => {
                 self.run(arguments, |a: crate::cloud::CloudArgs| {
                     crate::cloud::dispatch(self.client.as_ref(), a)
@@ -1003,6 +1009,48 @@ mod tests {
         assert!(resource.contains("package_put"));
         assert!(!resource.contains("owner_credential_id"));
         assert_eq!(fake.calls.lock().unwrap().len(), before);
+    }
+
+    #[tokio::test]
+    async fn source_tool_preserves_review_identity_and_cannot_configure_credentials() {
+        let fake = Fake::new();
+        fake.answer("sources.accounts.list", Ok(json!({"accounts":[]})));
+        let tools = ZeusTools::new(Arc::clone(&fake));
+        let listed = tools
+            .call(
+                "zeus_sources",
+                json!({"idempotency_key":"read","request":{"action":"accounts"}}),
+            )
+            .await
+            .unwrap();
+        assert!(!listed.is_error());
+        assert_eq!(fake.last().0, "sources.accounts.list");
+        let count = fake.calls.lock().unwrap().len();
+        for request in [
+            json!({"action":"configure","credential":"SOURCE-CANARY"}),
+            json!({"action":"revoke","account_id":"hub"}),
+            json!({"action":"accounts","owner":"another"}),
+        ] {
+            let result = tools
+                .call(
+                    "zeus_sources",
+                    json!({"idempotency_key":"intent","request":request}),
+                )
+                .await
+                .unwrap();
+            assert!(result.is_error());
+            assert!(!result.text().contains("SOURCE-CANARY"));
+        }
+        assert_eq!(fake.calls.lock().unwrap().len(), count);
+        let result=tools.call("zeus_sources",json!({"idempotency_key":"source-intent","request":{"action":"submit","plan_id":"srcplan_fixture","filename":"file.bin","max_connections":2}})).await.unwrap();
+        assert!(
+            result.is_error(),
+            "a failing backend must not claim publication"
+        );
+        let (method, params) = fake.last();
+        assert_eq!(method, "sources.submit");
+        assert_eq!(params["plan_id"], "srcplan_fixture");
+        assert_eq!(params["idempotency_key"], "source-intent");
     }
 
     #[tokio::test]

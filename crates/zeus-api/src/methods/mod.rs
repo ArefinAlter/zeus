@@ -19,6 +19,7 @@ pub mod inbox;
 pub mod jobs;
 pub mod queues;
 pub mod sessions;
+pub mod sources;
 pub mod workflows;
 
 /// A method of the daemon API: its wire name and types.
@@ -68,9 +69,27 @@ use self::inbox::*;
 use self::jobs::*;
 use self::queues::*;
 use self::sessions::*;
+use self::sources::*;
 use self::workflows::*;
 
 rpc_methods! {
+    /// Immutable source API: sources.accounts.list.
+    SourcesAccounts = "sources.accounts.list" (SourcesReadParams) -> SourcesAccountsResult;
+    /// Immutable source API: sources.accounts.configure.
+    SourcesConfigure = "sources.accounts.configure" (SourcesAccountConfigureParams) -> SourcesAccountMutationResult;
+    /// Immutable source API: sources.accounts.revoke.
+    SourcesRevoke = "sources.accounts.revoke" (SourcesAccountRevokeParams) -> SourcesAccountMutationResult;
+    /// Immutable source API: sources.inspect.
+    SourcesInspect = "sources.inspect" (SourcesInspectParams) -> SourcePlanView;
+    /// Immutable source API: sources.submit.
+    SourcesSubmit = "sources.submit" (SourcesSubmitParams) -> SourceOperationView;
+    /// Immutable source API: sources.list.
+    SourcesList = "sources.list" (SourcesReadParams) -> SourcesListResult;
+    /// Immutable source API: sources.get.
+    SourcesGet = "sources.get" (SourcesGetParams) -> SourceOperationView;
+    /// Immutable source API: sources.control.
+    SourcesControl = "sources.control" (SourcesControlParams) -> SourceOperationView;
+
     /// Create or edit one owned durable intake package.
     InboxPackagePut = "inbox.packages.put" (InboxPackagePutParams) -> InboxMutationResult;
     /// List owned package metadata.
@@ -183,6 +202,8 @@ rpc_methods! {
     FilesList = "files.list" (FilesListParams) -> FilesListResult;
     /// Plan or apply an organization of files (later).
     FilesOrganize = "files.organize" (FilesOrganizeParams) -> FilesOrganizeResult;
+    /// Read durable organization progress in the caller's view.
+    FilesOperationGet = "files.operation.get" (FilesOperationGetParams) -> FilesOperationGetResult;
     /// Convert files (later).
     FilesConvert = "files.convert" (FilesConvertParams) -> FilesConvertResult;
     /// Undo a previous file operation from the trash journal (later).

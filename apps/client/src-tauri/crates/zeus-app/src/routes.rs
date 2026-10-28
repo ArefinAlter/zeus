@@ -157,10 +157,83 @@ pub async fn dispatch(app: &Arc<App>, route: &str, body: Value) -> Result<Value>
             ensure_ready(app)?;
             let items = app
                 .daemon
-                .all("workflows.list", json!({}), 2)
-                .await
-                .unwrap_or_default();
+                .all_complete("workflows.list", json!({}), 20)
+                .await?;
             Ok(json!({"items": items}))
+        }
+        ("POST", ["native", "v1", "workflows", operation]) => {
+            ensure_ready(app)?;
+            // Closed dispatch: the page holds only this installation's restricted app identity.
+            // Running a plan creates an approval request; this route cannot decide it.
+            let method = match *operation {
+                "plan" => "workflows.plan",
+                "dry-run" => "workflows.dry_run",
+                "run" => "workflows.run",
+                "list" => "workflows.list",
+                "get" => "workflows.get",
+                "control" => "workflows.control",
+                "manifest" => "workflows.manifest",
+                _ => return Err(Failure::invalid("Unknown workflow operation.")),
+            };
+            app.daemon.raw(method, body).await
+        }
+        ("POST", ["native", "v1", "artifacts", operation]) => {
+            ensure_ready(app)?;
+            let method = match *operation {
+                "list" => "artifacts.list",
+                "get" => "artifacts.get",
+                "lineage" => "artifacts.lineage",
+                "ingest" => "artifacts.ingest",
+                "preview" => "artifacts.lifecycle.preview",
+                "apply" => "artifacts.lifecycle.apply",
+                _ => return Err(Failure::invalid("Unknown artifact operation.")),
+            };
+            app.daemon.raw(method, body).await
+        }
+        ("POST", ["native", "v1", "organize", operation]) => {
+            ensure_ready(app)?;
+            let method = match *operation {
+                "plan" | "request" => "files.organize",
+                "get" => "files.operation.get",
+                "undo" => "files.undo",
+                _ => return Err(Failure::invalid("Unknown organization operation.")),
+            };
+            let mut params = body;
+            if matches!(*operation, "plan" | "request") {
+                let object = params
+                    .as_object_mut()
+                    .ok_or_else(|| Failure::invalid("Send directory and deterministic rules."))?;
+                // The preview route cannot be changed into an execution request by caller input.
+                object.insert("dry_run".into(), json!(*operation == "plan"));
+                if !object.get("rules").is_some_and(Value::is_object) {
+                    return Err(Failure::invalid("Use a deterministic rule set."));
+                }
+            }
+            app.daemon.raw(method, params).await
+        }
+        ("POST", ["native", "v1", "sources", "review-terminal"]) => {
+            ensure_ready(app)?;
+            let action = match body.get("action").and_then(Value::as_str) {
+                Some("configure") => "source-configure",
+                Some("revoke") => "source-revoke",
+                _ => return Err(Failure::invalid("Choose source setup or revocation.")),
+            };
+            let id = body.get("id").and_then(Value::as_str).unwrap_or_default();
+            app.supervisor.open_review_terminal(action, id)?;
+            Ok(json!({"opened":true}))
+        }
+        ("POST", ["native", "v1", "sources", operation]) => {
+            ensure_ready(app)?;
+            let method = match *operation {
+                "accounts" => "sources.accounts.list",
+                "inspect" => "sources.inspect",
+                "submit" => "sources.submit",
+                "list" => "sources.list",
+                "get" => "sources.get",
+                "control" => "sources.control",
+                _ => return Err(Failure::invalid("Unknown source operation.")),
+            };
+            app.daemon.raw(method, body).await
         }
         ("GET", ["api", "v1", "fixtures"]) => Ok(json!({"hosts": [], "samples": []})),
 
