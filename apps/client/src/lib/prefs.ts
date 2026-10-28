@@ -139,7 +139,7 @@ function columns(v: unknown): ColumnPref[] {
     if (!c || typeof c !== 'object') continue
     const x = c as Partial<ColumnPref>
     if (typeof x.id !== 'string' || !(COLUMN_IDS as readonly string[]).includes(x.id) || out.some((o) => o.id === x.id)) continue
-    out.push({ id: x.id, width: typeof x.width === 'number' ? Math.min(800, Math.max(56, Math.round(x.width))) : 120, visible: x.id === 'name' ? true : bool(x.visible, true) })
+    out.push({ id: x.id, width: typeof x.width === 'number' && Number.isFinite(x.width) ? Math.min(800, Math.max(56, Math.round(x.width))) : 120, visible: x.id === 'name' ? true : bool(x.visible, true) })
   }
   for (const d of DEFAULT_COLUMNS) if (!out.some((o) => o.id === d.id)) out.push(d)
   return out
