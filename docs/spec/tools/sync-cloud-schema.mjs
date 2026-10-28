@@ -17,7 +17,14 @@ const write = (path, value) => {
 };
 const draft = read('crates/zeus-api/schemas/daemon-api.v1.draft.schema.json');
 const methods = Object.entries(draft.methods).filter(([name]) => name.startsWith('cloud.'));
-if (methods.length !== 8) throw new Error('expected all eight cloud daemon methods; regenerate the API schema first');
+const expected = [
+  'cloud.accounts.configure', 'cloud.accounts.list', 'cloud.accounts.revoke',
+  'cloud.control', 'cloud.get', 'cloud.list', 'cloud.plan', 'cloud.submit',
+  'cloud.oauth.begin', 'cloud.oauth.finish', 'cloud.oauth.status',
+  'cloud.oauth.cancel', 'cloud.oauth.refresh', 'cloud.oauth.disconnect',
+].sort();
+if (JSON.stringify(methods.map(([name]) => name).sort()) !== JSON.stringify(expected))
+  throw new Error('expected the explicit fourteen-method cloud profile; regenerate the API schema first');
 const selected = new Set();
 function collect(node) {
   if (!node || typeof node !== 'object') return;
@@ -44,18 +51,30 @@ function normalize(node) {
   Object.values(node).forEach(normalize);
 }
 normalize(defs);
-const ids = { plan_id: '^clp_[0-7][0-9A-HJKMNP-TV-Z]{25}$', delivery_id: '^cld_[0-7][0-9A-HJKMNP-TV-Z]{25}$' };
+const ids = { flow_id: '^cof_[0-7][0-9A-HJKMNP-TV-Z]{25}$', plan_id: '^clp_[0-7][0-9A-HJKMNP-TV-Z]{25}$', delivery_id: '^cld_[0-7][0-9A-HJKMNP-TV-Z]{25}$' };
 for (const definition of Object.values(defs)) {
   for (const [name, property] of Object.entries(definition.properties ?? {})) {
-    if (ids[name]) Object.assign(property, { type: 'string', pattern: ids[name] });
-    if (name === 'account_id') Object.assign(property, { type: 'string', pattern: '^[a-z0-9_-]{1,64}$' });
+    if (ids[name]) Object.assign(property, { pattern: ids[name] });
+    if (name === 'account_id') Object.assign(property, { pattern: '^[a-z0-9_-]{1,64}$' });
     if (name === 'idempotency_key') Object.assign(property, { type: 'string', minLength: 1, maxLength: 128 });
     if (name === 'max_seconds') Object.assign(property, { minimum: 1, maximum: 86400 });
     if (name === 'max_bytes' || name === 'max_bytes_per_delivery') property.minimum = 1;
   }
 }
 Object.assign(defs.CloudListParams.properties.limit, { minimum: 1, maximum: 100 });
-Object.assign(defs.CloudAccountsConfigureParams.properties.credential, { 'x-zeus-secret': true, writeOnly: true });
+for (const [type, fields] of [
+  ['CloudAccountsConfigureParams', ['credential']],
+  ['CloudOAuthBeginParams', ['client_secret']],
+  ['CloudOAuthFinishParams', ['code', 'state']],
+]) for (const field of fields)
+  Object.assign(defs[type].properties[field], { 'x-zeus-secret': true, writeOnly: true });
+for (const field of ['authorization_url', 'user_code'])
+  Object.assign(defs.CloudOAuthBeginResult.properties[field], { 'x-zeus-secret': true });
+// Preserve the generated nullable types; constrain only the selected nonnull identifier.
+defs.CloudOAuthStatusParams.oneOf = [
+  { properties: { flow_id: { type: 'string' }, account_id: { type: 'null' } }, required: ['flow_id'] },
+  { properties: { account_id: { type: 'string' }, flow_id: { type: 'null' } }, required: ['account_id'] },
+];
 const cloudId = 'https://zeus.invalid/schema/cloud.v1';
 write('docs/spec/schema/cloud.v1.schema.json', {
   $schema: 'https://json-schema.org/draft/2020-12/schema', $id: cloudId,

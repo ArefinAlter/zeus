@@ -774,7 +774,7 @@ impl Core {
                 .collect::<String>()
         );
         let action = crate::tools::action_of(&call.args);
-        h.log.push(json!({"type": "tool_start", "id": item, "tool": call.name, "action": action, "input": crate::tools::trim_value(&call.args, 600, 30)}));
+        h.log.push(json!({"type": "tool_start", "id": item, "tool": call.name, "action": action, "input": crate::tools::input_preview(&call.args)}));
         let refuse = |reason: String| {
             h.log.push(json!({"type": "tool_end", "id": item, "state": "denied", "summary": format!("refused: {reason}"), "ms": 0}));
             Msg::ToolResult {

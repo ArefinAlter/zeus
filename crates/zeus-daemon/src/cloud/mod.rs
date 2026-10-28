@@ -1,5 +1,7 @@
 //! Durable cloud delivery orchestration with exact scope, approval and recovery bindings.
+mod oauth;
 mod source;
+mod staging;
 mod store;
 #[cfg(test)]
 mod tests;
@@ -171,6 +173,7 @@ pub struct CloudService {
     consent: Arc<crate::consent::ConsentManager>,
     audit: Arc<dyn AuditSink>,
     credentials: Arc<dyn CredentialStore>,
+    credential_namespace: String,
     factory: Arc<dyn ProviderFactory>,
     staging: PathBuf,
     local_roots_file: PathBuf,
@@ -179,6 +182,7 @@ pub struct CloudService {
     stopping: AtomicBool,
     /// When retention last ran; it runs at startup and then at most hourly.
     retained_at: std::sync::Mutex<Option<std::time::Instant>>,
+    oauth: oauth::OAuthManager,
     /// Makes retention fail, to prove deliveries continue without it.
     #[cfg(test)]
     fail_retention: AtomicBool,
@@ -219,6 +223,8 @@ impl CloudService {
         }
         std::fs::create_dir_all(&staging).map_err(|_| fail())?;
         let store = Arc::new(Store::open(&state.join("cloud.redb"))?);
+        // Recover keyring writes interrupted before the account transaction was committed.
+        oauth::reconcile_credential_writes(&store, credentials.as_ref())?;
         for key in store.keys("delivery:")? {
             let row: Delivery = store.get(&key)?.ok_or_else(missing)?;
             if row.view.state == CloudDeliveryState::Running {
@@ -233,12 +239,23 @@ impl CloudService {
                 })?;
             }
         }
+        let credential_namespace = blake3::hash(
+            journal
+                .meta()
+                .map_err(|_| fail())?
+                .store_id
+                .to_string()
+                .as_bytes(),
+        )
+        .to_hex()[..32]
+            .to_owned();
         Ok(Arc::new(Self {
             store,
             journal,
             consent,
             audit,
             credentials,
+            credential_namespace,
             factory,
             staging,
             local_roots_file: state.join("cloud-local-roots.json"),
@@ -246,6 +263,7 @@ impl CloudService {
             workers: Default::default(),
             stopping: AtomicBool::new(false),
             retained_at: Default::default(),
+            oauth: oauth::OAuthManager::new()?,
             #[cfg(test)]
             fail_retention: AtomicBool::new(false),
         }))
@@ -376,7 +394,16 @@ impl CloudService {
         &self,
         identity: &ClientIdentity,
         actor: Actor,
+        p: CloudAccountsConfigureParams,
+    ) -> ApiResult<CloudAccountMutationResult> {
+        self.configure_oauth(identity, actor, p, None).await
+    }
+    async fn configure_oauth(
+        &self,
+        identity: &ClientIdentity,
+        actor: Actor,
         mut p: CloudAccountsConfigureParams,
+        oauth_override: Option<oauth::OAuthAccount>,
     ) -> ApiResult<CloudAccountMutationResult> {
         if !matches!(identity.kind, ClientKind::Human | ClientKind::Admin)
             || !actor.is_human_on_trust_surface()
@@ -455,9 +482,52 @@ impl CloudService {
             .as_ref()
             .map_or(1, |a| a.view.revision.saturating_add(1));
         let needs_secret = !matches!(p.config, ProviderConfig::Rclone { .. });
+        let provider_changed = old
+            .as_ref()
+            .is_some_and(|a| a.view.provider != p.config.kind());
+        if needs_secret && provider_changed && p.credential.is_none() {
+            return Err(invalid(
+                "changing native provider requires an explicit new credential",
+            ));
+        }
+        let oauth_metadata = if needs_secret {
+            oauth_override.or_else(|| {
+                p.credential
+                    .is_none()
+                    .then(|| old.as_ref().and_then(|a| a.oauth.clone()))
+                    .flatten()
+            })
+        } else {
+            None
+        };
+        if oauth_metadata
+            .as_ref()
+            .is_some_and(|m| m.registration.provider != p.config.kind())
+        {
+            return Err(invalid(
+                "existing OAuth registration belongs to a different provider",
+            ));
+        }
+        if old
+            .as_ref()
+            .is_some_and(|a| a.pending_credentials.len() >= 128)
+        {
+            return Err(ApiError::new(
+                "cloud.credential_cleanup_required",
+                "keyring cleanup must succeed before another account credential is added",
+            ));
+        }
         let credential = match p.credential {
+            _ if !needs_secret => None,
             Some(s) => {
-                if s.is_empty() || s.len() > 16384 {
+                if s.is_empty()
+                    || s.len()
+                        > if oauth_metadata.is_some() {
+                            64 * 1024
+                        } else {
+                            16384
+                        }
+                {
                     return Err(invalid("invalid credential length"));
                 }
                 Some(zeus_cloud::SecretString::new(s.expose().to_owned()))
@@ -477,9 +547,17 @@ impl CloudService {
         }
         self.admit()?;
         let cancel = CancellationToken::new();
+        let access_credential = match (&oauth_metadata, &credential) {
+            (Some(_), Some(secret)) => Some(
+                zeus_cloud::oauth::OAuthTokens::decode_private(secret)
+                    .map_err(oauth::oauth_error)?
+                    .access,
+            ),
+            _ => credential.clone(),
+        };
         let provider = self
             .factory
-            .connect(&p.config, credential.clone(), &cancel)
+            .connect(&p.config, access_credential, &cancel)
             .await
             .map_err(cloud_error)?;
         let destination = match &p.config {
@@ -500,16 +578,29 @@ impl CloudService {
         };
         self.audit(actor,"cloud.account_configured",serde_json::json!({"account_id":p.account_id,"revision":revision,"provider":view.provider,"max_bytes_per_delivery":view.max_bytes_per_delivery}))?;
         let credential_key = if let Some(secret) = credential {
-            let key = format!("{}-r{revision}", p.account_id);
+            let alias = blake3::hash(p.account_id.as_bytes()).to_hex()[..32].to_owned();
+            let key = format!("z{}-{alias}-r{revision}", self.credential_namespace);
+            self.store.save(&format!("credential-write:{key}"), &key)?;
             self.credentials.put(&key, &secret).map_err(cloud_error)?;
             Some(key)
         } else {
             None
         };
-        let account = Account {
+        let mut pending_credentials = old
+            .as_ref()
+            .map(|a| a.pending_credentials.clone())
+            .unwrap_or_default();
+        if let Some(previous) = old.as_ref().and_then(|a| a.credential_key.clone()) {
+            pending_credentials.push(previous);
+        }
+        pending_credentials.sort();
+        pending_credentials.dedup();
+        let mut account = Account {
             view: view.clone(),
             config: p.config,
             credential_key,
+            oauth: oauth_metadata,
+            pending_credentials,
         };
         let result = CloudAccountMutationResult {
             account: view,
@@ -526,10 +617,12 @@ impl CloudService {
                 },
             )?,
         ])?;
-        self.stop_account(&p.account_id, "cloud.account_changed")?;
-        if let Some(key) = old.and_then(|a| a.credential_key) {
-            let _ = self.credentials.delete(&key);
+        if let Some(key) = &account.credential_key {
+            // A retained marker is harmless: restart checks active references before cleanup.
+            let _ = self.store.remove(&format!("credential-write:{key}"));
         }
+        self.stop_account(&p.account_id, "cloud.account_changed")?;
+        self.cleanup_account_credentials(&mut account)?;
         Ok(result)
     }
     /// Revoke an account and invalidate all approvals that bind its old revision.
@@ -568,7 +661,11 @@ impl CloudService {
         )?;
         account.view.revoked = true;
         account.view.revision = account.view.revision.saturating_add(1);
-        let secret_key = account.credential_key.take();
+        if let Some(key) = account.credential_key.take() {
+            account.pending_credentials.push(key);
+        }
+        account.pending_credentials.sort();
+        account.pending_credentials.dedup();
         let result = CloudAccountMutationResult {
             account: account.view.clone(),
             replayed: false,
@@ -585,10 +682,24 @@ impl CloudService {
             )?,
         ])?;
         self.stop_account(&p.account_id, "cloud.account_revoked")?;
-        if let Some(key) = secret_key {
-            let _ = self.credentials.delete(&key);
-        }
+        self.cleanup_account_credentials(&mut account)?;
         Ok(result)
+    }
+    // Caller holds the account mutation gate. Retain failed keyring cleanup references in
+    // private durable state; local scope revocation never depends on keyring availability.
+    fn cleanup_account_credentials(&self, account: &mut Account) -> ApiResult<()> {
+        let mut pending = Vec::new();
+        for key in std::mem::take(&mut account.pending_credentials) {
+            if account.credential_key.as_ref() == Some(&key) {
+                continue;
+            }
+            if self.credentials.delete(&key).is_err() {
+                pending.push(key);
+            }
+        }
+        account.pending_credentials = pending;
+        self.store
+            .save(&format!("account:{}", account.view.account_id), account)
     }
     fn stop_account(&self, id: &str, reason: &str) -> ApiResult<()> {
         for key in self.store.keys("delivery:")? {
@@ -872,6 +983,8 @@ impl CloudService {
                     state: CloudDeliveryState::AwaitingApproval,
                     approval_id: None,
                     committed_bytes: 0,
+                    source_bytes_done: 0,
+                    source_verified: false,
                     artifact: None,
                     reason: None,
                     cleanup_pending: false,
@@ -881,6 +994,7 @@ impl CloudService {
                 source: plan.source,
                 upload: plan.upload,
                 checkpoint: None,
+                source_checkpoint: None,
                 started_at: None,
                 stop: None,
                 staged_sha256: None,
@@ -1042,6 +1156,7 @@ impl CloudService {
     }
     /// Kill switch pauses local work and retains all uncertain remote receipts.
     pub async fn pause_all_for_kill_switch(&self) -> ApiResult<()> {
+        self.oauth.cancel_flows().await;
         let _gate = self.gate.lock().await;
         for key in self.store.keys("delivery:")? {
             let row: Delivery = self.store.get(&key)?.ok_or_else(missing)?;
@@ -1058,6 +1173,7 @@ impl CloudService {
     /// Stop all local cloud workers at daemon shutdown; private checkpoints remain durable.
     pub async fn shutdown(&self) {
         self.stopping.store(true, Ordering::Release);
+        self.oauth.cancel_flows().await;
         let workers = match self.workers.lock() {
             Ok(mut workers) => std::mem::take(&mut *workers),
             Err(_) => return,

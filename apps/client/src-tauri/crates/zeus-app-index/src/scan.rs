@@ -19,6 +19,8 @@ pub struct Progress {
     pub dirs_done: AtomicU64,
     /// Folders found and not yet read in the current root.
     pub dirs_queued: AtomicU64,
+    /// Directories or entries that could not be enumerated; stale entries are retained.
+    pub unreadable: AtomicU64,
     /// Entries seen in this run.
     pub entries: AtomicU64,
 }
@@ -57,7 +59,7 @@ pub fn is_link(meta: &std::fs::Metadata) -> bool {
     #[cfg(windows)]
     {
         use std::os::windows::fs::MetadataExt;
-        meta.is_dir() && meta.file_attributes() & 0x400 != 0
+        meta.file_attributes() & 0x400 != 0
     }
     #[cfg(not(windows))]
     {
@@ -94,20 +96,33 @@ fn display_keeps_network_share_addresses_absolute() {
 struct Listing {
     files: Vec<(String, u64, i64, bool)>,
     subdirs: Vec<PathBuf>,
+    complete: bool,
 }
 
 fn list_dir(dir: &Path, ex: &Excluder) -> Listing {
     let mut out = Listing {
         files: Vec::new(),
         subdirs: Vec::new(),
+        complete: true,
     };
     let Ok(read) = std::fs::read_dir(dir) else {
+        out.complete = false;
         return out;
     };
-    for entry in read.flatten() {
+    for entry in read {
+        let Ok(entry) = entry else {
+            out.complete = false;
+            continue;
+        };
         let name = entry.file_name().to_string_lossy().into_owned();
         let path = entry.path();
-        let Ok(meta) = entry.metadata() else { continue };
+        let Ok(meta) = std::fs::symlink_metadata(&path) else {
+            out.complete = false;
+            continue;
+        };
+        if is_link(&meta) {
+            continue;
+        }
         if ex.skips(&name, &path) || ex.skips_attributes(&name, &meta) {
             continue;
         }
@@ -131,7 +146,7 @@ pub fn publish_dir(
     dir: &Path,
     ex: &Excluder,
     scan: u32,
-) -> (Vec<PathBuf>, usize) {
+) -> (Vec<PathBuf>, usize, bool) {
     let l = list_dir(dir, ex);
     let count = l.files.len();
     if let Ok(mut ix) = index.lock() {
@@ -142,7 +157,7 @@ pub fn publish_dir(
             }
         }
     }
-    (l.subdirs, count)
+    (l.subdirs, count, l.complete)
 }
 
 /// Scan `root` completely: everything below it is read, updated, and what vanished is removed. Returns the number of
@@ -160,13 +175,18 @@ pub fn scan_root(
         return 0;
     }
     let mut total = 0usize;
+    let mut complete = true;
     let mut stack = vec![root.to_path_buf()];
     progress.dirs_queued.store(1, Ordering::Relaxed);
     while let Some(dir) = stack.pop() {
         if cancel.load(Ordering::Relaxed) {
             return total;
         }
-        let (subs, n) = publish_dir(index, &dir, ex, scan);
+        let (subs, n, read_complete) = publish_dir(index, &dir, ex, scan);
+        complete &= read_complete;
+        if !read_complete {
+            progress.unreadable.fetch_add(1, Ordering::Relaxed);
+        }
         total += n;
         progress.entries.fetch_add(n as u64, Ordering::Relaxed);
         progress.dirs_done.fetch_add(1, Ordering::Relaxed);
@@ -176,7 +196,7 @@ pub fn scan_root(
             .fetch_add(subs.len() as u64, Ordering::Relaxed);
         stack.extend(subs);
     }
-    if let Ok(mut ix) = index.lock() {
+    if complete && let Ok(mut ix) = index.lock() {
         let g = ix.begin();
         ix.prune_unseen(g, &display(root), scan);
     }
@@ -205,8 +225,10 @@ pub fn refresh_dir(index: &Mutex<Index>, dir: &Path, ex: &Excluder, scan: u32) {
     let present: std::collections::HashSet<&str> = l.files.iter().map(|f| f.0.as_str()).collect();
     if let Ok(mut ix) = index.lock() {
         let g = ix.begin();
-        for gone in known.iter().filter(|k| !present.contains(k.as_str())) {
-            ix.remove_tree(g, gone);
+        if l.complete {
+            for gone in known.iter().filter(|k| !present.contains(k.as_str())) {
+                ix.remove_tree(g, gone);
+            }
         }
         for (path, size, mtime, is_dir) in &l.files {
             if !ix.upsert(g, path, *size, *mtime, *is_dir, scan) {
@@ -237,7 +259,7 @@ fn scan_subtree(
         if cancel.load(Ordering::Relaxed) {
             return;
         }
-        let (subs, _) = publish_dir(index, &d, ex, scan);
+        let (subs, _, _) = publish_dir(index, &d, ex, scan);
         progress.dirs_done.fetch_add(1, Ordering::Relaxed);
         stack.extend(subs);
     }
@@ -259,10 +281,7 @@ pub fn refresh_path(index: &Mutex<Index>, path: &Path, ex: &Excluder, scan: u32)
             }
         }
         Ok(meta) => {
-            if ex.skips(&name, path)
-                || ex.skips_attributes(&name, &meta)
-                || is_link(&meta) && meta.is_dir()
-            {
+            if ex.skips(&name, path) || ex.skips_attributes(&name, &meta) || is_link(&meta) {
                 if let Ok(mut ix) = index.lock() {
                     let g = ix.begin();
                     ix.remove_tree(g, &key);
@@ -406,5 +425,30 @@ mod tests {
         let stop = AtomicBool::new(true);
         scan_root(&index, dir.path(), &ex(), 2, &Progress::default(), &stop);
         assert_eq!(index.lock().unwrap().entries.len(), 1);
+    }
+    #[cfg(unix)]
+    #[test]
+    fn scans_never_index_link_targets_or_descend_into_replaced_directories() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        put(&outside.path().join("private.txt"), "private");
+        std::os::unix::fs::symlink(
+            outside.path().join("private.txt"),
+            dir.path().join("alias.txt"),
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(outside.path(), dir.path().join("alias-dir")).unwrap();
+        let ix = Mutex::new(Index::default());
+        scan_root(
+            &ix,
+            dir.path(),
+            &ex(),
+            1,
+            &Progress::default(),
+            &AtomicBool::new(false),
+        );
+        assert!(ix.lock().unwrap().entries.is_empty());
+        refresh_path(&ix, &dir.path().join("alias.txt"), &ex(), 2);
+        assert!(ix.lock().unwrap().entries.is_empty());
     }
 }

@@ -12,6 +12,7 @@ export interface NavItem {
 export const NAV: NavItem[] = [
   { id: 'downloads', label: 'Downloads', icon: 'download', group: 'Transfers' },
   { id: 'uploads', label: 'Uploads', icon: 'upload', group: 'Transfers' },
+  { id: 'inbox', label: 'Inbox', icon: 'inbox', group: 'Transfers' },
   { id: 'grabber', label: 'Link grabber', icon: 'grab', group: 'Transfers' },
   { id: 'queues', label: 'Queues and scheduler', icon: 'clock', group: 'Transfers' },
   { id: 'files', label: 'Files', icon: 'search', group: 'Transfers' },

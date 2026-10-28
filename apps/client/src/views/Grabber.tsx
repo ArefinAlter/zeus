@@ -22,6 +22,7 @@ import { SEP, baseOf, parentOf } from '../lib/paths.ts'
 import { href } from '../lib/router'
 import { Chip, Empty, Notice, PageHead, Provenance } from '../ui/components'
 import { Icon } from '../ui/icons'
+import { MediaGrabber } from './MediaGrabber'
 import '../styles/grabber.css'
 
 const SAMPLE = [
@@ -156,6 +157,7 @@ export function Grabber() {
   return (
     <div class="page">
       <PageHead title="Link grabber" sub="Paste links or a whole page. Nothing downloads until you review the batch and start it." />
+      {NATIVE ? <MediaGrabber /> : null}
       <div class="pastebox">
         <textarea
           aria-label="Links or a page to grab from"

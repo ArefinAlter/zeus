@@ -13,6 +13,9 @@ publish = false
 zeus-app = { path = "../zeus-app" }
 zeus-api.workspace = true
 zeus-types.workspace = true
+zeus-fs.workspace = true
+regex.workspace = true
+zip.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true

@@ -1,0 +1,48 @@
+[package]
+name = "zeus-sources"
+description = "Explicit immutable S3, Hugging Face and bounded torrent acquisition adapters"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[features]
+default = ["s3", "hugging-face"]
+s3 = ["dep:hmac"]
+hugging-face = []
+torrent = ["dep:librqbit", "dep:anyhow", "dep:sha1"]
+
+[dependencies]
+zeus-http.workspace = true
+zeus-types.workspace = true
+zeus-fs.workspace = true
+async-trait.workspace = true
+bytes.workspace = true
+futures.workspace = true
+http.workspace = true
+url.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+schemars.workspace = true
+sha2.workspace = true
+hmac = { workspace = true, optional = true }
+sha1 = { workspace = true, optional = true }
+hex.workspace = true
+thiserror.workspace = true
+zeroize.workspace = true
+time.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+librqbit = { workspace = true, optional = true }
+# rqbit's custom-storage trait returns anyhow; no application errors use it.
+anyhow = { workspace = true, optional = true }
+
+[dev-dependencies]
+tempfile.workspace = true
+axum.workspace = true
+
+[lints]
+workspace = true

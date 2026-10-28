@@ -36,6 +36,10 @@ pub use validate::{has_errors, validate_plan, validate_samples};
 
 #[cfg(feature = "runtime")]
 mod extract;
+#[cfg(feature = "runtime")]
+mod sitemap;
+#[cfg(feature = "runtime")]
+pub use sitemap::decode as decode_sitemap_document;
 
 #[cfg(feature = "runtime")]
 pub mod pagination;

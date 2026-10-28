@@ -89,6 +89,37 @@ pub fn resolve_new_inside(path: &str, roots: &[String]) -> Result<PathBuf> {
     Ok(out)
 }
 
+/// A root directory's identity captured when a person enables it, rather than on each file action.
+#[derive(Debug, Clone)]
+pub struct RootIdentity {
+    path: PathBuf,
+    canonical: PathBuf,
+    identity: zeus_types::FileId,
+}
+impl RootIdentity {
+    /// Pin an existing directory without accepting a final link or junction.
+    pub fn capture(path: &Path) -> Option<Self> {
+        use zeus_fs::{Filesystem, RealFs};
+        let meta = RealFs.metadata(path).ok()??;
+        if !meta.is_dir || meta.is_symlink {
+            return None;
+        }
+        Some(Self {
+            path: path.to_path_buf(),
+            canonical: canon(path)?,
+            identity: meta.file_id?,
+        })
+    }
+    /// Refuse a removed, replaced or redirected root.
+    pub fn current(&self) -> bool {
+        use zeus_fs::{Filesystem, RealFs};
+        canon(&self.path).as_ref() == Some(&self.canonical)
+            && RealFs.metadata(&self.path).ok().flatten().is_some_and(|m| {
+                m.is_dir && !m.is_symlink && m.file_id.as_ref() == Some(&self.identity)
+            })
+    }
+}
+
 const RESERVED: &[&str] = &[
     "con", "prn", "aux", "nul", "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8",
     "com9", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
@@ -176,5 +207,17 @@ mod tests {
         std::os::unix::fs::symlink(&outside, root.join("link")).unwrap();
         let roots = vec![root.display().to_string()];
         assert!(resolve_inside(&root.join("link/b.txt").display().to_string(), &roots).is_err());
+    }
+    #[test]
+    fn enabled_root_identity_does_not_follow_a_replacement() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("root");
+        std::fs::create_dir(&root).unwrap();
+        let pin = RootIdentity::capture(&root).unwrap();
+        assert!(pin.current());
+        std::fs::rename(&root, dir.path().join("old-root")).unwrap();
+        std::fs::create_dir(&root).unwrap();
+        assert!(!pin.current());
+        assert!(RootIdentity::capture(&root).unwrap().current());
     }
 }

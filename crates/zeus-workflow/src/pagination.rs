@@ -19,6 +19,9 @@ pub struct Chain {
     pub next_url: Option<String>,
     /// Resource depth; pagination preserves it.
     pub depth: u8,
+    /// Nested XML bootstrap depth; absent on ordinary listing chains and legacy checkpoints.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sitemap_depth: Option<u8>,
     /// Documents durably processed in this chain.
     pub pages: u32,
     /// Pagination local to this chain.
@@ -122,6 +125,7 @@ fn chain(source_index: usize, url: String, pagination: Option<Pagination>) -> Ch
         first_url: url,
         next_url,
         depth: 0,
+        sitemap_depth: None,
         pages: 0,
         pagination,
         visited: Default::default(),
@@ -138,12 +142,12 @@ pub fn frontier(plan: &Plan) -> Result<Vec<Chain>, Diagnostic> {
         let urls = match source {
             Source::StartUrls { urls } => urls.clone(),
             Source::ApiEndpoint { url, .. } => vec![url.clone()],
-            Source::Sitemap { .. } => {
-                return Err(Diagnostic::error(
-                    "workflow.capability_missing",
-                    "/sources",
-                    "sitemap execution requires an XML document provider",
-                ));
+            Source::Sitemap { url, .. } => {
+                if chains.len() >= 100_000 {
+                    return Err(invalid("frontier exceeds bounded capacity"));
+                }
+                chains.push(sitemap_chain(index, url.clone(), 0));
+                continue;
             }
         };
         for url in urls {
@@ -226,6 +230,26 @@ pub fn frontier(plan: &Plan) -> Result<Vec<Chain>, Diagnostic> {
                 return Err(invalid("frontier exceeds bounded capacity"));
             }
         }
+    }
+    Ok(chains)
+}
+/// XML bootstrap requests do not apply listing pagination or date substitutions.
+pub(crate) fn sitemap_chain(source_index: usize, url: String, depth: u8) -> Chain {
+    let mut result = chain(source_index, url, None);
+    result.sitemap_depth = Some(depth);
+    result
+}
+/// Apply the existing listing pagination to discovered pages, preserving the original source owner.
+pub(crate) fn sitemap_pages(
+    plan: &Plan,
+    source_index: usize,
+    urls: Vec<String>,
+) -> Result<Vec<Chain>, Diagnostic> {
+    let mut listing = plan.clone();
+    listing.sources = vec![Source::StartUrls { urls }];
+    let mut chains = frontier(&listing)?;
+    for chain in &mut chains {
+        chain.source_index = source_index;
     }
     Ok(chains)
 }

@@ -1,5 +1,5 @@
 // The desktop app's agent: a real model called by the engine's Rust process with the person's own key, using the same
-// thirteen tools any MCP client of Zeus gets. This module is the page's side of it: configuration of the provider
+// fourteen tools any MCP client of Zeus gets. This module is the page's side of it: configuration of the provider
 // ladder, consent, and a run, which is a request that returns an id and an event log the page reads by polling.
 //
 // Nothing here sees a key after the person typed it: it goes to the engine in one request and comes back only as

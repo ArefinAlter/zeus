@@ -83,6 +83,23 @@ pub async fn dispatch(app: &Arc<App>, route: &str, body: Value) -> Result<Value>
             ensure_ready(app)?;
             app.reviews.enqueue(&app.daemon, &body).await
         }
+        ("POST", ["native", "v1", "inbox", operation]) => {
+            ensure_ready(app)?;
+            let method = match *operation {
+                "package-put" => "inbox.packages.put",
+                "packages-list" => "inbox.packages.list",
+                "package-get" => "inbox.packages.get",
+                "package-archive" => "inbox.packages.archive",
+                "entries-add" => "inbox.entries.add",
+                "entries-remove" => "inbox.entries.remove",
+                "preview" => "inbox.preview",
+                "submit" => "inbox.submit",
+                "submission-get" => "inbox.submissions.get",
+                "submission-retry" => "inbox.submissions.retry",
+                _ => return Err(Failure::invalid("Unknown inbox operation.")),
+            };
+            app.daemon.raw(method, body).await
+        }
         ("POST", ["native", "v1", "cloud", "review-terminal"]) => {
             ensure_ready(app)?;
             let action = body

@@ -2,15 +2,15 @@
 // a preview pane, bookmarks and the search history of a desktop file search tool.
 //
 // In the desktop app the index is real: the engine scans the download folders (and folders you add), follows changes
-// with the file system watcher, and sends this page only what changed. The page searches its copy with the syntax in
-// model/search.ts, previews the selected file through the engine (text, pictures, or a card of facts) and offers rename,
-// move and delete inside the download folders. In the hosted pre-alpha and the offline sample the index is a sandbox
+// with the file system watcher, and executes parsed queries in Rust with bounded, generation-aware pages.
+// This view virtualizes those rows, preserves their identities across refresh, previews selected files and offers
+// scoped file, archive and upload actions. Live folder browsing also includes entries excluded from the index. In the hosted pre-alpha and the offline sample the index is a sandbox
 // scan or sample metadata, as before.
 
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks'
 
 import { filesApi } from '../backend/files'
-import type { Preview } from '../backend/files'
+import type { Preview, SearchPage } from '../backend/files'
 import { HOSTED, LIVE, NATIVE } from '../backend/live'
 import { addBookmark, clearHistory, pushHistory, removeBookmark, rescan, toast, useStore } from '../backend/store'
 import { extOf } from '../model/categories.ts'
@@ -26,6 +26,9 @@ import type { MenuItem } from '../ui/components'
 import { Chip, ContextMenu, CopyButton, Dialog, Provenance } from '../ui/components'
 import { Icon, categoryIcon } from '../ui/icons'
 import { DeleteDialog, MoveDialog, RenameDialog, NewFolderDialog, CopyJobs } from './files/FileOps'
+import { FileInsights } from './files/FileInsights'
+import { FileManager } from './files/FileManager'
+import { ArchiveDialog, ArchiveJobs } from './files/Archives'
 import '../styles/files.css'
 
 type SortKey = 'name' | 'path' | 'size' | 'modified'
@@ -179,6 +182,29 @@ export function Files({ initialPath }: { initialPath?: string }) {
   const downloadRoots = useStore((s) => s.settings.saveTo.writeRoots)
   const writeRoots = [...downloadRoots, ...indexRoots.filter(r => r.include && r.manageFiles).map(r=>r.path)]
   const prefs = usePrefs()
+  const [archive, setArchive] = useState<{kind:'create'|'extract';path:string;name:string}|null>(null)
+  const [insights, setInsights] = useState(false)
+  const [manager, setManager] = useState(false)
+  const [searchFiles, setSearchFiles] = useState<FileEntry[]>([])
+  const [searchPage, setSearchPage] = useState<SearchPage | null>(null)
+  const [searchBusy, setSearchBusy] = useState(false)
+  const [searchError, setSearchError] = useState('')
+  const searchEpoch = useRef(0)
+  const nativeIds = useRef(new Map<string, number>())
+  const nextNativeId = useRef(-1)
+  const searchSignature = useRef('')
+  const listedFolder = useRef<string | null>(null)
+  const nativeId = (path: string): number => {
+    const known = nativeIds.current.get(path)
+    if (known !== undefined) return known
+    const id = nextNativeId.current--
+    if (nativeIds.current.size >= 20_000) {
+      const oldest = nativeIds.current.keys().next().value
+      if (oldest !== undefined) nativeIds.current.delete(oldest)
+    }
+    nativeIds.current.set(path, id)
+    return id
+  }
   const [folderFiles, setFolderFiles] = useState<FileEntry[]>([])
   const [nextPage, setNextPage] = useState<string | null>(null)
   const [folderError, setFolderError] = useState('')
@@ -229,7 +255,7 @@ export function Files({ initialPath }: { initialPath?: string }) {
       if (listingEpoch.current !== epoch) return
       setFolderFiles(previous => {
         const kept = after ? previous : []
-        const rows = page.files.map((row, i) => ({ id: -(kept.length + i + 1), name: baseOf(row.path), dir: parentOf(row.path), isFolder: row.is_dir, size: row.size, modified: row.mtime, quarantined: row.quarantined }))
+        const rows = page.files.map((row) => ({ id: nativeId(row.path), name: baseOf(row.path), dir: parentOf(row.path), isFolder: row.is_dir, size: row.size, modified: row.mtime, quarantined: row.quarantined }))
         return [...kept, ...rows]
       })
       setNextPage(page.next)
@@ -241,17 +267,54 @@ export function Files({ initialPath }: { initialPath?: string }) {
   }
   useEffect(() => {
     const epoch = ++listingEpoch.current
-    setFolderFiles([])
+    if (listedFolder.current !== folder) {
+      setFolderFiles([])
+      setSel(null)
+      listedFolder.current = folder
+    }
     setNextPage(null)
-    setSel(null)
     if (NATIVE && folder) void loadFolder(folder, '', epoch)
     return () => { listingEpoch.current++ }
   }, [folder, revision])
-  const visibleFiles = NATIVE && folder ? folderFiles : files
+  const nativeSearch = NATIVE && !folder
+  const visibleFiles = NATIVE ? (folder ? folderFiles : searchFiles) : files
   const parsed = useMemo(() => parseQuery(query, opts, Date.now()), [query, opts])
+  const loadSearch = async (offset: number, epoch: number, generation?: number) => {
+    if (!parsed.ok) return
+    setSearchBusy(true)
+    setSearchError('')
+    try {
+      const page = await filesApi.search(parsed.query, filter, sort.key, sort.dir === -1, offset, generation)
+      if (searchEpoch.current !== epoch) return
+      setSearchFiles(previous => {
+        const kept = offset ? previous : []
+        return [...kept, ...page.files.map((row) => ({ id: nativeId(row.path), name: baseOf(row.path), dir: parentOf(row.path), isFolder: row.is_dir, size: row.size, modified: row.mtime, quarantined: row.quarantined }))]
+      })
+      setSearchPage(page)
+    } catch (e) {
+      if (searchEpoch.current === epoch) setSearchError(e instanceof Error ? e.message : 'The search could not be completed.')
+    } finally {
+      if (searchEpoch.current === epoch) setSearchBusy(false)
+    }
+  }
+  useEffect(() => {
+    const epoch = ++searchEpoch.current
+    if (!nativeSearch || !parsed.ok) return
+    const signature = JSON.stringify([query, opts, filter, sort])
+    if (searchSignature.current !== signature) {
+      setSearchFiles([])
+      searchSignature.current = signature
+      setScroll(0)
+      if (list.current) list.current.scrollTop = 0
+    }
+    setSearchPage(null)
+    const timer = setTimeout(() => void loadSearch(0, epoch), 180)
+    return () => { clearTimeout(timer); searchEpoch.current++ }
+  }, [nativeSearch, parsed, filter, sort, index.generation, revision])
   const t0 = performance.now()
   const results = useMemo(() => {
     if (!parsed.ok) return []
+    if (nativeSearch) return searchFiles
     const q = parsed.query
     const inside = folder && !NATIVE ? (f: FileEntry) => isInside(folder, f.dir) || (f.isFolder && isInside(folder, fullPath(f))) : () => true
     const out = visibleFiles.filter((f) => inside(f) && filterMatch(filter, f) && matches(q, f))
@@ -262,8 +325,8 @@ export function Files({ initialPath }: { initialPath?: string }) {
       return (x < y ? -1 : x > y ? 1 : 0) * sort.dir || (a.isFolder === b.isFolder ? 0 : a.isFolder ? -1 : 1)
     })
     return out
-  }, [visibleFiles, parsed, filter, folder, sort])
-  const took = performance.now() - t0
+  }, [visibleFiles, parsed, filter, folder, sort, nativeSearch, searchFiles])
+  const took = nativeSearch ? searchPage?.elapsed_ms ?? 0 : performance.now() - t0
   const includedRoots = useMemo(() => [...new Set([...downloadRoots, ...indexRoots.filter((r) => r.include).map((r) => r.path)])], [indexRoots, downloadRoots])
   const tree = useMemo(() => {
     const open = new Set(openDirs)
@@ -271,7 +334,8 @@ export function Files({ initialPath }: { initialPath?: string }) {
     return folderTree([...files, ...folderFiles], includedRoots, open)
   }, [files, folderFiles, includedRoots, openDirs])
   const current = results.find((f) => f.id === sel) ?? null
-  const totalSize = results.reduce((n, f) => n + f.size, 0)
+  const totalSize = nativeSearch ? searchPage?.total_bytes ?? 0 : results.reduce((n, f) => n + f.size, 0)
+  const matchCount = nativeSearch ? searchPage?.total ?? 0 : results.length
   const hiliteQuery: Query = parsed.ok ? parsed.query : []
 
   // Only the rows in view are drawn.
@@ -357,6 +421,8 @@ export function Files({ initialPath }: { initialPath?: string }) {
       { label: 'Rename…', icon: 'rename', hint: 'F2', disabled: why, run: () => act('rename', f) },
       { label: 'Copy to folder…', icon: 'copy', disabled: !NATIVE || f.quarantined, run: () => act('copy', f) },
       { label: 'Upload…', icon: 'upload', disabled: !NATIVE || f.quarantined || f.isFolder, run: () => navigate(href('uploads', {path:fullPath(f), name:f.name})) },
+      { label: 'Create ZIP…', icon: 'folder', disabled: !NATIVE || f.quarantined, run: () => setArchive({kind:'create',path:fullPath(f),name:`${f.name}.zip`}) },
+      { label: 'Extract ZIP…', icon: 'folderopen', disabled: !NATIVE || f.quarantined || f.isFolder || !f.name.toLowerCase().endsWith('.zip'), run: () => setArchive({kind:'extract',path:fullPath(f),name:f.name.replace(/\.zip$/i,'') || 'extracted'}) },
       { label: 'Move…', icon: 'folder', disabled: why, run: () => act('move', f) },
       { label: 'Delete…', icon: 'trash', hint: 'Del', danger: true, disabled: why, run: () => act('delete', f) },
       { sep: true, label: '' },
@@ -381,6 +447,8 @@ export function Files({ initialPath }: { initialPath?: string }) {
 
   const opFile = op ? visibleFiles.find((x) => x.id === op.id) : undefined
   const moveFolders = useMemo(() => ((op?.kind === 'move' || op?.kind === 'copy') ? files.filter((f) => f.isFolder && writeRoots.some((r) => isInside(r, fullPath(f)))).map(fullPath) : []), [op?.kind, files, writeRoots])
+
+  if (NATIVE && manager) return <FileManager roots={includedRoots} writeRoots={writeRoots} initialPath={folder} onClose={() => { setManager(false); setRevision(n => n + 1) }} />
 
   return (
     <div class={`files-page ${prefs.filesFolders ? 'with-folders' : ''} ${prefs.filesPreview ? 'with-preview' : ''}`}>
@@ -428,8 +496,9 @@ export function Files({ initialPath }: { initialPath?: string }) {
           <Icon name="panelright" />
         </button>
       </div>
-      {NATIVE ? <div class="fscope"><span>Manage files in folders you choose.</span><button class="btn small" onClick={()=>navigate(href('settings','index'))}>Choose folders</button><button class="btn small" disabled={!folder || !writeRoots.some(r=>isInside(r,folder))} onClick={()=>folder && setMkdir(folder)}>New folder</button>{folder ? <><button class="btn small" disabled={!indexRoots.some(r=>r.include && isInside(r.path,parentOf(folder))) && !downloadRoots.some(r=>isInside(r,parentOf(folder)))} onClick={()=>setFolder(parentOf(folder))}>Up</button><button class="btn small" disabled={listing} onClick={()=>setRevision(n=>n+1)}>Refresh folder</button></> : null}</div> : null}
+      {NATIVE ? <div class="fscope"><span>Manage files in folders you choose.</span><button class="btn small" onClick={()=>setManager(true)}>Two-pane manager</button><button class="btn small" onClick={()=>setInsights(true)}>Storage and history</button><button class="btn small" onClick={()=>navigate(href('settings','index'))}>Choose folders</button><button class="btn small" disabled={!folder || !writeRoots.some(r=>isInside(r,folder))} onClick={()=>folder && setMkdir(folder)}>New folder</button>{folder ? <><button class="btn small" disabled={!indexRoots.some(r=>r.include && isInside(r.path,parentOf(folder))) && !downloadRoots.some(r=>isInside(r,parentOf(folder)))} onClick={()=>setFolder(parentOf(folder))}>Up</button><button class="btn small" disabled={listing} onClick={()=>setRevision(n=>n+1)}>Refresh folder</button></> : null}</div> : null}
       {NATIVE && folder ? <div class="fscope" role="status">{listing ? 'Reading folder…' : `${folderFiles.length.toLocaleString()} items loaded`}{nextPage ? <button class="btn small" disabled={listing} onClick={()=>void loadFolder(folder,nextPage,listingEpoch.current)}>Load more</button> : null}{folderError ? <span class="field-err">{folderError}</span> : null}</div> : null}
+      {nativeSearch ? <div class="fscope" role="status">{searchBusy ? 'Searching the scoped index…' : `${results.length.toLocaleString()} of ${matchCount.toLocaleString()} matches loaded`}{searchPage?.next != null ? <button class="btn small" disabled={searchBusy} onClick={()=>void loadSearch(searchPage.next!,searchEpoch.current,searchPage.generation)}>Load more matches</button> : null}{searchError ? <span class="field-err">{searchError} <button class="btn small" onClick={()=>setRevision(n=>n+1)}>Refresh search</button></span> : null}</div> : null}
       {!parsed.ok ? <div class="fsyntaxerr">{parsed.error}</div> : null}
       {folder ? (
         <div class="fscope">
@@ -439,6 +508,7 @@ export function Files({ initialPath }: { initialPath?: string }) {
           </button>
         </div>
       ) : null}
+      {NATIVE && (index.freshness === 'scan_incomplete' || index.snapshotError) ? <div class="fscope" role="status"><span class="field-err">{index.snapshotError ? 'The index snapshot could not be saved; Zeus will retry. ' : ''}{index.freshness === 'scan_incomplete' ? `${index.unavailableRoots ?? 0} unavailable or changed folders; ${index.unreadableDirectories ?? 0} directories could not be fully read. Search may be incomplete.` : ''}</span><button class="btn small" onClick={()=>rescan()}>Reconcile index</button></div> : null}
       {NATIVE && index.state === 'scanning' ? (
         <div class="fprogress" role="status">
           <span class="bar" style={{ width: `${Math.round(index.progress * 100)}%` }} />
@@ -562,7 +632,7 @@ export function Files({ initialPath }: { initialPath?: string }) {
               <div class="empty">
                 {!parsed.ok
                   ? 'Fix the search to see results.'
-                  : files.length === 0 && NATIVE
+                  : (index.entries ?? files.length) === 0 && NATIVE
                     ? index.state === 'scanning'
                       ? 'Indexing your folders…'
                       : 'Nothing is indexed yet. Downloads appear here as they finish. Add other folders in Search and index settings.'
@@ -572,12 +642,12 @@ export function Files({ initialPath }: { initialPath?: string }) {
           </div>
           <div class="fstatus">
             <span>
-              {results.length.toLocaleString('en-US')} object{results.length === 1 ? '' : 's'} · {fmtBytes(totalSize)}
+              {matchCount.toLocaleString('en-US')} object{matchCount === 1 ? '' : 's'} · {fmtBytes(totalSize)}
             </span>
             <span class="muted">
               {index.state === 'scanning'
                 ? `${index.verifying ? 'Checking' : 'Scanning'} ${index.scanning ?? ''}: ${Math.round(index.progress * 100)} %`
-                : `Index current · generation ${index.generation} · ${files.length.toLocaleString('en-US')} entries${NATIVE ? (index.watcher ? ' · following changes' : ' · not following changes') : ''}${index.capped ? ' · capped' : ''}`}
+                : `${index.freshness === 'scan_incomplete' ? 'Index incomplete' : 'Index current'} · generation ${index.generation} · ${(NATIVE ? index.entries ?? 0 : files.length).toLocaleString('en-US')} entries${NATIVE ? (index.watcher ? ' · following changes' : ' · not following changes') : ''}${index.capped ? ' · capped' : ''}`}
             </span>
             <span class="spacer" />
             <span class="muted">searched in {took < 1 ? '<1' : took.toFixed(0)} ms</span>
@@ -663,7 +733,9 @@ export function Files({ initialPath }: { initialPath?: string }) {
           </aside>
         ) : null}
       </div>
-      {NATIVE ? <CopyJobs /> : null}
+      {NATIVE ? <><CopyJobs /><ArchiveJobs onChanged={()=>setRevision(n=>n+1)} /></> : null}
+      {archive ? <ArchiveDialog kind={archive.kind} source={archive.path} name={archive.name} directory={writeRoots[0] ?? parentOf(archive.path)} onClose={()=>setArchive(null)} /> : null}
+      {insights ? <FileInsights roots={includedRoots} onBrowse={path=>{setFolder(path);setInsights(false)}} onClose={()=>setInsights(false)} onChanged={()=>setRevision(n=>n+1)} /> : null}
       <Provenance>
         {NATIVE
           ? 'The engine keeps this index of your download folders (and folders you add) and follows changes with the file system watcher. Folders are read directly from disk, including items excluded from search. Search everywhere runs over the index; it matches names, sizes and dates, not file contents. SHA-256, quarantine and the job behind each file come from zeusd. Zeus reads at most the start of a text file or a small picture for the preview, never a quarantined file.'

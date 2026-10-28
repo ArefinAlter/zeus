@@ -347,7 +347,7 @@ export function applyIndexDelta(d: IndexDelta): void {
   if (d.state === 'current') indexReady = true
   const s = S.get()
   const prev = s.index
-  const next = { state: d.state, progress: d.progress, generation: d.generation, lastScan: d.last_scan ?? prev.lastScan, scanning: d.scanning, entries: d.entries, watcher: d.watcher, capped: d.capped, verifying: d.verifying }
+  const next = { state: d.state, progress: d.progress, generation: d.generation, lastScan: d.last_scan ?? prev.lastScan, scanning: d.scanning, entries: d.entries, watcher: d.watcher, capped: d.capped, verifying: d.verifying, freshness: d.freshness, watcherGaps: d.watcher_gaps, unreadableDirectories: d.unreadable_directories, unavailableRoots: d.unavailable_roots, snapshotError: d.snapshot_error }
   if (JSON.stringify(prev) !== JSON.stringify(next)) S.set({ index: next })
   if (changed || (firstTime && s.files.length === 0)) rebuildNativeFiles()
   if (changed || firstTime) rebuildJobs()

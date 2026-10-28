@@ -12,6 +12,7 @@
 
 pub mod crawl;
 pub mod html;
+pub mod media;
 pub mod robots;
 
 use std::collections::HashMap;
@@ -28,13 +29,15 @@ use zeus_app::failure::{Failure, Result};
 /// The module registered by `zeus-app-ext`.
 pub struct Module {
     walks: Mutex<HashMap<String, Arc<AtomicBool>>>,
+    media: Arc<media::service::Service>,
 }
 
 impl Module {
     /// Build the module (inside a Tokio runtime) for `app`.
-    pub fn new(_app: &Arc<App>) -> Arc<Self> {
+    pub fn new(app: &Arc<App>) -> Arc<Self> {
         Arc::new(Self {
             walks: Mutex::new(HashMap::new()),
+            media: media::service::Service::new(app.home.clone()),
         })
     }
 
@@ -133,6 +136,24 @@ impl Extension for Module {
             let (method, path) = route.split_once(' ')?;
             let parts: Vec<&str> = path.trim_matches('/').split('/').collect();
             match (method, parts.as_slice()) {
+                ("POST", ["native", "v1", "media", "inspect"]) => {
+                    Some(self.media.inspect(body).await)
+                }
+                ("POST", ["native", "v1", "media", "select"]) => {
+                    Some(self.media.select(body).await)
+                }
+                ("POST", ["native", "v1", "media", "start"]) => Some(self.media.start(body).await),
+                ("GET", ["native", "v1", "media", "tasks"]) => Some(self.media.list()),
+                ("POST", ["native", "v1", "media", "cancel"]) => Some(self.media.cancel(body)),
+                ("POST", ["native", "v1", "media", "recover"]) => Some(self.media.recover(body)),
+                ("GET", ["native", "v1", "media", "helper"]) => Some(Ok(self.media.helper())),
+                ("POST", ["native", "v1", "media", "mux-preview"]) => {
+                    Some(self.media.mux_preview(body))
+                }
+                ("POST", ["native", "v1", "media", "mux-start"]) => {
+                    Some(self.media.mux_start(body))
+                }
+                ("POST", ["native", "v1", "media", "archive"]) => Some(self.media.archive(body)),
                 ("POST", ["svc", "v1", "sitegrab", "preview"]) => Some(self.preview(body).await),
                 ("POST", ["native", "v1", "sitegrab", "cancel"]) => Some(self.cancel(body)),
                 ("POST", ["native", "v1", "jobs", id, "verify"]) => {
@@ -141,5 +162,9 @@ impl Extension for Module {
                 _ => None,
             }
         })
+    }
+
+    fn shutdown<'a>(&'a self) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+        Box::pin(async move { self.media.shutdown().await })
     }
 }

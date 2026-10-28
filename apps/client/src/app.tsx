@@ -29,6 +29,7 @@ import { Connectors } from './views/Connectors'
 import { AddUrl } from './views/dialogs/AddUrl'
 import { SiteGrabber } from './views/dialogs/SiteGrabber'
 import { Downloads, VIEWS, inView } from './views/downloads/Downloads'
+import { Inbox } from './views/Inbox'
 import { Files } from './views/Files'
 import { Uploads } from './views/Uploads'
 import { Grabber } from './views/Grabber'
@@ -40,6 +41,7 @@ const TITLES: Record<string, string> = {
   downloads: 'Downloads',
   grabber: 'Link grabber',
   queues: 'Queues and scheduler',
+  inbox: 'Inbox',
   files: 'Files',
   uploads: 'Uploads',
   agent: 'Agent',
@@ -63,6 +65,8 @@ function Page({ path, query }: { path: string[]; query: URLSearchParams }) {
       return <Queues {...(query.get('q') ? { queueId: query.get('q') as string } : {})} {...(query.get('tab') ? { tab: query.get('tab') as string } : {})} />
     case 'uploads':
       return <Uploads initialPath={query.get('path') ?? ''} initialName={query.get('name') ?? ''} />
+    case 'inbox':
+      return <Inbox />
     case 'files':
       return <Files {...(query.get('path') ? { initialPath: query.get('path') as string } : {})} />
     case 'agent':

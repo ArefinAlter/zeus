@@ -349,7 +349,7 @@ export function NativeProviders() {
           </div>
         </div>
       </section>
-      <Provenance>The ladder, your keys and the caps belong to this app's engine. The same thirteen tools any MCP client of Zeus gets are all the agent can use, and none of them decides an approval.</Provenance>
+      <Provenance>The ladder, your keys and the caps belong to this app's engine. The same fourteen tools any MCP client of Zeus gets are all the agent can use, and none of them decides an approval.</Provenance>
     </>
   )
 }

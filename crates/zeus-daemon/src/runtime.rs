@@ -11,11 +11,11 @@ use std::{
 };
 use tokio::sync::Mutex;
 use zeus_api::methods::{
-    admin::*, artifacts::*, cloud::*, daemon::*, events::*, files::*, jobs::*, queues::*,
-    sessions::*, workflows::*,
+    admin::*, artifacts::*, cloud::*, cloud_oauth::*, daemon::*, events::*, files::*, inbox::*,
+    jobs::*, queues::*, sessions::*, workflows::*,
 };
 use zeus_api::{ApiError, ApiResult, CallContext, Page};
-use zeus_engine::{Engine, EngineBuilder, EngineConfig};
+use zeus_engine::{Engine, EngineBuilder, EngineConfig, TransferTuning};
 use zeus_journal::{Journal, JournalOptions};
 use zeus_types::{
     ApprovalState, EventSeq, GrantState, JobSpec, JobState, Surface, Timestamp, ToEnvelope,
@@ -65,6 +65,7 @@ pub struct RuntimeBackend {
     pub shutdown: zeus_api::server::ShutdownController,
     mutations: Mutex<()>,
     receipts: crate::mutations::MutationStore,
+    inbox: crate::inbox::InboxStore,
     models: crate::models::ModelService,
     outbox: Arc<std::sync::Mutex<crate::outbox::Outbox>>,
     pub(crate) workflows: Arc<crate::workflows::WorkflowService>,
@@ -92,13 +93,6 @@ impl RuntimeBackend {
         config
             .validate()
             .map_err(|_| ApiError::invalid_params("invalid daemon configuration"))?;
-        if config.scheduler.segment_size_mib
-            != crate::config::SchedulerConfig::default().segment_size_mib
-        {
-            tracing::warn!(
-                "scheduler.segment_size_mib is not used by the engine yet; ranged requests use the commit unit"
-            );
-        }
         let roots = config.effective_write_roots();
         let default = roots
             .first()
@@ -202,6 +196,10 @@ impl RuntimeBackend {
             limits,
         ));
         let engine = EngineBuilder::new(engine_config)
+            .transfer_tuning(TransferTuning {
+                segment_bytes: u64::from(config.scheduler.segment_size_mib) << 20,
+                ..TransferTuning::default()
+            })
             .clock(clock)
             .session_provider(browser.clone())
             .proxy_fetch(browser.clone())
@@ -219,6 +217,7 @@ impl RuntimeBackend {
         workflows.attach_engine(engine.clone())?;
         let trust = crate::trust::TrustedPrograms::load_or_initialize(&state_dir)?;
         let receipts = crate::mutations::MutationStore::open(&state_dir.join("api-receipts.redb"))?;
+        let inbox = crate::inbox::InboxStore::open(&state_dir.join("inbox.redb"))?;
         let models = crate::models::ModelService::open(
             &state_dir,
             Arc::new(zeus_llm::secrets::OsKeyringStore {
@@ -258,6 +257,7 @@ impl RuntimeBackend {
             audit,
             browser,
             receipts,
+            inbox,
             models,
             outbox,
             workflows,
@@ -404,6 +404,141 @@ impl RuntimeBackend {
 
 #[async_trait]
 impl Backend for RuntimeBackend {
+    async fn inbox_package_put(
+        &self,
+        ctx: &CallContext,
+        p: InboxPackagePutParams,
+    ) -> ApiResult<InboxMutationResult> {
+        let _gate = self.inbox.gate.lock().await;
+        self.inbox.put(ctx.identity.credential_id.as_str(), &p)
+    }
+
+    async fn inbox_packages_list(
+        &self,
+        ctx: &CallContext,
+        p: InboxPackagesListParams,
+    ) -> ApiResult<InboxPackagesListResult> {
+        let owner = self.inbox_inspect_owner(ctx, p.owner_credential_id.as_deref())?;
+        self.inbox.list(&owner, &p)
+    }
+
+    async fn inbox_package_get(
+        &self,
+        ctx: &CallContext,
+        p: InboxPackageGetParams,
+    ) -> ApiResult<InboxPackageGetResult> {
+        let owner = self.inbox_inspect_owner(ctx, p.owner_credential_id.as_deref())?;
+        self.inbox.get(&owner, &p)
+    }
+
+    async fn inbox_package_archive(
+        &self,
+        ctx: &CallContext,
+        p: InboxPackageArchiveParams,
+    ) -> ApiResult<InboxMutationResult> {
+        let _gate = self.inbox.gate.lock().await;
+        self.inbox.archive(ctx.identity.credential_id.as_str(), &p)
+    }
+
+    async fn inbox_entries_add(
+        &self,
+        ctx: &CallContext,
+        p: InboxEntriesAddParams,
+    ) -> ApiResult<InboxEntriesAddResult> {
+        let _gate = self.inbox.gate.lock().await;
+        self.inbox.add(ctx.identity.credential_id.as_str(), &p)
+    }
+
+    async fn inbox_entries_remove(
+        &self,
+        ctx: &CallContext,
+        p: InboxEntriesRemoveParams,
+    ) -> ApiResult<InboxMutationResult> {
+        let _gate = self.inbox.gate.lock().await;
+        self.inbox.remove(ctx.identity.credential_id.as_str(), &p)
+    }
+
+    async fn inbox_preview(
+        &self,
+        ctx: &CallContext,
+        p: InboxPreviewParams,
+    ) -> ApiResult<InboxPreviewResult> {
+        self.inbox_preview_impl(ctx, p).await
+    }
+
+    async fn inbox_submit(
+        &self,
+        ctx: &CallContext,
+        p: InboxSubmitParams,
+    ) -> ApiResult<InboxSubmitResult> {
+        self.inbox_submit_impl(ctx, p).await
+    }
+
+    async fn inbox_submission_get(
+        &self,
+        ctx: &CallContext,
+        p: InboxSubmissionGetParams,
+    ) -> ApiResult<InboxSubmissionView> {
+        let owner = self.inbox_inspect_owner(ctx, p.owner_credential_id.as_deref())?;
+        self.inbox.view_batch(&owner, &p)
+    }
+
+    async fn inbox_submission_retry(
+        &self,
+        ctx: &CallContext,
+        p: InboxSubmissionRetryParams,
+    ) -> ApiResult<InboxSubmitResult> {
+        self.inbox_retry_impl(ctx, p).await
+    }
+
+    async fn cloud_oauth_begin(
+        &self,
+        ctx: &CallContext,
+        p: CloudOAuthBeginParams,
+    ) -> ApiResult<CloudOAuthBeginResult> {
+        let actor = self.model_human(ctx)?;
+        self.cloud.oauth_begin(&ctx.identity, actor, p).await
+    }
+    async fn cloud_oauth_finish(
+        &self,
+        ctx: &CallContext,
+        p: CloudOAuthFinishParams,
+    ) -> ApiResult<CloudOAuthStatus> {
+        let actor = self.model_human(ctx)?;
+        self.cloud.oauth_finish(&ctx.identity, actor, p).await
+    }
+    async fn cloud_oauth_status(
+        &self,
+        ctx: &CallContext,
+        p: CloudOAuthStatusParams,
+    ) -> ApiResult<CloudOAuthStatus> {
+        let actor = self.model_human(ctx)?;
+        self.cloud.oauth_status(&ctx.identity, actor, p).await
+    }
+    async fn cloud_oauth_cancel(
+        &self,
+        ctx: &CallContext,
+        p: CloudOAuthCancelParams,
+    ) -> ApiResult<CloudOAuthStatus> {
+        let actor = self.model_human(ctx)?;
+        self.cloud.oauth_cancel(&ctx.identity, actor, p).await
+    }
+    async fn cloud_oauth_refresh(
+        &self,
+        ctx: &CallContext,
+        p: CloudOAuthRefreshParams,
+    ) -> ApiResult<CloudOAuthStatus> {
+        let actor = self.model_human(ctx)?;
+        self.cloud.oauth_refresh(&ctx.identity, actor, p).await
+    }
+    async fn cloud_oauth_disconnect(
+        &self,
+        ctx: &CallContext,
+        p: CloudOAuthDisconnectParams,
+    ) -> ApiResult<CloudOAuthDisconnectResult> {
+        let actor = self.model_human(ctx)?;
+        self.cloud.oauth_disconnect(&ctx.identity, actor, p).await
+    }
     async fn cloud_accounts_list(
         &self,
         _ctx: &CallContext,
@@ -1559,3 +1694,10 @@ mod queue_tests;
 #[cfg(test)]
 #[path = "runtime_tests.rs"]
 mod tests;
+
+#[path = "inbox_api.rs"]
+mod inbox_api;
+
+#[cfg(test)]
+#[path = "inbox_runtime_tests.rs"]
+mod inbox_runtime_tests;

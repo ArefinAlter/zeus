@@ -62,3 +62,48 @@ mark.hl {
 
 .copy-jobs { max-height: 180px; overflow: auto; flex-shrink: 0; }
 .copy-jobs .fscope { justify-content: space-between; overflow-wrap: anywhere; }
+
+.file-insight-tabs{display:flex;gap:.5rem;flex-wrap:wrap;margin-bottom:1rem}
+.file-insights{max-height:60vh;overflow:auto;min-width:min(38rem,70vw)}
+.file-insight-row{display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:.75rem;padding:.45rem 0;border-bottom:1px solid var(--line)}
+.file-insight-row>span:first-child,.file-duplicate-candidate .mono{overflow-wrap:anywhere}
+.file-duplicate-candidate{padding:.7rem 0;border-bottom:1px solid var(--line)}
+.file-duplicate-candidate ul{padding-left:1.25rem;font-size:.85rem}
+.archive-preview{max-height:30vh;overflow:auto;padding-left:1.25rem}
+.archive-jobs{max-height:25vh;overflow:auto;border-top:1px solid var(--line)}
+.archive-job{display:flex;align-items:start;justify-content:space-between;gap:1rem;padding:.65rem 1rem;border-bottom:1px solid var(--line);font-size:.85rem}
+.archive-job .mono{overflow-wrap:anywhere}
+.archive-job-actions{display:flex;gap:.4rem;flex-wrap:wrap}
+.everything-results{max-height:35vh;overflow:auto}
+
+/* Each pane owns its scrolling. Compact windows switch panes without discarding their state. */
+.file-manager { min-width: 0; gap: 8px; overflow: auto; }
+.fm-toolbar, .fm-pane-tools, .fm-transfer, .fm-pane-status { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; min-width: 0; flex-shrink: 0; }
+.fm-toolbar h2 { margin: 0 8px 0 0; font-size: 16px; }
+.fm-explanation { margin: 0; flex-shrink: 0; overflow-wrap: anywhere; }
+.fm-pane-switch { display: none; gap: 6px; flex-shrink: 0; }
+.file-manager .sr-only { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
+.fm-panes { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; flex: 1 0 300px; min-height: 0; min-width: 0; }
+.fm-pane { display: flex; flex-direction: column; gap: 8px; min-height: 0; min-width: 0; border: 1px solid var(--line); border-radius: var(--radius-lg); padding: 8px; overflow: auto; }
+.fm-pane-tools select { width: 100%; min-width: 0; max-width: 100%; }
+.fm-address { display: flex; gap: 6px; min-width: 0; flex-shrink: 0; }
+.fm-address label { flex: 1; min-width: 0; }
+.fm-address input { width: 100%; min-width: 0; }
+.fm-list { flex: 1 0 80px; min-height: 80px; min-width: 0; overflow: auto; position: relative; border: 1px solid var(--line); border-radius: 4px; }
+.fm-list:focus { outline: 2px solid var(--ring); outline-offset: 1px; }
+.fm-row { display: grid; grid-template-columns: minmax(100px, 1fr) 75px 120px; align-items: center; height: 32px; min-width: 300px; font-size: 12px; cursor: default; }
+.fm-row.comparing { grid-template-columns: minmax(100px, 1fr) 75px 120px 140px; min-width: 450px; }
+.fm-row > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 0 6px; }
+.fm-columns { position: sticky; top: 0; z-index: 1; background: var(--card); border-bottom: 1px solid var(--line); font-weight: 600; }
+.fm-rows { position: relative; }
+.fm-rows > .fm-row { position: absolute; left: 0; right: 0; }
+.fm-row.selected { background: color-mix(in srgb, var(--accent) 16%, transparent); }
+.fm-row:hover { background: color-mix(in srgb, var(--accent) 9%, transparent); }
+.fm-pane-status { font-size: 12px; overflow-wrap: anywhere; }
+.file-manager .copy-jobs { max-height: 64px; }
+@media (max-width: 800px), (max-height: 640px) {
+  .fm-pane-switch { display: flex; }
+  .fm-panes { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); }
+  .fm-pane:not(.active) { display: none; }
+  .fm-pane { gap: 5px; padding: 6px; }
+}

@@ -2263,6 +2263,18 @@
             "null"
           ]
         },
+        "source_bytes_done": {
+          "default": 0,
+          "description": "Bytes prepared locally for staged upload, separate from provider-confirmed bytes.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "source_verified": {
+          "default": false,
+          "description": "Full prepared source passed size/hash verification for the approved plan.",
+          "type": "boolean"
+        },
         "state": {
           "$ref": "#/$defs/CloudDeliveryState",
           "description": "Current state."
@@ -2343,6 +2355,378 @@
         "delivery",
         "replayed"
       ],
+      "type": "object"
+    },
+    "CloudOAuthBeginParams": {
+      "additionalProperties": false,
+      "description": "Begin sign-in for an explicitly reviewed destination and registered application.",
+      "properties": {
+        "account_id": {
+          "description": "Existing/new human-selected alias.",
+          "type": "string"
+        },
+        "client_secret": {
+          "description": "Registered app password entered only through hidden terminal input.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "x-zeus-secret": true
+        },
+        "config": {
+          "$ref": "#/$defs/ProviderConfig",
+          "description": "Exact destination, independent of provider OAuth permissions."
+        },
+        "expected_revision": {
+          "description": "Current revision when replacing an account.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "idempotency_key": {
+          "description": "Same-intent retry binding for this bounded in-memory flow.",
+          "type": "string"
+        },
+        "label": {
+          "description": "Untrusted display label.",
+          "type": "string"
+        },
+        "max_bytes_per_delivery": {
+          "description": "Reviewed transfer ceiling.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "redirect_uri": {
+          "description": "CLI-owned exact loopback redirect; absent for Baidu device authorization.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "registration": {
+          "$ref": "#/$defs/OAuthRegistration",
+          "description": "Explicit provider application and requested scopes."
+        }
+      },
+      "required": [
+        "account_id",
+        "label",
+        "config",
+        "max_bytes_per_delivery",
+        "registration",
+        "idempotency_key"
+      ],
+      "type": "object"
+    },
+    "CloudOAuthBeginResult": {
+      "description": "Human-only initial browser/device instructions, never an agent resource.",
+      "properties": {
+        "authorization_url": {
+          "$ref": "#/$defs/CloudOAuthHumanText",
+          "description": "Browser authorization URL or official device verification page."
+        },
+        "poll_interval_ms": {
+          "description": "Minimum device polling interval; zero for loopback code exchange.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "status": {
+          "$ref": "#/$defs/CloudOAuthStatus",
+          "description": "Durable destination identity plus bounded in-memory flow state."
+        },
+        "user_code": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CloudOAuthHumanText"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Device code for the person, never the private polling credential."
+        }
+      },
+      "required": [
+        "status",
+        "authorization_url",
+        "poll_interval_ms"
+      ],
+      "type": "object"
+    },
+    "CloudOAuthCancelParams": {
+      "additionalProperties": false,
+      "description": "Cancel a flow; no provider account credentials are changed.",
+      "properties": {
+        "flow_id": {
+          "description": "Started flow.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "flow_id"
+      ],
+      "type": "object"
+    },
+    "CloudOAuthDisconnectParams": {
+      "additionalProperties": false,
+      "description": "Disable local account authority and optionally revoke access at a supported provider.",
+      "properties": {
+        "account_id": {
+          "description": "Account to disconnect.",
+          "type": "string"
+        },
+        "expected_revision": {
+          "description": "Current revision the person reviewed.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "idempotency_key": {
+          "description": "Durable local revocation retry binding.",
+          "type": "string"
+        },
+        "remote": {
+          "description": "Explicit remote revocation; Google revokes this app/project's scopes, not just one folder.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "account_id",
+        "expected_revision",
+        "remote",
+        "idempotency_key"
+      ],
+      "type": "object"
+    },
+    "CloudOAuthDisconnectResult": {
+      "description": "Accurate local and remote disconnect outcomes.",
+      "properties": {
+        "account": {
+          "$ref": "#/$defs/CloudAccountView",
+          "description": "Locally revoked account, independent of provider response."
+        },
+        "local_cleanup_pending": {
+          "description": "Local authority is disabled even when private keyring deletion needs another attempt.",
+          "type": "boolean"
+        },
+        "reason": {
+          "description": "Stable redacted reason for unavailable or uncertain remote revocation.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "remote_revoked": {
+          "description": "true only after confirmed provider revocation, false after failure/unsupported, null if not requested.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "account",
+        "local_cleanup_pending"
+      ],
+      "type": "object"
+    },
+    "CloudOAuthFinishParams": {
+      "additionalProperties": false,
+      "description": "Submit the one-use loopback code/state or perform one bounded device poll.",
+      "properties": {
+        "code": {
+          "description": "Browser callback code; absent for device polling.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "x-zeus-secret": true
+        },
+        "flow_id": {
+          "description": "Flow started by this human credential.",
+          "type": "string"
+        },
+        "state": {
+          "description": "Exact browser callback state; absent for device polling.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "x-zeus-secret": true
+        }
+      },
+      "required": [
+        "flow_id"
+      ],
+      "type": "object"
+    },
+    "CloudOAuthHumanText": {
+      "description": "Human-only provider URL/code projection; Debug always withholds its contents.",
+      "type": "string",
+      "x-zeus-secret": true
+    },
+    "CloudOAuthRefreshParams": {
+      "additionalProperties": false,
+      "description": "Human-requested refresh; regular transfers also refresh near-expiry credentials.",
+      "properties": {
+        "account_id": {
+          "description": "Registered OAuth account.",
+          "type": "string"
+        },
+        "expected_revision": {
+          "description": "Current destination revision.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "idempotency_key": {
+          "description": "Same-intent refresh retry binding; a saved successful refresh is not dispatched twice.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "account_id",
+        "expected_revision",
+        "idempotency_key"
+      ],
+      "type": "object"
+    },
+    "CloudOAuthState": {
+      "description": "Authorization lifecycle, without access or refresh tokens.",
+      "oneOf": [
+        {
+          "const": "waiting",
+          "description": "Waiting for external browser/device consent.",
+          "type": "string"
+        },
+        {
+          "const": "connected",
+          "description": "New credential was safely stored and destination configured.",
+          "type": "string"
+        },
+        {
+          "const": "refresh_required",
+          "description": "Access token expired; supported refresh material is available for the same account.",
+          "type": "string"
+        },
+        {
+          "const": "canceled",
+          "description": "Explicit cancellation.",
+          "type": "string"
+        },
+        {
+          "const": "expired",
+          "description": "Flow deadline passed; start a new sign-in.",
+          "type": "string"
+        },
+        {
+          "const": "failed",
+          "description": "Provider denied or exchange failed; no credential material is returned.",
+          "type": "string"
+        },
+        {
+          "const": "sign_in_required",
+          "description": "A previously configured account needs renewed authentication.",
+          "type": "string"
+        },
+        {
+          "const": "revoked",
+          "description": "Local account authority was revoked.",
+          "type": "string"
+        },
+        {
+          "const": "manual",
+          "description": "Account uses an explicitly entered token or external rclone configuration.",
+          "type": "string"
+        }
+      ]
+    },
+    "CloudOAuthStatus": {
+      "description": "Nonsecret status projection; only the begin result contains human instructions.",
+      "properties": {
+        "account": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CloudAccountView"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Latest nonsecret account scope after a completed connection."
+        },
+        "account_id": {
+          "description": "Destination account alias.",
+          "type": "string"
+        },
+        "expires_at": {
+          "description": "Flow expiration (never token contents).",
+          "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:([0-5][0-9]|60)\\.[0-9]{3}Z$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "flow_id": {
+          "description": "Flow identity when inspecting a sign-in attempt.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "local_cleanup_pending": {
+          "description": "An earlier requested keyring deletion still needs cleanup.",
+          "type": "boolean"
+        },
+        "refresh_available": {
+          "description": "Supported refresh material is present and neither locally revoked nor uncertain.",
+          "type": "boolean"
+        },
+        "state": {
+          "$ref": "#/$defs/CloudOAuthState",
+          "description": "Current lifecycle state."
+        },
+        "token_expires_at": {
+          "description": "Current token expiration when known.",
+          "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:([0-5][0-9]|60)\\.[0-9]{3}Z$",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "account_id",
+        "state",
+        "refresh_available",
+        "local_cleanup_pending"
+      ],
+      "type": "object"
+    },
+    "CloudOAuthStatusParams": {
+      "additionalProperties": false,
+      "description": "Inspect exactly one flow or account through the human-only lifecycle surface.",
+      "properties": {
+        "account_id": {
+          "description": "Existing account, mutually exclusive with flow_id.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "flow_id": {
+          "description": "Started flow, mutually exclusive with account_id.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
       "type": "object"
     },
     "CloudPlanParams": {
@@ -4609,6 +4993,863 @@
         }
       ]
     },
+    "InboxDispatchState": {
+      "description": "Public dispatch state; a pending batch is retried with its original private payload/key.",
+      "oneOf": [
+        {
+          "const": "pending",
+          "description": "Durable intent exists; dispatch/completion has not been reconciled.",
+          "type": "string"
+        },
+        {
+          "const": "complete",
+          "description": "A full immutable result is retained.",
+          "type": "string"
+        }
+      ]
+    },
+    "InboxEntriesAddParams": {
+      "additionalProperties": false,
+      "description": "Add1–200 private requests with exact deduplication inside an owned package.",
+      "properties": {
+        "entries": {
+          "description": "Exact request records, at most200 and512KiB serialized per call.",
+          "items": {
+            "$ref": "#/$defs/InboxIntakeItem"
+          },
+          "type": "array"
+        },
+        "expected_revision": {
+          "description": "Current revision; stale metadata is refused.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "idempotency_key": {
+          "description": "Exact duplicate additions and retries return the original receipt.",
+          "type": "string"
+        },
+        "package_id": {
+          "description": "Target owned package.",
+          "pattern": "^pkg_[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "package_id",
+        "expected_revision",
+        "entries",
+        "idempotency_key"
+      ],
+      "type": "object"
+    },
+    "InboxEntriesAddResult": {
+      "description": "Accepted metadata intake, without publishing raw URLs back to clients.",
+      "properties": {
+        "added_ids": {
+          "description": "Newly retained identifiers, in input order.",
+          "items": {
+            "description": "One private intake request (`inb_<ULID>`).",
+            "pattern": "^inb_[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "duplicate_ids": {
+          "description": "Existing identifiers for byte-equivalent typed intake records.",
+          "items": {
+            "description": "One private intake request (`inb_<ULID>`).",
+            "pattern": "^inb_[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "package": {
+          "$ref": "#/$defs/InboxPackageView",
+          "description": "Package after the first successful addition."
+        },
+        "replayed": {
+          "description": "Identical key/payload replay.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "package",
+        "added_ids",
+        "duplicate_ids",
+        "replayed"
+      ],
+      "type": "object"
+    },
+    "InboxEntriesRemoveParams": {
+      "additionalProperties": false,
+      "description": "Remove inbox metadata only; associated downloads are never cancelled or deleted.",
+      "properties": {
+        "entry_ids": {
+          "description": "Existing owned entry identifiers, at most500.",
+          "items": {
+            "description": "One private intake request (`inb_<ULID>`).",
+            "pattern": "^inb_[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "expected_revision": {
+          "description": "Current revision.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "idempotency_key": {
+          "description": "Durable retry binding.",
+          "type": "string"
+        },
+        "package_id": {
+          "description": "Owned package.",
+          "pattern": "^pkg_[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "package_id",
+        "expected_revision",
+        "entry_ids",
+        "idempotency_key"
+      ],
+      "type": "object"
+    },
+    "InboxEntryView": {
+      "description": "One public entry; raw URLs, hint URLs, referrers and headers never appear here.",
+      "properties": {
+        "created_at": {
+          "description": "Time the private request was retained.",
+          "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:([0-5][0-9]|60)\\.[0-9]{3}Z$",
+          "type": "string"
+        },
+        "dest_dir": {
+          "description": "Requested or package-default destination, subject to current roots at preview.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ErrorEnvelope"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Last bounded enqueue rejection; no raw source request is included."
+        },
+        "id": {
+          "description": "Entry identity.",
+          "pattern": "^inb_[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+          "type": "string"
+        },
+        "job_id": {
+          "description": "Download reference only after a durable successful enqueue.",
+          "pattern": "^job_[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "redacted_url": {
+          "description": "URL with userinfo/query/fragment redacted.",
+          "maxLength": 2048,
+          "minLength": 8,
+          "pattern": "^https?://[^@\\s#]*$",
+          "type": "string"
+        },
+        "untrusted_filename": {
+          "description": "Caller-provided filename hint, not a destination guarantee.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "untrusted_label": {
+          "description": "Optional caller-provided description.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "redacted_url",
+        "created_at"
+      ],
+      "type": "object"
+    },
+    "InboxIntakeItem": {
+      "additionalProperties": false,
+      "description": "One input record. The `NewJob` is persisted privately and revalidated before any execution.",
+      "properties": {
+        "job": {
+          "$ref": "#/$defs/NewJob",
+          "description": "Requested HTTP download; source identity always comes from authenticated dispatch context."
+        },
+        "untrusted_label": {
+          "default": null,
+          "description": "Optional untrusted label, at most500 UTF-8 bytes.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "job"
+      ],
+      "type": "object"
+    },
+    "InboxMutationResult": {
+      "description": "A durable metadata mutation result.",
+      "properties": {
+        "package": {
+          "$ref": "#/$defs/InboxPackageView",
+          "description": "Current result at the time this receipt was first committed."
+        },
+        "replayed": {
+          "description": "The response replays an identical mutation receipt.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "package",
+        "replayed"
+      ],
+      "type": "object"
+    },
+    "InboxPackageArchiveParams": {
+      "additionalProperties": false,
+      "description": "Archive/unarchive an owned package's metadata, preserving jobs and receipts.",
+      "properties": {
+        "archived": {
+          "description": "Desired visibility in the ordinary package list.",
+          "type": "boolean"
+        },
+        "expected_revision": {
+          "description": "Current revision.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "idempotency_key": {
+          "description": "Durable retry binding.",
+          "type": "string"
+        },
+        "package_id": {
+          "description": "Owned package.",
+          "pattern": "^pkg_[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "package_id",
+        "expected_revision",
+        "archived",
+        "idempotency_key"
+      ],
+      "type": "object"
+    },
+    "InboxPackageGetParams": {
+      "description": "Read one owned package and one bounded page of its entries.",
+      "properties": {
+        "cursor": {
+          "description": "Opaque cursor from a previous result. Valid only for the same method and filters.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "include_history": {
+          "default": false,
+          "description": "Include bounded retained redacted previews/dispatches explicitly; ordinary reads default to metadata/entries only.",
+          "type": "boolean"
+        },
+        "limit": {
+          "description": "Page size. Absent: 50. Values above 100 are clamped to 100; 0 is invalid.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "owner_credential_id": {
+          "description": "Explicit read-only inspection of another credential’s redacted intake; human-capable callers only.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "package_id": {
+          "description": "Existing owned package.",
+          "pattern": "^pkg_[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+          "type": "string"
+        },
+        "pending_only": {
+          "default": false,
+          "description": "Omit previously accepted entries when true.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "package_id"
+      ],
+      "type": "object"
+    },
+    "InboxPackageGetResult": {
+      "description": "Metadata and redacted entry page.",
+      "properties": {
+        "entries": {
+          "$ref": "#/$defs/Page2",
+          "description": "Bounded redacted entry views."
+        },
+        "package": {
+          "$ref": "#/$defs/InboxPackageView",
+          "description": "Package metadata."
+        },
+        "previews": {
+          "description": "At most16 retained redacted review handles, newest first.",
+          "items": {
+            "$ref": "#/$defs/InboxPreviewResult"
+          },
+          "type": "array"
+        },
+        "submissions": {
+          "description": "At most20 most recent dispatch projections; no original requests or keys.",
+          "items": {
+            "$ref": "#/$defs/InboxSubmissionView"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "package",
+        "entries",
+        "previews",
+        "submissions"
+      ],
+      "type": "object"
+    },
+    "InboxPackagePutParams": {
+      "additionalProperties": false,
+      "description": "Create or update one owned package. Updates require the current revision.",
+      "properties": {
+        "default_dest_dir": {
+          "default": null,
+          "description": "Optional destination default inside engine write roots at preview/dispatch time.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "expected_revision": {
+          "default": null,
+          "description": "Required for update, absent for create.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "idempotency_key": {
+          "description": "Binds this entire mutation to one owner-scoped retry key.",
+          "type": "string"
+        },
+        "package_id": {
+          "default": null,
+          "description": "Absent creates a daemon-minted package; present edits an existing owned package.",
+          "pattern": "^pkg_[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "untrusted_name": {
+          "description": "Untrusted display name, bounded to160 UTF-8 bytes.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "untrusted_name",
+        "idempotency_key"
+      ],
+      "type": "object"
+    },
+    "InboxPackageView": {
+      "description": "Public package metadata, derived for the authenticated owner only.",
+      "properties": {
+        "active_batch": {
+          "description": "Any unresolved dispatch prevents editing until the same batch is reconciled/retried.",
+          "pattern": "^iba_[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "archived": {
+          "description": "Archived packages retain their receipts and do not cancel existing downloads.",
+          "type": "boolean"
+        },
+        "created_at": {
+          "description": "Creation time, UTC with three fractional digits.",
+          "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:([0-5][0-9]|60)\\.[0-9]{3}Z$",
+          "type": "string"
+        },
+        "default_dest_dir": {
+          "description": "Suggested destination; actual scope and collision decisions belong to preview/enqueue.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "enqueued_entries": {
+          "description": "Accepted download references retained in this package.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "id": {
+          "description": "Daemon-minted package identity.",
+          "pattern": "^pkg_[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+          "type": "string"
+        },
+        "pending_entries": {
+          "description": "Still awaiting a successful enqueue.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "revision": {
+          "description": "Revision required by every edit and preview.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "untrusted_name": {
+          "description": "Person/agent-provided display text; never executable instructions.",
+          "type": "string"
+        },
+        "updated_at": {
+          "description": "Last successful metadata/receipt change.",
+          "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:([0-5][0-9]|60)\\.[0-9]{3}Z$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "revision",
+        "untrusted_name",
+        "archived",
+        "pending_entries",
+        "enqueued_entries",
+        "created_at",
+        "updated_at"
+      ],
+      "type": "object"
+    },
+    "InboxPackagesListParams": {
+      "description": "List only the authenticated owner's packages.",
+      "properties": {
+        "cursor": {
+          "description": "Opaque cursor from a previous result. Valid only for the same method and filters.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "include_archived": {
+          "default": false,
+          "description": "Include explicitly archived metadata.",
+          "type": "boolean"
+        },
+        "limit": {
+          "description": "Page size. Absent: 50. Values above 100 are clamped to 100; 0 is invalid.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "owner_credential_id": {
+          "description": "Explicit read-only inspection of another credential’s redacted intake; human-capable callers only.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "InboxPreviewEntry": {
+      "description": "One daemon-derived preview row; remote/caller content remains untrusted and redacted.",
+      "properties": {
+        "approval_needed": {
+          "description": "Enqueue would wait for a separate human approval.",
+          "type": "boolean"
+        },
+        "dest_path": {
+          "description": "Reviewed destination path, never an authority grant.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "entry_id": {
+          "description": "Private request reference.",
+          "pattern": "^inb_[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+          "type": "string"
+        },
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ErrorEnvelope"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Invalid source/destination/permission facts for this row."
+        },
+        "filename": {
+          "description": "Reviewed filename after safe naming/collision planning, if valid.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "redacted_url": {
+          "description": "Redacted resource address.",
+          "maxLength": 2048,
+          "minLength": 8,
+          "pattern": "^https?://[^@\\s#]*$",
+          "type": "string"
+        },
+        "warnings": {
+          "description": "Neutral daemon warning codes/facts.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "entry_id",
+        "redacted_url",
+        "approval_needed",
+        "warnings"
+      ],
+      "type": "object"
+    },
+    "InboxPreviewParams": {
+      "additionalProperties": false,
+      "description": "Preview at most50 still-pending requests using current daemon destination and approval facts.",
+      "properties": {
+        "entry_ids": {
+          "default": [],
+          "description": "Explicit pending records, or the next at most50 pending records when empty.",
+          "items": {
+            "description": "One private intake request (`inb_<ULID>`).",
+            "pattern": "^inb_[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "expected_revision": {
+          "description": "Exact package revision being reviewed.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "idempotency_key": {
+          "description": "Preview creation is retained so a retry cannot silently change reviewed facts.",
+          "type": "string"
+        },
+        "package_id": {
+          "description": "Owned package.",
+          "pattern": "^pkg_[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "package_id",
+        "expected_revision",
+        "idempotency_key"
+      ],
+      "type": "object"
+    },
+    "InboxPreviewResult": {
+      "description": "Immutable reviewed batch handle; no session material or approval decision is returned.",
+      "properties": {
+        "entries": {
+          "description": "At most50 destination/approval projections.",
+          "items": {
+            "$ref": "#/$defs/InboxPreviewEntry"
+          },
+          "type": "array"
+        },
+        "expires_at": {
+          "description": "Fresh submissions must start before this UTC instant.",
+          "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:([0-5][0-9]|60)\\.[0-9]{3}Z$",
+          "type": "string"
+        },
+        "package_id": {
+          "description": "Owned package.",
+          "pattern": "^pkg_[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+          "type": "string"
+        },
+        "package_revision": {
+          "description": "Exact metadata revision.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "preview_id": {
+          "description": "Owner-bound immutable preview reference.",
+          "pattern": "^ipv_[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+          "type": "string"
+        },
+        "ready_entries": {
+          "description": "Rows eligible for the reviewed enqueue batch.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "remaining_pending": {
+          "description": "Pending requests outside this preview.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "replayed": {
+          "description": "Identical preview-key replay.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "preview_id",
+        "package_id",
+        "package_revision",
+        "expires_at",
+        "entries",
+        "ready_entries",
+        "remaining_pending",
+        "replayed"
+      ],
+      "type": "object"
+    },
+    "InboxSubmissionEntry": {
+      "description": "One entry's existing enqueue response, in reviewed order.",
+      "properties": {
+        "entry_id": {
+          "description": "Intake reference.",
+          "pattern": "^inb_[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+          "type": "string"
+        },
+        "result": {
+          "$ref": "#/$defs/EnqueuedJob",
+          "description": "Existing daemon enqueue contract; approvals remain undecided."
+        }
+      },
+      "required": [
+        "entry_id",
+        "result"
+      ],
+      "type": "object"
+    },
+    "InboxSubmissionGetParams": {
+      "additionalProperties": false,
+      "description": "Inspect an owned dispatch without exposing its hidden request or idempotency key.",
+      "properties": {
+        "batch_id": {
+          "description": "Dispatch reference.",
+          "pattern": "^iba_[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+          "type": "string"
+        },
+        "owner_credential_id": {
+          "description": "Explicit read-only inspection of another credential’s redacted intake; human-capable callers only.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "package_id": {
+          "description": "Owned package.",
+          "pattern": "^pkg_[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "package_id",
+        "batch_id"
+      ],
+      "type": "object"
+    },
+    "InboxSubmissionRetryParams": {
+      "additionalProperties": false,
+      "description": "Explicitly retry/reconcile an already-owned pending batch using its saved request/key.",
+      "properties": {
+        "batch_id": {
+          "description": "Existing dispatch; the caller cannot supply different URLs or destinations.",
+          "pattern": "^iba_[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+          "type": "string"
+        },
+        "idempotency_key": {
+          "description": "Retry operation binding; underlying enqueue keeps its original durable key.",
+          "type": "string"
+        },
+        "package_id": {
+          "description": "Owned package.",
+          "pattern": "^pkg_[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "package_id",
+        "batch_id",
+        "idempotency_key"
+      ],
+      "type": "object"
+    },
+    "InboxSubmissionView": {
+      "description": "Recoverable owner-scoped dispatch projection.",
+      "properties": {
+        "batch_id": {
+          "description": "Dispatch reference.",
+          "pattern": "^iba_[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+          "type": "string"
+        },
+        "error_code": {
+          "description": "Most recent bounded API error code; retry never changes the private request.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "package_id": {
+          "description": "Owned package.",
+          "pattern": "^pkg_[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+          "type": "string"
+        },
+        "preview_id": {
+          "description": "Reviewed preview reference for diagnostics, not a raw source request.",
+          "pattern": "^ipv_[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+          "type": "string"
+        },
+        "result": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/InboxSubmitResult"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Completed response, when durable."
+        },
+        "state": {
+          "$ref": "#/$defs/InboxDispatchState",
+          "description": "Pending or complete; uncertainty is never treated as a new batch."
+        }
+      },
+      "required": [
+        "batch_id",
+        "package_id",
+        "state",
+        "preview_id"
+      ],
+      "type": "object"
+    },
+    "InboxSubmitParams": {
+      "additionalProperties": false,
+      "description": "Dispatch one reviewed immutable batch with restart-safe request binding.",
+      "properties": {
+        "expected_revision": {
+          "description": "Revision bound into the saved preview.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "idempotency_key": {
+          "description": "Durable owner-scoped dispatch key.",
+          "type": "string"
+        },
+        "package_id": {
+          "description": "Owned package.",
+          "pattern": "^pkg_[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+          "type": "string"
+        },
+        "preview_id": {
+          "description": "Exact preview handle; caller cannot replace its hidden enqueue payload.",
+          "pattern": "^ipv_[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "package_id",
+        "expected_revision",
+        "preview_id",
+        "idempotency_key"
+      ],
+      "type": "object"
+    },
+    "InboxSubmitResult": {
+      "description": "Durable completion of one bounded batch, including per-entry rejection facts.",
+      "properties": {
+        "batch_id": {
+          "description": "Stable dispatch identity for recovery.",
+          "pattern": "^iba_[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+          "type": "string"
+        },
+        "entries": {
+          "description": "At most50 per-entry results.",
+          "items": {
+            "$ref": "#/$defs/InboxSubmissionEntry"
+          },
+          "type": "array"
+        },
+        "package_id": {
+          "description": "Owned package.",
+          "pattern": "^pkg_[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+          "type": "string"
+        },
+        "package_revision": {
+          "description": "Package after accepted jobs/rejections were recorded.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "remaining_pending": {
+          "description": "Still-pending metadata records, including rejected rows.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "replayed": {
+          "description": "Exact dispatch result was already committed.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "batch_id",
+        "package_id",
+        "package_revision",
+        "entries",
+        "remaining_pending",
+        "replayed"
+      ],
+      "type": "object"
+    },
     "ItemsFormat": {
       "description": "Item records are JSON Lines.",
       "oneOf": [
@@ -6710,6 +7951,33 @@
       ],
       "type": "object"
     },
+    "OAuthRegistration": {
+      "additionalProperties": false,
+      "description": "Nonsecret, explicitly supplied app registration. Client passwords live only in the keyring.",
+      "properties": {
+        "client_id": {
+          "description": "Registered public application identifier.",
+          "type": "string"
+        },
+        "provider": {
+          "$ref": "#/$defs/ProviderKind",
+          "description": "Native provider; rclone manages its own authorization."
+        },
+        "scopes": {
+          "description": "Exact permissions the person will review on the provider consent page.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "provider",
+        "client_id",
+        "scopes"
+      ],
+      "type": "object"
+    },
     "OnDrift": {
       "description": "Drift response.",
       "oneOf": [
@@ -6806,7 +8074,7 @@
         "items": {
           "description": "The items.",
           "items": {
-            "$ref": "#/$defs/JobSummary"
+            "$ref": "#/$defs/InboxPackageView"
           },
           "type": "array"
         },
@@ -6829,7 +8097,7 @@
         "items": {
           "description": "The items.",
           "items": {
-            "$ref": "#/$defs/SessionGrant"
+            "$ref": "#/$defs/InboxEntryView"
           },
           "type": "array"
         },
@@ -6852,7 +8120,7 @@
         "items": {
           "description": "The items.",
           "items": {
-            "$ref": "#/$defs/ApprovalView"
+            "$ref": "#/$defs/JobSummary"
           },
           "type": "array"
         },
@@ -6875,7 +8143,7 @@
         "items": {
           "description": "The items.",
           "items": {
-            "$ref": "#/$defs/FileEntry"
+            "$ref": "#/$defs/SessionGrant"
           },
           "type": "array"
         },
@@ -6898,7 +8166,7 @@
         "items": {
           "description": "The items.",
           "items": {
-            "$ref": "#/$defs/RunReport"
+            "$ref": "#/$defs/ApprovalView"
           },
           "type": "array"
         },
@@ -6916,6 +8184,52 @@
       "type": "object"
     },
     "Page6": {
+      "description": "One page of results.",
+      "properties": {
+        "items": {
+          "description": "The items.",
+          "items": {
+            "$ref": "#/$defs/FileEntry"
+          },
+          "type": "array"
+        },
+        "next_cursor": {
+          "description": "Cursor for the next page, `null` at the end.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "items"
+      ],
+      "type": "object"
+    },
+    "Page7": {
+      "description": "One page of results.",
+      "properties": {
+        "items": {
+          "description": "The items.",
+          "items": {
+            "$ref": "#/$defs/RunReport"
+          },
+          "type": "array"
+        },
+        "next_cursor": {
+          "description": "Cursor for the next page, `null` at the end.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "items"
+      ],
+      "type": "object"
+    },
+    "Page8": {
       "description": "One page of results.",
       "properties": {
         "items": {
@@ -11634,7 +12948,7 @@
         "$ref": "#/$defs/ApprovalsListParams"
       },
       "result": {
-        "$ref": "#/$defs/Page3"
+        "$ref": "#/$defs/Page5"
       }
     },
     "artifacts.get": {
@@ -11682,7 +12996,7 @@
         "$ref": "#/$defs/ArtifactsListParams"
       },
       "result": {
-        "$ref": "#/$defs/Page6"
+        "$ref": "#/$defs/Page8"
       }
     },
     "audit.tail": {
@@ -11771,6 +13085,54 @@
       },
       "result": {
         "$ref": "#/$defs/CloudListResult"
+      }
+    },
+    "cloud.oauth.begin": {
+      "params": {
+        "$ref": "#/$defs/CloudOAuthBeginParams"
+      },
+      "result": {
+        "$ref": "#/$defs/CloudOAuthBeginResult"
+      }
+    },
+    "cloud.oauth.cancel": {
+      "params": {
+        "$ref": "#/$defs/CloudOAuthCancelParams"
+      },
+      "result": {
+        "$ref": "#/$defs/CloudOAuthStatus"
+      }
+    },
+    "cloud.oauth.disconnect": {
+      "params": {
+        "$ref": "#/$defs/CloudOAuthDisconnectParams"
+      },
+      "result": {
+        "$ref": "#/$defs/CloudOAuthDisconnectResult"
+      }
+    },
+    "cloud.oauth.finish": {
+      "params": {
+        "$ref": "#/$defs/CloudOAuthFinishParams"
+      },
+      "result": {
+        "$ref": "#/$defs/CloudOAuthStatus"
+      }
+    },
+    "cloud.oauth.refresh": {
+      "params": {
+        "$ref": "#/$defs/CloudOAuthRefreshParams"
+      },
+      "result": {
+        "$ref": "#/$defs/CloudOAuthStatus"
+      }
+    },
+    "cloud.oauth.status": {
+      "params": {
+        "$ref": "#/$defs/CloudOAuthStatusParams"
+      },
+      "result": {
+        "$ref": "#/$defs/CloudOAuthStatus"
       }
     },
     "cloud.plan": {
@@ -11890,7 +13252,7 @@
         "$ref": "#/$defs/FilesListParams"
       },
       "result": {
-        "$ref": "#/$defs/Page4"
+        "$ref": "#/$defs/Page6"
       }
     },
     "files.organize": {
@@ -11915,6 +13277,86 @@
       },
       "result": {
         "$ref": "#/$defs/FilesUndoResult"
+      }
+    },
+    "inbox.entries.add": {
+      "params": {
+        "$ref": "#/$defs/InboxEntriesAddParams"
+      },
+      "result": {
+        "$ref": "#/$defs/InboxEntriesAddResult"
+      }
+    },
+    "inbox.entries.remove": {
+      "params": {
+        "$ref": "#/$defs/InboxEntriesRemoveParams"
+      },
+      "result": {
+        "$ref": "#/$defs/InboxMutationResult"
+      }
+    },
+    "inbox.packages.archive": {
+      "params": {
+        "$ref": "#/$defs/InboxPackageArchiveParams"
+      },
+      "result": {
+        "$ref": "#/$defs/InboxMutationResult"
+      }
+    },
+    "inbox.packages.get": {
+      "params": {
+        "$ref": "#/$defs/InboxPackageGetParams"
+      },
+      "result": {
+        "$ref": "#/$defs/InboxPackageGetResult"
+      }
+    },
+    "inbox.packages.list": {
+      "params": {
+        "$ref": "#/$defs/InboxPackagesListParams"
+      },
+      "result": {
+        "$ref": "#/$defs/Page"
+      }
+    },
+    "inbox.packages.put": {
+      "params": {
+        "$ref": "#/$defs/InboxPackagePutParams"
+      },
+      "result": {
+        "$ref": "#/$defs/InboxMutationResult"
+      }
+    },
+    "inbox.preview": {
+      "params": {
+        "$ref": "#/$defs/InboxPreviewParams"
+      },
+      "result": {
+        "$ref": "#/$defs/InboxPreviewResult"
+      }
+    },
+    "inbox.submissions.get": {
+      "params": {
+        "$ref": "#/$defs/InboxSubmissionGetParams"
+      },
+      "result": {
+        "$ref": "#/$defs/InboxSubmissionView"
+      }
+    },
+    "inbox.submissions.retry": {
+      "params": {
+        "$ref": "#/$defs/InboxSubmissionRetryParams"
+      },
+      "result": {
+        "$ref": "#/$defs/InboxSubmitResult"
+      }
+    },
+    "inbox.submit": {
+      "params": {
+        "$ref": "#/$defs/InboxSubmitParams"
+      },
+      "result": {
+        "$ref": "#/$defs/InboxSubmitResult"
       }
     },
     "jobs.control": {
@@ -11946,7 +13388,7 @@
         "$ref": "#/$defs/JobsListParams"
       },
       "result": {
-        "$ref": "#/$defs/Page"
+        "$ref": "#/$defs/Page3"
       }
     },
     "jobs.probe": {
@@ -12066,7 +13508,7 @@
         "$ref": "#/$defs/SessionsListParams"
       },
       "result": {
-        "$ref": "#/$defs/Page2"
+        "$ref": "#/$defs/Page4"
       }
     },
     "sessions.request": {
@@ -12114,7 +13556,7 @@
         "$ref": "#/$defs/WorkflowsListParams"
       },
       "result": {
-        "$ref": "#/$defs/Page5"
+        "$ref": "#/$defs/Page7"
       }
     },
     "workflows.manifest": {

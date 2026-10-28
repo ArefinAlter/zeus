@@ -802,6 +802,27 @@ impl WorkflowService {
                 }
                 Ok(doc)
             }
+            async fn fetch_document_request(
+                &self,
+                request: &FetchRequest,
+            ) -> Result<Document, zeus_workflow::planner::PlannerError> {
+                let doc = self
+                    .service
+                    .network
+                    .document_with_accept(self.plan, &request.url, None, &request.accept)
+                    .await
+                    .map_err(|_| {
+                        zeus_workflow::planner::PlannerError::Fetch(
+                            "workflow.document_unavailable".into(),
+                        )
+                    })?;
+                if doc.body.len() > 512 * 1024 {
+                    return Err(zeus_workflow::planner::PlannerError::Fetch(
+                        "workflow.sample_too_large".into(),
+                    ));
+                }
+                Ok(doc)
+            }
         }
         let report = BoundedPlanner
             .dry_run(
@@ -1656,7 +1677,12 @@ impl RuntimePort for WorkflowService {
             .map_err(|_| runtime_fail())?
             .ok_or_else(runtime_fail)?;
         self.network
-            .document(&row.plan, &request.url, Some(request.run_id))
+            .document_with_accept(
+                &row.plan,
+                &request.url,
+                Some(request.run_id),
+                &request.accept,
+            )
             .await
     }
     async fn job_totals(&self, run: RunId) -> RuntimeResult<JobTotals> {
@@ -1762,6 +1788,27 @@ fn sampling_plan(urls: &[String]) -> ApiResult<Plan> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn sitemap_negotiation_and_encoding_failures_are_redacted_typed_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let service = receipt_service(dir.path());
+        let plan = row().plan;
+        let bad_accept = "text/html\r\nCookie: HEADER-CANARY";
+        let error = service
+            .network
+            .document_with_accept(&plan, "http://127.0.0.1/private", None, bad_accept)
+            .await
+            .err()
+            .expect("invalid Accept must fail before network");
+        let error = runtime_error(error);
+        assert_eq!(error.envelope().code.as_str(), "workflow.document_accept");
+        assert!(!error.envelope().message.contains("HEADER-CANARY"));
+        let error =
+            runtime_error(zeus_workflow::decode_sitemap_document(&[0xff, 0xfe]).unwrap_err());
+        assert_eq!(error.envelope().code.as_str(), "workflow.sitemap_encoding");
+        assert_eq!(error.envelope().class, zeus_types::ErrorClass::Integrity);
+        assert!(!error.envelope().retryable);
+    }
     fn receipt_service(path: &Path) -> Arc<WorkflowService> {
         let journal = zeus_journal::Journal::open(
             &path.join("journal.redb"),

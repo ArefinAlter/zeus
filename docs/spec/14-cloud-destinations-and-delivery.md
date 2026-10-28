@@ -125,12 +125,15 @@ The contract is [`cloud.v1.schema.json`](schema/cloud.v1.schema.json), reference
 | `cloud.accounts.list` | `jobs.read` | Public scopes and actual capabilities; no credentials or local configuration paths. |
 | `cloud.accounts.configure` | `config.write`, verified physical terminal | Create/update explicit scope and write credential to keyring. Updates require the reviewed revision. |
 | `cloud.accounts.revoke` | `config.write`, verified physical terminal | Increment revision, revoke scope, stop local workers; retain uncertainty about continuing provider operations. |
+| `cloud.oauth.begin`, `cloud.oauth.finish` | `config.write`, verified physical terminal | Begin reviewed PKCE/device consent and publish account authority only after private keyring storage succeeds. |
+| `cloud.oauth.status`, `cloud.oauth.cancel` | `config.write`, verified physical terminal | Inspect redacted lifecycle state or cancel a bounded pending flow. |
+| `cloud.oauth.refresh`, `cloud.oauth.disconnect` | `config.write`, verified physical terminal | Refresh with a durable dispatch receipt, or locally revoke with separate remote confirmation/uncertainty. |
 | `cloud.plan` | `jobs.write` | Persist immutable dry run and hash. Hashes a bounded `local_file` source; other sources use their declared or recorded metadata. Creates no remote object. |
 | `cloud.submit` | `jobs.write` | Reserve delivery and raise `cloud_delivery` approval; does not authorize transfer. |
 | `cloud.list`, `cloud.get` | `jobs.read` | Agent callers see their own deliveries; human callers may inspect all. |
 | `cloud.control` | `jobs.control` | Pause/resume/cancel within the original authority; never broadens it. |
 
-Mutations require a caller-scoped `idempotency_key`. A plan binds account revision, source hash, mode, unique remote name, exact size, byte/time budgets, expected SHA-256 when known, provider cancellation limits and remote-fetch disclosure. `max_seconds` is 1–86400. A `public_url` source includes `size_bytes` and optionally `sha256` and `block_md5`; another source kind is `completed_job` with `job_id`. The `local_file` source takes an absolute `path` and supports only `staged_upload`. It is limited to regular files inside the desktop user's explicitly included read roots (ADR 0014); missing, invalid or revoked scopes fail closed. Planning reads at most `max_bytes` to bind an exact SHA-256 digest and size, without disclosing the absolute path in public views. At execution the daemon rechecks scope, stages its own copy and verifies the approved digest before contacting the upload provider. The original file is preserved. Local paths and source hashes remain private persisted inputs. Browser sessions are never accepted as cloud sources.
+Account configuration, delivery mutations and explicit OAuth begin/refresh/disconnect require a caller-scoped `idempotency_key`. OAuth finish/cancel bind the human-owned, one-use flow identity; no account credential is exposed in that result. A plan binds account revision, source hash, mode, unique remote name, exact size, byte/time budgets, expected SHA-256 when known, provider cancellation limits and remote-fetch disclosure. `max_seconds` is 1–86400. A `public_url` source includes `size_bytes` and optionally `sha256` and `block_md5`; another source kind is `completed_job` with `job_id`. The `local_file` source takes an absolute `path` and supports only `staged_upload`. It is limited to regular files inside the desktop user's explicitly included read roots (ADR 0014); missing, invalid or revoked scopes fail closed. Planning reads at most `max_bytes` to bind an exact SHA-256 digest and size, without disclosing the absolute path in public views. At execution the daemon rechecks scope, stages its own copy and verifies the approved digest before contacting the upload provider. The original file is preserved. Local paths and source hashes remain private persisted inputs. Browser sessions are never accepted as cloud sources.
 
 ```json validate=cloud.v1#/$defs/CloudPlanParams
 {
@@ -159,7 +162,7 @@ Delivery states are `awaiting_approval`, `queued`, `running`, `remote_pending`, 
 
 `zeus_cloud` (06 section 6.10) exposes account listing, planning, submission, listing, inspection and control. All mutations require intent keys. It exposes no account mutation or approval decision. A pending delivery directs the agent to ask the person; it never suggests using browser-session consent to authorize a cloud upload.
 
-The CLI provides `zeus cloud accounts`, `plan`, `submit`, `list`, `get` and `control`. Native account credentials are entered on the physical terminal without echo, never in arguments. The initial implementation accepts existing authorized access tokens; OAuth application provisioning, interactive browser/device-code flows and automatic refresh are separate work. Rclone authentication is managed by its explicit protected configuration. Configuration and executable hashes are pinned at human setup and checked before launch; changed files require human reconfiguration.
+The CLI provides `zeus cloud accounts`, `plan`, `submit`, `list`, `get` and `control`. Native account credentials are entered on the physical terminal without echo, never in arguments. Native enrollment uses `zeus cloud auth login`: Google/Yandex PKCE and a CLI-owned loopback receiver, or Baidu device authorization. `status`, `refresh` and `disconnect` provide the human-only lifecycle. A registered provider app remains explicit setup; no ambient account is discovered. Refresh rotation is serialized and guarded durably against uncertain replay. See [native sign-in and acceptance limits](../alpha-0.1/CLOUD-OAUTH.md). Rclone authentication is managed by its explicit protected configuration. Configuration and executable hashes are pinned at human setup and checked before launch; changed files require human reconfiguration.
 
 ### 11.3 Provider references
 
@@ -173,7 +176,7 @@ The current daemon bounds outstanding deliveries, account/plan counts and privat
 ## Open issues
 
 - Validate live provider accounts, OAuth application registrations, scope restrictions and quotas without treating simulated provider tests as vendor acceptance.
-- Complete human OAuth onboarding and refresh for native providers. Baidu application eligibility and account limits require live acceptance; no verified public remote-import API is enabled.
+- Complete live owner-authorized OAuth and keyring acceptance using registered applications. Baidu application eligibility and account limits require live acceptance; no verified public remote-import API is enabled.
 - Broaden provider-specific resumability, cancellation and readback verification as those APIs permit; retain explicit capability limits.
 - Reconcile the implementation and generated API schemas with this draft before freezing the cloud contract.
 

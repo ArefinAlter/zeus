@@ -75,6 +75,8 @@ regex.workspace = true
 schemars.workspace = true
 
 [dev-dependencies]
+axum.workspace = true
+zeus-cloud = { workspace = true, features = ["test-fixtures"] }
 zeus-types = { workspace = true, features = ["spec-testing"] }
 tempfile.workspace = true
 proptest.workspace = true

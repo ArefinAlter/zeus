@@ -141,6 +141,11 @@ export interface IndexState {
   watcher?: boolean
   capped?: boolean
   verifying?: boolean
+  freshness?: 'reconciling' | 'scan_incomplete' | 'watching' | 'periodic_scan'
+  watcherGaps?: number
+  unreadableDirectories?: number
+  unavailableRoots?: number
+  snapshotError?: boolean
 }
 
 export interface State {

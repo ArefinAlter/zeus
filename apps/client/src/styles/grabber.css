@@ -68,3 +68,12 @@
   font-size: 11px;
   word-break: break-all;
 }
+.media-grabber { margin-bottom: 1rem; }
+.media-panel { margin-top: .75rem; padding: 1rem; border: 1px solid var(--border, #3f4248); border-radius: .5rem; }
+.media-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 18rem), 1fr)); gap: .75rem; margin: .75rem 0; }
+.media-fields label { display: flex; flex-direction: column; gap: .35rem; font-size: .85rem; }
+.media-fields input, .media-fields select { width: 100%; min-width: 0; }
+.media-formats ul, .media-tasks ul { list-style: none; padding: 0; }
+.media-formats li, .media-tasks li { padding: .75rem 0; border-bottom: 1px solid var(--border, #3f4248); }
+.media-review { margin-top: 1rem; }
+.media-panel .mono { overflow-wrap: anywhere; }

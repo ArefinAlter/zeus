@@ -103,6 +103,32 @@ use Permission::*;
 
 /// Every method of the daemon API. See ARCHITECTURE section 5.4.
 pub const METHODS: &[MethodSpec] = &[
+    MethodSpec::needs("inbox.packages.put", JobsWrite).mutates(),
+    MethodSpec::needs("inbox.packages.list", JobsRead),
+    MethodSpec::needs("inbox.packages.get", JobsRead),
+    MethodSpec::needs("inbox.packages.archive", JobsWrite).mutates(),
+    MethodSpec::needs("inbox.entries.add", JobsWrite).mutates(),
+    MethodSpec::needs("inbox.entries.remove", JobsWrite).mutates(),
+    MethodSpec::needs("inbox.preview", JobsWrite).mutates(),
+    MethodSpec::needs("inbox.submit", JobsWrite).mutates(),
+    MethodSpec::needs("inbox.submissions.get", JobsRead),
+    MethodSpec::needs("inbox.submissions.retry", JobsWrite).mutates(),
+    MethodSpec::needs("cloud.oauth.begin", ConfigWrite)
+        .mutates()
+        .human(),
+    MethodSpec::needs("cloud.oauth.finish", ConfigWrite)
+        .mutates()
+        .human(),
+    MethodSpec::needs("cloud.oauth.status", ConfigWrite).human(),
+    MethodSpec::needs("cloud.oauth.cancel", ConfigWrite)
+        .mutates()
+        .human(),
+    MethodSpec::needs("cloud.oauth.refresh", ConfigWrite)
+        .mutates()
+        .human(),
+    MethodSpec::needs("cloud.oauth.disconnect", ConfigWrite)
+        .mutates()
+        .human(),
     MethodSpec::needs("cloud.accounts.list", JobsRead),
     MethodSpec::needs("cloud.accounts.configure", ConfigWrite)
         .mutates()
@@ -291,6 +317,16 @@ pub fn authorize(
     {
         return Err(ApiError::permission_denied(spec.name));
     }
+    if matches!(
+        spec.name,
+        "inbox.packages.list" | "inbox.packages.get" | "inbox.submissions.get"
+    ) && params
+        .get("owner_credential_id")
+        .is_some_and(|v| !v.is_null())
+        && !identity.kind.is_human_capable()
+    {
+        return Err(ApiError::human_required("cross-owner inbox inspection"));
+    }
     let human_by_param = spec
         .human_param
         .is_some_and(|name| params.get(name).and_then(Value::as_bool).unwrap_or(false));
@@ -414,6 +450,13 @@ mod tests {
             .map(|m| m.name)
             .collect();
         let expected: BTreeSet<&str> = [
+            "inbox.packages.put",
+            "inbox.packages.archive",
+            "inbox.entries.add",
+            "inbox.entries.remove",
+            "inbox.preview",
+            "inbox.submit",
+            "inbox.submissions.retry",
             "cloud.plan",
             "cloud.submit",
             "cloud.control",
@@ -446,6 +489,31 @@ mod tests {
             let result = authorize(None, method, &serde_json::json!({}));
             let pre_auth = matches!(method.name, "daemon.hello" | "daemon.authenticate");
             assert_eq!(result.is_ok(), pre_auth, "{}", method.name);
+        }
+    }
+
+    #[test]
+    fn cross_owner_inbox_inspection_requires_a_human_capable_credential() {
+        let agent = identity(ClientKind::Agent, ClientRole::Mcp);
+        let human = identity(ClientKind::Human, ClientRole::Cli);
+        for name in [
+            "inbox.packages.list",
+            "inbox.packages.get",
+            "inbox.submissions.get",
+        ] {
+            let spec = lookup(name).unwrap();
+            assert!(authorize(Some(&agent), spec, &serde_json::json!({})).is_ok());
+            let params =
+                serde_json::json!({"owner_credential_id":"cli_01M45NHJ2AHWMXT8JVJ7BEEJX7"});
+            assert_eq!(
+                authorize(Some(&agent), spec, &params)
+                    .unwrap_err()
+                    .envelope()
+                    .code
+                    .as_str(),
+                codes::HUMAN_REQUIRED
+            );
+            assert!(authorize(Some(&human), spec, &params).is_ok());
         }
     }
 

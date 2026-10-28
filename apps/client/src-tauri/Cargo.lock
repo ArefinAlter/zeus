@@ -1530,6 +1530,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "fs4"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7e72ed92b67c146290f88e9c89d60ca163ea417a446f61ffd7b72df3e7f1dfd5"
+dependencies = [
+ "rustix",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "fs_extra"
 version = "1.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5519,6 +5529,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d245f478577f809a851594d02313b640fb437e0bb33866753cff937863096954"
 
 [[package]]
+name = "unicode-normalization"
+version = "0.1.26"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "75cd3fb03d5288b3ba9a1ee103ac7e9cbb59f0b03d64f8ddfcc04dd42758a85d"
+dependencies = [
+ "tinyvec",
+]
+
+[[package]]
 name = "unicode-segmentation"
 version = "1.13.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6501,6 +6520,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "xattr"
+version = "1.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "32e45ad4206f6d2479085147f02bc2ef834ac85886624a23575ae137c8aa8156"
+dependencies = [
+ "libc",
+ "rustix",
+]
+
+[[package]]
 name = "yoke"
 version = "0.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6797,7 +6826,9 @@ version = "0.0.1-beta.1"
 dependencies = [
  "axum",
  "hex",
+ "quick-xml",
  "reqwest",
+ "rustix",
  "serde",
  "serde_json",
  "sha2 0.11.1",
@@ -6806,8 +6837,10 @@ dependencies = [
  "tokio",
  "tracing",
  "url",
+ "win32job",
  "zeus-api",
  "zeus-app",
+ "zeus-fs",
  "zeus-types",
 ]
 
@@ -6818,6 +6851,7 @@ dependencies = [
  "base64 0.23.1",
  "hex",
  "notify",
+ "regex",
  "serde",
  "serde_json",
  "sha2 0.11.1",
@@ -6829,7 +6863,9 @@ dependencies = [
  "url",
  "zeus-api",
  "zeus-app",
+ "zeus-fs",
  "zeus-types",
+ "zip",
 ]
 
 [[package]]
@@ -6876,11 +6912,13 @@ name = "zeus-cloud"
 version = "0.0.1-beta.1"
 dependencies = [
  "async-trait",
+ "base64 0.23.1",
  "bytes",
  "futures",
  "hex",
  "http",
  "md-5",
+ "rand 0.10.3",
  "reqwest",
  "schemars 1.2.2",
  "serde",
@@ -6891,6 +6929,23 @@ dependencies = [
  "tokio-util",
  "url",
  "zeroize",
+]
+
+[[package]]
+name = "zeus-fs"
+version = "0.1.0"
+dependencies = [
+ "fs4",
+ "rustix",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tracing",
+ "trash",
+ "unicode-normalization",
+ "windows-sys 0.61.2",
+ "xattr",
+ "zeus-types",
 ]
 
 [[package]]
@@ -6918,13 +6973,18 @@ name = "zeus-mcp"
 version = "0.0.1-beta.1"
 dependencies = [
  "async-trait",
+ "blake3",
+ "futures",
  "rmcp",
  "schemars 1.2.2",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
  "tokio",
+ "tokio-util",
  "tracing",
+ "url",
+ "zeroize",
  "zeus-api",
  "zeus-types",
  "zeus-verify",

@@ -25,7 +25,7 @@ type Plan = {
   supported: boolean
   unsupported_reason?: string
 }
-type Delivery = { approval_id?: string; committed_bytes: number; delivery_id: string; state: string; reason?: string; plan: Plan }
+type Delivery = { source_bytes_done?: number; source_verified?: boolean; approval_id?: string; committed_bytes: number; delivery_id: string; state: string; reason?: string; plan: Plan }
 const id = () => `desktop-${crypto.randomUUID()}`
 
 export function Uploads({ initialPath = '', initialName = '' }: { initialPath?: string; initialName?: string }) {
@@ -96,7 +96,7 @@ export function Uploads({ initialPath = '', initialName = '' }: { initialPath?: 
       })
       setPlan(result.plan)
     })
-  const openReview = (action: 'configure' | 'revoke' | 'review' | 'approve', target = '') => void run(async () => {
+  const openReview = (action: 'configure' | 'revoke' | 'review' | 'approve' | 'oauth-login' | 'oauth-status' | 'oauth-refresh' | 'oauth-disconnect' | 'oauth-disconnect-remote', target = '') => void run(async () => {
     await call('POST', '/native/v1/cloud/review-terminal', { action, id: target })
     setMessage('Zeus opened a review terminal for this installation. Read the scope and confirm there. This window never sends a decision.')
   })
@@ -121,12 +121,21 @@ export function Uploads({ initialPath = '', initialName = '' }: { initialPath?: 
         Connect Google Drive, Yandex Disk, Baidu Netdisk or a configured rclone remote with account setup below. A
         destination must support uploading; support varies by connector. Account credentials stay in the engine.
       </p>
-      <div class="row-actions"><button class="btn" disabled={busy} onClick={()=>openReview('configure')}>Connect destination</button><button class="btn" disabled={busy} onClick={()=>openReview('review')}>Review pending approvals</button></div>
+      <section class="upload-card" aria-label="Connect a cloud account">
+        <strong>Connect a cloud account</strong>
+        <p>Sign in to Google Drive, Yandex Disk or Baidu Netdisk with your registered app. A separate terminal reviews the destination and permissions, then opens browser or device consent instructions.</p>
+        <div class="row-actions">
+          <button class="btn primary" disabled={busy} onClick={() => openReview('oauth-login')}>Sign in to a drive</button>
+          <button class="btn" disabled={busy} onClick={() => openReview('configure')}>Use a token or rclone</button>
+          <button class="btn" disabled={busy} onClick={() => openReview('review')}>Review pending approvals</button>
+        </div>
+        <p class="muted">Credentials stay in this computer’s keyring. Every upload still needs your approval. Provider app registration and account access are required.</p>
+      </section>
       {error ? <Notice kind="error">{error}</Notice> : null}
       {message ? <Notice kind="info">{message}</Notice> : null}
       {!accounts.some((a) => !a.revoked) ? (
         <Notice kind="info">
-          No destination is connected yet. Choose Connect destination below; Zeus opens account setup for this installation. Local
+          No destination is connected yet. Choose Sign in to a drive or Use a token or rclone above. Zeus opens setup for this installation. Local
           files must be in a folder included under Settings, Search and index.
         </Notice>
       ) : null}
@@ -254,8 +263,9 @@ export function Uploads({ initialPath = '', initialName = '' }: { initialPath?: 
             <article class="upload-card">
               <strong>{d.plan.remote_name}</strong>
               <span>
-                {d.state} · {fmtBytes(d.committed_bytes)} / {fmtBytes(d.plan.size_bytes)} → {d.plan.destination}
+                {d.state} · uploaded {fmtBytes(d.committed_bytes)} / {fmtBytes(d.plan.size_bytes)} → {d.plan.destination}
               </span>
+              {d.source_bytes_done !== undefined ? <span class="muted">Prepared locally: {fmtBytes(d.source_bytes_done)} / {fmtBytes(d.plan.size_bytes)} · {d.source_verified ? 'verified' : 'verification pending'}</span> : null}
               {d.reason ? <span class="muted">{d.reason}</span> : null}
               <div class="row-actions">
                 {d.approval_id && d.state === 'awaiting_approval' ? <button class="btn small" disabled={busy} onClick={()=>openReview('approve',d.approval_id)}>Review approval</button> : null}
@@ -294,7 +304,14 @@ export function Uploads({ initialPath = '', initialName = '' }: { initialPath?: 
               {a.provider} · {a.destination}
               {a.revoked ? ' · revoked' : ''}
             </p>
-            {!a.revoked ? <button class="btn small" disabled={busy} onClick={()=>openReview('revoke',a.account_id)}>Review disconnect</button> : null}
+            <div class="row-actions">
+              <button class="btn small" disabled={busy} onClick={() => openReview('oauth-status', a.account_id)}>Connection status</button>
+              {!a.revoked ? <>
+                <button class="btn small" disabled={busy || a.provider === 'rclone'} onClick={() => openReview('oauth-refresh', a.account_id)}>Review refresh</button>
+                <button class="btn small" disabled={busy} onClick={() => openReview('oauth-disconnect', a.account_id)}>Review disconnect</button>
+                <button class="btn small" disabled={busy || a.provider === 'rclone'} onClick={() => openReview('oauth-disconnect-remote', a.account_id)}>Review remote revocation</button>
+              </> : null}
+            </div>
             <p class="muted">
               Upload: {a.capabilities.staged_upload ? 'supported' : 'unavailable'} · Streaming:{' '}
               {a.capabilities.stream_upload ? 'supported' : 'unavailable'} · Provider fetch:{' '}

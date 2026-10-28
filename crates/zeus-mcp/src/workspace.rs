@@ -7,6 +7,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use zeus_api::methods::*;
+use zeus_api::methods::artifacts::ArtifactsLifecyclePreviewResult;
 use zeus_api::{ApiError, Client};
 
 use crate::output::NextStep;
@@ -137,7 +138,7 @@ pub struct ArtifactsArgs {
     pub request: ArtifactsRequest,
 }
 
-/// Artifact methods available to agents. No deletion, GC or materialization.
+/// Artifact methods available to agents. Lifecycle effects retain daemon review and scope checks.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ArtifactsRequest {
@@ -191,6 +192,18 @@ pub enum ArtifactsRequest {
         #[serde(default)]
         media_type: Option<String>,
     },
+    /// Preview a record retention/tombstone effect or a verified copy into a permitted root.
+    LifecyclePreview {
+        /// Visible record identity.
+        artifact_id: String,
+        /// Closed daemon lifecycle operation; this cannot release quarantine or approve anything.
+        operation: artifacts::ArtifactLifecycleOperation,
+    },
+    /// Apply the exact preview, requesting human review when the daemon requires it.
+    LifecycleApply {
+        /// The complete previous preview receipt, copied without amendments.
+        preview: serde_json::Map<String, Value>,
+    },
 }
 
 fn default_limit() -> u32 {
@@ -230,7 +243,7 @@ fn fail(error: ApiError) -> ToolOutcome {
     outcome
 }
 
-fn key(value: &str) -> Result<(), ToolOutcome> {
+pub(crate) fn key(value: &str) -> Result<(), ToolOutcome> {
     if value.is_empty() || value.len() > 128 || value.chars().any(char::is_control) {
         return Err(fail(ApiError::invalid_params(
             "idempotency_key must be 1–128 UTF-8 bytes without controls",
@@ -249,7 +262,7 @@ fn limit(value: u32, maximum: u32) -> Result<(), ToolOutcome> {
 }
 
 /// Validate typed parameters and forward retry keys to each mutating daemon method.
-async fn rpc<M: RpcMethod, C: Client>(
+pub(crate) async fn rpc<M: RpcMethod, C: Client>(
     client: &C,
     mut params: Value,
     retry_key: &str,
@@ -268,7 +281,7 @@ async fn rpc<M: RpcMethod, C: Client>(
         .map_err(|_| fail(ApiError::internal("result could not be serialized")))
 }
 
-fn output(
+pub(crate) fn output(
     operation: &'static str,
     mut data: Value,
     next: &'static str,
@@ -527,8 +540,44 @@ pub async fn artifacts<C: Client>(
             )
             .await?,
         ),
+        ArtifactsRequest::LifecyclePreview {
+            artifact_id,
+            operation,
+        } => (
+            "artifacts.lifecycle.preview",
+            rpc::<ArtifactsLifecyclePreview, _>(
+                client,
+                json!({"artifact_id":artifact_id,"operation":operation}),
+                k,
+            )
+            .await?,
+        ),
+        ArtifactsRequest::LifecycleApply { preview } => {
+            let exact: ArtifactsLifecyclePreviewResult =
+                serde_json::from_value(Value::Object(preview)).map_err(|_| {
+                    fail(ApiError::invalid_params(
+                        "lifecycle preview receipt is malformed",
+                    ))
+                })?;
+            (
+                "artifacts.lifecycle.apply",
+                rpc::<ArtifactsLifecycleApply, _>(
+                    client,
+                    json!({"plan":exact.plan,"plan_hash":exact.plan_hash}),
+                    k,
+                )
+                .await?,
+            )
+        }
     };
-    output(method, data, "none")
+    let next = if method == "artifacts.lifecycle.preview" {
+        "review_plan"
+    } else if method == "artifacts.lifecycle.apply" && data["applied"] == false {
+        "ask_user"
+    } else {
+        "none"
+    };
+    output(method, data, next)
 }
 
 #[cfg(test)]

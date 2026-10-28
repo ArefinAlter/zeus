@@ -49,6 +49,10 @@ pub(super) struct Account {
     pub view: CloudAccountView,
     pub config: ProviderConfig,
     pub credential_key: Option<String>,
+    #[serde(default)]
+    pub oauth: Option<super::oauth::OAuthAccount>,
+    #[serde(default)]
+    pub pending_credentials: Vec<String>,
 }
 #[derive(Clone, Serialize, Deserialize)]
 pub(super) struct Plan {
@@ -68,6 +72,8 @@ pub(super) struct Delivery {
     pub stop: Option<CloudControlAction>,
     #[serde(default)]
     pub staged_sha256: Option<Hex256>,
+    #[serde(default)]
+    pub source_checkpoint: Option<super::staging::SourceCheckpoint>,
 }
 #[derive(Clone, Serialize, Deserialize)]
 pub(super) struct Receipt {
@@ -142,6 +148,28 @@ impl Store {
     }
     pub fn list<T: DeserializeOwned>(&self, prefix: &str) -> ApiResult<Vec<T>> {
         self.map(prefix, Some)
+    }
+    /// Remove a private cleanup marker while maintaining the bounded byte ledger.
+    pub fn remove(&self, key: &str) -> ApiResult<()> {
+        let mut tx = self.0.begin_write().map_err(|_| fail())?;
+        tx.set_durability(redb::Durability::Immediate)
+            .map_err(|_| fail())?;
+        {
+            let mut table = tx.open_table(RECORDS).map_err(|_| fail())?;
+            let mut limits = tx.open_table(LIMITS).map_err(|_| fail())?;
+            let freed = table
+                .remove(key)
+                .map_err(|_| fail())?
+                .map_or(0, |v| v.value().len() as u64);
+            let used = limits
+                .get("bytes")
+                .map_err(|_| fail())?
+                .map_or(0, |v| v.value());
+            limits
+                .insert("bytes", used.saturating_sub(freed))
+                .map_err(|_| fail())?;
+        }
+        tx.commit().map_err(|_| fail())
     }
     pub fn save<T: Serialize>(&self, key: &str, value: &T) -> ApiResult<()> {
         self.save_many(&[(

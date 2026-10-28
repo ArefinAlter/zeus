@@ -63,3 +63,5 @@ pub mod workflows;
 
 /// Approval-bound, durable cloud delivery operations.
 pub mod cloud;
+
+mod inbox;

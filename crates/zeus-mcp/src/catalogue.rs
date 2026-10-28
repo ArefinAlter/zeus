@@ -35,6 +35,8 @@ pub struct ToolDef {
     pub open_world: bool,
     /// Requires an `idempotency_key` argument.
     pub needs_idempotency_key: bool,
+    /// Optional standard extension metadata, including read-only App visibility.
+    pub meta: Option<Map<String, Value>>,
     /// JSON Schema of the arguments.
     pub input_schema: Map<String, Value>,
     /// JSON Schema of `structuredContent`.
@@ -79,6 +81,7 @@ pub fn catalogue() -> Vec<ToolDef> {
                     .as_bool()
                     .expect("openWorldHint"),
                 needs_idempotency_key,
+                meta: entry.get("_meta").and_then(Value::as_object).cloned(),
                 input_schema,
                 output_schema: entry["outputSchema"]
                     .as_object()
@@ -97,14 +100,18 @@ impl ToolDef {
             .destructive(self.destructive)
             .idempotent(self.idempotent)
             .open_world(self.open_world);
-        rmcp::model::Tool::new(
+        let tool = rmcp::model::Tool::new(
             self.name,
             self.description,
             Arc::new(self.input_schema.clone()),
         )
         .with_raw_output_schema(Arc::new(self.output_schema.clone()))
         .with_annotations(annotations)
-        .with_title(self.title)
+        .with_title(self.title);
+        match &self.meta {
+            Some(meta) => tool.with_meta(rmcp::model::MetaObject(meta.clone())),
+            None => tool,
+        }
     }
 }
 
@@ -142,7 +149,8 @@ mod tests {
                 "zeus_cloud",
                 "zeus_workflow",
                 "zeus_files",
-                "zeus_artifacts"
+                "zeus_artifacts",
+                "zeus_inbox"
             ]
         );
     }

@@ -243,7 +243,13 @@ fn check_sources(plan: &Plan, out: &mut Vec<Diagnostic>) {
                     check_url(url, &format!("/sources/{i}/urls/{j}"), plan, out);
                 }
             }
-            Source::Sitemap { url, .. } | Source::ApiEndpoint { url, .. } => {
+            Source::Sitemap { url, loc_pattern } => {
+                check_url(url, &format!("/sources/{i}/url"), plan, out);
+                if let Some(pattern) = loc_pattern {
+                    check_regex(pattern, &format!("/sources/{i}/loc_pattern"), out);
+                }
+            }
+            Source::ApiEndpoint { url, .. } => {
                 check_url(url, &format!("/sources/{i}/url"), plan, out);
             }
         }

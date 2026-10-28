@@ -1,4 +1,4 @@
-//! The Zeus app's in-app agent: model providers with the person's own keys, and the thirteen Zeus tools.
+//! The Zeus app's in-app agent: model providers with the person's own keys, and the fourteen Zeus tools.
 //!
 //! Provider traffic is made here, by the Rust process, directly to the provider the person chose; the page has no
 //! network access and never sees a key. Keys live in the operating system's credential store (or an encrypted file).

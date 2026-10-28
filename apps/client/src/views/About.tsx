@@ -13,7 +13,7 @@ const REAL: [string, string][] = [
   ['Job states and controls', 'The twelve states of spec 01 and the pause, resume, retry and cancel rules, as zeusd applies them.'],
   ['Link review', 'The two-step Preview downloads, Start reviewed downloads flow of the desktop client, with its 50-link and 64 KiB limits.'],
   ['Approvals', 'Facts in a fixed order, the scopes a kind allows, the request hash and bind code, the 750 ms arming delay, typed codes, and refusal when the facts changed.'],
-  ['Agent tools', 'The thirteen MCP tools of zeus-mcp with their access levels; no tool decides an approval, at any level.'],
+  ['Agent tools', 'The fourteen MCP tools of zeus-mcp with their access levels; no tool decides an approval, at any level.'],
   ['Search syntax and schedules', 'The file search syntax and the queue and limiter rules, covered by tests in this app.'],
 ]
 
@@ -136,7 +136,7 @@ const NATIVE_REAL: [string, string][] = [
   ['Files', 'An index of your download folders kept up to date by a file watcher, instant search with the operators of a file-search tool, a preview of text and pictures, rename, move and delete on your click.'],
   ['Link grabber and site grabber', 'Online check of many links at once, a reviewed batch started once, duplicate handling; a polite crawler that reads robots.txt and keeps to the host you name.'],
   ['Agent', 'Threads with your own model keys (Anthropic, OpenAI-compatible providers, Gemini, local Ollama). Keys stay in the operating system credential store and never reach this window. Nothing is sent to a provider until you allow it for that provider.'],
-  ['Connect', 'The thirteen Zeus tools for Claude Code, Cursor and Codex through the bundled zeus program, and the browser extension with its native-messaging host.'],
+  ['Connect', 'The fourteen Zeus tools for Claude Code, Cursor and Codex through the bundled zeus program, and the browser extension with its native-messaging host.'],
 ]
 
 const NATIVE_LIMITS: [string, string][] = [

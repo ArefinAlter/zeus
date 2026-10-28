@@ -11,6 +11,7 @@ mod credential;
 mod google;
 mod http_client;
 mod model;
+pub mod oauth;
 mod rclone;
 mod source;
 #[cfg(test)]

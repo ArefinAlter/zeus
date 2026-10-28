@@ -19,7 +19,8 @@
         "zeus_cloud",
         "zeus_workflow",
         "zeus_files",
-        "zeus_artifacts"
+        "zeus_artifacts",
+        "zeus_inbox"
       ]
     },
     "LaterToolName": {
@@ -725,7 +726,8 @@
         "zeus_cloud",
         "zeus_workflow",
         "zeus_files",
-        "zeus_artifacts"
+        "zeus_artifacts",
+        "zeus_inbox"
       ],
       "properties": {
         "zeus_probe": {
@@ -827,9 +829,17 @@
         "zeus_artifacts": {
           "const": {
             "readOnlyHint": false,
-            "destructiveHint": false,
+            "destructiveHint": true,
             "idempotentHint": true,
             "openWorldHint": false
+          }
+        },
+        "zeus_inbox": {
+          "const": {
+            "readOnlyHint": false,
+            "destructiveHint": true,
+            "idempotentHint": true,
+            "openWorldHint": true
           }
         }
       }
@@ -854,7 +864,11 @@
           "properties": { "type": { "const": "object" } },
           "additionalProperties": true
         },
-        "annotations": { "$ref": "#/$defs/ToolAnnotations" }
+        "annotations": { "$ref": "#/$defs/ToolAnnotations" },
+        "_meta": {
+          "type": "object",
+          "additionalProperties": true
+        }
       }
     },
     "TextContent": {
@@ -1445,6 +1459,102 @@
                 "action",
                 "path"
               ]
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "action": {
+                  "const": "lifecycle_preview"
+                },
+                "artifact_id": {
+                  "type": "string"
+                },
+                "operation": {
+                  "oneOf": [
+                    {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "kind": {
+                          "const": "delete"
+                        }
+                      },
+                      "required": [
+                        "kind"
+                      ]
+                    },
+                    {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "kind": {
+                          "const": "set_retention"
+                        },
+                        "retention": {
+                          "enum": [
+                            "keep",
+                            "evictable"
+                          ]
+                        },
+                        "retain_until": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "format": "date-time"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "retention"
+                      ]
+                    },
+                    {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "kind": {
+                          "const": "materialize"
+                        },
+                        "path": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "path"
+                      ]
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "action",
+                "artifact_id",
+                "operation"
+              ]
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "action": {
+                  "const": "lifecycle_apply"
+                },
+                "preview": {
+                  "type": "object",
+                  "description": "Exact lifecycle preview receipt (plan and plan_hash); daemon validates every nested field."
+                }
+              },
+              "required": [
+                "action",
+                "preview"
+              ]
             }
           ]
         }
@@ -1455,6 +1565,194 @@
       ]
     },
     "ArtifactsOutput": {
+      "type": "object",
+      "required": [
+        "operation",
+        "untrusted_data",
+        "truncated",
+        "next"
+      ],
+      "properties": {
+        "operation": {
+          "type": "string"
+        },
+        "untrusted_data": {
+          "type": "object"
+        },
+        "truncated": {
+          "type": "boolean"
+        },
+        "next": {
+          "$ref": "#/$defs/NextStep"
+        }
+      }
+    },
+    "CatalogueUi": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "zeus_probe",
+        "zeus_enqueue",
+        "zeus_status",
+        "zeus_wait",
+        "zeus_control",
+        "zeus_verify",
+        "zeus_session_list",
+        "zeus_session_request",
+        "zeus_files_list",
+        "zeus_cloud",
+        "zeus_workflow",
+        "zeus_files",
+        "zeus_artifacts",
+        "zeus_inbox"
+      ],
+      "properties": {
+        "zeus_probe": {
+          "const": {
+            "visibility": [
+              "model"
+            ]
+          }
+        },
+        "zeus_enqueue": {
+          "const": {
+            "visibility": [
+              "model"
+            ]
+          }
+        },
+        "zeus_status": {
+          "const": {
+            "resourceUri": "ui://zeus/transfer-monitor/v1",
+            "visibility": [
+              "model",
+              "app"
+            ]
+          }
+        },
+        "zeus_wait": {
+          "const": {
+            "resourceUri": "ui://zeus/transfer-monitor/v1",
+            "visibility": [
+              "model",
+              "app"
+            ]
+          }
+        },
+        "zeus_control": {
+          "const": {
+            "visibility": [
+              "model"
+            ]
+          }
+        },
+        "zeus_verify": {
+          "const": {
+            "visibility": [
+              "model"
+            ]
+          }
+        },
+        "zeus_session_list": {
+          "const": {
+            "visibility": [
+              "model"
+            ]
+          }
+        },
+        "zeus_session_request": {
+          "const": {
+            "visibility": [
+              "model"
+            ]
+          }
+        },
+        "zeus_files_list": {
+          "const": {
+            "visibility": [
+              "model"
+            ]
+          }
+        },
+        "zeus_cloud": {
+          "const": {
+            "visibility": [
+              "model"
+            ]
+          }
+        },
+        "zeus_workflow": {
+          "const": {
+            "visibility": [
+              "model"
+            ]
+          }
+        },
+        "zeus_files": {
+          "const": {
+            "visibility": [
+              "model"
+            ]
+          }
+        },
+        "zeus_artifacts": {
+          "const": {
+            "visibility": [
+              "model"
+            ]
+          }
+        },
+        "zeus_inbox": {
+          "const": {
+            "visibility": [
+              "model"
+            ]
+          }
+        }
+      }
+    },
+    "InboxInput": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "idempotency_key",
+        "request"
+      ],
+      "properties": {
+        "idempotency_key": {
+          "$ref": "#/$defs/IdempotencyKey"
+        },
+        "request": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "action"
+          ],
+          "properties": {
+            "action": {
+              "enum": [
+                "package_put",
+                "packages_list",
+                "package_get",
+                "package_archive",
+                "entries_add",
+                "entries_remove",
+                "preview",
+                "submit",
+                "submission_get",
+                "submission_retry"
+              ]
+            },
+            "parameters": {
+              "type": "object",
+              "description": "Closed typed parameters from zeus://inbox/schema. No owner selector or inner idempotency key is accepted. Read pages default to 10; inspect larger results through inbox resources.",
+              "default": {}
+            }
+          }
+        }
+      }
+    },
+    "InboxOutput": {
       "type": "object",
       "required": [
         "operation",

@@ -25,42 +25,14 @@ pub fn quarantine_refusal(what: &str) -> Failure {
     )
 }
 
-fn exists_nofollow(p: &Path) -> bool {
-    std::fs::symlink_metadata(p).is_ok()
-}
-
 /// Move `from` to `to` without ever replacing something at `to`.
 pub fn move_noreplace(from: &Path, to: &Path) -> std::io::Result<()> {
-    if exists_nofollow(to) {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::AlreadyExists,
-            "the target exists",
-        ));
-    }
-    let meta = std::fs::symlink_metadata(from)?;
-    if meta.is_file() {
-        // A hard link fails when the target exists, so this cannot replace a file that appears at the last moment.
-        match std::fs::hard_link(from, to) {
-            Ok(()) => return std::fs::remove_file(from),
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => return Err(e),
-            Err(_) => {}
-        }
-    }
-    if exists_nofollow(to) {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::AlreadyExists,
-            "the target exists",
-        ));
-    }
-    match std::fs::rename(from, to) {
-        Ok(()) => Ok(()),
-        // Across volumes: copy, then remove, for files.
-        Err(_) if meta.is_file() => {
-            std::fs::copy(from, to)?;
-            std::fs::remove_file(from)
-        }
-        Err(e) => Err(e),
-    }
+    use zeus_fs::{Filesystem, FsError, RealFs};
+    RealFs.rename_noreplace(from, to).map_err(|e| match e {
+        FsError::AlreadyExists => std::io::Error::from(std::io::ErrorKind::AlreadyExists),
+        FsError::Io { source, .. } => source,
+        _ => std::io::Error::other("Atomic no-replace move is unavailable."),
+    })
 }
 
 fn already(name: &str) -> Failure {

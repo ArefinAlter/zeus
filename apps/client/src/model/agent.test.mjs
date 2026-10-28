@@ -12,9 +12,9 @@ import { applyEvent, approvalsCommand, settingsLinkFor, trimItems, untilLastUser
 
 const catalogue = JSON.parse(readFileSync(new URL('../../../../docs/spec/generated/mcp-catalogue.json', import.meta.url), 'utf8'))
 
-test('the page lists exactly the thirteen tools of the MCP catalogue', () => {
+test('the page lists exactly the fourteen tools of the MCP catalogue', () => {
   assert.deepEqual(TOOLS.map((t) => t.name).sort(), catalogue.map((t) => t.name).sort())
-  assert.equal(TOOLS.length, 13)
+  assert.equal(TOOLS.length, 14)
 })
 
 test('no tool, action or access level can decide an approval', () => {
@@ -89,4 +89,20 @@ test('the approvals command carries this app\'s environment and quotes it for th
   assert.ok(win.endsWith("& 'C:\\Program Files\\Zeus\\zeus.exe' approvals"))
   const nix = approvalsCommand({ ZEUS_PROFILE: 'zeus-app' }, '/opt/zeus app', 'linux')
   assert.equal(nix, "ZEUS_PROFILE='zeus-app' '/opt/zeus app/zeus' approvals")
+})
+
+
+test('inbox reads, intake mutations and artifact lifecycle respect thread access', () => {
+  const all = TOOLS.map(t => t.name)
+  for (const action of ['packages_list', 'package_get', 'submission_get']) assert.equal(mayCall('zeus_inbox', 'read', all, action).ok, true)
+  for (const action of ['package_put', 'package_archive', 'entries_add', 'entries_remove', 'preview', 'submit', 'submission_retry']) {
+    assert.equal(mayCall('zeus_inbox', 'read', all, action).ok, false)
+    assert.equal(mayCall('zeus_inbox', 'download', all, action).ok, true)
+  }
+  for (const action of ['lifecycle_preview', 'lifecycle_apply']) {
+    assert.equal(mayCall('zeus_artifacts', 'read', all, action).ok, false)
+    assert.equal(mayCall('zeus_artifacts', 'download', all, action).ok, false)
+    assert.equal(mayCall('zeus_artifacts', 'organize', all, action).ok, true)
+  }
+  for (const action of ['raw_rpc', 'owner_inspect', 'grant', undefined]) assert.equal(mayCall('zeus_inbox', 'organize', all, action).ok, false)
 })

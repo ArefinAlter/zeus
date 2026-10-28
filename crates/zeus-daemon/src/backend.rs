@@ -20,6 +20,7 @@ use zeus_api::methods::artifacts::{
     ArtifactsListParams, ArtifactsListResult,
 };
 use zeus_api::methods::cloud::*;
+use zeus_api::methods::cloud_oauth::*;
 use zeus_api::methods::daemon::{
     KillSwitchParams, KillSwitchResult, ShutdownParams, ShutdownResult, StatusParams, StatusResult,
 };
@@ -30,6 +31,7 @@ use zeus_api::methods::files::{
     FilesListParams, FilesListResult, FilesOrganizeParams, FilesOrganizeResult,
     FilesRootsRegisterParams, FilesRootsRegisterResult, FilesUndoParams, FilesUndoResult,
 };
+use zeus_api::methods::inbox::*;
 use zeus_api::methods::jobs::{
     EnqueueParams, EnqueueResult, JobsControlParams, JobsControlResult, JobsGetParams,
     JobsGetResult, JobsListParams, JobsListResult, JobsVerifyParams, JobsVerifyResult,
@@ -66,6 +68,38 @@ macro_rules! backend {
 }
 
 backend! {
+    /// Durable owner-scoped `inbox.package.put`.
+    inbox_package_put(InboxPackagePutParams) -> InboxMutationResult;
+    /// Durable owner-scoped `inbox.packages.list`.
+    inbox_packages_list(InboxPackagesListParams) -> InboxPackagesListResult;
+    /// Durable owner-scoped `inbox.package.get`.
+    inbox_package_get(InboxPackageGetParams) -> InboxPackageGetResult;
+    /// Durable owner-scoped `inbox.package.archive`.
+    inbox_package_archive(InboxPackageArchiveParams) -> InboxMutationResult;
+    /// Durable owner-scoped `inbox.entries.add`.
+    inbox_entries_add(InboxEntriesAddParams) -> InboxEntriesAddResult;
+    /// Durable owner-scoped `inbox.entries.remove`.
+    inbox_entries_remove(InboxEntriesRemoveParams) -> InboxMutationResult;
+    /// Durable owner-scoped `inbox.preview`.
+    inbox_preview(InboxPreviewParams) -> InboxPreviewResult;
+    /// Durable owner-scoped `inbox.submit`.
+    inbox_submit(InboxSubmitParams) -> InboxSubmitResult;
+    /// Durable owner-scoped `inbox.submission.get`.
+    inbox_submission_get(InboxSubmissionGetParams) -> InboxSubmissionView;
+    /// Durable owner-scoped `inbox.submission.retry`.
+    inbox_submission_retry(InboxSubmissionRetryParams) -> InboxSubmitResult;
+    /// Human-only `cloud.oauth.begin`.
+    cloud_oauth_begin(CloudOAuthBeginParams) -> CloudOAuthBeginResult;
+    /// Human-only `cloud.oauth.finish`.
+    cloud_oauth_finish(CloudOAuthFinishParams) -> CloudOAuthStatus;
+    /// Human-only `cloud.oauth.status`.
+    cloud_oauth_status(CloudOAuthStatusParams) -> CloudOAuthStatus;
+    /// Human-only `cloud.oauth.cancel`.
+    cloud_oauth_cancel(CloudOAuthCancelParams) -> CloudOAuthStatus;
+    /// Human-only `cloud.oauth.refresh`.
+    cloud_oauth_refresh(CloudOAuthRefreshParams) -> CloudOAuthStatus;
+    /// Human-only `cloud.oauth.disconnect`.
+    cloud_oauth_disconnect(CloudOAuthDisconnectParams) -> CloudOAuthDisconnectResult;
     /// `cloud.accounts.list`.
     cloud_accounts_list(CloudAccountsListParams) -> CloudAccountsListResult;
     /// `cloud.accounts.configure`.

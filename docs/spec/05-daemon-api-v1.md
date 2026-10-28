@@ -1555,3 +1555,28 @@ Decided while writing this document; the code and the named documents are to fol
 | O7 | `tool.call` records the daemon method, not the MCP tool name that 04's example shows. | Let bridges pass the outer tool name as an untrusted, length-limited `_meta` member that the daemon records verbatim. |
 | O8 | A `never` entry can only be created by denying an approval (07 open issue O1). | A human-only `sessions.block {origin, surface}` method, once 01 allows a `never` grant without an approval. |
 | O9 | Agents see every job, including the user's browser handoffs, because rescue flows need them (06 open issue O3 raises the privacy side). | Keep for v1; consider a configuration switch that limits agents to their own jobs plus handoffs the human forwards explicitly. |
+
+## 20. Durable intake packages (desktop alpha0.1)
+
+Intake retains private `NewJob` requests before a reviewed enqueue. Ownership is the authenticated credential ID, never a caller-supplied source identity. Original URL/header/referrer/hint fields are not returned in any package, preview or dispatch view. Every mutating method requires a1–128-byte idempotency key, binds the entire typed request to that owner and rejects changed-payload retries. Package edits require the current revision.
+
+| Method | Permission | Result and boundary |
+|---|---|---|
+| `inbox.packages.put` | `jobs.write` | Create a daemon-minted package or edit its current name/default destination. |
+| `inbox.packages.list` | `jobs.read` | Owner-filtered metadata page, at most100 records. |
+| `inbox.packages.get` | `jobs.read` | Metadata plus a redacted entry page, at most100 entries/256KiB with a continuation cursor. `include_history` defaults false. |
+| `inbox.packages.archive` | `jobs.write` | Archive/unarchive metadata, preserving downloads and receipts. |
+| `inbox.entries.add` | `jobs.write` | Add1–200 requests/512KiB with exact typed-request deduplication within the package. |
+| `inbox.entries.remove` | `jobs.write` | Remove1–500 intake references only; associated downloads remain intact. |
+| `inbox.preview` | `jobs.write` | Save an immutable ten-minute review of at most50 pending requests: concrete safe filename/destination, collision facts and separate approval requirements. No download starts. |
+| `inbox.submit` | `jobs.write` | Persist a dispatch intent, then enqueue its exact reviewed requests with `overwrite=fail`; no approval is decided. |
+| `inbox.submissions.get` | `jobs.read` | One pending/completed dispatch projection, excluding its hidden requests and retry key. |
+| `inbox.submissions.retry` | `jobs.write` | Reconcile only the named dispatch using its original hidden request/key; never replace it with a new batch. |
+
+The three read methods accept an explicit `owner_credential_id` inspection selector only for human-capable credentials. Agent/service credentials, including the desktop GUI credential, are refused that selector by policy and backend checks. The selector never permits cross-owner mutation or execution. `packages.get(include_history=true)` returns at most16 saved redacted previews and the newest20 dispatch views, bounded to768KiB/256KiB respectively. An oversized explicit history returns `api.payload_too_large` with guidance to read metadata/entries without history and inspect a specific dispatch. Session material and original requests stay private during human inspection too.
+
+An unresolved dispatch fences package edits. Its durable intent precedes `jobs.enqueue`; the existing per-item enqueue receipts recover accepted job IDs after interruption. A restart does not automatically dispatch pending packages. See [the executable alpha intake contract](../alpha-0.1/INBOX.md) for retained-state bounds and [the normative schema](schema/inbox.v1.schema.json). These methods add no network listener, root registration or approval authority.
+
+```json validate=daemon-api.v1#/$defs/InboxPackagesPutRequest
+{"jsonrpc":"2.0","id":600,"method":"inbox.packages.put","params":{"untrusted_name":"Research package","default_dest_dir":null,"idempotency_key":"research-package-1"}}
+```

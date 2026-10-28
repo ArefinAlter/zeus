@@ -1,8 +1,9 @@
-// The file index of the desktop app: what the page reads (a delta of the engine's index every second or two), the
-// preview of one file, and the file operations the person clicks. Nothing here touches a disk: every call goes through
+// Native file workspace: bounded Rust search pages, scoped live folder/Everything views, metadata-only
+// index status sync, previews and the durable file/archive operations the person clicks. Nothing here touches a disk: every call goes through
 // the closed route table, whose Rust side checks each path against download and explicitly managed folders.
 
 import type { Settings } from './settings.ts'
+import type { Query } from '../model/search.ts'
 import { call } from './remote.ts'
 
 export interface IndexRow {
@@ -33,6 +34,11 @@ export interface IndexStatus {
   generation: number
   last_scan: number | null
   watcher: boolean
+  freshness?: 'reconciling' | 'scan_incomplete' | 'watching' | 'periodic_scan'
+  watcher_gaps?: number
+  unreadable_directories?: number
+  unavailable_roots?: number
+  snapshot_error?: boolean
   capped: boolean
   cap: number
   roots: IndexRootStatus[]
@@ -93,13 +99,117 @@ export interface CopyJob {
   error: string
 }
 
+export interface SearchPage {
+  generation: number
+  files: IndexRow[]
+  total: number
+  total_bytes: number
+  next: number | null
+  elapsed_ms: number
+}
+
+export interface FileHistoryRecord {
+  id: string
+  from: string
+  path: string
+  state: 'pending' | 'complete' | 'failed' | 'undoing' | 'undone'
+  created_ms: number
+  can_undo: boolean
+  directory: boolean
+}
+
+export interface FileAnalytics {
+  generation: number
+  files: number
+  logical_bytes: number
+  measurement: 'logical_file_size'
+  directories: { path: string; files: number; bytes: number }[]
+  extensions: { path: string; files: number; bytes: number }[]
+  duplicate_candidates: { bytes: number; files: number; paths: string[]; truncated: boolean; verified: false }[]
+}
+
+function nativeQuery(q: Query): unknown[][] {
+  return q.map(group => group.map(term => {
+    if (term.kind === 'regex' || term.kind === 'wild') return { kind: term.kind, neg: term.neg, path: term.path, pattern: term.re.source, match_case: !term.re.ignoreCase }
+    if (term.kind === 'text') return { kind: term.kind, neg: term.neg, path: term.path, value: term.value, match_case: term.matchCase, whole_word: term.wholeWord }
+    return term
+  }))
+}
+
+export interface ArchiveJob {
+  id: string
+  kind: 'create' | 'extract'
+  state: 'ready' | 'running' | 'publishing' | 'interrupted' | 'complete' | 'cancelled' | 'failed' | 'uncertain'
+  source: string
+  target: string
+  total_bytes: number
+  bytes: number
+  total_entries: number
+  entries: number
+  error: string
+  staging: string | null
+  sha256: string | null
+  digest_kind: 'zip_bytes_sha256' | 'tree_manifest_sha256'
+}
+export interface ArchivePlan {
+  id: string
+  kind: 'create' | 'extract'
+  source: string
+  target: string
+  total_bytes: number
+  total_entries: number
+  entries: { name: string; bytes: number; directory: boolean }[]
+  truncated: boolean
+  state: 'ready'
+}
+
+export interface EverythingSettings {
+  enabled: boolean
+  helper: string
+  sha256: string
+  instance: string
+  file_id?: unknown
+}
+export interface EverythingConfig {
+  settings: EverythingSettings
+  supported: boolean
+  provider: 'everything_ipc2'
+  independent_usn_backend: false
+  suggested_helper: string | null
+}
+export interface EverythingPage {
+  provider: 'everything_ipc2'
+  consistency: 'live'
+  files: IndexRow[]
+  next: number | null
+  skipped: number
+  elapsed_ms: number
+}
+
 export const filesApi = {
+  everythingConfig: () => call<EverythingConfig>('GET', '/native/v1/index/everything/config'),
+  everythingInspect: (path: string) => call<{helper: string; sha256: string; bytes: number; modified_ms: number}>('POST', '/native/v1/index/everything/inspect', { path }),
+  everythingConfigure: (settings: EverythingSettings) => call<EverythingConfig>('PUT', '/native/v1/index/everything/config', settings),
+  everythingSearch: (root: string, text: string, sort = 'name', descending = false, offset = 0) => call<EverythingPage>('POST', '/native/v1/index/everything/search', { root, text, sort, descending, offset }),
+  archives: () => call<{jobs: ArchiveJob[]}>('GET', '/native/v1/files/archives'),
+  archivePrepare: (kind: 'create' | 'extract', source: string, directory: string, name: string) => call<ArchivePlan>('POST', '/native/v1/files/archive/prepare', { kind, source, directory, name }),
+  archiveStart: (id: string) => call<ArchiveJob>('POST', '/native/v1/files/archive/start', { id }),
+  archiveReconcile: (id: string) => call<{ok: boolean; sha256: string}>('POST', '/native/v1/files/archive/reconcile', { id }),
+  archiveCancel: (id: string) => call<ArchiveJob>('POST', '/native/v1/files/archive/cancel', { id }),
+  archiveCleanup: (id: string) => call<{ok: boolean}>('POST', '/native/v1/files/archive/cleanup', { id }),
+  archiveDismiss: (id: string) => call<{ok: boolean}>('POST', '/native/v1/files/archive/dismiss', { id }),
+  search: (query: Query, filter: string, sort: string, descending: boolean, offset = 0, generation?: number) => call<SearchPage>('POST', '/native/v1/index/search', { groups: nativeQuery(query), filter, sort, descending, limit: 500, offset, ...(generation !== undefined ? { generation } : {}) }),
+  analytics: () => call<FileAnalytics>('GET', '/native/v1/index/analytics'),
+  history: () => call<{ records: FileHistoryRecord[]; load_failed: boolean }>('GET', '/native/v1/files/history'),
+  undo: (id: string) => call<{ ok: boolean }>('POST', '/native/v1/files/history/undo', { id }),
+  reconcile: (id: string) => call<{ ok: boolean }>('POST', '/native/v1/files/history/reconcile', { id }),
+  verifyDuplicates: (paths: string[]) => call<{ algorithm: string; bytes_read: number; groups: { sha256: string; paths: string[]; verified: true }[] }>('POST', '/native/v1/files/duplicates/verify', { paths }),
   copies: () => call<{ jobs: CopyJob[] }>('GET', '/native/v1/files/copies'),
   list: (path: string, after = '') => call<{ path: string; files: IndexRow[]; next: string | null; skipped: number }>('POST', '/native/v1/files/list', { path, after, limit: 500 }),
   copyStart: (path: string, dir: string) => call<CopyJob>('POST', '/native/v1/files/copy/start', { path, dir }),
   copyStatus: (id: string) => call<CopyJob>('POST', '/native/v1/files/copy/status', { id }),
   copyCancel: (id: string) => call<CopyJob>('POST', '/native/v1/files/copy/cancel', { id }),
-  changes: (since: number) => call<IndexDelta>('POST', '/native/v1/index/changes', { since }),
+  changes: (since: number) => call<IndexDelta>('POST', '/native/v1/index/changes', { since, summary_only: true }),
   status: () => call<IndexStatus>('GET', '/native/v1/index/status'),
   rescan: (path?: string) => call<unknown>('POST', '/svc/v1/index/rescan', path ? { path } : {}),
   config: () => call<IndexConfigWire>('GET', '/native/v1/index/config'),

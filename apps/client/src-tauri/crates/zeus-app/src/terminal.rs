@@ -15,12 +15,19 @@ fn arguments(action: &str, id: &str) -> Result<Vec<String>> {
             .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_');
     let args = match action {
         "configure" if id.is_empty() => vec!["cloud", "accounts", "configure"],
+        "oauth-login" if id.is_empty() => vec!["cloud", "auth", "login"],
+        "oauth-status" if valid_id => vec!["cloud", "auth", "status", id],
+        "oauth-refresh" if valid_id => vec!["cloud", "auth", "refresh", id],
+        "oauth-disconnect" if valid_id => vec!["cloud", "auth", "disconnect", id],
+        "oauth-disconnect-remote" if valid_id => {
+            vec!["cloud", "auth", "disconnect", id, "--revoke-remote"]
+        }
         "revoke" if valid_id => vec!["cloud", "accounts", "revoke", id],
         "approve" if valid_id => vec!["approvals", "approve", id],
         "review" if id.is_empty() => vec!["tui"],
         _ => {
             return Err(Failure::invalid(
-                "Choose account setup, account revocation or approval review.",
+                "Choose account setup, cloud sign-in/lifecycle or approval review.",
             ));
         }
     };
@@ -155,7 +162,20 @@ mod tests {
             arguments("approve", "01AB-CD").unwrap(),
             ["approvals", "approve", "01AB-CD"]
         );
+        assert_eq!(
+            arguments("oauth-login", "").unwrap(),
+            ["cloud", "auth", "login"]
+        );
+        assert_eq!(
+            arguments("oauth-disconnect-remote", "research").unwrap(),
+            ["cloud", "auth", "disconnect", "research", "--revoke-remote"]
+        );
         for (action, id) in [
+            ("oauth-login", "extra"),
+            ("oauth-refresh", "--help"),
+            ("oauth-status", "a;echo x"),
+            ("oauth-disconnect-remote", "../other"),
+            ("oauth-refresh", ""),
             ("configure", "extra"),
             ("approve", "--yes"),
             ("approve", "a;echo x"),

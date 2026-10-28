@@ -6530,6 +6530,694 @@
           }
         }
       ]
+    },
+    "CloudOauthBeginParams": {
+      "$ref": "https://zeus.invalid/schema/cloud.v1#/$defs/CloudOAuthBeginParams"
+    },
+    "CloudOauthBeginResult": {
+      "$ref": "https://zeus.invalid/schema/cloud.v1#/$defs/CloudOAuthBeginResult"
+    },
+    "CloudOauthBeginRequest": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/RequestBase"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "method": {
+              "const": "cloud.oauth.begin"
+            },
+            "params": {
+              "$ref": "#/$defs/CloudOauthBeginParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ]
+        }
+      ]
+    },
+    "CloudOauthBeginResponse": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/SuccessBase"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "result": {
+              "$ref": "#/$defs/CloudOauthBeginResult"
+            }
+          }
+        }
+      ]
+    },
+    "CloudOauthCancelParams": {
+      "$ref": "https://zeus.invalid/schema/cloud.v1#/$defs/CloudOAuthCancelParams"
+    },
+    "CloudOauthCancelResult": {
+      "$ref": "https://zeus.invalid/schema/cloud.v1#/$defs/CloudOAuthStatus"
+    },
+    "CloudOauthCancelRequest": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/RequestBase"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "method": {
+              "const": "cloud.oauth.cancel"
+            },
+            "params": {
+              "$ref": "#/$defs/CloudOauthCancelParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ]
+        }
+      ]
+    },
+    "CloudOauthCancelResponse": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/SuccessBase"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "result": {
+              "$ref": "#/$defs/CloudOauthCancelResult"
+            }
+          }
+        }
+      ]
+    },
+    "CloudOauthDisconnectParams": {
+      "$ref": "https://zeus.invalid/schema/cloud.v1#/$defs/CloudOAuthDisconnectParams"
+    },
+    "CloudOauthDisconnectResult": {
+      "$ref": "https://zeus.invalid/schema/cloud.v1#/$defs/CloudOAuthDisconnectResult"
+    },
+    "CloudOauthDisconnectRequest": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/RequestBase"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "method": {
+              "const": "cloud.oauth.disconnect"
+            },
+            "params": {
+              "$ref": "#/$defs/CloudOauthDisconnectParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ]
+        }
+      ]
+    },
+    "CloudOauthDisconnectResponse": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/SuccessBase"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "result": {
+              "$ref": "#/$defs/CloudOauthDisconnectResult"
+            }
+          }
+        }
+      ]
+    },
+    "CloudOauthFinishParams": {
+      "$ref": "https://zeus.invalid/schema/cloud.v1#/$defs/CloudOAuthFinishParams"
+    },
+    "CloudOauthFinishResult": {
+      "$ref": "https://zeus.invalid/schema/cloud.v1#/$defs/CloudOAuthStatus"
+    },
+    "CloudOauthFinishRequest": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/RequestBase"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "method": {
+              "const": "cloud.oauth.finish"
+            },
+            "params": {
+              "$ref": "#/$defs/CloudOauthFinishParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ]
+        }
+      ]
+    },
+    "CloudOauthFinishResponse": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/SuccessBase"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "result": {
+              "$ref": "#/$defs/CloudOauthFinishResult"
+            }
+          }
+        }
+      ]
+    },
+    "CloudOauthRefreshParams": {
+      "$ref": "https://zeus.invalid/schema/cloud.v1#/$defs/CloudOAuthRefreshParams"
+    },
+    "CloudOauthRefreshResult": {
+      "$ref": "https://zeus.invalid/schema/cloud.v1#/$defs/CloudOAuthStatus"
+    },
+    "CloudOauthRefreshRequest": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/RequestBase"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "method": {
+              "const": "cloud.oauth.refresh"
+            },
+            "params": {
+              "$ref": "#/$defs/CloudOauthRefreshParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ]
+        }
+      ]
+    },
+    "CloudOauthRefreshResponse": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/SuccessBase"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "result": {
+              "$ref": "#/$defs/CloudOauthRefreshResult"
+            }
+          }
+        }
+      ]
+    },
+    "CloudOauthStatusParams": {
+      "$ref": "https://zeus.invalid/schema/cloud.v1#/$defs/CloudOAuthStatusParams"
+    },
+    "CloudOauthStatusResult": {
+      "$ref": "https://zeus.invalid/schema/cloud.v1#/$defs/CloudOAuthStatus"
+    },
+    "CloudOauthStatusRequest": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/RequestBase"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "method": {
+              "const": "cloud.oauth.status"
+            },
+            "params": {
+              "$ref": "#/$defs/CloudOauthStatusParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ]
+        }
+      ]
+    },
+    "CloudOauthStatusResponse": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/SuccessBase"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "result": {
+              "$ref": "#/$defs/CloudOauthStatusResult"
+            }
+          }
+        }
+      ]
+    },
+    "InboxEntriesAddParams": {
+      "$ref": "https://zeus.invalid/schema/inbox.v1#/$defs/InboxEntriesAddParams"
+    },
+    "InboxEntriesAddResult": {
+      "$ref": "https://zeus.invalid/schema/inbox.v1#/$defs/InboxEntriesAddResult"
+    },
+    "InboxEntriesAddRequest": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/RequestBase"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "method": {
+              "const": "inbox.entries.add"
+            },
+            "params": {
+              "$ref": "#/$defs/InboxEntriesAddParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ]
+        }
+      ]
+    },
+    "InboxEntriesAddResponse": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/SuccessBase"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "result": {
+              "$ref": "#/$defs/InboxEntriesAddResult"
+            }
+          }
+        }
+      ]
+    },
+    "InboxEntriesRemoveParams": {
+      "$ref": "https://zeus.invalid/schema/inbox.v1#/$defs/InboxEntriesRemoveParams"
+    },
+    "InboxEntriesRemoveResult": {
+      "$ref": "https://zeus.invalid/schema/inbox.v1#/$defs/InboxMutationResult"
+    },
+    "InboxEntriesRemoveRequest": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/RequestBase"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "method": {
+              "const": "inbox.entries.remove"
+            },
+            "params": {
+              "$ref": "#/$defs/InboxEntriesRemoveParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ]
+        }
+      ]
+    },
+    "InboxEntriesRemoveResponse": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/SuccessBase"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "result": {
+              "$ref": "#/$defs/InboxEntriesRemoveResult"
+            }
+          }
+        }
+      ]
+    },
+    "InboxPackagesArchiveParams": {
+      "$ref": "https://zeus.invalid/schema/inbox.v1#/$defs/InboxPackageArchiveParams"
+    },
+    "InboxPackagesArchiveResult": {
+      "$ref": "https://zeus.invalid/schema/inbox.v1#/$defs/InboxMutationResult"
+    },
+    "InboxPackagesArchiveRequest": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/RequestBase"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "method": {
+              "const": "inbox.packages.archive"
+            },
+            "params": {
+              "$ref": "#/$defs/InboxPackagesArchiveParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ]
+        }
+      ]
+    },
+    "InboxPackagesArchiveResponse": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/SuccessBase"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "result": {
+              "$ref": "#/$defs/InboxPackagesArchiveResult"
+            }
+          }
+        }
+      ]
+    },
+    "InboxPackagesGetParams": {
+      "$ref": "https://zeus.invalid/schema/inbox.v1#/$defs/InboxPackageGetParams"
+    },
+    "InboxPackagesGetResult": {
+      "$ref": "https://zeus.invalid/schema/inbox.v1#/$defs/InboxPackageGetResult"
+    },
+    "InboxPackagesGetRequest": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/RequestBase"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "method": {
+              "const": "inbox.packages.get"
+            },
+            "params": {
+              "$ref": "#/$defs/InboxPackagesGetParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ]
+        }
+      ]
+    },
+    "InboxPackagesGetResponse": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/SuccessBase"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "result": {
+              "$ref": "#/$defs/InboxPackagesGetResult"
+            }
+          }
+        }
+      ]
+    },
+    "InboxPackagesListParams": {
+      "$ref": "https://zeus.invalid/schema/inbox.v1#/$defs/InboxPackagesListParams"
+    },
+    "InboxPackagesListResult": {
+      "$ref": "https://zeus.invalid/schema/inbox.v1#/$defs/Page"
+    },
+    "InboxPackagesListRequest": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/RequestBase"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "method": {
+              "const": "inbox.packages.list"
+            },
+            "params": {
+              "$ref": "#/$defs/InboxPackagesListParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ]
+        }
+      ]
+    },
+    "InboxPackagesListResponse": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/SuccessBase"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "result": {
+              "$ref": "#/$defs/InboxPackagesListResult"
+            }
+          }
+        }
+      ]
+    },
+    "InboxPackagesPutParams": {
+      "$ref": "https://zeus.invalid/schema/inbox.v1#/$defs/InboxPackagePutParams"
+    },
+    "InboxPackagesPutResult": {
+      "$ref": "https://zeus.invalid/schema/inbox.v1#/$defs/InboxMutationResult"
+    },
+    "InboxPackagesPutRequest": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/RequestBase"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "method": {
+              "const": "inbox.packages.put"
+            },
+            "params": {
+              "$ref": "#/$defs/InboxPackagesPutParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ]
+        }
+      ]
+    },
+    "InboxPackagesPutResponse": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/SuccessBase"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "result": {
+              "$ref": "#/$defs/InboxPackagesPutResult"
+            }
+          }
+        }
+      ]
+    },
+    "InboxPreviewParams": {
+      "$ref": "https://zeus.invalid/schema/inbox.v1#/$defs/InboxPreviewParams"
+    },
+    "InboxPreviewResult": {
+      "$ref": "https://zeus.invalid/schema/inbox.v1#/$defs/InboxPreviewResult"
+    },
+    "InboxPreviewRequest": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/RequestBase"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "method": {
+              "const": "inbox.preview"
+            },
+            "params": {
+              "$ref": "#/$defs/InboxPreviewParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ]
+        }
+      ]
+    },
+    "InboxPreviewResponse": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/SuccessBase"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "result": {
+              "$ref": "#/$defs/InboxPreviewResult"
+            }
+          }
+        }
+      ]
+    },
+    "InboxSubmissionsGetParams": {
+      "$ref": "https://zeus.invalid/schema/inbox.v1#/$defs/InboxSubmissionGetParams"
+    },
+    "InboxSubmissionsGetResult": {
+      "$ref": "https://zeus.invalid/schema/inbox.v1#/$defs/InboxSubmissionView"
+    },
+    "InboxSubmissionsGetRequest": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/RequestBase"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "method": {
+              "const": "inbox.submissions.get"
+            },
+            "params": {
+              "$ref": "#/$defs/InboxSubmissionsGetParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ]
+        }
+      ]
+    },
+    "InboxSubmissionsGetResponse": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/SuccessBase"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "result": {
+              "$ref": "#/$defs/InboxSubmissionsGetResult"
+            }
+          }
+        }
+      ]
+    },
+    "InboxSubmissionsRetryParams": {
+      "$ref": "https://zeus.invalid/schema/inbox.v1#/$defs/InboxSubmissionRetryParams"
+    },
+    "InboxSubmissionsRetryResult": {
+      "$ref": "https://zeus.invalid/schema/inbox.v1#/$defs/InboxSubmitResult"
+    },
+    "InboxSubmissionsRetryRequest": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/RequestBase"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "method": {
+              "const": "inbox.submissions.retry"
+            },
+            "params": {
+              "$ref": "#/$defs/InboxSubmissionsRetryParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ]
+        }
+      ]
+    },
+    "InboxSubmissionsRetryResponse": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/SuccessBase"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "result": {
+              "$ref": "#/$defs/InboxSubmissionsRetryResult"
+            }
+          }
+        }
+      ]
+    },
+    "InboxSubmitParams": {
+      "$ref": "https://zeus.invalid/schema/inbox.v1#/$defs/InboxSubmitParams"
+    },
+    "InboxSubmitResult": {
+      "$ref": "https://zeus.invalid/schema/inbox.v1#/$defs/InboxSubmitResult"
+    },
+    "InboxSubmitRequest": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/RequestBase"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "method": {
+              "const": "inbox.submit"
+            },
+            "params": {
+              "$ref": "#/$defs/InboxSubmitParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ]
+        }
+      ]
+    },
+    "InboxSubmitResponse": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/SuccessBase"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "result": {
+              "$ref": "#/$defs/InboxSubmitResult"
+            }
+          }
+        }
+      ]
     }
   }
 }

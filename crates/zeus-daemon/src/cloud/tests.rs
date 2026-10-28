@@ -585,6 +585,7 @@ async fn killed_or_revoked_scope_stops_inflight_bytes_and_cannot_resume() {
         .journal
         .transact(|tx| tx.set_kill_switch(false))
         .unwrap();
+    let revoked_credential_key = f.service.account("drive").unwrap().credential_key.unwrap();
     let revoked = f
         .service
         .revoke(
@@ -612,7 +613,7 @@ async fn killed_or_revoked_scope_stops_inflight_bytes_and_cannot_resume() {
             .await
             .is_err()
     );
-    assert!(f.service.credentials.get("drive-r1").is_err());
+    assert!(f.service.credentials.get(&revoked_credential_key).is_err());
     assert!(f.get(&delivery.delivery_id).artifact.is_none());
     f.service.shutdown().await;
 }
@@ -1372,4 +1373,321 @@ async fn local_file_cannot_bypass_job_quarantine_even_after_approval() {
         CloudDeliveryState::Completed
     );
     assert_eq!(std::fs::read(path).unwrap(), b"quarantine regression");
+}
+
+/// Explicit test port maps an approved public source onto a loopback fixture. Production always
+/// constructs PublicNetwork and retains source::response_from DNS/peer/redirect checks.
+struct StagingWire {
+    endpoint: String,
+}
+#[async_trait]
+impl staging::SourceNetwork for StagingWire {
+    async fn response(
+        &self,
+        url: &HttpUrl,
+        _size: u64,
+        resume: Option<(String, u64)>,
+        cancel: &CancellationToken,
+    ) -> ApiResult<(HttpUrl, reqwest::Response)> {
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        let mut request = client.get(&self.endpoint);
+        if let Some((etag, offset)) = resume {
+            request = request
+                .header("Range", format!("bytes={offset}-"))
+                .header("If-Range", etag);
+        }
+        let response = tokio::select! {
+            _ = cancel.cancelled() => return Err(invalid("fixture canceled")),
+            response = request.send() => response.map_err(|_| fail())?,
+        };
+        Ok((url.clone(), response))
+    }
+}
+async fn staged_wire_fixture(bytes: &[u8]) -> (Fixture, Delivery, HttpUrl) {
+    let f = Fixture::new().await;
+    f.service
+        .configure(
+            &f.human,
+            Actor::human(Surface::CliInteractive),
+            CloudAccountsConfigureParams {
+                account_id: "drive".into(),
+                label: "Fixture".into(),
+                config: ProviderConfig::GoogleDrive {
+                    parent_id: "root".into(),
+                },
+                max_bytes_per_delivery: 32 << 20,
+                expected_revision: Some(1),
+                credential: None,
+                idempotency_key: "larger-fixture".into(),
+            },
+        )
+        .await
+        .unwrap();
+    let url = HttpUrl::parse("https://example.org/stage?signature=SOURCE-STAGING-CANARY").unwrap();
+    let plan = f
+        .service
+        .plan(
+            &f.agent,
+            CloudPlanParams {
+                account_id: "drive".into(),
+                mode: DeliveryMode::StagedUpload,
+                source: CloudSource::PublicUrl {
+                    url: url.clone(),
+                    size_bytes: bytes.len() as u64,
+                    sha256: Some(zeus_verify::hash_bytes(bytes).sha256),
+                    block_md5: None,
+                },
+                remote_name: "fixture.bin".into(),
+                max_bytes: 32 << 20,
+                max_seconds: 3600,
+                allow_unbounded_remote: false,
+                idempotency_key: "range-plan".into(),
+            },
+        )
+        .await
+        .unwrap()
+        .plan;
+    let view = f
+        .service
+        .submit(
+            &f.agent,
+            CloudSubmitParams {
+                plan_id: plan.plan_id,
+                plan_hash: plan.plan_hash,
+                idempotency_key: "range-submit".into(),
+            },
+        )
+        .await
+        .unwrap()
+        .delivery;
+    f.approve(&view).await;
+    f.service
+        .store
+        .mutate_delivery(&view.delivery_id, |row| {
+            row.view.state = CloudDeliveryState::Running;
+            Ok(())
+        })
+        .unwrap();
+    let row = f
+        .service
+        .store
+        .get(&format!("delivery:{}", view.delivery_id))
+        .unwrap()
+        .unwrap();
+    (f, row, url)
+}
+async fn staging_server(
+    bytes: Arc<Vec<u8>>,
+    ignore_range: bool,
+) -> (
+    StagingWire,
+    Arc<std::sync::Mutex<Vec<String>>>,
+    tokio::task::JoinHandle<()>,
+) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = format!("http://{}/fixture", listener.local_addr().unwrap());
+    let requests = Arc::new(std::sync::Mutex::new(vec![]));
+    let observed = requests.clone();
+    let task = tokio::spawn(async move {
+        let mut ordinal = 0;
+        loop {
+            let Ok((mut stream, _)) = listener.accept().await else {
+                break;
+            };
+            let mut head = vec![];
+            while !head.ends_with(b"\r\n\r\n") && head.len() < 8192 {
+                let mut one = [0];
+                if stream.read(&mut one).await.unwrap_or(0) == 0 {
+                    break;
+                }
+                head.push(one[0]);
+            }
+            let head = String::from_utf8(head).unwrap().to_ascii_lowercase();
+            observed.lock().unwrap().push(head.clone());
+            let requested = head
+                .lines()
+                .find_map(|s| s.strip_prefix("range: bytes="))
+                .map(|s| s.split('-').next().unwrap().parse::<usize>().unwrap());
+            let start = if ignore_range {
+                0
+            } else {
+                requested.unwrap_or(0)
+            };
+            let range = if requested.is_some() && !ignore_range {
+                format!(
+                    "Content-Range: bytes {}-{}/{}\r\n",
+                    start,
+                    bytes.len() - 1,
+                    bytes.len()
+                )
+            } else {
+                String::new()
+            };
+            let status = if requested.is_some() && !ignore_range {
+                "206 Partial Content"
+            } else {
+                "200 OK"
+            };
+            let headers = format!(
+                "HTTP/1.1 {status}\r\nContent-Length: {}\r\nETag: \"stage-v1\"\r\n{range}Connection: close\r\n\r\n",
+                bytes.len() - start
+            );
+            stream.write_all(headers.as_bytes()).await.unwrap();
+            if ordinal == 0 {
+                let _ = stream.write_all(&bytes[..5 << 20]).await;
+            } else {
+                let _ = stream.write_all(&bytes[start..]).await;
+            }
+            ordinal += 1;
+        }
+    });
+    (StagingWire { endpoint }, requests, task)
+}
+#[tokio::test]
+async fn partial_url_staging_recovers_over_http_and_ignored_ranges_restart_without_append() {
+    for ignore_range in [false, true] {
+        let bytes = Arc::new(
+            (0..(9 << 20) + 123)
+                .map(|i| (i % 251) as u8)
+                .collect::<Vec<_>>(),
+        );
+        let (f, row, url) = staged_wire_fixture(&bytes).await;
+        let path = f
+            .service
+            .staging
+            .join(format!("{}.part", row.view.delivery_id));
+        let (network, requests, server) = staging_server(bytes.clone(), ignore_range).await;
+        assert!(
+            staging::download_using(
+                &f.service,
+                &row,
+                &url,
+                &path,
+                &CancellationToken::new(),
+                &network
+            )
+            .await
+            .is_err()
+        );
+        let resumed: Delivery = f
+            .service
+            .store
+            .get(&format!("delivery:{}", row.view.delivery_id))
+            .unwrap()
+            .unwrap();
+        assert_eq!(resumed.view.source_bytes_done, 4 << 20);
+        assert!(!resumed.view.source_verified);
+        assert!(resumed.source_checkpoint.is_some());
+        assert!(
+            !serde_json::to_string(&resumed.view)
+                .unwrap()
+                .contains("SOURCE-STAGING-CANARY")
+        );
+        let mut file = staging::download_using(
+            &f.service,
+            &resumed,
+            &url,
+            &path,
+            &CancellationToken::new(),
+            &network,
+        )
+        .await
+        .unwrap();
+        let mut actual = vec![];
+        file.read_to_end(&mut actual).await.unwrap();
+        assert_eq!(
+            zeus_verify::hash_bytes(&actual).sha256,
+            zeus_verify::hash_bytes(&bytes).sha256
+        );
+        assert_eq!(actual, *bytes);
+        let seen = requests.lock().unwrap().clone();
+        assert_eq!(seen.len(), 2);
+        assert!(
+            seen[1].contains("range: bytes=4194304-\r\n"),
+            "{:?}",
+            seen[1]
+        );
+        assert!(seen[1].contains("if-range: \"stage-v1\""));
+        server.abort();
+        f.service.shutdown().await;
+    }
+}
+
+#[path = "oauth_tests.rs"]
+mod oauth_tests;
+
+#[tokio::test]
+async fn omitted_credential_cannot_cross_native_provider_boundaries() {
+    let f = Fixture::new().await;
+    let params = CloudAccountsConfigureParams {
+        account_id: "drive".into(),
+        label: "Provider change".into(),
+        config: ProviderConfig::YandexDisk {
+            root_path: "disk:/Zeus".into(),
+        },
+        max_bytes_per_delivery: 1_000_000,
+        expected_revision: Some(1),
+        credential: None,
+        idempotency_key: "different-provider".into(),
+    };
+    let error = f
+        .service
+        .configure(
+            &f.human,
+            Actor::human(Surface::CliInteractive),
+            params.clone(),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(error.envelope().code.as_str(), "api.invalid_params");
+    let unchanged = f.service.account("drive").unwrap();
+    assert_eq!(unchanged.view.revision, 1);
+    assert_eq!(unchanged.view.provider, ProviderKind::GoogleDrive);
+    let mut replacement = params;
+    replacement.credential = Some("EXPLICIT-NEW-PROVIDER-CREDENTIAL".into());
+    replacement.idempotency_key = "explicit-different-provider".into();
+    let changed = f
+        .service
+        .configure(&f.human, Actor::human(Surface::CliInteractive), replacement)
+        .await
+        .unwrap();
+    assert_eq!(changed.account.revision, 2);
+    assert_eq!(changed.account.provider, ProviderKind::YandexDisk);
+    let mut same_provider = CloudAccountsConfigureParams {
+        account_id: "drive".into(),
+        label: "Same provider edit".into(),
+        config: ProviderConfig::YandexDisk {
+            root_path: "disk:/Zeus".into(),
+        },
+        max_bytes_per_delivery: 1_000_000,
+        expected_revision: Some(2),
+        credential: None,
+        idempotency_key: "same-provider".into(),
+    };
+    let same = f
+        .service
+        .configure(
+            &f.human,
+            Actor::human(Surface::CliInteractive),
+            same_provider.clone(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(same.account.revision, 3);
+    same_provider.config = ProviderConfig::GoogleDrive {
+        parent_id: "root".into(),
+    };
+    same_provider.expected_revision = Some(3);
+    same_provider.idempotency_key = "provider-switch-back".into();
+    assert!(
+        f.service
+            .configure(
+                &f.human,
+                Actor::human(Surface::CliInteractive),
+                same_provider
+            )
+            .await
+            .is_err()
+    );
 }

@@ -12,8 +12,13 @@ members = [".", "crates/zeus-app", "crates/zeus-app-ext", "crates/zeus-app-index
 
 [workspace.dependencies]
 win32job = "2"
+rustix = "1"
 zeus-api = { path = "../../../crates/zeus-api" }
 zeus-types = { path = "../../../../zeus-core/crates/zeus-types" }
+zeus-fs = { path = "../../../../zeus-core/crates/zeus-fs" }
+quick-xml = "0.42"
+regex = "1.13"
+zip = { version = "9.1.2", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1.53", features = ["rt-multi-thread", "macros", "sync", "time", "net", "fs", "process", "signal", "io-util"] }
@@ -26,7 +31,7 @@ hex = "0.4"
 directories = "6"
 toml = "1.1"
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio"] }
-reqwest = { version = "0.13", default-features = false, features = ["rustls", "http2", "system-proxy"] }
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "http2", "system-proxy", "stream"] }
 
 [package]
 name = "zeus-client"

@@ -650,7 +650,7 @@ export function AgentSettings() {
       </SettingsGroup>
       <SettingsGroup title="Use Zeus from your own agent">
         <div class="row stack">
-          <div class="desc">Any MCP client gets the same thirteen tools over stdio. Register the server once:</div>
+          <div class="desc">Any MCP client gets the same fourteen tools over stdio. Register the server once:</div>
           <CodeCopy text="claude mcp add zeus -- zeus mcp" />
         </div>
       </SettingsGroup>

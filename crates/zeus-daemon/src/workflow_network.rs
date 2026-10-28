@@ -559,6 +559,27 @@ impl WorkflowNetwork {
         url: &str,
         run: Option<zeus_types::RunId>,
     ) -> RuntimeResult<Document> {
+        self.document_with_accept(plan, url, run, "text/html,application/json;q=0.9,*/*;q=0.1")
+            .await
+    }
+    pub async fn document_with_accept(
+        self: &Arc<Self>,
+        plan: &Plan,
+        url: &str,
+        run: Option<zeus_types::RunId>,
+        accept: &str,
+    ) -> RuntimeResult<Document> {
+        let accept = match accept {
+            "application/xml,text/xml;q=0.9" => "application/xml,text/xml;q=0.9",
+            "application/json" => "application/json",
+            "text/html,application/xhtml+xml;q=0.9,*/*;q=0.1" => {
+                "text/html,application/xhtml+xml;q=0.9,*/*;q=0.1"
+            }
+            "text/html,application/json;q=0.9,*/*;q=0.1" => {
+                "text/html,application/json;q=0.9,*/*;q=0.1"
+            }
+            _ => return Err(RuntimeError::Policy("workflow.document_accept")),
+        };
         let mut url =
             url::Url::parse(url).map_err(|_| RuntimeError::Policy("workflow.url_invalid"))?;
         for _ in 0..=10 {
@@ -568,10 +589,7 @@ impl WorkflowNetwork {
                 "accept-encoding",
                 http::HeaderValue::from_static("identity"),
             );
-            headers.insert(
-                "accept",
-                http::HeaderValue::from_static("text/html,application/json;q=0.9,*/*;q=0.1"),
-            );
+            headers.insert("accept", http::HeaderValue::from_static(accept));
             let mut response = self
                 .send(
                     HttpRequest {
@@ -626,7 +644,11 @@ impl WorkflowNetwork {
                 final_url: url.into(),
                 status: response.status.as_u16(),
                 content_type,
-                body: String::from_utf8_lossy(&body).into_owned(),
+                body: if accept == "application/xml,text/xml;q=0.9" {
+                    zeus_workflow::decode_sitemap_document(&body)?
+                } else {
+                    String::from_utf8_lossy(&body).into_owned()
+                },
                 headers,
             });
         }

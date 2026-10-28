@@ -23,6 +23,14 @@ use zeus_api::methods::{
     CloudAccountsConfigure, CloudAccountsList, CloudAccountsRevoke, CloudControl, CloudGet,
     CloudList, CloudPlan, CloudSubmit,
 };
+use zeus_api::methods::{
+    CloudOAuthBegin, CloudOAuthCancel, CloudOAuthDisconnect, CloudOAuthFinish, CloudOAuthRefresh,
+    CloudOAuthStatusMethod,
+};
+use zeus_api::methods::{
+    InboxEntriesAdd, InboxEntriesRemove, InboxPackageArchive, InboxPackageGet, InboxPackagePut,
+    InboxPackagesList, InboxPreview, InboxSubmissionGet, InboxSubmissionRetry, InboxSubmit,
+};
 use zeus_types::Timestamp;
 
 use crate::backend::Backend;
@@ -48,6 +56,32 @@ pub fn build_router<B: Backend>(backend: Arc<B>) -> Router {
             server_time: Timestamp::now(),
         })
     });
+    let router = forward!(router, backend, InboxPackagePut, inbox_package_put);
+    let router = forward!(router, backend, InboxPackagesList, inbox_packages_list);
+    let router = forward!(router, backend, InboxPackageGet, inbox_package_get);
+    let router = forward!(router, backend, InboxPackageArchive, inbox_package_archive);
+    let router = forward!(router, backend, InboxEntriesAdd, inbox_entries_add);
+    let router = forward!(router, backend, InboxEntriesRemove, inbox_entries_remove);
+    let router = forward!(router, backend, InboxPreview, inbox_preview);
+    let router = forward!(router, backend, InboxSubmit, inbox_submit);
+    let router = forward!(router, backend, InboxSubmissionGet, inbox_submission_get);
+    let router = forward!(
+        router,
+        backend,
+        InboxSubmissionRetry,
+        inbox_submission_retry
+    );
+    let router = forward!(router, backend, CloudOAuthBegin, cloud_oauth_begin);
+    let router = forward!(router, backend, CloudOAuthFinish, cloud_oauth_finish);
+    let router = forward!(router, backend, CloudOAuthStatusMethod, cloud_oauth_status);
+    let router = forward!(router, backend, CloudOAuthCancel, cloud_oauth_cancel);
+    let router = forward!(router, backend, CloudOAuthRefresh, cloud_oauth_refresh);
+    let router = forward!(
+        router,
+        backend,
+        CloudOAuthDisconnect,
+        cloud_oauth_disconnect
+    );
     let router = forward!(router, backend, CloudAccountsList, cloud_accounts_list);
     let router = forward!(
         router,

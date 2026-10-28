@@ -50,6 +50,15 @@ async fn response(
     head: bool,
     cancel: &CancellationToken,
 ) -> ApiResult<(HttpUrl, reqwest::Response)> {
+    response_from(url, size, head, None, cancel).await
+}
+pub(super) async fn response_from(
+    url: &HttpUrl,
+    size: u64,
+    head: bool,
+    resume: Option<(&str, u64)>,
+    cancel: &CancellationToken,
+) -> ApiResult<(HttpUrl, reqwest::Response)> {
     let mut current = url.clone();
     for redirects in 0..=5 {
         validate_url(&current, head)?;
@@ -85,6 +94,16 @@ async fn response(
             client.get(current.expose())
         }
         .header(reqwest::header::ACCEPT_ENCODING, "identity");
+        let request = if let Some((etag, offset)) = resume {
+            request
+                .header(
+                    reqwest::header::RANGE,
+                    format!("bytes={offset}-{}", size - 1),
+                )
+                .header(reqwest::header::IF_RANGE, etag)
+        } else {
+            request
+        };
         let response = tokio::select! {_ = cancel.cancelled()=>return Err(invalid("source request canceled")),result=request.send()=>result.map_err(|_|ApiError::new("cloud.source_unavailable","source HTTP request failed"))?};
         if response.remote_addr().is_none_or(|peer| {
             !crate::workflow_network::public_ip(peer.ip())
@@ -118,18 +137,7 @@ async fn response(
                 HttpUrl::parse(next.as_str()).map_err(|_| invalid("invalid source redirect"))?;
             continue;
         }
-        if response.status() != reqwest::StatusCode::OK {
-            return Err(ApiError::new(
-                "cloud.source_unavailable",
-                "source did not return HTTP 200",
-            ));
-        }
-        if response.content_length() != Some(size) {
-            return Err(ApiError::new(
-                "cloud.source_changed",
-                "source content length differs from the exact approved size",
-            ));
-        }
+        super::staging::validate_response(response.status(), response.headers(), size, resume)?;
         if response
             .headers()
             .get(reqwest::header::CONTENT_ENCODING)
@@ -238,6 +246,13 @@ pub(super) async fn upload_source(
                 .open(path)
                 .await
                 .map_err(|_| fail())?;
+            service
+                .store
+                .mutate_delivery(&row.view.delivery_id, |stored| {
+                    stored.view.source_bytes_done = 0;
+                    stored.view.source_verified = false;
+                    Ok(())
+                })?;
             let mut buffer = vec![0; 65536];
             let mut read = 0u64;
             loop {
@@ -254,6 +269,15 @@ pub(super) async fn upload_source(
                     return Err(invalid("local source exceeds approved length"));
                 }
                 output.write_all(&buffer[..n]).await.map_err(|_| fail())?;
+                if read.is_multiple_of(4 << 20) {
+                    output.sync_all().await.map_err(|_| fail())?;
+                    service
+                        .store
+                        .mutate_delivery(&row.view.delivery_id, |stored| {
+                            stored.view.source_bytes_done = read;
+                            Ok(())
+                        })?;
+                }
             }
             if read != row.view.plan.size_bytes {
                 return Err(invalid("local source size changed"));
@@ -310,47 +334,7 @@ pub(super) async fn upload_source(
                     )
                 })?
             } else {
-                if path.exists() {
-                    tokio::fs::remove_file(&path).await.map_err(|_| fail())?;
-                }
-                let mut file = tokio::fs::OpenOptions::new()
-                    .read(true)
-                    .write(true)
-                    .create_new(true)
-                    .open(&path)
-                    .await
-                    .map_err(|_| fail())?;
-                let mut source = public_reader(service, row, url, cancel).await?;
-                let mut left = row.view.plan.size_bytes;
-                let mut buffer = vec![0; 64 * 1024];
-                while left > 0 {
-                    let n = source
-                        .read(&mut buffer[..left.min(64 * 1024) as usize])
-                        .await
-                        .map_err(|_| {
-                            ApiError::new("cloud.source_unavailable", "source download interrupted")
-                        })?;
-                    if n == 0 {
-                        return Err(ApiError::new(
-                            "cloud.source_changed",
-                            "source ended before approved length",
-                        ));
-                    }
-                    file.write_all(&buffer[..n]).await.map_err(|_| fail())?;
-                    left -= n as u64;
-                }
-                let mut extra = [0];
-                if source.read(&mut extra).await.map_err(|_| fail())? != 0 {
-                    return Err(ApiError::new(
-                        "cloud.source_changed",
-                        "source exceeds approved length",
-                    ));
-                }
-                file.sync_all().await.map_err(|_| fail())?;
-                file.seek(std::io::SeekFrom::Start(0))
-                    .await
-                    .map_err(|_| fail())?;
-                file
+                super::staging::download(service, row, url, &path, cancel).await?
             }
         }
     };
@@ -437,6 +421,9 @@ pub(super) async fn upload_source(
                 return Err(invalid("delivery stopped"));
             }
             stored.staged_sha256 = Some(digest.sha256);
+            stored.view.source_bytes_done = digest.size_bytes;
+            stored.view.source_verified = true;
+            stored.source_checkpoint = None;
             stored.upload = request.clone();
             Ok(())
         })?;
