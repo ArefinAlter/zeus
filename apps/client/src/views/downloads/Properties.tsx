@@ -28,6 +28,7 @@ function Fact({ k, children }: { k: string; children: preact.ComponentChildren }
 
 export function Properties({ job: j, onClose, onMove }: { job: Job; onClose: () => void; onMove: () => void }) {
   const now = useStore((s) => s.now)
+  const history = useStore((s) => s.live?.history)
   const approval = useStore((s) => (j.approvalId ? s.approvals.find((a) => a.id === j.approvalId) : undefined))
   const [fresh, setFresh] = useState('')
   const [err, setErr] = useState<string | null>(null)
@@ -189,6 +190,11 @@ export function Properties({ job: j, onClose, onMove }: { job: Job; onClose: () 
 
         <section class="dsec">
           <h3>History</h3>
+          {NATIVE && <p class="muted small" role="status">
+            {history?.unavailable ? 'Reconnecting to history. The last successful read is kept.' : history?.replaying ? 'Recovering recorded history…' : 'Recorded by the engine; recent history is kept on this device.'}
+            {history?.lost ? ' Some older records are no longer retained by the engine.' : ''}
+            {history?.limited ? ' Showing up to 50 records per download and 2,000 in total.' : ''}
+          </p>}
           <ol class="events">
             {[...j.events].reverse().map((e) => (
               <li>

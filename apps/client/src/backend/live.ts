@@ -26,6 +26,7 @@ import type { Settings } from './settings.ts'
 import { ulid } from './rand.ts'
 import type { IndexDelta, IndexRow } from './files.ts'
 import { filesApi, indexFromWire, nudgeIndexSync, startIndexSync } from './files.ts'
+import { historyLabel } from '../model/eventHistory.ts'
 
 export const LIVE = backend().kind !== 'scripted'
 export const HOSTED = backend().kind === 'hosted'
@@ -91,6 +92,8 @@ export interface LiveInfo {
   /** Native: the engine's life (starting, ready, restarting, failed) and whether settings wait for a restart. */
   engine?: EngineInfo['status'] | null
   engineDirty?: boolean
+  /** Durable native history has its own status; a failed read never clears its last successful page. */
+  history?: { replaying: boolean; lost: boolean; limited: boolean; unavailable: boolean }
 }
 
 // The store is imported lazily through these hooks to avoid an import cycle at module evaluation.
@@ -162,6 +165,7 @@ export function subdirOf(dir: string): string {
 // ---------------------------------------------------------------- mapping zeusd views to the client's model
 
 const remoteJobs = new Map<string, RemoteJob>()
+const durableHistory = new Map<string, Job['events']>()
 /** Native: the queue each job belongs to and the jobs zeusd holds back for a queue that is not running. */
 const queueOfJob = new Map<string, string>()
 const heldJobs = new Set<string>()
@@ -204,7 +208,7 @@ function toJob(r: RemoteJob, prev: Job | undefined): Job {
   const state = (NATIVE && heldJobs.has(r.id) && r.state === 'paused' ? 'queued' : r.state) as JobState
   const art = s.live?.artifacts.find((a) => a.job_id === r.id)
   const active = ['probing', 'downloading', 'verifying', 'finalizing'].includes(state)
-  const events = prev?.events ?? [{ t: Date.parse(r.created_at), text: 'Enqueued in zeusd' }]
+  const events = (NATIVE ? durableHistory.get(r.id) : prev?.events) ?? [{ t: Date.parse(r.created_at), text: 'Enqueued in zeusd' }]
   const gone = NATIVE && state === 'completed' && indexReady && !!r.path && !indexMap.has(r.path) && !fileJobIds.has(r.id)
   const job: Job = {
     id: r.id,
@@ -279,7 +283,7 @@ export function rebuildJobs(): void {
     let j = toJob(r, prev.get(r.id))
     const was = lastState.get(r.id)
     if (was !== undefined && was !== r.state) {
-      j = { ...j, events: [...j.events.slice(-30), { t: Date.now(), text: `zeusd: ${r.state.replace('_', ' ')}` }] }
+      if (!NATIVE) j = { ...j, events: [...j.events.slice(-30), { t: Date.now(), text: `zeusd: ${r.state.replace('_', ' ')}` }] }
       if (r.state === 'completed' || r.state === 'failed') finished.push(j)
     }
     lastState.set(r.id, r.state)
@@ -445,15 +449,49 @@ function connected(failure: LiveInfo['failure']): void {
   S.set({ live: { ...s.live, connected: !failure, failure } })
 }
 
+let jobsBusy = false
 async function pollJobs(): Promise<void> {
+  if (jobsBusy) return
+  jobsBusy = true
   try {
     const r = await api.jobs()
+    connected(r.failure)
+    if (r.failure) return
     remoteJobs.clear()
     for (const j of r.items) remoteJobs.set(j.id, j)
-    connected(r.failure)
     rebuildJobs()
   } catch (e) {
     connected(e instanceof RemoteError ? { code: e.code, message: e.message } : { code: 'client.error', message: 'The backend could not be read.' })
+  } finally {
+    jobsBusy = false
+  }
+}
+
+let historyBusy = false
+async function pollHistory(): Promise<void> {
+  if (!NATIVE || historyBusy) return
+  historyBusy = true
+  try {
+    const page = await api.history()
+    const next = new Map<string, Job['events']>()
+    for (const e of page.entries) {
+      const text = historyLabel(e.kind, e.state)
+      const t = Date.parse(e.ts)
+      if (!text || !Number.isFinite(t)) continue
+      const events = next.get(e.job_id) ?? []
+      events.push({ t, text })
+      next.set(e.job_id, events)
+    }
+    durableHistory.clear()
+    for (const [id, events] of next) durableHistory.set(id, events)
+    const live = S.get().live
+    if (live) S.set({ live: { ...live, history: { replaying: page.replaying, lost: page.history_lost, limited: page.limited, unavailable: false } } })
+    rebuildJobs()
+  } catch {
+    const live = S.get().live
+    if (live) S.set({ live: { ...live, history: { replaying: false, lost: false, limited: false, ...live.history, unavailable: true } } })
+  } finally {
+    historyBusy = false
   }
 }
 
@@ -1157,7 +1195,7 @@ export function startLive(hooks: StoreHooks): void {
           // Built from zeusd's file list instead.
         }
       }
-      await Promise.all([pollJobs(), refreshFiles(false), pollSlow(), pollQueues(), pollEngine()])
+      await Promise.all([pollJobs(), pollHistory(), refreshFiles(false), pollSlow(), pollQueues(), pollEngine()])
     } catch (e) {
       connected(e instanceof RemoteError ? { code: e.code, message: e.message } : { code: 'client.error', message: 'The backend could not be reached.' })
       setTimeout(() => void boot(), 5000)
@@ -1170,6 +1208,7 @@ export function startLive(hooks: StoreHooks): void {
         return
       }
       void pollJobs()
+      void pollHistory()
       if (NATIVE && n % 2 === 0) void pollQueues()
       if (NATIVE && n % 3 === 0) void pollEngine()
       if (n % 4 === 0) void pollSlow()

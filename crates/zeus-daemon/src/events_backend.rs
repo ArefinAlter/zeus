@@ -13,6 +13,7 @@ fn matches(event: &zeus_types::Event, p: &SubscribeParams) -> bool {
             .as_ref()
             .is_none_or(|types| types.iter().any(|t| t == event.payload.type_name()))
 }
+
 async fn deliver(
     notifier: &zeus_api::server::Notifier,
     native: &NativeDestination,
@@ -78,6 +79,90 @@ async fn deliver(
     }
 }
 impl RuntimeBackend {
+    pub(super) fn read_events(
+        &self,
+        ctx: &CallContext,
+        p: EventsReadParams,
+    ) -> ApiResult<EventsReadResult> {
+        let limit = p.limit.unwrap_or(64);
+        if !(1..=128).contains(&limit)
+            || p.cursor.as_ref().is_some_and(|c| {
+                c.instance_id.len() > 64 || c.seq > zeus_types::limits::MAX_SAFE_INTEGER
+            })
+        {
+            return Err(ApiError::invalid_params("invalid event page bounds"));
+        }
+        // Head, retention boundary and records come from one journal snapshot. No full-history scan.
+        let (meta, reset, start, batch) = self
+            .journal
+            .read(|tx| {
+                let meta = tx.meta()?;
+                let reset = p.cursor.as_ref().and_then(|c| {
+                    if c.store_id != meta.store_id {
+                        Some(EventReset::StoreChanged)
+                    } else if c.instance_id != self.info.instance_id {
+                        Some(EventReset::DaemonRestarted)
+                    } else if c.seq > meta.last_event_seq {
+                        Some(EventReset::CursorAhead)
+                    } else {
+                        None
+                    }
+                });
+                let start = if reset.is_some() {
+                    0
+                } else {
+                    p.cursor.as_ref().map_or(0, |c| c.seq)
+                };
+                let batch = tx.events_since(EventSeq::new(start).ok(), limit as usize)?;
+                Ok((meta, reset, start, batch))
+            })
+            .map_err(error)?;
+        let scope = Self::scope(ctx);
+        let mut cursor = start;
+        let mut bytes = 0;
+        let mut events = Vec::new();
+        let mut history_lost = false;
+        let empty = batch.is_empty();
+        for event in batch {
+            let seq = event.seq.ok_or_else(internal)?.get();
+            let visible = scope.event(&event, &self.journal);
+            let size = if visible {
+                serde_json::to_vec(&event).map_err(|_| internal())?.len()
+            } else {
+                0
+            };
+            if bytes + size > 512 * 1024 {
+                if cursor == start {
+                    return Err(internal());
+                }
+                break;
+            }
+            history_lost |= seq != cursor.saturating_add(1);
+            cursor = seq;
+            if visible {
+                bytes += size;
+                events.push(event);
+            }
+        }
+        // All remaining records may have been pruned. Advance, but expose that loss explicitly.
+        if empty && cursor < meta.last_event_seq {
+            history_lost = true;
+            cursor = meta.last_event_seq;
+        }
+        Ok(EventsReadResult {
+            events,
+            cursor: EventCursor {
+                store_id: meta.store_id,
+                instance_id: self.info.instance_id.clone(),
+                seq: cursor,
+            },
+            head_seq: meta.last_event_seq,
+            has_more: cursor < meta.last_event_seq,
+            reset,
+            history_lost,
+        })
+    }
+
     pub(super) async fn subscribe_events(
         &self,
         ctx: &CallContext,
@@ -195,5 +280,206 @@ impl RuntimeBackend {
             replay_count,
             replay_truncated,
         })
+    }
+}
+
+#[cfg(test)]
+mod read_tests {
+    use super::*;
+    use crate::runtime::tests::{context, setup};
+
+    fn append(
+        backend: &RuntimeBackend,
+        count: usize,
+        job: Option<zeus_types::JobId>,
+        bytes: usize,
+    ) {
+        backend
+            .journal
+            .transact(|tx| {
+                for _ in 0..count {
+                    let job = job
+                        .or_else(|| (bytes > 0).then(|| zeus_types::IdGenerator::new().job_id()));
+                    let payload = if job.is_some() {
+                        zeus_types::event::JobCompletedData {
+                            path: "x".repeat(bytes),
+                            size_bytes: 0,
+                            sha256: "00".repeat(32).parse().unwrap(),
+                            blake3: "11".repeat(32).parse().unwrap(),
+                            quarantined: false,
+                            duration_ms: 1,
+                        }
+                        .into()
+                    } else {
+                        zeus_types::event::DaemonStoppingData {
+                            reason: zeus_types::event::StopReason::Signal,
+                        }
+                        .into()
+                    };
+                    tx.append_event(Timestamp::now(), job, None, payload)?;
+                }
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn bounded_replay_advances_over_invisible_events_without_reporting_false_loss() {
+        let dir = tempfile::tempdir().unwrap();
+        let backend = setup(dir.path()).await;
+        let (mut ctx, _) = context(dir.path(), "agent");
+        let initial = backend
+            .read_events(&ctx, EventsReadParams::default())
+            .unwrap();
+        ctx.identity.kind = zeus_api::ClientKind::Service;
+        append(
+            &backend,
+            5,
+            Some(zeus_types::IdGenerator::new().job_id()),
+            0,
+        );
+        append(&backend, 1, None, 0);
+        let mut cursor = initial.cursor;
+        for i in 0..3 {
+            let page = backend
+                .read_events(
+                    &ctx,
+                    EventsReadParams {
+                        cursor: Some(cursor.clone()),
+                        limit: Some(2),
+                    },
+                )
+                .unwrap();
+            assert_eq!(page.cursor.seq, cursor.seq + 2);
+            assert_eq!(page.events.len(), usize::from(i == 2));
+            assert_eq!(page.has_more, i != 2);
+            assert!(!page.history_lost);
+            cursor = page.cursor;
+        }
+        backend.engine.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn replacement_restart_and_future_cursors_reset_instead_of_silently_skipping() {
+        let dir = tempfile::tempdir().unwrap();
+        let backend = setup(dir.path()).await;
+        let (ctx, _) = context(dir.path(), "agent");
+        append(&backend, 3, None, 0);
+        let initial = backend
+            .read_events(&ctx, EventsReadParams::default())
+            .unwrap();
+        for expected in [
+            EventReset::StoreChanged,
+            EventReset::DaemonRestarted,
+            EventReset::CursorAhead,
+        ] {
+            let mut cursor = initial.cursor.clone();
+            match expected {
+                EventReset::StoreChanged => {
+                    cursor.store_id = zeus_types::IdGenerator::new().store_id()
+                }
+                EventReset::DaemonRestarted => cursor.instance_id = "old".into(),
+                EventReset::CursorAhead => cursor.seq += 1,
+            }
+            let page = backend
+                .read_events(
+                    &ctx,
+                    EventsReadParams {
+                        cursor: Some(cursor),
+                        limit: None,
+                    },
+                )
+                .unwrap();
+            assert_eq!(page.reset, Some(expected));
+            assert_eq!(page.events, initial.events);
+            assert_eq!(page.cursor, initial.cursor);
+        }
+        for limit in [0, 129, u32::MAX] {
+            assert!(
+                backend
+                    .read_events(
+                        &ctx,
+                        EventsReadParams {
+                            cursor: None,
+                            limit: Some(limit)
+                        }
+                    )
+                    .is_err()
+            );
+        }
+        backend.engine.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn retention_and_empty_retained_history_report_actual_loss() {
+        let dir = tempfile::tempdir().unwrap();
+        let backend = setup(dir.path()).await;
+        let (ctx, _) = context(dir.path(), "agent");
+        append(&backend, 6, None, 0);
+        let head = backend.journal.meta().unwrap().last_event_seq;
+        backend
+            .journal
+            .transact(|tx| {
+                tx.set_cursors(head, head)?;
+                tx.set_artifact_cursor(head)?;
+                assert_eq!(tx.prune_events(EventSeq::new(head - 1).unwrap())?, head - 1);
+                Ok(())
+            })
+            .unwrap();
+        let page = backend
+            .read_events(&ctx, EventsReadParams::default())
+            .unwrap();
+        assert!(page.history_lost);
+        assert_eq!(page.events.len(), 1);
+        assert_eq!(page.cursor.seq, head);
+        backend
+            .journal
+            .transact(|tx| {
+                tx.prune_events(EventSeq::new(head).unwrap())?;
+                Ok(())
+            })
+            .unwrap();
+        let page = backend
+            .read_events(&ctx, EventsReadParams::default())
+            .unwrap();
+        assert!(page.history_lost);
+        assert!(page.events.is_empty());
+        assert_eq!(page.cursor.seq, head);
+        assert!(!page.has_more);
+        backend.engine.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn large_events_obey_frame_budget_and_resume_without_loss() {
+        let dir = tempfile::tempdir().unwrap();
+        let backend = setup(dir.path()).await;
+        let (ctx, _) = context(dir.path(), "agent");
+        let initial = backend
+            .read_events(&ctx, EventsReadParams::default())
+            .unwrap();
+        append(&backend, 20, None, 60_000);
+        let mut cursor = initial.cursor;
+        let mut count = 0;
+        loop {
+            let page = backend
+                .read_events(
+                    &ctx,
+                    EventsReadParams {
+                        cursor: Some(cursor.clone()),
+                        limit: Some(128),
+                    },
+                )
+                .unwrap();
+            assert!(serde_json::to_vec(&page).unwrap().len() < 530_000);
+            assert!(!page.history_lost);
+            assert!(page.cursor.seq > cursor.seq);
+            count += page.events.len();
+            cursor = page.cursor;
+            if !page.has_more {
+                break;
+            }
+        }
+        assert_eq!(count, 20);
+        backend.engine.shutdown().await.unwrap();
     }
 }

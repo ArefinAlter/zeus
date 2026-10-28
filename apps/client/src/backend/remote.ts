@@ -238,6 +238,13 @@ export interface DaemonStatus {
   uptime_ms: number
 }
 
+export interface RemoteHistory {
+  entries: { seq: number; ts: string; job_id: string; kind: string; state: string | null }[]
+  replaying: boolean
+  history_lost: boolean
+  limited: boolean
+}
+
 export interface RemoteJob {
   id: string
   state: string
@@ -328,6 +335,7 @@ export interface EnqueueResult {
 }
 
 export const api = {
+  history: () => request<RemoteHistory>('/native/v1/events'),
   status: () => request<{ daemon: DaemonStatus | null; failure: { code: string; message: string } | null; updated_ms: number }>('/api/v1/status'),
   jobs: () => request<{ items: RemoteJob[]; updated_ms: number; failure: { code: string; message: string } | null }>('/api/v1/jobs'),
   preview: (urls: string[], subdir: string) => request<PreviewResult>('/api/v1/links/preview', 'POST', { urls, subdir }),

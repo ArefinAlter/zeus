@@ -234,6 +234,8 @@ Agent and service visibility is scoped (05 section 7.5): such a client sees only
 
 ### 5.4 Method catalogue
 
+Desktop history uses read-only `events.read` over the existing IPC connection, with the same `events.read` permission and entity visibility as subscriptions. Each page scans at most 128 durable records and returns at most 512 KiB of event JSON. Store and daemon lifetime identities fence its cursor; restart, journal replacement and retention loss are explicit. The native client atomically caches the cursor with at most 2,000 projected history entries (50 per job), keeping only typed event names, timestamps, job ids and states. It polls current job snapshots separately and retains the last successful list during a failed request; history replay never mutates download state or grants authority. See spec 05 section 9.3 and `docs/alpha-0.1/DESKTOP-EVENT-RECOVERY.md`.
+
 MVP unless marked later.
 
 | Namespace | Methods |

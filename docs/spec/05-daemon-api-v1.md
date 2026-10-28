@@ -429,7 +429,7 @@ Rules:
 | `jobs.read` | `jobs.probe`, `jobs.list`, `jobs.get`, `jobs.wait`, `jobs.verify`; `queues.list`; `cloud.accounts.list`, `cloud.list`, `cloud.get` | yes | yes | yes | yes |
 | `jobs.write` | `jobs.enqueue`; `cloud.plan`, `cloud.submit` | yes | yes | yes | yes |
 | `jobs.control` | `jobs.control`, `cloud.control`, `queues.put`, `queues.delete`, `queues.control`, `queues.configure` | yes | yes | yes | yes |
-| `events.read` | `events.subscribe`, `events.unsubscribe` | yes | yes | yes | yes |
+| `events.read` | `events.read`, `events.subscribe`, `events.unsubscribe` | yes | yes | yes | yes |
 | `sessions.read` | `sessions.list` | yes | yes | yes | yes |
 | `sessions.request` | `sessions.request` (raises an approval, never grants) | yes | yes | yes | yes |
 | `sessions.revoke` | `sessions.revoke` | no | no | yes | yes |
@@ -528,6 +528,7 @@ ADR 0011 introduces the `service` kind for first-party programs that use the dae
 | `queues.delete` | MVP | `jobs.control` | A H Ad | yes | The built-in queue `main` cannot be deleted. Refused for services. |
 | `queues.control` | MVP | `jobs.control` | A S H Ad | yes | `start`, `stop`, `assign`, `unassign`, `move`, `ack_finish`; a service may only move its own jobs. |
 | `queues.configure` | MVP | `jobs.control` | A H Ad | yes | Speed limiter and scheduler defaults. Refused for services. |
+| `events.read` | MVP | `events.read` | A S H Ad | no | Capability `events.read`; bounded replay. |
 | `events.subscribe` | MVP | `events.read` | A S H Ad | no | Capability `events`. |
 | `events.unsubscribe` | MVP | `events.read` | A S H Ad | no | Capability `events`. |
 | `sessions.list` | MVP | `sessions.read` | A S H Ad | no | Grants, never material. Paged. |
@@ -590,6 +591,7 @@ Capabilities follow 00 section 4.1. A daemon advertises a capability only when i
 |---|---|---|---|
 | `events` | `events.subscribe`, `events.unsubscribe`, `events.event`, `events.lagged` | MVP | MUST offer |
 | `events.replay` | `since_seq` of `events.subscribe` | MVP | MUST offer |
+| `events.read` | bounded replay with store/lifetime-bound cursors | Alpha | Offer when implemented |
 | `jobs.wait` | `jobs.wait` | MVP | MUST offer |
 | `idempotency` | `idempotency_key` on mutating methods | MVP | MUST offer |
 | `nm.relay` | `nm.frame` | MVP | MUST offer |
@@ -765,6 +767,22 @@ The condition is evaluated first against the state at the time of the call. Resu
 Re-hashes the file of a `completed` job and compares it with the digests recorded at completion and, if given, `expected_sha256`. A job in another state is `api.invalid_transition`; a missing file is `fs.dest_missing`. Result: `sha256`, `blake3`, `size_bytes`, `detected_mime`, `matches_recorded`, `matches_expected`, `quarantined`, `quarantine_reasons`. The call reads the whole file and counts against the `probe` bucket.
 
 ### 9.3 `events.*`
+
+#### `events.read`
+
+A bounded durable replay page for polling frontends; permission and negotiated capability `events.read` are required. This is a read-only local IPC method and creates no subscription or listener. Parameters: optional `cursor` (`store_id`, `instance_id`, `seq`) and `limit` (1–128 scanned records, default 64). An absent cursor starts at the oldest retained event. The daemon captures the journal head and page in one read transaction. It scans no more than `limit` records and returns no more than 512 KiB of serialized event JSON; the enclosing response adds a small fixed envelope.
+
+The result contains visible redacted `events`, the next `cursor`, `head_seq`, `has_more`, nullable `reset`, and `history_lost`. The cursor advances across invisible records: an empty visible page can still have `has_more`. Clients MUST persist the returned cursor with its events, never ahead of them. Gaps between visible sequences alone do not imply loss. Only a gap in the underlying journal sets `history_lost`, including when all remaining history was pruned.
+
+Replacing the journal, restarting the daemon, or supplying a cursor ahead of the head restarts replay and returns `store_changed`, `daemon_restarted`, or `cursor_ahead`. Restart replay is conservative so a restored backup cannot silently reuse old sequence positions. Clients clear their old event cache on `reset`, show retention loss, and refresh job snapshots. Event history is descriptive: replay MUST NOT overwrite a newer job snapshot. Ephemeral progress is excluded; it remains available through subscriptions or fresh job snapshots.
+
+```json validate=daemon-api.v1#/$defs/Request
+{"jsonrpc":"2.0","id":23,"method":"events.read","params":{"limit":64}}
+```
+
+```json validate=daemon-api.v1#/$defs/EventsReadResponse
+{"jsonrpc":"2.0","id":23,"result":{"events":[],"cursor":{"store_id":"01K8M4VZ390000000000000001","instance_id":"abcd1234","seq":8},"head_seq":12,"has_more":true,"reset":null,"history_lost":false}}
+```
 
 #### `events.subscribe`
 

@@ -72,6 +72,10 @@ pub async fn dispatch(app: &Arc<App>, route: &str, body: Value) -> Result<Value>
         ("POST", ["api", "v1", "session"]) => session(app).await,
         ("GET", ["api", "v1", "status"]) => status(app).await,
         ("GET", ["api", "v1", "jobs"]) => jobs(app).await,
+        ("GET", ["native", "v1", "events"]) => {
+            ensure_ready(app)?;
+            app.history.refresh(&app.daemon).await
+        }
         ("GET", ["api", "v1", "jobs", id]) => job(app, id).await,
         ("POST", ["api", "v1", "jobs", id, "control"]) => control(app, id, &body).await,
         ("POST", ["api", "v1", "links", "preview"]) => {
@@ -161,7 +165,10 @@ pub async fn dispatch(app: &Arc<App>, route: &str, body: Value) -> Result<Value>
         ("GET", ["api", "v1", "fixtures"]) => Ok(json!({"hosts": [], "samples": []})),
 
         ("GET", ["svc", "v1", "state"]) => app.state.all().await,
-        ("DELETE", ["svc", "v1", "state"]) => app.state.clear().await,
+        ("DELETE", ["svc", "v1", "state"]) => {
+            app.history.clear().await?;
+            app.state.clear().await
+        }
         ("PUT", ["svc", "v1", "state", slice]) => app.state.put(slice, &body).await,
         ("GET", ["svc", "v1", "index"]) | ("POST", ["svc", "v1", "index", "rescan"]) => {
             index(app).await
@@ -308,7 +315,7 @@ async fn jobs(app: &Arc<App>) -> Result<Value> {
     if app.supervisor.status().phase != Phase::Ready {
         return Ok(json!({"items": [], "updated_ms": now_ms(), "failure": not_ready(app)}));
     }
-    match app.daemon.all("jobs.list", json!({}), 20).await {
+    match app.daemon.all_complete("jobs.list", json!({}), 100).await {
         Ok(items) => Ok(json!({"items": items, "updated_ms": now_ms(), "failure": Value::Null})),
         Err(f) => Ok(json!({"items": [], "updated_ms": now_ms(), "failure": f})),
     }

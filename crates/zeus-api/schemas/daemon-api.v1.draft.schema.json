@@ -3915,6 +3915,33 @@
       ],
       "type": "object"
     },
+    "EventCursor": {
+      "additionalProperties": false,
+      "description": "Checkpoint for bounded replay, bound to the store and daemon lifetime.",
+      "properties": {
+        "instance_id": {
+          "description": "Daemon lifetime; replay after restart also covers restored backups.",
+          "type": "string"
+        },
+        "seq": {
+          "description": "Last scanned sequence, including events outside this credential's view.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "store_id": {
+          "description": "Journal identity; replacing a profile cannot reuse its cursor.",
+          "pattern": "^[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "store_id",
+        "instance_id",
+        "seq"
+      ],
+      "type": "object"
+    },
     "EventNotification": {
       "description": "`params` of the `events.event` notification.",
       "properties": {
@@ -3930,6 +3957,104 @@
       "required": [
         "subscription_id",
         "event"
+      ],
+      "type": "object"
+    },
+    "EventReset": {
+      "description": "Why replay restarted from the oldest retained event.",
+      "oneOf": [
+        {
+          "const": "store_changed",
+          "description": "The journal was replaced.",
+          "type": "string"
+        },
+        {
+          "const": "daemon_restarted",
+          "description": "The daemon restarted (possibly using a restored journal).",
+          "type": "string"
+        },
+        {
+          "const": "cursor_ahead",
+          "description": "The supplied position exceeds the journal head.",
+          "type": "string"
+        }
+      ]
+    },
+    "EventsReadParams": {
+      "additionalProperties": false,
+      "description": "`events.read`: read one bounded durable batch without opening a subscription.",
+      "properties": {
+        "cursor": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/EventCursor"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Absent: start from the oldest retained event."
+        },
+        "limit": {
+          "default": null,
+          "description": "Maximum records scanned, including invisible records; 1–128, default 64.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "EventsReadResult": {
+      "description": "One durable page, limited to 128 scanned records and 512 KiB of event JSON.",
+      "properties": {
+        "cursor": {
+          "$ref": "#/$defs/EventCursor",
+          "description": "Persist with the events, never before them. Use even when `events` is empty."
+        },
+        "events": {
+          "description": "Visible, redacted events in ascending sequence order. May be empty even with `has_more`.",
+          "items": {
+            "$ref": "#/$defs/Event"
+          },
+          "type": "array"
+        },
+        "has_more": {
+          "description": "More records remained at the captured head.",
+          "type": "boolean"
+        },
+        "head_seq": {
+          "description": "Journal head in the same read transaction as this page.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "history_lost": {
+          "description": "A gap exists in the underlying journal, not merely in the credential's filtered view.",
+          "type": "boolean"
+        },
+        "reset": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/EventReset"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Clear cached history and re-read jobs when this is present."
+        }
+      },
+      "required": [
+        "events",
+        "cursor",
+        "head_seq",
+        "has_more",
+        "history_lost"
       ],
       "type": "object"
     },
@@ -13221,6 +13346,14 @@
       },
       "result": {
         "$ref": "#/$defs/DoctorResult"
+      }
+    },
+    "events.read": {
+      "params": {
+        "$ref": "#/$defs/EventsReadParams"
+      },
+      "result": {
+        "$ref": "#/$defs/EventsReadResult"
       }
     },
     "events.subscribe": {

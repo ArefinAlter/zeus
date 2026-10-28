@@ -164,6 +164,7 @@ pub const METHODS: &[MethodSpec] = &[
     MethodSpec::needs("queues.control", JobsControl).mutates(),
     MethodSpec::needs("queues.configure", JobsControl).mutates(),
     MethodSpec::needs("events.subscribe", EventsRead).gated("events"),
+    MethodSpec::needs("events.read", EventsRead).gated("events.read"),
     MethodSpec::needs("events.unsubscribe", EventsRead).gated("events"),
     MethodSpec::needs("sessions.list", SessionsRead),
     MethodSpec::needs("sessions.request", SessionsRequest).mutates(),
@@ -401,6 +402,24 @@ mod tests {
         for method in METHODS {
             assert!(seen.insert(method.name), "{}", method.name);
         }
+    }
+
+    #[test]
+    fn bounded_history_requires_read_permission_and_its_own_capability() {
+        let method = lookup("events.read").unwrap();
+        let mut agent = identity(ClientKind::Agent, ClientRole::Gui);
+        assert!(authorize(Some(&agent), method, &serde_json::json!({})).is_ok());
+        agent.permissions.remove(&Permission::EventsRead);
+        assert!(authorize(Some(&agent), method, &serde_json::json!({})).is_err());
+        let old = ["events".to_string(), "events.replay".to_string()]
+            .into_iter()
+            .collect();
+        assert!(require_capabilities(method, &serde_json::json!({}), &old).is_err());
+        assert!(
+            require_capabilities(method, &serde_json::json!({}), &crate::capabilities::all())
+                .is_ok()
+        );
+        assert!(!method.mutating && !method.human_only);
     }
 
     #[test]

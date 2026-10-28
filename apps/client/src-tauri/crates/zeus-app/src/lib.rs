@@ -17,6 +17,7 @@ pub mod engine_config;
 pub mod ext;
 pub mod failure;
 pub mod held;
+pub mod history;
 pub mod home;
 pub mod links;
 pub mod osopen;
@@ -52,6 +53,8 @@ pub struct App {
     pub supervisor: Arc<Supervisor>,
     /// Settings and lists the client keeps.
     pub state: StateStore,
+    /// Durable, bounded display history replayed from zeusd.
+    pub history: history::History,
     /// Requests the app itself holds (site-grabber plans, file moves).
     pub held: Held,
     /// Start at sign-in, the notification-area icon, notifications.
@@ -84,6 +87,7 @@ impl App {
             .map_or(0, |d| d.as_millis() as u64);
         Ok(Arc::new(Self {
             state: StateStore::new(&home),
+            history: history::History::new(&home),
             held: Held::new(&home),
             shell: shell::Shell::new(&home),
             reviews: Reviews::default(),

@@ -1187,6 +1187,13 @@ impl Backend for RuntimeBackend {
     ) -> ApiResult<QueuesConfigureResult> {
         self.queues_configure_impl(ctx, p).await
     }
+    async fn events_read(
+        &self,
+        ctx: &CallContext,
+        p: EventsReadParams,
+    ) -> ApiResult<EventsReadResult> {
+        self.read_events(ctx, p)
+    }
     async fn events_subscribe(
         &self,
         ctx: &CallContext,

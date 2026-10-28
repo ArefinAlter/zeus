@@ -158,6 +158,8 @@ rpc_methods! {
     /// Change the speed limiter and the scheduler defaults.
     QueuesConfigure = "queues.configure" (QueuesConfigureParams) -> QueuesConfigureResult;
 
+    /// Read a bounded durable event page.
+    EventsRead = "events.read" (EventsReadParams) -> EventsReadResult;
     /// Subscribe to events.
     EventsSubscribe = "events.subscribe" (SubscribeParams) -> SubscribeResult;
     /// Cancel a subscription.

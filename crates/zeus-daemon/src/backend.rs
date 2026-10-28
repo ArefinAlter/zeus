@@ -25,7 +25,8 @@ use zeus_api::methods::daemon::{
     KillSwitchParams, KillSwitchResult, ShutdownParams, ShutdownResult, StatusParams, StatusResult,
 };
 use zeus_api::methods::events::{
-    SubscribeParams, SubscribeResult, UnsubscribeParams, UnsubscribeResult,
+    EventsReadParams, EventsReadResult, SubscribeParams, SubscribeResult, UnsubscribeParams,
+    UnsubscribeResult,
 };
 use zeus_api::methods::files::{
     FilesListParams, FilesListResult, FilesOrganizeParams, FilesOrganizeResult,
@@ -148,6 +149,8 @@ backend! {
     queues_configure(QueuesConfigureParams) -> QueuesConfigureResult;
     /// `events.subscribe`: replays durable events, then pushes through `ctx.notifier`.
     events_subscribe(SubscribeParams) -> SubscribeResult;
+    /// `events.read`: bounded replay under the same entity visibility rules.
+    events_read(EventsReadParams) -> EventsReadResult;
     /// `events.unsubscribe`.
     events_unsubscribe(UnsubscribeParams) -> UnsubscribeResult;
     /// `sessions.list`.

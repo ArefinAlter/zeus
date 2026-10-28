@@ -5165,6 +5165,9 @@
         },
         {
           "$ref": "#/$defs/LlmAuthSignOutRequest"
+        },
+        {
+          "$ref": "#/$defs/EventsReadRequest"
         }
       ]
     },
@@ -7214,6 +7217,134 @@
           "properties": {
             "result": {
               "$ref": "#/$defs/InboxSubmitResult"
+            }
+          }
+        }
+      ]
+    },
+    "EventCursor": {
+      "type": "object",
+      "properties": {
+        "store_id": {
+          "type": "string",
+          "pattern": "^[0-7][0-9A-HJKMNP-TV-Z]{25}$"
+        },
+        "instance_id": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "seq": {
+          "$ref": "#/$defs/EventSeqOrZero"
+        }
+      },
+      "required": [
+        "store_id",
+        "instance_id",
+        "seq"
+      ],
+      "additionalProperties": false
+    },
+    "EventsReadParams": {
+      "type": "object",
+      "properties": {
+        "cursor": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/EventCursor"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "limit": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 128
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [],
+      "additionalProperties": false
+    },
+    "EventsReadResult": {
+      "type": "object",
+      "properties": {
+        "events": {
+          "type": "array",
+          "maxItems": 128,
+          "items": {
+            "$ref": "https://zeus.invalid/schema/domain#/$defs/Event"
+          }
+        },
+        "cursor": {
+          "$ref": "#/$defs/EventCursor"
+        },
+        "head_seq": {
+          "$ref": "#/$defs/EventSeqOrZero"
+        },
+        "has_more": {
+          "type": "boolean"
+        },
+        "history_lost": {
+          "type": "boolean"
+        },
+        "reset": {
+          "enum": [
+            null,
+            "store_changed",
+            "daemon_restarted",
+            "cursor_ahead"
+          ]
+        }
+      },
+      "required": [
+        "events",
+        "cursor",
+        "head_seq",
+        "has_more",
+        "history_lost",
+        "reset"
+      ],
+      "additionalProperties": false
+    },
+    "EventsReadRequest": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/RequestBase"
+        },
+        {
+          "type": "object",
+          "required": [
+            "method"
+          ],
+          "properties": {
+            "method": {
+              "const": "events.read"
+            },
+            "params": {
+              "$ref": "#/$defs/EventsReadParams"
+            }
+          }
+        }
+      ]
+    },
+    "EventsReadResponse": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/SuccessBase"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "result": {
+              "$ref": "#/$defs/EventsReadResult"
             }
           }
         }

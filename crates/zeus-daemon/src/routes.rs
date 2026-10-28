@@ -110,6 +110,7 @@ pub fn build_router<B: Backend>(backend: Arc<B>) -> Router {
     let router = forward!(router, backend, QueuesDelete, queues_delete);
     let router = forward!(router, backend, QueuesControl, queues_control);
     let router = forward!(router, backend, QueuesConfigure, queues_configure);
+    let router = forward!(router, backend, zeus_api::methods::EventsRead, events_read);
     let router = forward!(router, backend, EventsSubscribe, events_subscribe);
     let router = forward!(router, backend, EventsUnsubscribe, events_unsubscribe);
     let router = forward!(router, backend, SessionsList, sessions_list);
