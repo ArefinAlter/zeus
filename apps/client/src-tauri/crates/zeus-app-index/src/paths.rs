@@ -276,6 +276,9 @@ pub fn check_name(name: &str) -> Result<()> {
     if RESERVED.contains(&stem.as_str()) {
         return bad("That name is reserved by the operating system.");
     }
+    zeus_fs::directory::validate_filename(std::ffi::OsStr::new(name)).map_err(|_| {
+        Failure::invalid("That name is reserved or unsupported by the file system.")
+    })?;
     Ok(())
 }
 

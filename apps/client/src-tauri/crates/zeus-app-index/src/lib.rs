@@ -382,12 +382,18 @@ impl Extension for Module {
                         Ok(f) => f,
                         Err(e) => return Some(Err(e)),
                     };
-                    let reads = svc.read_roots();
-                    let writes = svc.write_roots();
+                    let reads = match svc.file_capabilities(false) {
+                        Ok(r) => r,
+                        Err(e) => return Some(Err(e)),
+                    };
+                    let writes = match svc.file_capabilities(true) {
+                        Ok(r) => r,
+                        Err(e) => return Some(Err(e)),
+                    };
                     let manager = self.archives.clone();
                     Some(
                         tokio::task::spawn_blocking(move || {
-                            manager.prepare(&request, &reads, &writes, &facts)
+                            manager.prepare_pinned(&request, &reads, &writes, &facts)
                         })
                         .await
                         .unwrap_or_else(|_| {
@@ -403,16 +409,25 @@ impl Extension for Module {
                         Ok(f) => f,
                         Err(e) => return Some(Err(e)),
                     };
-                    Some(self.archives.start(
-                        str_of(body, "id"),
-                        svc.read_roots(),
-                        svc.write_roots(),
-                        facts,
-                    ))
+                    let reads = match svc.file_capabilities(false) {
+                        Ok(r) => r,
+                        Err(e) => return Some(Err(e)),
+                    };
+                    let writes = match svc.file_capabilities(true) {
+                        Ok(r) => r,
+                        Err(e) => return Some(Err(e)),
+                    };
+                    Some(
+                        self.archives
+                            .start_pinned(str_of(body, "id"), reads, writes, facts),
+                    )
                 }
                 "POST /native/v1/files/archive/reconcile" => {
                     let id = str_of(body, "id").to_owned();
-                    let writes = svc.write_roots();
+                    let writes = match svc.file_capabilities(true) {
+                        Ok(r) => r,
+                        Err(e) => return Some(Err(e)),
+                    };
                     let manager = self.archives.clone();
                     let facts = match guarded_facts(svc, app).await {
                         Ok(f) => f,
@@ -420,7 +435,7 @@ impl Extension for Module {
                     };
                     Some(
                         tokio::task::spawn_blocking(move || {
-                            manager.reconcile(&id, &writes, &facts)
+                            manager.reconcile_pinned(&id, &writes, &facts)
                         })
                         .await
                         .unwrap_or_else(|_| {
@@ -439,10 +454,13 @@ impl Extension for Module {
                 }
                 "POST /native/v1/files/archive/cleanup" => {
                     let id = str_of(body, "id").to_owned();
-                    let writes = svc.write_roots();
+                    let writes = match svc.file_capabilities(true) {
+                        Ok(r) => r,
+                        Err(e) => return Some(Err(e)),
+                    };
                     let manager = self.archives.clone();
                     Some(
-                        tokio::task::spawn_blocking(move || manager.cleanup(&id, &writes))
+                        tokio::task::spawn_blocking(move || manager.cleanup_pinned(&id, &writes))
                             .await
                             .unwrap_or_else(|_| {
                                 Err(Failure::new(

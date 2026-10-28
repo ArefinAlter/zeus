@@ -2,7 +2,7 @@
 //! cancellation and no-replace publication. Archive content never launches a helper or executable.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::io::{Read, Write};
+use std::io::{Read, Seek, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{
     Arc, Mutex,
@@ -14,13 +14,18 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use zeus_app::failure::{Failure, Result};
+use zeus_fs::DirectoryCap;
+#[cfg(test)]
 use zeus_fs::{Filesystem, RealFs};
 use zip::{CompressionMethod, ZipArchive, ZipWriter, write::SimpleFileOptions};
 
 use crate::{
     facts::{FileFacts, quarantined_under},
-    paths::{RootIdentity, check_name, resolve_inside, shown},
+    paths::{RootCaps, cap_failure, check_name, shown},
 };
+
+mod io;
+use io::{ArchiveSource, cleanup_stage, entry_stamp, file_stamp, stage_name};
 
 const MAX_ENTRIES: usize = 10_000;
 const MAX_BYTES: u64 = 4 * 1024 * 1024 * 1024;
@@ -37,11 +42,15 @@ struct Stamp {
     mtime_ms: i64,
     directory: bool,
 }
+#[cfg(test)]
 fn stamp(path: &Path) -> Result<Stamp> {
     let m = RealFs
         .metadata(path)
         .map_err(|_| failed("The source identity could not be read."))?
         .ok_or_else(|| failed("The source is missing."))?;
+    stamp_meta(m)
+}
+fn stamp_meta(m: zeus_fs::FileMeta) -> Result<Stamp> {
     if m.is_symlink || (!m.is_regular_file && !m.is_dir) {
         return Err(failed(
             "Archives do not follow links, junctions or special files.",
@@ -63,6 +72,8 @@ struct Plan {
     source: String,
     source_stamp: Stamp,
     target: String,
+    #[serde(default)]
+    target_parent_id: Option<zeus_types::FileId>,
     entries: Vec<Entry>,
     bytes: u64,
 }
@@ -204,6 +215,21 @@ impl Archives {
         writes: &[String],
         facts: &HashMap<String, FileFacts>,
     ) -> Result<Value> {
+        self.prepare_pinned(
+            request,
+            &RootCaps::capture(reads)?,
+            &RootCaps::capture(writes)?,
+            facts,
+        )
+    }
+    /// Preview with the root identities retained by the native settings service.
+    pub fn prepare_pinned(
+        &self,
+        request: &Prepare,
+        reads: &RootCaps,
+        writes: &RootCaps,
+        facts: &HashMap<String, FileFacts>,
+    ) -> Result<Value> {
         let kind = request.kind.as_str();
         let source = request.source.as_str();
         let directory = request.directory.as_str();
@@ -215,35 +241,44 @@ impl Archives {
         if kind == "create" && !name.to_lowercase().ends_with(".zip") {
             return Err(failed("A ZIP archive name must end in .zip."));
         }
-        let source = resolve_inside(source, reads)?;
+        let source = reads.path(source)?;
         if quarantined_under(facts, &shown(&source)) {
             return Err(crate::ops::quarantine_refusal("This item"));
         }
-        let directory = resolve_inside(directory, writes)?;
-        if !directory.is_dir() || directory.starts_with(&source) {
+        let directory = writes.path(directory)?;
+        let destination = writes.directory(&directory)?;
+        if directory.starts_with(&source) {
             return Err(failed(
                 "Choose an existing writable destination outside the source.",
             ));
         }
         let target = directory.join(name);
-        if std::fs::symlink_metadata(&target).is_ok() {
+        if destination
+            .entry_exists(std::ffi::OsStr::new(name))
+            .map_err(cap_failure)?
+        {
             return Err(Failure::new(
                 "app.exists",
                 "The destination exists. Archives never replace it.",
             ));
         }
-        let source_stamp = stamp(&source)?;
+        let mut input = ArchiveSource::open(&source, reads)?;
+        let source_stamp = input.stamp()?;
         let (entries, bytes) = if kind == "create" {
-            manifest(&source, reads, facts)?
+            input.manifest(&source, facts)?
         } else {
-            zip_manifest(&source)?
+            zip_manifest_open(input.zip_file()?)?
         };
+        if input.stamp()? != source_stamp {
+            return Err(failed("The source changed during preview."));
+        }
         let plan = Plan {
             id: format!("farc_{}", zeus_app::review::random_id()),
             kind: kind.into(),
             source: shown(&source),
             source_stamp,
             target: shown(&target),
+            target_parent_id: Some(destination.file_id().map_err(cap_failure)?),
             entries,
             bytes,
         };
@@ -280,6 +315,21 @@ impl Archives {
         id: &str,
         reads: Vec<String>,
         writes: Vec<String>,
+        facts: Arc<HashMap<String, FileFacts>>,
+    ) -> Result<Value> {
+        self.start_pinned(
+            id,
+            RootCaps::capture(&reads)?,
+            RootCaps::capture(&writes)?,
+            facts,
+        )
+    }
+    /// Execute using retained current read and managed-write root identities.
+    pub fn start_pinned(
+        self: &Arc<Self>,
+        id: &str,
+        reads: RootCaps,
+        writes: RootCaps,
         facts: Arc<HashMap<String, FileFacts>>,
     ) -> Result<Value> {
         let job = {
@@ -322,7 +372,7 @@ impl Archives {
         let manager = self.clone();
         let out = job.snapshot();
         tokio::task::spawn_blocking(move || {
-            let result = execute(&manager, &job, &reads, &writes, &facts);
+            let result = execute_pinned(&manager, &job, &reads, &writes, &facts);
             let mut r = job.receipt.lock().unwrap();
             match result {
                 Ok(digest) => {
@@ -361,6 +411,10 @@ impl Archives {
     }
     /// Remove only a recorded private staging object whose stable identity still matches.
     pub fn cleanup(&self, id: &str, writes: &[String]) -> Result<Value> {
+        self.cleanup_pinned(id, &RootCaps::capture(writes)?)
+    }
+    /// Remove only the expected staging object through retained directory authority.
+    pub fn cleanup_pinned(&self, id: &str, writes: &RootCaps) -> Result<Value> {
         let job = self
             .jobs
             .lock()
@@ -373,50 +427,21 @@ impl Archives {
             return Err(failed("Cancel the running job and wait before cleanup."));
         }
         if let Some(stage) = r.staging.as_ref() {
-            if std::fs::symlink_metadata(stage)
-                .is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound)
-            {
-                if std::fs::symlink_metadata(&r.plan.target).is_ok() {
+            let (parent, target_name) = destination(&r.plan, writes, false)?;
+            let name = stage_name(&r.plan, stage, writes)?;
+            if !parent.entry_exists(&name).map_err(cap_failure)? {
+                if parent.entry_exists(&target_name).map_err(cap_failure)? {
                     return Err(failed(
                         "The target exists and staging is absent. Reconcile publication before cleanup.",
                     ));
                 }
-                r.staging = None;
-                r.staging_id = None;
-                if r.state == "uncertain" {
-                    r.state = "failed".into();
-                    r.sha256 = None;
-                }
-                self.save(&r)?;
-                return Ok(json!({"ok":true}));
-            }
-            let p = resolve_inside(stage, writes)?;
-            let m = RealFs
-                .metadata(&p)
-                .map_err(|_| failed("The staging identity could not be checked."))?
-                .ok_or_else(|| failed("The staging output is missing; review the receipt."))?;
-            if m.file_id != r.staging_id
-                || m.is_symlink
-                || !p.file_name().is_some_and(|n| {
-                    n.to_string_lossy()
-                        .starts_with(&format!(".zeus-archive-{}-", r.plan.id))
-                })
-            {
-                return Err(failed(
-                    "The staging identity changed; automatic cleanup was refused.",
-                ));
-            }
-            if m.is_dir {
-                std::fs::remove_dir_all(&p)?;
             } else {
-                std::fs::remove_file(&p)?;
+                let expected = r.staging_id.as_ref().ok_or_else(|| failed("The staging identity was not saved. Inspect it manually; cleanup was refused."))?;
+                cleanup_stage(&parent, &name, expected)?;
             }
             r.staging = None;
             r.staging_id = None;
-            if r.state == "uncertain"
-                && std::fs::symlink_metadata(&r.plan.target)
-                    .is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound)
-            {
+            if r.state == "uncertain" && !parent.entry_exists(&target_name).map_err(cap_failure)? {
                 r.state = "failed".into();
                 r.sha256 = None;
             }
@@ -429,6 +454,15 @@ impl Archives {
         &self,
         id: &str,
         writes: &[String],
+        facts: &HashMap<String, FileFacts>,
+    ) -> Result<Value> {
+        self.reconcile_pinned(id, &RootCaps::capture(writes)?, facts)
+    }
+    /// Inspect publication with held roots, directories and files; never replay an interrupted write.
+    pub fn reconcile_pinned(
+        &self,
+        id: &str,
+        writes: &RootCaps,
         facts: &HashMap<String, FileFacts>,
     ) -> Result<Value> {
         let job = self
@@ -444,25 +478,26 @@ impl Archives {
                 "This archive receipt does not need publication reconciliation.",
             ));
         }
-        let target = resolve_inside(&r.plan.target, writes)?;
+        let target = writes.path(&r.plan.target)?;
+        let (parent, target_name) = destination(&r.plan, writes, false)?;
         if quarantined_under(facts, &shown(&target)) {
             return Err(crate::ops::quarantine_refusal("This output"));
         }
-        let actual = stamp(&target)?;
+        let actual = entry_stamp(&parent, &target_name)?;
         if Some(&actual.file_id) != r.staging_id.as_ref() || r.sha256.is_none() {
             return Err(failed(
                 "The output identity is not established by this receipt; review the target manually.",
             ));
         }
-        if r.staging
-            .as_ref()
-            .is_some_and(|p| std::fs::symlink_metadata(p).is_ok())
-        {
-            return Err(failed(
-                "Both staging and target exist; automatic reconciliation is ambiguous.",
-            ));
+        if let Some(stage) = &r.staging {
+            let name = stage_name(&r.plan, stage, writes)?;
+            if parent.entry_exists(&name).map_err(cap_failure)? {
+                return Err(failed(
+                    "Both staging and target exist; automatic reconciliation is ambiguous.",
+                ));
+            }
         }
-        let digest = published_digest(&r.plan, &target)?;
+        let digest = published_digest(&r.plan, &parent, &target_name, &actual)?;
         if r.sha256.as_deref() != Some(digest.as_str()) {
             return Err(failed(
                 "The published output content changed; completion was not asserted.",
@@ -520,76 +555,9 @@ fn relative_name(name: &str, directory: bool) -> Result<PathBuf> {
     }
     Ok(p)
 }
-fn manifest(
-    source: &Path,
-    reads: &[String],
-    facts: &HashMap<String, FileFacts>,
-) -> Result<(Vec<Entry>, u64)> {
-    let base = source
-        .parent()
-        .ok_or_else(|| failed("Choose a named file or folder, rather than a volume root."))?;
-    let mut pending = vec![source.to_path_buf()];
-    let mut entries = Vec::new();
-    let mut bytes = 0u64;
-    let mut names = HashSet::new();
-    let mut name_bytes = 0usize;
-    while let Some(path) = pending.pop() {
-        if entries.len() + pending.len() >= MAX_ENTRIES {
-            return Err(failed("Archive at most 10,000 entries at a time."));
-        }
-        if resolve_inside(&shown(&path), reads)? != path || quarantined_under(facts, &shown(&path))
-        {
-            return Err(failed(
-                "A source is outside current read scopes or quarantined.",
-            ));
-        }
-        let st = stamp(&path)?;
-        let name = path
-            .strip_prefix(base)
-            .map_err(|_| failed("The archive source changed."))?
-            .components()
-            .map(|x| x.as_os_str().to_string_lossy())
-            .collect::<Vec<_>>()
-            .join("/");
-        relative_name(&name, st.directory)?;
-        name_bytes = name_bytes.saturating_add(name.len());
-        if name_bytes > 8 * 1024 * 1024 {
-            return Err(failed("Archive member paths exceed their 8 MiB bound."));
-        }
-        if !names.insert(name.to_lowercase()) {
-            return Err(failed(
-                "Source names collide when compared without case; choose a portable subset.",
-            ));
-        }
-        bytes = bytes
-            .checked_add(st.bytes)
-            .ok_or_else(|| failed("The archive size exceeds its limit."))?;
-        if bytes > MAX_BYTES {
-            return Err(failed(
-                "Archive at most 4 GiB of source data per operation.",
-            ));
-        }
-        if st.directory {
-            for item in std::fs::read_dir(&path)? {
-                pending.push(item?.path());
-                if pending.len() + entries.len() >= MAX_ENTRIES {
-                    return Err(failed("Archive at most 10,000 entries."));
-                }
-            }
-        }
-        entries.push(Entry {
-            name,
-            bytes: st.bytes,
-            directory: st.directory,
-            stamp: Some(st),
-        });
-    }
-    entries.sort_by(|a, b| a.name.cmp(&b.name));
-    Ok((entries, bytes))
-}
-fn validate_zip_container(path: &Path) -> Result<()> {
-    use std::io::{Seek, SeekFrom};
-    let mut input = std::fs::File::open(path)?;
+fn validate_zip_container(input: &mut std::fs::File) -> Result<()> {
+    use std::io::SeekFrom;
+    input.rewind()?;
     let size = input.metadata()?.len();
     if !(22..=MAX_ZIP_BYTES).contains(&size) {
         return Err(failed("Inspect ordinary ZIP files up to 1 GiB."));
@@ -634,15 +602,21 @@ fn validate_zip_container(path: &Path) -> Result<()> {
     }
     Ok(())
 }
+#[cfg(test)]
 fn zip_manifest(source: &Path) -> Result<(Vec<Entry>, u64)> {
-    if std::fs::metadata(source)?.len() > MAX_ZIP_BYTES {
+    let roots = RootCaps::capture(&[shown(source.parent().unwrap())])?;
+    let mut input = ArchiveSource::open(source, &roots)?;
+    zip_manifest_open(input.zip_file()?)
+}
+fn zip_manifest_open(source: &mut std::fs::File) -> Result<(Vec<Entry>, u64)> {
+    if source.metadata()?.len() > MAX_ZIP_BYTES {
         return Err(failed(
             "Inspect ZIP inputs up to 1 GiB. Expanded data is limited to 4 GiB.",
         ));
     }
     validate_zip_container(source)?;
-    let mut zip = ZipArchive::new(std::fs::File::open(source)?)
-        .map_err(|_| failed("This is not a supported ZIP archive."))?;
+    let mut zip =
+        ZipArchive::new(source).map_err(|_| failed("This is not a supported ZIP archive."))?;
     if zip.len() > MAX_ENTRIES {
         return Err(failed("Extract at most 10,000 ZIP entries."));
     }
@@ -763,23 +737,43 @@ fn expanded_paths(entries: &[Entry]) -> Result<HashMap<PathBuf, bool>> {
             ));
         }
     }
+    let mut folded = HashMap::new();
+    for path in paths.keys() {
+        let key = path
+            .components()
+            .map(|p| p.as_os_str().to_string_lossy())
+            .collect::<Vec<_>>()
+            .join("/")
+            .to_lowercase();
+        if folded
+            .insert(key, path)
+            .is_some_and(|previous| previous != path)
+        {
+            return Err(failed(
+                "ZIP parent folders collide when compared without case.",
+            ));
+        }
+    }
     Ok(paths)
 }
-fn published_digest(plan: &Plan, target: &Path) -> Result<String> {
+fn published_digest(
+    plan: &Plan,
+    parent: &DirectoryCap,
+    name: &std::ffi::OsStr,
+    expected_root: &Stamp,
+) -> Result<String> {
     let started = Instant::now();
-    let before = stamp(target)?;
     if plan.kind == "create" {
-        if before.directory {
-            return Err(failed("The published ZIP changed type."));
+        let mut input = parent.open_read(name).map_err(cap_failure)?;
+        let before = file_stamp(&input)?;
+        if &before != expected_root {
+            return Err(failed("The published ZIP changed before reconciliation."));
         }
-        let mut input = std::fs::File::open(target)?;
         let mut hash = Sha256::new();
         let mut bytes = 0u64;
         let mut buffer = [0u8; 65536];
         loop {
-            if started.elapsed() > Duration::from_secs(600) {
-                return Err(failed("Reconciliation exceeded ten minutes."));
-            }
+            io::time_bound(started)?;
             let n = input.read(&mut buffer)?;
             if n == 0 {
                 break;
@@ -790,56 +784,65 @@ fn published_digest(plan: &Plan, target: &Path) -> Result<String> {
             }
             hash.update(&buffer[..n]);
         }
-        if bytes != before.bytes || stamp(target)? != before {
+        if bytes != before.bytes
+            || file_stamp(&input)? != before
+            || entry_stamp(parent, name)? != before
+        {
             return Err(failed("The published ZIP changed during reconciliation."));
         }
         return Ok(hex::encode(hash.finalize()));
     }
-    if !before.directory {
-        return Err(failed("The published output changed type."));
+    let root = parent.open_dir(Path::new(name)).map_err(cap_failure)?;
+    let before = stamp_meta(root.metadata().map_err(cap_failure)?)?;
+    if &before != expected_root {
+        return Err(failed(
+            "The published directory changed before reconciliation.",
+        ));
     }
     let expected = expanded_paths(&plan.entries)?;
-    let mut pending = vec![target.to_path_buf()];
-    let mut actual = 0usize;
-    while let Some(dir) = pending.pop() {
-        for entry in std::fs::read_dir(&dir)? {
-            let path = entry?.path();
-            let relative = path
-                .strip_prefix(target)
-                .map_err(|_| failed("The published tree escaped its root."))?;
-            let meta = stamp(&path)?;
-            if expected.get(relative) != Some(&meta.directory) {
+    let mut pending = vec![PathBuf::new()];
+    let mut observed = Vec::new();
+    while let Some(relative) = pending.pop() {
+        io::time_bound(started)?;
+        let dir = root.open_dir(&relative).map_err(cap_failure)?;
+        for child in dir
+            .entry_names(MAX_ENTRIES - observed.len())
+            .map_err(cap_failure)?
+        {
+            let path = relative.join(&child);
+            let meta = entry_stamp(&dir, &child)?;
+            if expected.get(&path) != Some(&meta.directory) {
                 return Err(failed(
                     "The published tree contains an unexpected or changed item.",
                 ));
             }
-            actual += 1;
-            if actual > MAX_ENTRIES {
-                return Err(failed("The published tree exceeded its entry bound."));
-            }
             if meta.directory {
-                pending.push(path);
+                pending.push(path.clone());
             }
+            observed.push((path, meta));
         }
     }
-    if actual != expected.len() {
+    if observed.len() != expected.len() {
         return Err(failed("The published tree is incomplete."));
     }
     let mut hash = Sha256::new();
     for entry in plan.entries.iter().filter(|e| !e.directory) {
-        let path = target.join(relative_name(&entry.name, false)?);
-        let file_before = stamp(&path)?;
-        if file_before.directory || file_before.bytes != entry.bytes {
-            return Err(failed("A published file changed type or length."));
+        let relative = relative_name(&entry.name, false)?;
+        let dir = root
+            .open_dir(relative.parent().unwrap())
+            .map_err(cap_failure)?;
+        let mut input = dir
+            .open_read(relative.file_name().unwrap())
+            .map_err(cap_failure)?;
+        let before = file_stamp(&input)?;
+        if before.bytes != entry.bytes {
+            return Err(failed("A published file changed length."));
         }
-        let mut input = std::fs::File::open(&path)?;
         let mut file_hash = Sha256::new();
         let mut bytes = 0u64;
         let mut buffer = [0u8; 65536];
         loop {
-            if started.elapsed() > Duration::from_secs(600) {
-                return Err(failed("Reconciliation exceeded ten minutes."));
-            }
+            io::time_bound(started)?;
             let n = input.read(&mut buffer)?;
             if n == 0 {
                 break;
@@ -850,7 +853,10 @@ fn published_digest(plan: &Plan, target: &Path) -> Result<String> {
             }
             file_hash.update(&buffer[..n]);
         }
-        if bytes != entry.bytes || stamp(&path)? != file_before {
+        if bytes != entry.bytes
+            || file_stamp(&input)? != before
+            || entry_stamp(&dir, relative.file_name().unwrap())? != before
+        {
             return Err(failed("A published file changed during reconciliation."));
         }
         hash.update((entry.name.len() as u64).to_le_bytes());
@@ -858,19 +864,55 @@ fn published_digest(plan: &Plan, target: &Path) -> Result<String> {
         hash.update(entry.bytes.to_le_bytes());
         hash.update(file_hash.finalize());
     }
-    if stamp(target)? != before {
+    for (path, before) in observed {
+        io::time_bound(started)?;
+        let dir = root.open_dir(path.parent().unwrap()).map_err(cap_failure)?;
+        if entry_stamp(&dir, path.file_name().unwrap())? != before {
+            return Err(failed("The published tree changed during reconciliation."));
+        }
+    }
+    if stamp_meta(root.metadata().map_err(cap_failure)?)? != before
+        || entry_stamp(parent, name)? != before
+    {
         return Err(failed(
             "The published directory changed during reconciliation.",
         ));
     }
     Ok(hex::encode(hash.finalize()))
 }
+fn destination(
+    plan: &Plan,
+    writes: &RootCaps,
+    require_preview_identity: bool,
+) -> Result<(DirectoryCap, std::ffi::OsString)> {
+    let target = writes.path(&plan.target)?;
+    let (parent, name) = writes.parent(&target)?;
+    check_name(
+        name.to_str()
+            .ok_or_else(|| failed("The destination name is not valid text."))?,
+    )?;
+    match plan.target_parent_id.as_ref() {
+        Some(expected) if parent.file_id().map_err(cap_failure)?.eq(expected) => (),
+        None if !require_preview_identity => (),
+        None => {
+            return Err(failed(
+                "Preview this older archive plan again before starting it.",
+            ));
+        }
+        Some(_) => {
+            return Err(failed(
+                "The destination folder changed after preview. Choose it again.",
+            ));
+        }
+    }
+    Ok((parent, name))
+}
 fn validate_plan(
     plan: &Plan,
-    reads: &[String],
-    writes: &[String],
+    reads: &RootCaps,
+    writes: &RootCaps,
     facts: &HashMap<String, FileFacts>,
-) -> Result<()> {
+) -> Result<(ArchiveSource, DirectoryCap, std::ffi::OsString)> {
     if !valid_id(&plan.id)
         || !["create", "extract"].contains(&plan.kind.as_str())
         || plan.entries.len() > MAX_ENTRIES
@@ -878,49 +920,43 @@ fn validate_plan(
     {
         return Err(failed("The saved archive plan is invalid."));
     }
-    let source = resolve_inside(&plan.source, reads)?;
-    if stamp(&source)? != plan.source_stamp {
+    let path = reads.path(&plan.source)?;
+    let mut source = ArchiveSource::open(&path, reads)?;
+    if source.stamp()? != plan.source_stamp {
         return Err(failed(
             "The source changed after preview. Prepare a new manifest.",
         ));
     }
-    if quarantined_under(facts, &shown(&source)) {
+    if quarantined_under(facts, &shown(&path)) {
         return Err(crate::ops::quarantine_refusal("This item"));
     }
-    let target = Path::new(&plan.target);
-    let parent = target
-        .parent()
-        .ok_or_else(|| failed("The archive destination is invalid."))?;
-    if resolve_inside(&shown(parent), writes)? != parent || parent.starts_with(&source) {
-        return Err(failed(
-            "The destination is outside current writable roots or inside the source.",
-        ));
+    let target = writes.path(&plan.target)?;
+    if target.parent().is_none_or(|p| p.starts_with(&path)) {
+        return Err(failed("Choose a destination outside the source."));
     }
-    check_name(
-        target
-            .file_name()
-            .ok_or_else(|| failed("The destination has no name."))?
-            .to_str()
-            .ok_or_else(|| failed("The destination name is not valid text."))?,
-    )?;
-    if std::fs::symlink_metadata(target).is_ok() {
+    let (parent, name) = destination(plan, writes, true)?;
+    if parent.entry_exists(&name).map_err(cap_failure)? {
         return Err(Failure::new(
             "app.exists",
             "The destination already exists. No files were replaced.",
         ));
     }
     let (current, bytes) = if plan.kind == "create" {
-        manifest(&source, reads, facts)?
+        source.manifest(&path, facts)?
     } else {
-        zip_manifest(&source)?
+        zip_manifest_open(source.zip_file()?)?
     };
-    if bytes != plan.bytes || serde_json::to_vec(&current)? != serde_json::to_vec(&plan.entries)? {
+    if bytes != plan.bytes
+        || serde_json::to_vec(&current)? != serde_json::to_vec(&plan.entries)?
+        || source.stamp()? != plan.source_stamp
+    {
         return Err(failed(
             "The source manifest changed. Preview again before starting.",
         ));
     }
-    Ok(())
+    Ok((source, parent, name))
 }
+#[cfg(test)]
 fn execute(
     manager: &Archives,
     job: &Job,
@@ -928,54 +964,91 @@ fn execute(
     writes: &[String],
     facts: &HashMap<String, FileFacts>,
 ) -> Result<String> {
+    execute_pinned(
+        manager,
+        job,
+        &RootCaps::capture(reads)?,
+        &RootCaps::capture(writes)?,
+        facts,
+    )
+}
+fn execute_pinned(
+    manager: &Archives,
+    job: &Job,
+    reads: &RootCaps,
+    writes: &RootCaps,
+    facts: &HashMap<String, FileFacts>,
+) -> Result<String> {
+    execute_steps(manager, job, reads, writes, facts, || {})
+}
+// The private callback marks the durable publication boundary for deterministic crash/cancel/
+// collision tests. Production supplies an empty callback; it grants no new external authority.
+fn execute_steps(
+    manager: &Archives,
+    job: &Job,
+    reads: &RootCaps,
+    writes: &RootCaps,
+    facts: &HashMap<String, FileFacts>,
+    before_publish: impl FnOnce(),
+) -> Result<String> {
     let started = Instant::now();
     let plan = job.receipt.lock().unwrap().plan.clone();
-    validate_plan(&plan, reads, writes, facts)?;
-    let target = Path::new(&plan.target);
-    let parent = target
-        .parent()
-        .ok_or_else(|| failed("The target has no parent."))?;
-    let parent_pin = RootIdentity::capture(parent)
-        .ok_or_else(|| failed("The destination parent cannot be pinned."))?;
-    let stage = parent.join(format!(
+    job.check(started)?;
+    let (mut source, parent, target_name) = validate_plan(&plan, reads, writes, facts)?;
+    let stage_name = format!(
         ".zeus-archive-{}-{}",
         plan.id,
         zeus_app::review::random_id()
-    ));
+    );
+    let stage = Path::new(&plan.target).parent().unwrap().join(&stage_name);
     {
         let mut r = job.receipt.lock().unwrap();
         r.staging = Some(shown(&stage));
+        r.staging_id = None;
+        r.sha256 = None;
         manager.save(&r)?;
     }
-    if !parent_pin.current() {
-        return Err(failed("The destination parent changed before staging."));
-    }
-    if plan.kind == "create" {
-        std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&stage)?;
-    } else {
-        std::fs::create_dir(&stage)?;
-        #[cfg(unix)]
+    let stage_name = std::ffi::OsStr::new(&stage_name);
+    let (digest, staging_id) = if plan.kind == "create" {
+        let output = parent.create_new(stage_name).map_err(cap_failure)?;
+        let id = file_stamp(&output)?.file_id;
         {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&stage, std::fs::Permissions::from_mode(0o700))?;
+            let mut r = job.receipt.lock().unwrap();
+            r.staging_id = Some(id.clone());
+            manager.save(&r)?;
         }
-    }
-    {
-        let mut r = job.receipt.lock().unwrap();
-        r.staging_id = Some(stamp(&stage)?.file_id);
-        manager.save(&r)?;
-    }
-    let digest = if plan.kind == "create" {
-        create_zip(&plan, &stage, job, started, reads)?
+        (create_zip(&plan, output, &source, job, started)?, id)
     } else {
-        extract_zip(&plan, &stage, job, started, reads)?
+        parent.create_dir(stage_name).map_err(cap_failure)?;
+        let stage = parent
+            .open_dir(Path::new(stage_name))
+            .map_err(cap_failure)?;
+        let id = stage.file_id().map_err(cap_failure)?;
+        {
+            let mut r = job.receipt.lock().unwrap();
+            r.staging_id = Some(id.clone());
+            manager.save(&r)?;
+        }
+        (
+            extract_zip(&plan, &stage, source.zip_file()?, job, started)?,
+            id,
+        )
     };
     job.check(started)?;
-    if !parent_pin.current() || resolve_inside(&shown(parent), writes)? != parent {
-        return Err(failed("The destination changed before publication."));
+    if source.stamp()? != plan.source_stamp {
+        return Err(failed("The archive source changed during execution."));
+    }
+    // Close staging data handles, then pin and compare the publication object. Windows moves the
+    // exact retained object; Unix retains the shared primitive's explicit compare/rename limit.
+    let publication = parent.prepare_rename(stage_name).map_err(cap_failure)?;
+    if publication
+        .metadata()
+        .map_err(cap_failure)?
+        .file_id
+        .as_ref()
+        != Some(&staging_id)
+    {
+        return Err(failed("The staging object changed before publication."));
     }
     {
         let mut r = job.receipt.lock().unwrap();
@@ -983,36 +1056,42 @@ fn execute(
         r.sha256 = Some(digest.clone());
         manager.save(&r)?;
     }
-    job.check(started)?;
-    if !parent_pin.current() {
-        return Err(failed("The destination changed before publication."));
+    before_publish();
+    if let Err(error) = job.check(started) {
+        job.receipt.lock().unwrap().state = if job.cancel.load(Ordering::Relaxed) {
+            "cancelled"
+        } else {
+            "failed"
+        }
+        .into();
+        return Err(error);
     }
-    crate::ops::move_noreplace(&stage, target)?;
-    if let Some(parent) = target.parent() {
-        RealFs.sync_dir(parent).map_err(|_|failed("The output was published but directory durability could not be confirmed. Review the target."))?;
+    if let Err(error) = publication.rename_noreplace(&parent, &target_name) {
+        // A reported no-replace collision is a refused publication, not a completed output.
+        if matches!(error, zeus_fs::FsError::AlreadyExists) {
+            job.receipt.lock().unwrap().state = "failed".into();
+        }
+        return Err(cap_failure(error));
     }
+    parent.sync().map_err(|_| failed("The output was published but directory durability could not be confirmed. Review the target."))?;
     Ok(digest)
 }
 fn create_zip(
     plan: &Plan,
-    stage: &Path,
+    output: std::fs::File,
+    source: &ArchiveSource,
     job: &Job,
     start: Instant,
-    reads: &[String],
 ) -> Result<String> {
-    let source = Path::new(&plan.source);
-    let base = source
-        .parent()
-        .ok_or_else(|| failed("The source has no parent."))?;
-    let mut output = ZipWriter::new(std::fs::OpenOptions::new().write(true).open(stage)?);
+    let mut output = ZipWriter::new(output);
     let options = SimpleFileOptions::default()
         .compression_method(CompressionMethod::Deflated)
         .unix_permissions(0o644);
     for entry in &plan.entries {
         job.check(start)?;
-        let relative = relative_name(&entry.name, entry.directory)?;
-        let path = base.join(relative);
-        if resolve_inside(&shown(&path), reads)? != path || Some(stamp(&path)?) != entry.stamp {
+        if Some(source.member_stamp(&entry.name, entry.directory, Path::new(&plan.source))?)
+            != entry.stamp
+        {
             return Err(failed("An archive source changed after preview."));
         }
         if entry.directory {
@@ -1023,12 +1102,16 @@ fn create_zip(
             output
                 .start_file(&entry.name, options)
                 .map_err(|_| failed("A ZIP file header could not be written."))?;
-            let mut input = std::fs::File::open(&path)?;
+            let mut input = source.open_member(&entry.name, Path::new(&plan.source))?;
+            if Some(file_stamp(&input.file)?) != entry.stamp {
+                return Err(failed("A source changed before opening it."));
+            }
+            input.file.rewind()?;
             let mut count = 0u64;
             let mut buffer = [0u8; 65536];
             loop {
                 job.check(start)?;
-                let n = input.read(&mut buffer)?;
+                let n = input.file.read(&mut buffer)?;
                 if n == 0 {
                     break;
                 }
@@ -1039,22 +1122,26 @@ fn create_zip(
                 output.write_all(&buffer[..n])?;
                 job.bytes.fetch_add(n as u64, Ordering::Relaxed);
             }
-            if count != entry.bytes || Some(stamp(&path)?) != entry.stamp {
+            if count != entry.bytes
+                || Some(file_stamp(&input.file)?) != entry.stamp
+                || Some(source.member_stamp(&entry.name, false, Path::new(&plan.source))?)
+                    != entry.stamp
+            {
                 return Err(failed("A source changed while creating the ZIP."));
             }
         }
         job.files.fetch_add(1, Ordering::Relaxed);
     }
-    let file = output
+    let mut file = output
         .finish()
         .map_err(|_| failed("The ZIP archive could not be finalized."))?;
     file.sync_all()?;
-    let mut input = std::fs::File::open(stage)?;
+    file.rewind()?;
     let mut hash = Sha256::new();
     let mut buffer = [0u8; 65536];
     loop {
         job.check(start)?;
-        let n = input.read(&mut buffer)?;
+        let n = file.read(&mut buffer)?;
         if n == 0 {
             break;
         }
@@ -1064,53 +1151,29 @@ fn create_zip(
 }
 fn extract_zip(
     plan: &Plan,
-    stage: &Path,
+    stage: &DirectoryCap,
+    source: &mut std::fs::File,
     job: &Job,
     start: Instant,
-    reads: &[String],
 ) -> Result<String> {
-    let source = resolve_inside(&plan.source, reads)?;
-    let mut zip = ZipArchive::new(std::fs::File::open(&source)?)
-        .map_err(|_| failed("The ZIP source is invalid."))?;
-    let stage_pin = RootIdentity::capture(stage)
-        .ok_or_else(|| failed("The staging directory cannot be pinned."))?;
-    let stage_root = zeus_fs::SafeRoot::open(stage)
-        .map_err(|_| failed("The staging directory cannot be scoped."))?;
+    let mut zip = ZipArchive::new(source).map_err(|_| failed("The ZIP source is invalid."))?;
     let mut tree_hash = Sha256::new();
     for (i, entry) in plan.entries.iter().enumerate() {
         job.check(start)?;
         let relative = relative_name(&entry.name, entry.directory)?;
-        let to = stage.join(relative);
-        if !stage_pin.current() {
-            return Err(failed("The staging directory changed."));
-        }
-        if crate::config::norm(&shown(
-            &stage_root
-                .check_existing(&to)
-                .map_err(|_| failed("A ZIP destination escaped private staging."))?,
-        )) != crate::config::norm(&shown(&to))
-        {
-            return Err(failed("A ZIP destination changed."));
-        }
         if entry.directory {
-            std::fs::create_dir_all(&to)?;
+            stage.create_dir_all(&relative).map_err(cap_failure)?;
         } else {
-            std::fs::create_dir_all(
-                to.parent()
-                    .ok_or_else(|| failed("A ZIP entry has no parent."))?,
-            )?;
-            if crate::config::norm(&shown(
-                &stage_root
-                    .check_existing(&to)
-                    .map_err(|_| failed("A ZIP destination escaped private staging."))?,
-            )) != crate::config::norm(&shown(&to))
-            {
-                return Err(failed("A ZIP destination changed."));
-            }
-            let mut output = std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&to)?;
+            let parent = stage
+                .create_dir_all(
+                    relative
+                        .parent()
+                        .ok_or_else(|| failed("A ZIP entry has no parent."))?,
+                )
+                .map_err(cap_failure)?;
+            let mut output = parent
+                .create_new(relative.file_name().unwrap())
+                .map_err(cap_failure)?;
             let mut item = zip
                 .by_index(i)
                 .map_err(|_| failed("A ZIP entry could not be opened."))?;
@@ -1153,9 +1216,7 @@ fn extract_zip(
         }
         job.files.fetch_add(1, Ordering::Relaxed);
     }
-    if stamp(&source)? != plan.source_stamp {
-        return Err(failed("The ZIP source changed while extracting."));
-    }
+    stage.sync().map_err(cap_failure)?;
     Ok(hex::encode(tree_hash.finalize()))
 }
 
@@ -1416,5 +1477,295 @@ mod tests {
         );
         assert!(root.join("out.zip").is_file());
         assert_eq!(std::fs::read(source).unwrap(), b"recover publication");
+    }
+    fn prepared_file(
+        root: &Path,
+        dest: &Path,
+        db: &Path,
+    ) -> (Archives, String, Vec<String>, Arc<Job>) {
+        std::fs::create_dir_all(root).unwrap();
+        std::fs::create_dir_all(dest).unwrap();
+        std::fs::write(root.join("source.txt"), b"source bytes").unwrap();
+        let roots = vec![shown(root)];
+        let manager = Archives::new(db.to_path_buf());
+        let plan = manager
+            .prepare(
+                &Prepare {
+                    kind: "create".into(),
+                    source: shown(&root.join("source.txt")),
+                    directory: shown(dest),
+                    name: "out.zip".into(),
+                },
+                &roots,
+                &roots,
+                &HashMap::new(),
+            )
+            .unwrap();
+        let id = plan["id"].as_str().unwrap().to_owned();
+        let job = manager.jobs.lock().unwrap()[&id].clone();
+        (manager, id, roots, job)
+    }
+    fn directory_link(target: &Path, link: &Path) {
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(target, link).unwrap();
+        #[cfg(windows)]
+        assert!(
+            std::process::Command::new("cmd.exe")
+                .current_dir(link.parent().unwrap())
+                .args(["/d", "/c", "mklink", "/j"])
+                .arg(link)
+                .arg(target)
+                .stdout(std::process::Stdio::null())
+                .status()
+                .unwrap()
+                .success()
+        );
+    }
+    #[test]
+    fn preview_binds_destination_parent_and_legacy_ready_plans_require_preview() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("root");
+        let dest = root.join("dest");
+        let (manager, id, roots, job) = prepared_file(&root, &dest, &temp.path().join("jobs"));
+        std::fs::rename(&dest, root.join("old-dest")).unwrap();
+        std::fs::create_dir(&dest).unwrap();
+        assert!(execute(&manager, &job, &roots, &roots, &HashMap::new()).is_err());
+        assert!(job.receipt.lock().unwrap().staging.is_none());
+        assert!(!dest.join("out.zip").exists());
+        // A receipt written by the previous alpha still loads, but cannot start with an unbound destination.
+        let file = temp.path().join("jobs").join(format!("{id}.json"));
+        let mut old: Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+        old["plan"]
+            .as_object_mut()
+            .unwrap()
+            .remove("target_parent_id");
+        std::fs::write(&file, serde_json::to_vec(&old).unwrap()).unwrap();
+        let restored = Archives::new(temp.path().join("jobs"));
+        let job = restored.jobs.lock().unwrap()[&id].clone();
+        assert!(
+            execute(&restored, &job, &roots, &roots, &HashMap::new())
+                .unwrap_err()
+                .message
+                .contains("older")
+        );
+        assert!(job.receipt.lock().unwrap().staging.is_none());
+    }
+    #[test]
+    fn publication_collision_and_late_cancellation_keep_owned_staging_for_cleanup() {
+        let temp = tempfile::tempdir().unwrap();
+        for cancel in [false, true] {
+            let root = temp
+                .path()
+                .join(if cancel { "cancel" } else { "collision" });
+            let (manager, id, roots, job) = prepared_file(&root, &root, &root.join("state"));
+            let caps = RootCaps::capture(&roots).unwrap();
+            let outcome = execute_steps(&manager, &job, &caps, &caps, &HashMap::new(), || {
+                if cancel {
+                    job.cancel.store(true, Ordering::Relaxed);
+                } else {
+                    std::fs::write(root.join("out.zip"), b"foreign output").unwrap();
+                }
+            });
+            assert!(outcome.is_err());
+            assert_eq!(
+                job.receipt.lock().unwrap().state,
+                if cancel { "cancelled" } else { "failed" }
+            );
+            let stage = job.receipt.lock().unwrap().staging.clone().unwrap();
+            assert!(Path::new(&stage).is_file());
+            if cancel {
+                assert!(!root.join("out.zip").exists());
+            } else {
+                assert_eq!(
+                    std::fs::read(root.join("out.zip")).unwrap(),
+                    b"foreign output"
+                );
+            }
+            manager.cleanup_pinned(&id, &caps).unwrap();
+            assert!(!Path::new(&stage).exists());
+            assert!(job.receipt.lock().unwrap().staging.is_none());
+            assert_eq!(
+                std::fs::read(root.join("source.txt")).unwrap(),
+                b"source bytes"
+            );
+        }
+    }
+    #[test]
+    fn cleanup_refuses_a_replaced_staging_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("root");
+        let (manager, id, roots, job) = prepared_file(&root, &root, &temp.path().join("jobs"));
+        let stage = root.join(format!(".zeus-archive-{id}-{}", "a".repeat(32)));
+        std::fs::write(&stage, b"owned output").unwrap();
+        {
+            let mut receipt = job.receipt.lock().unwrap();
+            receipt.staging = Some(shown(&stage));
+            receipt.staging_id = Some(stamp(&stage).unwrap().file_id);
+            manager.save(&receipt).unwrap();
+        }
+        std::fs::rename(&stage, root.join("original-stage")).unwrap();
+        std::fs::write(&stage, b"foreign replacement").unwrap();
+        assert!(manager.cleanup(&id, &roots).is_err());
+        assert_eq!(std::fs::read(&stage).unwrap(), b"foreign replacement");
+        assert!(job.receipt.lock().unwrap().staging.is_some());
+    }
+    #[test]
+    fn cleanup_preflights_the_entire_tree_before_removing_anything() {
+        let temp = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("canary"), b"outside unchanged").unwrap();
+        let root = temp.path().join("root");
+        let (manager, id, roots, job) = prepared_file(&root, &root, &temp.path().join("jobs"));
+        let stage = root.join(format!(".zeus-archive-{id}-{}", "b".repeat(32)));
+        std::fs::create_dir_all(stage.join("nested")).unwrap();
+        std::fs::write(stage.join("nested/owned"), b"partial").unwrap();
+        directory_link(outside.path(), &stage.join("junction"));
+        {
+            let mut r = job.receipt.lock().unwrap();
+            r.staging = Some(shown(&stage));
+            r.staging_id = Some(stamp(&stage).unwrap().file_id);
+            manager.save(&r).unwrap();
+        }
+        assert!(manager.cleanup(&id, &roots).is_err());
+        assert_eq!(
+            std::fs::read(stage.join("nested/owned")).unwrap(),
+            b"partial"
+        );
+        assert_eq!(
+            std::fs::read(outside.path().join("canary")).unwrap(),
+            b"outside unchanged"
+        );
+        #[cfg(windows)]
+        std::fs::remove_dir(stage.join("junction")).unwrap();
+        #[cfg(unix)]
+        std::fs::remove_file(stage.join("junction")).unwrap();
+        manager.cleanup(&id, &roots).unwrap();
+        assert!(!stage.exists());
+        assert_eq!(
+            std::fs::read(outside.path().join("canary")).unwrap(),
+            b"outside unchanged"
+        );
+    }
+    #[test]
+    fn a_whole_read_root_can_be_archived_without_authority_over_its_parent() {
+        let temp = tempfile::tempdir().unwrap();
+        let read = temp.path().join("read");
+        let write = temp.path().join("write");
+        std::fs::create_dir_all(read.join("inner")).unwrap();
+        std::fs::create_dir(&write).unwrap();
+        std::fs::write(read.join("inner/data.txt"), b"root contents").unwrap();
+        let reads = vec![shown(&read)];
+        let writes = vec![shown(&write)];
+        let manager = Archives::new(temp.path().join("jobs"));
+        let plan = manager
+            .prepare(
+                &Prepare {
+                    kind: "create".into(),
+                    source: shown(&read),
+                    directory: shown(&write),
+                    name: "all.zip".into(),
+                },
+                &reads,
+                &writes,
+                &HashMap::new(),
+            )
+            .unwrap();
+        let job = manager.jobs.lock().unwrap()[plan["id"].as_str().unwrap()].clone();
+        execute(&manager, &job, &reads, &writes, &HashMap::new()).unwrap();
+        let mut zip = ZipArchive::new(std::fs::File::open(write.join("all.zip")).unwrap()).unwrap();
+        let mut bytes = Vec::new();
+        zip.by_name("read/inner/data.txt")
+            .unwrap()
+            .read_to_end(&mut bytes)
+            .unwrap();
+        assert_eq!(bytes, b"root contents");
+    }
+    #[test]
+    fn implicit_parent_case_collisions_and_device_aliases_fail_preview() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("source.zip");
+        for names in [
+            ["A/first", "a/second"],
+            ["CONIN$/first", "second"],
+            ["parent/COM¹.txt", "second"],
+        ] {
+            make_zip(&path, &[(names[0], b"one"), (names[1], b"two")]);
+            assert!(zip_manifest(&path).is_err(), "{names:?}");
+        }
+    }
+
+    #[test]
+    fn extracted_tree_reconciliation_rejects_content_changes_and_linked_children() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("root");
+        let outside = temp.path().join("outside");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::create_dir(&outside).unwrap();
+        std::fs::write(outside.join("canary"), b"outside unchanged").unwrap();
+        let zip = root.join("source.zip");
+        make_zip(
+            &zip,
+            &[("nested/data.txt", b"original"), ("other.txt", b"two")],
+        );
+        let roots = vec![shown(&root)];
+        let db = temp.path().join("jobs");
+        let manager = Archives::new(db.clone());
+        let plan = manager
+            .prepare(
+                &Prepare {
+                    kind: "extract".into(),
+                    source: shown(&zip),
+                    directory: shown(&root),
+                    name: "output".into(),
+                },
+                &roots,
+                &roots,
+                &HashMap::new(),
+            )
+            .unwrap();
+        let id = plan["id"].as_str().unwrap();
+        let job = manager.jobs.lock().unwrap()[id].clone();
+        // Publication succeeded; simulate a restart before the worker saves its final receipt.
+        execute(&manager, &job, &roots, &roots, &HashMap::new()).unwrap();
+        drop(job);
+        drop(manager);
+        let restored = Archives::new(db);
+        let output = root.join("output");
+        std::fs::write(output.join("nested/data.txt"), b"modified").unwrap();
+        assert!(restored.reconcile(id, &roots, &HashMap::new()).is_err());
+        assert_eq!(
+            restored.jobs.lock().unwrap()[id]
+                .receipt
+                .lock()
+                .unwrap()
+                .state,
+            "interrupted"
+        );
+        std::fs::write(output.join("nested/data.txt"), b"original").unwrap();
+        std::fs::rename(output.join("nested"), root.join("saved-nested")).unwrap();
+        directory_link(&outside, &output.join("nested"));
+        assert!(restored.reconcile(id, &roots, &HashMap::new()).is_err());
+        assert_eq!(
+            std::fs::read(outside.join("canary")).unwrap(),
+            b"outside unchanged"
+        );
+        #[cfg(windows)]
+        std::fs::remove_dir(output.join("nested")).unwrap();
+        #[cfg(unix)]
+        std::fs::remove_file(output.join("nested")).unwrap();
+        std::fs::rename(root.join("saved-nested"), output.join("nested")).unwrap();
+        restored.reconcile(id, &roots, &HashMap::new()).unwrap();
+        assert_eq!(
+            restored.jobs.lock().unwrap()[id]
+                .receipt
+                .lock()
+                .unwrap()
+                .state,
+            "complete"
+        );
+        assert_eq!(
+            std::fs::read(output.join("nested/data.txt")).unwrap(),
+            b"original"
+        );
     }
 }
