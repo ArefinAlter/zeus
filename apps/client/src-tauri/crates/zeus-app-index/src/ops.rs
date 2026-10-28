@@ -11,7 +11,7 @@ use serde_json::{Value, json};
 use zeus_app::failure::{Failure, Result};
 
 use crate::facts::{FileFacts, quarantined_under};
-use crate::paths::{check_name, resolve_inside, resolve_new_inside, shown};
+use crate::paths::{RootCaps, cap_failure, check_name, resolve_inside, resolve_new_inside, shown};
 
 use std::collections::HashMap;
 
@@ -277,34 +277,34 @@ pub fn copy_to(
     write_roots: &[String],
     facts: &HashMap<String, FileFacts>,
 ) -> Result<Value> {
+    copy_to_pinned(
+        path,
+        dir,
+        &RootCaps::capture(read_roots)?,
+        &RootCaps::capture(write_roots)?,
+        facts,
+    )
+}
+
+/// Copy a regular file through separately retained read and write root capabilities.
+pub fn copy_to_pinned(
+    path: &str,
+    dir: &str,
+    reads: &RootCaps,
+    writes: &RootCaps,
+    facts: &HashMap<String, FileFacts>,
+) -> Result<Value> {
     use std::io::{Read, Write};
-    let from = resolve_inside(path, read_roots)?;
+    let from = reads.path(path)?;
     if quarantined_under(facts, &shown(&from)) {
         return Err(quarantine_refusal("This file"));
     }
-    if !from.is_file() {
-        return Err(Failure::invalid("Choose a file to copy."));
-    }
-    let dest = resolve_inside(dir, write_roots)?;
-    if !dest.is_dir() {
-        return Err(Failure::invalid("Choose an existing destination folder."));
-    }
-    let name = from
-        .file_name()
-        .ok_or_else(|| Failure::invalid("The file has no name."))?;
-    let to = dest.join(name);
-    let mut source = std::fs::File::open(&from)?;
-    let mut output = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&to)
-        .map_err(|e| {
-            if e.kind() == std::io::ErrorKind::AlreadyExists {
-                already(&name.to_string_lossy())
-            } else {
-                Failure::new("app.io", "The copy could not be created.")
-            }
-        })?;
+    let dest = writes.path(dir)?;
+    let (source_parent, name) = reads.parent(&from)?;
+    let dest_parent = writes.directory(&dest)?;
+    let to = dest.join(&name);
+    let mut source = source_parent.open_read(&name).map_err(cap_failure)?;
+    let mut output = dest_parent.create_new(&name).map_err(cap_failure)?;
     let result = (|| -> std::io::Result<()> {
         let mut bytes = [0u8; 65536];
         loop {
@@ -317,11 +317,14 @@ pub fn copy_to(
         output.sync_all()
     })();
     if result.is_err() {
-        drop(output);
-        let _ = std::fs::remove_file(&to);
+        let cleaned = dest_parent.discard_created(&name, output).is_ok();
         return Err(Failure::new(
             "app.io",
-            "The copy did not finish; its incomplete output was removed.",
+            if cleaned {
+                "The copy did not finish; its incomplete output was removed."
+            } else {
+                "The copy did not finish. Its incomplete destination could not be removed; inspect it before retrying."
+            },
         ));
     }
     Ok(json!({"ok":true,"path":shown(&to)}))
@@ -329,17 +332,18 @@ pub fn copy_to(
 
 /// Create one folder in an explicitly writable existing folder.
 pub fn create_folder(parent: &str, name: &str, roots: &[String]) -> Result<Value> {
+    create_folder_pinned(parent, name, &RootCaps::capture(roots)?)
+}
+
+/// Create one folder through the retained managed-root authority.
+pub fn create_folder_pinned(parent: &str, name: &str, roots: &RootCaps) -> Result<Value> {
     check_name(name)?;
-    let parent = resolve_inside(parent, roots)?;
-    let path = parent.join(name);
-    std::fs::create_dir(&path).map_err(|e| {
-        if e.kind() == std::io::ErrorKind::AlreadyExists {
-            already(name)
-        } else {
-            Failure::new("app.io", "The folder could not be created.")
-        }
-    })?;
-    Ok(json!({"ok":true,"path":shown(&path)}))
+    let parent = roots.path(parent)?;
+    roots
+        .directory(&parent)?
+        .create_dir(std::ffi::OsStr::new(name))
+        .map_err(cap_failure)?;
+    Ok(json!({"ok":true,"path":shown(&parent.join(name))}))
 }
 
 #[cfg(test)]

@@ -207,7 +207,8 @@ async fn relocate_route(
 ) -> Result<Value> {
     let svc = &module.svc;
     let facts = guarded_facts(svc, app).await?;
-    let from = paths::resolve_inside(str_of(body, "path"), &svc.write_roots())?;
+    let roots = svc.file_capabilities(true)?;
+    let from = roots.path(str_of(body, "path"))?;
     let to = if rename {
         let name = str_of(body, "name");
         paths::check_name(name)?;
@@ -215,21 +216,16 @@ async fn relocate_route(
             .ok_or_else(|| Failure::invalid("That path has no parent."))?
             .join(name)
     } else {
-        let dest = paths::resolve_inside(str_of(body, "dir"), &svc.write_roots())?;
-        if !dest.is_dir() {
-            return Err(Failure::invalid(
-                "Create or choose an existing destination folder first.",
-            ));
-        }
+        let dest = roots.path(str_of(body, "dir"))?;
+        roots.directory(&dest)?;
         dest.join(
             from.file_name()
                 .ok_or_else(|| Failure::invalid("That path has no name."))?,
         )
     };
     let journal = module.history.clone();
-    let roots = svc.write_roots();
     let result = tokio::task::spawn_blocking(move || {
-        journal.relocate(&paths::shown(&from), &paths::shown(&to), &roots, &facts)
+        journal.relocate_pinned(&paths::shown(&from), &paths::shown(&to), &roots, &facts)
     })
     .await
     .map_err(|_| Failure::new("app.io", "The operation task stopped; review its receipt."))??;
@@ -460,7 +456,10 @@ impl Extension for Module {
                 "POST /native/v1/files/history/undo"
                 | "POST /native/v1/files/history/reconcile" => {
                     let id = str_of(body, "id").to_owned();
-                    let roots = svc.write_roots();
+                    let roots = match svc.file_capabilities(true) {
+                        Ok(r) => r,
+                        Err(e) => return Some(Err(e)),
+                    };
                     let journal = self.history.clone();
                     let undo = route.ends_with("/undo");
                     let facts = match guarded_facts(svc, app).await {
@@ -469,9 +468,9 @@ impl Extension for Module {
                     };
                     let result = tokio::task::spawn_blocking(move || {
                         if undo {
-                            journal.undo(&id, &roots, &facts)
+                            journal.undo_pinned(&id, &roots, &facts)
                         } else {
-                            journal.reconcile(&id, &roots)
+                            journal.reconcile(&id, &roots.paths())
                         }
                     })
                     .await
@@ -587,11 +586,19 @@ impl Extension for Module {
                         Ok(f) => f,
                         Err(e) => return Some(Err(e)),
                     };
+                    let reads = match svc.file_capabilities(false) {
+                        Ok(r) => r,
+                        Err(e) => return Some(Err(e)),
+                    };
+                    let writes = match svc.file_capabilities(true) {
+                        Ok(r) => r,
+                        Err(e) => return Some(Err(e)),
+                    };
                     Some(self.transfers.start(
                         str_of(body, "path").to_owned(),
                         str_of(body, "dir").to_owned(),
-                        svc.read_roots(),
-                        svc.write_roots(),
+                        reads,
+                        writes,
                         facts,
                     ))
                 }
@@ -602,14 +609,20 @@ impl Extension for Module {
                 "POST /native/v1/files/copy" => {
                     let from = str_of(body, "path").to_owned();
                     let to = str_of(body, "dir").to_owned();
-                    let reads = svc.read_roots();
-                    let writes = svc.write_roots();
+                    let reads = match svc.file_capabilities(false) {
+                        Ok(r) => r,
+                        Err(e) => return Some(Err(e)),
+                    };
+                    let writes = match svc.file_capabilities(true) {
+                        Ok(r) => r,
+                        Err(e) => return Some(Err(e)),
+                    };
                     let facts = match guarded_facts(svc, app).await {
                         Ok(f) => f,
                         Err(e) => return Some(Err(e)),
                     };
                     let result = tokio::task::spawn_blocking(move || {
-                        ops::copy_to(&from, &to, &reads, &writes, &facts)
+                        ops::copy_to_pinned(&from, &to, &reads, &writes, &facts)
                     })
                     .await;
                     svc.rescan(None);
@@ -622,9 +635,12 @@ impl Extension for Module {
                 "POST /native/v1/files/mkdir" => {
                     let parent = str_of(body, "parent").to_owned();
                     let name = str_of(body, "name").to_owned();
-                    let roots = svc.write_roots();
+                    let roots = match svc.file_capabilities(true) {
+                        Ok(r) => r,
+                        Err(e) => return Some(Err(e)),
+                    };
                     let result = tokio::task::spawn_blocking(move || {
-                        ops::create_folder(&parent, &name, &roots)
+                        ops::create_folder_pinned(&parent, &name, &roots)
                     })
                     .await;
                     svc.rescan(None);

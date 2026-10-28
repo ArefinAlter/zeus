@@ -13,7 +13,7 @@ use zeus_fs::{Filesystem, RealFs};
 use crate::{
     facts::{FileFacts, quarantined_under},
     ops,
-    paths::{resolve_inside, resolve_new_inside, shown},
+    paths::{RootCaps, cap_failure, resolve_new_inside, shown},
 };
 
 const MAX_RECORDS: usize = 1000;
@@ -35,12 +35,15 @@ fn identity(path: &Path) -> Result<Identity> {
             "Choose a file or folder itself, rather than a link or special file.",
         ));
     }
-    Ok(Identity {
+    Ok(identity_from_meta(meta))
+}
+fn identity_from_meta(meta: zeus_fs::FileMeta) -> Identity {
+    Identity {
         file_id: meta.file_id,
         bytes: meta.len,
         mtime_ms: meta.mtime_ms,
         directory: meta.is_dir,
-    })
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -109,14 +112,25 @@ impl Journal {
         roots: &[String],
         facts: &HashMap<String, FileFacts>,
     ) -> Result<Value> {
-        let from = resolve_inside(from, roots)?;
-        let to = resolve_new_inside(to, roots)?;
+        self.relocate_pinned(from, to, &RootCaps::capture(roots)?, facts)
+    }
+    /// Move using roots pinned against the desktop service's enablement identities.
+    pub fn relocate_pinned(
+        &self,
+        from: &str,
+        to: &str,
+        roots: &RootCaps,
+        facts: &HashMap<String, FileFacts>,
+    ) -> Result<Value> {
+        let from = roots.path(from)?;
+        let to = roots.path(to)?;
         if from == to || to.starts_with(&from) {
             return Err(Failure::invalid(
                 "Choose a different path outside the source.",
             ));
         }
         if roots
+            .paths()
             .iter()
             .any(|r| crate::config::norm(r) == crate::config::norm(&shown(&from)))
         {
@@ -127,23 +141,12 @@ impl Journal {
         if quarantined_under(facts, &shown(&from)) || quarantined_under(facts, &shown(&to)) {
             return Err(ops::quarantine_refusal("This item"));
         }
-        let parent = to
-            .parent()
-            .ok_or_else(|| Failure::invalid("That destination has no parent."))?;
-        // Parent creation is a separate explicit operation; a move is a single recoverable rename.
-        resolve_inside(&shown(parent), roots)?;
-        let source_identity = identity(&from)?;
-        let source_parent = crate::paths::RootIdentity::capture(
-            from.parent()
-                .ok_or_else(|| Failure::invalid("That source has no parent."))?,
-        )
-        .ok_or_else(|| Failure::new("app.path_changed", "The source parent cannot be pinned."))?;
-        let target_parent = crate::paths::RootIdentity::capture(parent).ok_or_else(|| {
-            Failure::new(
-                "app.path_changed",
-                "The destination parent cannot be pinned.",
-            )
-        })?;
+        let (source_parent, source_name) = roots.parent(&from)?;
+        let (target_parent, target_name) = roots.parent(&to)?;
+        let source = source_parent
+            .prepare_rename(&source_name)
+            .map_err(cap_failure)?;
+        let source_identity = identity_from_meta(source.metadata().map_err(cap_failure)?);
         let mut records = self
             .records
             .lock()
@@ -173,16 +176,15 @@ impl Journal {
                 .map_or(0, |x| x.as_millis() as u64),
         });
         self.save(&records)?;
-        // Re-resolve both sides after durable intent; a changed parent is refused.
-        if !source_parent.current()
-            || !target_parent.current()
-            || identity(&from)? != records.last().expect("receipt exists").identity
-            || resolve_inside(&shown(&from), roots)? != from
-            || resolve_inside(&shown(parent), roots)? != parent
+        // The source and both parents remain open across durable intent and publication.
+        if identity_from_meta(source.metadata().map_err(cap_failure)?)
+            != records.last().expect("receipt exists").identity
         {
-            return Err(Failure::invalid("A folder changed before the move."));
+            return Err(Failure::invalid(
+                "The source changed before the move; review its receipt.",
+            ));
         }
-        let result = ops::move_noreplace(&from, &to);
+        let result = source.rename_noreplace(&target_parent, &target_name);
         let row = records.last_mut().expect("receipt was just appended");
         row.state = if result.is_ok() { "complete" } else { "failed" }.into();
         // A save failure leaves the durable pending intent; never pretend the move did not happen.
@@ -192,7 +194,7 @@ impl Journal {
                 "The operation result could not be saved. Check both paths and the pending receipt before retrying.",
             ));
         }
-        result.map_err(|e| if e.kind()==std::io::ErrorKind::AlreadyExists { Failure::new("app.exists", "That destination already exists; nothing was replaced.") } else { Failure::new("app.move_failed", "The move was refused. Moves across drives require Copy, then a separate deletion after verification.") })?;
+        result.map_err(|e| if matches!(e, zeus_fs::FsError::AlreadyExists) { Failure::new("app.exists", "That destination already exists; nothing was replaced.") } else { Failure::new("app.move_failed", "The move was refused. Moves across drives require Copy, then a separate deletion after verification.") })?;
         Ok(json!({"ok":true,"id":id,"from":shown(&from),"path":shown(&to),"can_undo":true}))
     }
     /// Undo a completed move only when its identity still matches and the old path is unoccupied.
@@ -200,6 +202,15 @@ impl Journal {
         &self,
         id: &str,
         roots: &[String],
+        facts: &HashMap<String, FileFacts>,
+    ) -> Result<Value> {
+        self.undo_pinned(id, &RootCaps::capture(roots)?, facts)
+    }
+    /// Undo using retained root authority and an opened source identity.
+    pub fn undo_pinned(
+        &self,
+        id: &str,
+        roots: &RootCaps,
         facts: &HashMap<String, FileFacts>,
     ) -> Result<Value> {
         let mut records = self
@@ -217,55 +228,31 @@ impl Journal {
                 "Only a completed, not-yet-undone move can be undone.",
             ));
         }
-        let current = resolve_inside(&r.path, roots)?;
-        let original = resolve_new_inside(&r.from, roots)?;
+        let current = roots.path(&r.path)?;
+        let original = roots.path(&r.from)?;
         if quarantined_under(facts, &r.path) || quarantined_under(facts, &r.from) {
             return Err(ops::quarantine_refusal("This item"));
         }
-        if identity(&current)? != r.identity {
+        let (current_parent, current_name) = roots.parent(&current)?;
+        let (original_parent, original_name) = roots.parent(&original)?;
+        let source = current_parent
+            .prepare_rename(&current_name)
+            .map_err(cap_failure)?;
+        if identity_from_meta(source.metadata().map_err(cap_failure)?) != r.identity {
             return Err(Failure::new(
                 "app.file_changed",
                 "This item changed or was replaced since the move; undo was refused.",
             ));
         }
-        if std::fs::symlink_metadata(&original).is_ok() {
-            return Err(Failure::new(
-                "app.exists",
-                "The original path is occupied. Undo never replaces it.",
-            ));
-        }
-        resolve_inside(
-            &shown(
-                original
-                    .parent()
-                    .ok_or_else(|| Failure::invalid("The original parent is unavailable."))?,
-            ),
-            roots,
-        )?;
-        let current_parent = crate::paths::RootIdentity::capture(
-            current
-                .parent()
-                .ok_or_else(|| Failure::invalid("The current parent is unavailable."))?,
-        )
-        .ok_or_else(|| Failure::new("app.path_changed", "The current parent cannot be pinned."))?;
-        let original_parent = crate::paths::RootIdentity::capture(
-            original
-                .parent()
-                .ok_or_else(|| Failure::invalid("The original parent is unavailable."))?,
-        )
-        .ok_or_else(|| Failure::new("app.path_changed", "The original parent cannot be pinned."))?;
         records[at].state = "undoing".into();
         self.save(&records)?;
-        if !current_parent.current()
-            || !original_parent.current()
-            || identity(&current)? != r.identity
-        {
+        if identity_from_meta(source.metadata().map_err(cap_failure)?) != r.identity {
             return Err(Failure::new(
                 "app.path_changed",
-                "A parent or source identity changed before undo; review the receipt.",
+                "The source changed before undo; review its receipt.",
             ));
         }
-        let result = ops::move_noreplace(&current, &original);
+        let result = source.rename_noreplace(&original_parent, &original_name);
         records[at].state = if result.is_ok() { "undone" } else { "complete" }.into();
         if self.save(&records).is_err() {
             return Err(Failure::new(
@@ -273,7 +260,10 @@ impl Journal {
                 "Undo's result could not be saved. Review both paths before another action.",
             ));
         }
-        result.map_err(|_| {
+        result.map_err(|error| {
+            if matches!(error, zeus_fs::FsError::AlreadyExists) {
+                return cap_failure(error);
+            }
             Failure::new(
                 "app.undo_failed",
                 "Undo could not move the item. No existing destination was replaced.",

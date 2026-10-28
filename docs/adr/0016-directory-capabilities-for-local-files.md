@@ -1,0 +1,18 @@
+# 0016: Directory capabilities for local file operations
+
+Status: additive primitive and native copy/move/undo/mkdir conversion implemented; engine, index, archive and deletion consumers remain to be converted.
+Owner direction: complete the desktop file manager and the non-mobile 0.1 roadmap.
+
+Path canonicalization and identity rechecks do not protect the interval before a later path-based open, rename or delete. Introduce an additive directory-capability implementation in `zeus-fs`. It retains open root and parent directories and resolves only normal child components. A final symlink, junction or reparse point is refused. Opening a configured root is the explicit ambient-authority boundary; subsequent operations are relative to held handles. Read roots and managed write roots remain distinct.
+
+Use the maintained `cap-std`/`cap-fs-ext` primitives for bounded directory-relative resolution. Preserve exclusive creation and atomic no-replace publication; ordinary rename-with-replacement is not an acceptable substitute. The Windows no-replace primitive uses `NtSetInformationFile(FileRenameInformation)` with an opened source and destination directory handle; Unix uses directory-relative rename with NOREPLACE. Platform FFI stays in the isolated system module. File identities come from the opened objects. Operations keep their parent capabilities alive until completion.
+
+Retain the existing `Filesystem`/`DataFile` contracts and `RealFs` entry point for compatibility. The additive `DirectoryCap`/`RenameSource` types serve opted-in consumers; injected simulation filesystems remain usable. Convert the engine's default file access and the native file/index/archive operations incrementally, with each converted surface recorded in the file-workspace report. Do not claim all path races closed while an ambient-path consumer remains.
+
+A capability authorizes the directory object that was opened. On Unix an independently renamed directory can retain that authority through its open descriptor; this is not an OS sandbox against another process running as the same user. Windows directory handles must retain the sharing restrictions required by the capability library. Existing scope, quarantine, file-identity, approval, collision and durable-receipt checks remain required in addition to path containment.
+
+Acceptance covers component traversal/ADS/device-name rejection, intermediate and final links, rename collisions, held-directory identity during replacement, partial outputs and failure cleanup. Windows execution, Rust 1.90 Windows/Linux-target compilation and Ogun compatibility are recorded in FILE-WORKSPACE.md; actual Linux execution remains pending. Unsupported atomic platform operations fail explicitly. Existing release downloads are unchanged until release acceptance.
+
+References: [cap-std directory capabilities](https://docs.rs/cap-std/4.0.3/cap_std/fs/struct.Dir.html), [no-follow directory/file options](https://docs.rs/cap-fs-ext/4.0.3/cap_fs_ext/), and [Windows relative rename information](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntifs/ns-ntifs-_file_rename_information).
+
+The Win32 `SetFileInformationByHandle` wrapper rejected a non-null relative directory handle with error87 on the acceptance machine. The isolated Windows module therefore uses the documented NT rename information class directly with synchronous handles and no replace flag. Incomplete copy cleanup deletes the opened Windows output object; Unix checks its identity before directory-relative unlink. Unix lacks atomic rename/unlink conditioned on a file identity, and power-loss durability on each target filesystem still needs the planned fault matrix.

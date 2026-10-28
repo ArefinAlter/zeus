@@ -199,6 +199,33 @@ impl Service {
         self.included().into_iter().map(|r| r.path).collect()
     }
 
+    /// Retain root authority for a local operation using the identities captured at enablement.
+    pub fn file_capabilities(
+        &self,
+        writable: bool,
+    ) -> zeus_app::failure::Result<crate::paths::RootCaps> {
+        let paths = if writable {
+            self.write_roots()
+        } else {
+            self.read_roots()
+        };
+        let pins = self.root_identities.lock().map_err(|_| {
+            zeus_app::failure::Failure::new("app.io", "Folder permissions are busy.")
+        })?;
+        let selected = paths
+            .iter()
+            .map(|p| {
+                pins.get(&norm(p)).cloned().ok_or_else(|| {
+                    zeus_app::failure::Failure::new(
+                        "app.path_changed",
+                        "An enabled folder changed.",
+                    )
+                })
+            })
+            .collect::<zeus_app::failure::Result<Vec<_>>>()?;
+        crate::paths::RootCaps::from_pins(&selected)
+    }
+
     /// Replace the configuration (from the page), save it, and apply it.
     pub fn set_config(&self, new: IndexConfig) -> zeus_app::failure::Result<IndexConfig> {
         new.validate()?;
