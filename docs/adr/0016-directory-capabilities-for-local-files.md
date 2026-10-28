@@ -1,6 +1,6 @@
 # 0016: Directory capabilities for local file operations
 
-Status: additive primitive and native copy/move/undo/mkdir, archive data paths, previews and duplicate verification converted; engine, indexing/listing and deletion consumers remain to be converted. Private application receipt persistence remains a separate boundary.
+Status: additive primitive and native copy/move/undo/mkdir, archive data paths, previews and duplicate verification converted; engine and deletion consumers remain to be converted. Private application receipt persistence remains a separate boundary.
 Owner direction: complete the desktop file manager and the non-mobile 0.1 roadmap.
 
 Path canonicalization and identity rechecks do not protect the interval before a later path-based open, rename or delete. Introduce an additive directory-capability implementation in `zeus-fs`. It retains open root and parent directories and resolves only normal child components. A final symlink, junction or reparse point is refused. Opening a configured root is the explicit ambient-authority boundary; subsequent operations are relative to held handles. Read roots and managed write roots remain distinct.
@@ -21,3 +21,5 @@ Archive conversion: retain read/destination/staging directory capabilities throu
 
 
 Read-consumer conversion: native previews and duplicate verification acquire existing read-root identities and retain parent/file handles throughout the request. Preview image and line-count reads are limited while reading, not only by earlier metadata, and never reopen a checked ambient path. Duplicate hashing retains every selected file through a final identity/metadata recheck, deduplicates hard-link aliases by file identity, and keeps the existing 32-selection/1 GiB bounds with a cooperative two-minute I/O-loop deadline. These checks do not provide an atomic snapshot or prevent a same-user writer from modifying bytes while preserving metadata. Index scans, direct folder listings, the optional Everything result filter and external file-manager launch paths are still separate consumers.
+
+Index/listing conversion: add streaming directory-name enumeration and OS metadata from an opened no-follow child to the existing capability. The index scanner, watcher refresh, direct paged listings and Everything row validation must use retained roots; unknown read errors retain prior rows, while a confirmed absent child can remove its cached subtree. Preserve native hidden/system filtering and bounded page memory. Helper executable staging and private index snapshot persistence remain explicit application-state boundaries.

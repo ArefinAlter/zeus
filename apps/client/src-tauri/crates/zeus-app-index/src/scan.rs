@@ -10,6 +10,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::UNIX_EPOCH;
 
 use crate::config::Excluder;
+use crate::paths::RootCaps;
 use crate::store::Index;
 
 /// Counters a scan updates and the status route reads.
@@ -99,31 +100,43 @@ struct Listing {
     complete: bool,
 }
 
-fn list_dir(dir: &Path, ex: &Excluder) -> Listing {
+fn list_dir(dir: &Path, ex: &Excluder, roots: &RootCaps) -> Listing {
     let mut out = Listing {
         files: Vec::new(),
         subdirs: Vec::new(),
         complete: true,
     };
-    let Ok(read) = std::fs::read_dir(dir) else {
+    let Ok(directory) = roots.directory(dir) else {
         out.complete = false;
         return out;
     };
-    for entry in read {
+    let Ok(read) = directory.iter_names() else {
+        out.complete = false;
+        return out;
+    };
+    for (count, entry) in read.enumerate() {
+        if count >= crate::store::CAP {
+            out.complete = false;
+            break;
+        }
         let Ok(entry) = entry else {
             out.complete = false;
             continue;
         };
-        let name = entry.file_name().to_string_lossy().into_owned();
-        let path = entry.path();
-        let Ok(meta) = std::fs::symlink_metadata(&path) else {
+        let Some(name) = entry.to_str() else {
             out.complete = false;
             continue;
         };
-        if is_link(&meta) {
-            continue;
-        }
-        if ex.skips(&name, &path) || ex.skips_attributes(&name, &meta) {
+        let path = dir.join(&entry);
+        let meta = match directory.entry_os_metadata(&entry) {
+            Ok(meta) => meta,
+            Err(zeus_fs::FsError::SymlinkRefused | zeus_fs::FsError::InvalidName(_)) => continue,
+            Err(_) => {
+                out.complete = false;
+                continue;
+            }
+        };
+        if ex.skips(name, &path) || ex.skips_attributes(name, &meta) {
             continue;
         }
         if meta.is_dir() {
@@ -147,7 +160,19 @@ pub fn publish_dir(
     ex: &Excluder,
     scan: u32,
 ) -> (Vec<PathBuf>, usize, bool) {
-    let l = list_dir(dir, ex);
+    let Ok(roots) = RootCaps::capture(&[display(dir)]) else {
+        return (Vec::new(), 0, false);
+    };
+    publish_dir_pinned(index, dir, ex, scan, &roots)
+}
+fn publish_dir_pinned(
+    index: &Mutex<Index>,
+    dir: &Path,
+    ex: &Excluder,
+    scan: u32,
+    roots: &RootCaps,
+) -> (Vec<PathBuf>, usize, bool) {
+    let l = list_dir(dir, ex, roots);
     let count = l.files.len();
     if let Ok(mut ix) = index.lock() {
         let g = ix.begin();
@@ -170,8 +195,25 @@ pub fn scan_root(
     progress: &Progress,
     cancel: &AtomicBool,
 ) -> usize {
+    let Ok(roots) = RootCaps::capture(&[display(root)]) else {
+        progress.unreadable.fetch_add(1, Ordering::Relaxed);
+        return 0;
+    };
+    scan_root_pinned(index, root, ex, scan, progress, cancel, &roots)
+}
+/// Scan through already enabled root identities. Errors preserve unseen cached entries.
+pub fn scan_root_pinned(
+    index: &Mutex<Index>,
+    root: &Path,
+    ex: &Excluder,
+    scan: u32,
+    progress: &Progress,
+    cancel: &AtomicBool,
+    roots: &RootCaps,
+) -> usize {
     progress.reset();
-    if !root.is_dir() {
+    if roots.directory(root).is_err() {
+        progress.unreadable.fetch_add(1, Ordering::Relaxed);
         return 0;
     }
     let mut total = 0usize;
@@ -182,7 +224,7 @@ pub fn scan_root(
         if cancel.load(Ordering::Relaxed) {
             return total;
         }
-        let (subs, n, read_complete) = publish_dir(index, &dir, ex, scan);
+        let (subs, n, read_complete) = publish_dir_pinned(index, &dir, ex, scan, roots);
         complete &= read_complete;
         if !read_complete {
             progress.unreadable.fetch_add(1, Ordering::Relaxed);
@@ -194,6 +236,11 @@ pub fn scan_root(
         progress
             .dirs_queued
             .fetch_add(subs.len() as u64, Ordering::Relaxed);
+        if stack.len().saturating_add(subs.len()) > crate::store::CAP {
+            complete = false;
+            progress.unreadable.fetch_add(1, Ordering::Relaxed);
+            break;
+        }
         stack.extend(subs);
     }
     if complete && let Ok(mut ix) = index.lock() {
@@ -206,22 +253,33 @@ pub fn scan_root(
 /// Bring one folder up to date after the watcher saw a change in it: read its direct children, drop the ones that
 /// are gone, and scan any sub-folder that is new. A folder that is gone is removed with its subtree.
 pub fn refresh_dir(index: &Mutex<Index>, dir: &Path, ex: &Excluder, scan: u32) {
-    let key = display(dir);
-    let Ok(meta) = std::fs::symlink_metadata(dir) else {
-        if let Ok(mut ix) = index.lock() {
-            let g = ix.begin();
-            ix.remove_tree(g, &key);
-        }
+    let Ok(roots) = RootCaps::capture(&[display(dir.parent().unwrap_or(dir))]) else {
         return;
     };
-    if !meta.is_dir() || is_link(&meta) {
-        return;
+    refresh_dir_pinned(index, dir, ex, scan, &roots);
+}
+fn refresh_dir_pinned(
+    index: &Mutex<Index>,
+    dir: &Path,
+    ex: &Excluder,
+    scan: u32,
+    roots: &RootCaps,
+) -> bool {
+    let key = display(dir);
+    match roots.os_metadata(dir) {
+        Ok(None) => {
+            remove_cached_tree(index, &key);
+            return true;
+        }
+        Ok(Some(meta)) if meta.is_dir() => (),
+        _ => return false,
     }
     let known: std::collections::HashSet<String> = index
         .lock()
         .map(|ix| ix.children(&key).into_iter().collect())
         .unwrap_or_default();
-    let l = list_dir(dir, ex);
+    let l = list_dir(dir, ex, roots);
+    let mut complete = l.complete;
     let present: std::collections::HashSet<&str> = l.files.iter().map(|f| f.0.as_str()).collect();
     if let Ok(mut ix) = index.lock() {
         let g = ix.begin();
@@ -232,6 +290,7 @@ pub fn refresh_dir(index: &Mutex<Index>, dir: &Path, ex: &Excluder, scan: u32) {
         }
         for (path, size, mtime, is_dir) in &l.files {
             if !ix.upsert(g, path, *size, *mtime, *is_dir, scan) {
+                complete = false;
                 break;
             }
         }
@@ -240,9 +299,10 @@ pub fn refresh_dir(index: &Mutex<Index>, dir: &Path, ex: &Excluder, scan: u32) {
     let cancel = AtomicBool::new(false);
     for sub in l.subdirs {
         if !known.contains(&display(&sub)) {
-            scan_subtree(index, &sub, ex, scan, &progress, &cancel);
+            complete &= scan_subtree(index, &sub, ex, scan, &progress, &cancel, roots);
         }
     }
+    complete
 }
 
 /// Scan a new sub-folder fully without pruning anything outside it.
@@ -253,50 +313,78 @@ fn scan_subtree(
     scan: u32,
     progress: &Progress,
     cancel: &AtomicBool,
-) {
+    roots: &RootCaps,
+) -> bool {
+    let mut complete = true;
     let mut stack = vec![dir.to_path_buf()];
     while let Some(d) = stack.pop() {
         if cancel.load(Ordering::Relaxed) {
-            return;
+            return false;
         }
-        let (subs, _, _) = publish_dir(index, &d, ex, scan);
+        let (subs, _, read_complete) = publish_dir_pinned(index, &d, ex, scan, roots);
+        complete &= read_complete;
         progress.dirs_done.fetch_add(1, Ordering::Relaxed);
+        if stack.len().saturating_add(subs.len()) > crate::store::CAP {
+            return false;
+        }
         stack.extend(subs);
     }
+    complete
 }
 
 /// Bring one path up to date: a file or folder that exists is stored, one that does not is removed. A folder is
 /// refreshed one level deep.
 pub fn refresh_path(index: &Mutex<Index>, path: &Path, ex: &Excluder, scan: u32) {
+    let Ok(roots) = RootCaps::capture(&[display(path.parent().unwrap_or(path))]) else {
+        return;
+    };
+    refresh_path_pinned(index, path, ex, scan, &roots);
+}
+fn remove_cached_tree(index: &Mutex<Index>, key: &str) {
+    if let Ok(mut ix) = index.lock() {
+        let g = ix.begin();
+        ix.remove_tree(g, key);
+    }
+}
+/// Refresh only through retained read-root identities. Unknown errors never mean deletion.
+pub fn refresh_path_pinned(
+    index: &Mutex<Index>,
+    path: &Path,
+    ex: &Excluder,
+    scan: u32,
+    roots: &RootCaps,
+) -> bool {
     let key = display(path);
     let name = path
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
-    match std::fs::symlink_metadata(path) {
-        Err(_) => {
+    match roots.os_metadata(path) {
+        Ok(None) => {
+            remove_cached_tree(index, &key);
+            true
+        }
+        Err(_) => false,
+        Ok(Some(meta)) => {
+            if ex.skips(&name, path) || ex.skips_attributes(&name, &meta) {
+                remove_cached_tree(index, &key);
+                return true;
+            }
             if let Ok(mut ix) = index.lock() {
                 let g = ix.begin();
-                ix.remove_tree(g, &key);
-            }
-        }
-        Ok(meta) => {
-            if ex.skips(&name, path) || ex.skips_attributes(&name, &meta) || is_link(&meta) {
-                if let Ok(mut ix) = index.lock() {
-                    let g = ix.begin();
-                    ix.remove_tree(g, &key);
-                }
-                return;
+                ix.upsert(
+                    g,
+                    &key,
+                    if meta.is_dir() { 0 } else { meta.len() },
+                    mtime_ms(&meta),
+                    meta.is_dir(),
+                    scan,
+                );
             }
             if meta.is_dir() {
-                if let Ok(mut ix) = index.lock() {
-                    let g = ix.begin();
-                    ix.upsert(g, &key, 0, mtime_ms(&meta), true, scan);
-                }
-                refresh_dir(index, path, ex, scan);
-            } else if let Ok(mut ix) = index.lock() {
-                let g = ix.begin();
-                ix.upsert(g, &key, meta.len(), mtime_ms(&meta), false, scan);
+                refresh_dir_pinned(index, path, ex, scan, roots)
+            } else {
+                true
             }
         }
     }
@@ -450,5 +538,68 @@ mod tests {
         assert!(ix.lock().unwrap().entries.is_empty());
         refresh_path(&ix, &dir.path().join("alias.txt"), &ex(), 2);
         assert!(ix.lock().unwrap().entries.is_empty());
+    }
+    #[test]
+    fn pinned_scan_and_refresh_never_follow_a_replaced_child() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("root");
+        let outside = temp.path().join("outside");
+        put(&root.join("child/old.txt"), "old");
+        put(&outside.join("foreign.txt"), "outside unchanged");
+        let roots = RootCaps::capture(&[display(&root)]).unwrap();
+        let index = Mutex::new(Index::default());
+        let progress = Progress::default();
+        let cancel = AtomicBool::new(false);
+        scan_root_pinned(&index, &root, &ex(), 1, &progress, &cancel, &roots);
+        assert!(
+            index
+                .lock()
+                .unwrap()
+                .entries
+                .contains_key(&display(&root.join("child/old.txt")))
+        );
+        std::fs::rename(root.join("child"), root.join("saved-child")).unwrap();
+        let link = root.join("child");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&outside, &link).unwrap();
+        #[cfg(windows)]
+        assert!(
+            std::process::Command::new("cmd.exe")
+                .current_dir(&root)
+                .args(["/d", "/c", "mklink", "/j"])
+                .arg(&link)
+                .arg(&outside)
+                .stdout(std::process::Stdio::null())
+                .status()
+                .unwrap()
+                .success()
+        );
+        // A read failure is not proof that the old file was deleted; preserve its cached row.
+        refresh_path_pinned(&index, &root.join("child/old.txt"), &ex(), 2, &roots);
+        assert!(
+            index
+                .lock()
+                .unwrap()
+                .entries
+                .contains_key(&display(&root.join("child/old.txt")))
+        );
+        assert!(crate::browse::list_pinned(&display(&link), "", 10, &roots).is_err());
+        scan_root_pinned(&index, &root, &ex(), 3, &progress, &cancel, &roots);
+        assert!(
+            !index
+                .lock()
+                .unwrap()
+                .entries
+                .keys()
+                .any(|key| key.contains("foreign.txt"))
+        );
+        assert_eq!(
+            std::fs::read(outside.join("foreign.txt")).unwrap(),
+            b"outside unchanged"
+        );
+        #[cfg(windows)]
+        std::fs::remove_dir(&link).unwrap();
+        #[cfg(unix)]
+        std::fs::remove_file(&link).unwrap();
     }
 }

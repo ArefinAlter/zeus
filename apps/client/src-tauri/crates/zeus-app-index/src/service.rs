@@ -371,9 +371,20 @@ impl Service {
             let path = PathBuf::from(&root.path);
             let ex = self.excluder();
             let scan_id = self.scan_seq.fetch_add(1, Ordering::SeqCst);
-            let _ = tokio::task::spawn_blocking(move || {
-                if path.is_dir() {
-                    scan::scan_root(&svc.index, &path, &ex, scan_id, &svc.progress, &svc.cancel);
+            let _ = tokio::task::spawn_blocking(move || match svc.file_capabilities(false) {
+                Ok(roots) => {
+                    scan::scan_root_pinned(
+                        &svc.index,
+                        &path,
+                        &ex,
+                        scan_id,
+                        &svc.progress,
+                        &svc.cancel,
+                        &roots,
+                    );
+                }
+                Err(_) => {
+                    svc.progress.unreadable.fetch_add(1, Ordering::Relaxed);
                 }
             })
             .await;
@@ -449,6 +460,9 @@ impl Service {
         let ex = self.excluder();
         let scan_id = self.scan_seq.fetch_add(1, Ordering::SeqCst);
         let included = self.included();
+        let Ok(caps) = self.file_capabilities(false) else {
+            return;
+        };
         let roots: Vec<(String, PathBuf)> = included
             .iter()
             .map(|r| (norm(&r.path), PathBuf::from(&r.path)))
@@ -461,7 +475,7 @@ impl Service {
                 roots.iter().any(|(r, root)| {
                     (k == *r || k.starts_with(&format!("{r}{}", std::path::MAIN_SEPARATOR)))
                         && !ex.skips_below(p, root)
-                        && !ex.skips_by_attributes_below(p, root)
+                        && !ex.skips_by_attributes_pinned(p, root, &caps)
                 })
             })
             .collect();
@@ -471,7 +485,9 @@ impl Service {
             if p.ancestors().any(|parent| refreshed.contains(parent)) {
                 continue;
             }
-            scan::refresh_path(&self.index, &p, &ex, scan_id);
+            if !scan::refresh_path_pinned(&self.index, &p, &ex, scan_id, &caps) {
+                self.progress.unreadable.fetch_add(1, Ordering::Relaxed);
+            }
             refreshed.insert(p);
         }
         self.dirty.store(true, Ordering::SeqCst);

@@ -546,12 +546,22 @@ impl Extension for Module {
                             )));
                         }
                     };
-                    let reads = svc.read_roots();
+                    let reads = match svc.file_capabilities(false) {
+                        Ok(r) => r,
+                        Err(e) => return Some(Err(e)),
+                    };
                     let exclusions =
                         Excluder::new(&svc.cfg.lock().map(|c| c.clone()).unwrap_or_default());
-                    let result = self.everything.query(&request, &reads, &exclusions).await;
+                    let result = self
+                        .everything
+                        .query_pinned(&request, &reads, &exclusions)
+                        .await;
                     // Native settings can revoke a read scope while the helper is running.
-                    if paths::resolve_inside(&request.root, &svc.read_roots()).is_err() {
+                    if svc
+                        .file_capabilities(false)
+                        .and_then(|roots| roots.directory(std::path::Path::new(&request.root)))
+                        .is_err()
+                    {
                         return Some(Err(Failure::new(
                             "app.path_outside",
                             "This read scope was revoked during the query.",
@@ -574,7 +584,10 @@ impl Extension for Module {
                 "POST /native/v1/files/list" => {
                     let path = str_of(body, "path").to_owned();
                     let after = str_of(body, "after").to_owned();
-                    let roots = svc.read_roots();
+                    let roots = match svc.file_capabilities(false) {
+                        Ok(r) => r,
+                        Err(e) => return Some(Err(e)),
+                    };
                     let limit = body
                         .get("limit")
                         .and_then(Value::as_u64)
@@ -583,7 +596,7 @@ impl Extension for Module {
                     let facts = svc.facts.table(app).await;
                     Some(
                         tokio::task::spawn_blocking(move || {
-                            let mut page = browse::list(&path, &after, limit, &roots)?;
+                            let mut page = browse::list_pinned(&path, &after, limit, &roots)?;
                             if let Some(rows) = page["files"].as_array_mut() {
                                 for row in rows {
                                     let quarantined = facts.as_ref().is_some_and(|t| {

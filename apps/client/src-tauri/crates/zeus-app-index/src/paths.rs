@@ -219,6 +219,11 @@ impl RootCaps {
         ))
     }
 
+    /// Display paths of the authority already retained by this set, without acquiring new roots.
+    pub fn scopes(&self) -> Vec<String> {
+        self.roots.iter().map(|(path, _)| shown(path)).collect()
+    }
+
     /// Open a descendant directory through a retained root; every intermediate link is refused.
     pub fn directory(&self, path: &Path) -> Result<zeus_fs::DirectoryCap> {
         let path = self.path(&shown(path))?;
@@ -234,6 +239,24 @@ impl RootCaps {
                 )
             })?;
         cap.open_dir(path.strip_prefix(root).expect("matching root"))
+            .map_err(cap_failure)
+    }
+
+    /// Native metadata through held roots. Only a confirmed absent leaf is None; inaccessible
+    /// parents and rejected links remain errors, so refresh cannot prune rows on an uncertain read.
+    pub fn os_metadata(&self, path: &Path) -> Result<Option<std::fs::Metadata>> {
+        let path = self.path(&shown(path))?;
+        if self.roots.iter().any(|(root, _)| root == &path) {
+            let dir = self.directory(&path)?;
+            return dir.os_metadata().map(Some).map_err(cap_failure);
+        }
+        let (parent, name) = self.parent(&path)?;
+        if !parent.entry_exists(&name).map_err(cap_failure)? {
+            return Ok(None);
+        }
+        parent
+            .entry_os_metadata(&name)
+            .map(Some)
             .map_err(cap_failure)
     }
 

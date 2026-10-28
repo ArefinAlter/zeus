@@ -16,7 +16,7 @@ use zeus_fs::{Filesystem, RealFs};
 
 use crate::{
     config::{Excluder, norm},
-    paths::{RootIdentity, resolve_inside, shown},
+    paths::{RootCaps, cap_failure, shown},
     scan,
     search::in_scope,
     store::Row,
@@ -149,6 +149,17 @@ impl Everything {
         roots: &[String],
         exclusions: &Excluder,
     ) -> Result<Page> {
+        self.query_pinned(request, &RootCaps::capture(roots)?, exclusions)
+            .await
+    }
+
+    /// Query through existing read-root authority and validate returned rows using held directories.
+    pub async fn query_pinned(
+        &self,
+        request: &Request,
+        roots: &RootCaps,
+        exclusions: &Excluder,
+    ) -> Result<Page> {
         if !cfg!(windows) {
             return Err(Failure::new(
                 "app.everything_unsupported",
@@ -168,15 +179,9 @@ impl Everything {
             ));
         }
         let started = Instant::now();
-        let root = resolve_inside(&request.root, roots)?;
-        if !root.is_dir() {
-            return Err(Failure::invalid(
-                "Choose an included folder for this query.",
-            ));
-        }
-        let pin = RootIdentity::capture(&root).ok_or_else(|| {
-            Failure::new("app.path_changed", "The selected folder cannot be pinned.")
-        })?;
+        let root = roots.path(&request.root)?;
+        let directory = roots.directory(&root)?;
+        let identity = directory.file_id().map_err(cap_failure)?;
         let inspected = inspect(&settings.helper)?;
         if inspected["sha256"].as_str() != Some(settings.sha256.as_str())
             || serde_json::from_value::<zeus_types::FileId>(inspected["file_id"].clone()).ok()
@@ -272,7 +277,7 @@ impl Everything {
                 ),
             });
         }
-        if !pin.current() {
+        if roots.directory(&root)?.file_id().map_err(cap_failure)? != identity {
             return Err(Failure::new(
                 "app.path_changed",
                 "The selected folder changed during the query.",
@@ -286,7 +291,7 @@ impl Everything {
             ));
         }
         let bytes = std::fs::read(&output)?;
-        let mut page = parse_page(&bytes, request, roots, exclusions)?;
+        let mut page = parse_page_pinned(&bytes, request, roots, exclusions)?;
         page.elapsed_ms = started.elapsed().as_millis() as u64;
         drop(guard);
         Ok(page)
@@ -403,10 +408,19 @@ fn arguments(request: &Request, root: &str, instance: &str, output: &str) -> Vec
     ]
 }
 
+#[cfg(test)]
 fn parse_page(
     bytes: &[u8],
     request: &Request,
     roots: &[String],
+    exclusions: &Excluder,
+) -> Result<Page> {
+    parse_page_pinned(bytes, request, &RootCaps::capture(roots)?, exclusions)
+}
+fn parse_page_pinned(
+    bytes: &[u8],
+    request: &Request,
+    roots: &RootCaps,
     exclusions: &Excluder,
 ) -> Result<Page> {
     let bytes = bytes.strip_prefix(&[0xef, 0xbb, 0xbf]).unwrap_or(bytes);
@@ -428,7 +442,8 @@ fn parse_page(
             "The broker response exceeded 501 requested rows.",
         ));
     }
-    let scopes: Vec<_> = roots.iter().map(|r| norm(r)).collect();
+    let root_paths = roots.scopes();
+    let scopes: Vec<_> = root_paths.iter().map(|r| norm(r)).collect();
     let query_root = norm(&request.root);
     let mut files = Vec::new();
     let mut skipped = 0;
@@ -459,7 +474,7 @@ fn parse_page(
             skipped += 1;
             continue;
         }
-        let Ok(resolved) = resolve_inside(path, roots) else {
+        let Ok(resolved) = roots.path(path) else {
             skipped += 1;
             continue;
         };
@@ -471,16 +486,20 @@ fn parse_page(
             skipped += 1;
             continue;
         }
-        let Ok(metadata) = std::fs::symlink_metadata(path) else {
+        let Ok(Some(metadata)) = roots.os_metadata(Path::new(path)) else {
             skipped += 1;
             continue;
         };
         if scan::is_link(&metadata)
             || (!metadata.is_file() && !metadata.is_dir())
-            || !roots.iter().any(|root| {
+            || !root_paths.iter().any(|root| {
                 in_scope(path, std::slice::from_ref(&norm(root)))
                     && !exclusions.skips_below(Path::new(path), Path::new(root))
-                    && !exclusions.skips_by_attributes_below(Path::new(path), Path::new(root))
+                    && !exclusions.skips_by_attributes_pinned(
+                        Path::new(path),
+                        Path::new(root),
+                        roots,
+                    )
             })
         {
             skipped += 1;
