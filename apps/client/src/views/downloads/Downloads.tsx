@@ -11,7 +11,8 @@ import { cancel, deleteCompleted, getState, isActive, pause, pauseAll, queueName
 import { CATEGORIES, categoryLabel } from '../../model/categories.ts'
 import type { Job } from '../../model/types.ts'
 import { fmtBytes, fmtRate } from '../../model/units.ts'
-import { setPrefs, usePrefs } from '../../lib/prefs'
+import { getPrefs, setPrefs, usePrefs } from '../../lib/prefs'
+import { pointerResize } from '../../lib/pointer-resize'
 import { href, navigate } from '../../lib/router'
 import { openDialog } from '../../lib/ui'
 import type { MenuItem } from '../../ui/components'
@@ -68,6 +69,8 @@ export function Downloads({ view, queue, focus }: { view: string; queue: string 
   const [confirm, setConfirm] = useState<{ ids: string[] } | null>(null)
   const [widths, setWidths] = useState<Record<string, number> | null>(null)
   const tableRef = useRef<HTMLDivElement>(null)
+  const resizeStop = useRef<() => void>(() => {})
+  useEffect(() => () => resizeStop.current(), [view, queue])
 
   useEffect(() => {
     if (focus) {
@@ -183,21 +186,23 @@ export function Downloads({ view, queue, focus }: { view: string; queue: string 
     ]
   }
 
+  const saveWidth = (id: string, width: number) => setPrefs({ columns: getPrefs().columns.map((column) => column.id === id ? { ...column, width } : column) })
   const startResize = (e: PointerEvent, id: string, base: number) => {
-    e.preventDefault()
-    e.stopPropagation()
-    const x0 = e.clientX
+    if (e.button !== 0 || e.isPrimary === false) return
+    resizeStop.current()
     const all: Record<string, number> = Object.fromEntries(prefs.columns.map((c) => [c.id, c.width]))
-    const move = (ev: PointerEvent) => setWidths({ ...all, [id]: Math.max(56, Math.min(800, base + ev.clientX - x0)) })
-    const up = (ev: PointerEvent) => {
-      window.removeEventListener('pointermove', move)
-      window.removeEventListener('pointerup', up)
-      const w = Math.max(56, Math.min(800, base + ev.clientX - x0))
-      setPrefs({ columns: prefs.columns.map((c) => (c.id === id ? { ...c, width: w } : c)) })
-      setWidths(null)
-    }
-    window.addEventListener('pointermove', move)
-    window.addEventListener('pointerup', up)
+    resizeStop.current = pointerResize(e, e.currentTarget as HTMLElement, {
+      axis: 'x', initial: Number.isFinite(base) ? base : 120,
+      bounds: () => ({ min: 56, max: 800 }),
+      change: (width) => setWidths({ ...all, [id]: width }),
+      finish: (width, cancelled) => { if (!cancelled) saveWidth(id, width); setWidths(null) },
+    })
+  }
+  const resizeKey = (event: KeyboardEvent, id: string, width: number) => {
+    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return
+    event.preventDefault(); event.stopPropagation()
+    const next = event.key === 'Home' ? 56 : event.key === 'End' ? 800 : Math.max(56, Math.min(800, width + (event.key === 'ArrowRight' ? 1 : -1) * (event.shiftKey ? 50 : 10)))
+    saveWidth(id, next)
   }
 
   const sortBy = (id: string) => setPrefs(prefs.sortBy === id ? { sortDir: prefs.sortDir === 'asc' ? 'desc' : 'asc' } : { sortBy: id, sortDir: id === 'name' || id === 'host' || id === 'category' || id === 'queue' ? 'asc' : 'desc' })
@@ -297,7 +302,7 @@ export function Downloads({ view, queue, focus }: { view: string; queue: string 
                       {c.col.label}
                       {prefs.sortBy === c.col.id ? <span class={`sortmark ${prefs.sortDir}`} aria-hidden="true">{prefs.sortDir === 'asc' ? '▲' : '▼'}</span> : null}
                     </button>
-                    <span class="resizer" onPointerDown={(e) => startResize(e, c.pref.id, widthOf(c.pref.id, c.pref.width))} aria-hidden="true" />
+                    <span class="resizer" role="separator" tabIndex={0} aria-label={`Resize ${c.col.label} column`} aria-orientation="vertical" aria-valuemin={56} aria-valuemax={800} aria-valuenow={widthOf(c.pref.id, c.pref.width)} onPointerDown={(e) => startResize(e, c.pref.id, widthOf(c.pref.id, c.pref.width))} onKeyDown={(e) => resizeKey(e, c.pref.id, widthOf(c.pref.id, c.pref.width))} />
                   </th>
                 ))}
               </tr>

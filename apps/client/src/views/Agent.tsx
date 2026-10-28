@@ -77,6 +77,7 @@ function Details({ id }: { id: string }) {
   const skill = skills.find((k) => k.id === t.skill)
   return (
     <aside class="agent-side" aria-label="Thread details">
+      <div class="details-heading"><strong>Thread details</strong><button type="button" class="icon-btn" aria-label="Close thread details" onClick={() => setPrefs({ agentDetails: false })}><Icon name="x" /></button></div>
       <Section title="Thread">
         <dl class="kvs">
           <dt>state</dt>
