@@ -107,3 +107,9 @@ mark.hl {
   .fm-pane:not(.active) { display: none; }
   .fm-pane { gap: 5px; padding: 6px; }
 }
+
+.fm-recursive { flex-shrink: 0; min-width: 0; border: 1px solid var(--line); border-radius: var(--radius-lg); padding: 10px; }
+.fm-recursive p, .fm-recursive label { overflow-wrap: anywhere; }
+.fm-comparison-rows { max-height: 280px; overflow: auto; min-width: 0; margin: 8px 0; }
+.fm-comparison-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; border-bottom: 1px solid var(--line); padding: 6px 0; font-size: 12px; overflow-wrap: anywhere; }
+@media (max-width: 640px) { .fm-comparison-row { grid-template-columns: minmax(0, 1fr); gap: 3px; } }

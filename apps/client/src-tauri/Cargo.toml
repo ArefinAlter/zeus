@@ -19,6 +19,7 @@ zeroize = { version = "1.9", features = ["derive"] }
 win32job = "2"
 rustix = "1"
 zeus-api = { path = "../../../crates/zeus-api" }
+zeus-file-workspace = { path = "../../../crates/zeus-file-workspace" }
 zeus-types = { path = "../../../../zeus-core/crates/zeus-types" }
 zeus-fs = { path = "../../../../zeus-core/crates/zeus-fs" }
 quick-xml = "0.42"

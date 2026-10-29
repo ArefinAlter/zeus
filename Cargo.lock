@@ -6871,6 +6871,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "zeus-file-workspace"
+version = "0.1.0-alpha.1"
+dependencies = [
+ "hex",
+ "rand 0.10.3",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "zeus-fs",
+ "zeus-types",
+]
+
+[[package]]
 name = "zeus-fs"
 version = "0.1.0"
 dependencies = [

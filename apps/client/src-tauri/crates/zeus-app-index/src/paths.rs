@@ -224,6 +224,12 @@ impl RootCaps {
         self.roots.iter().map(|(path, _)| shown(path)).collect()
     }
 
+    /// Share only the roots already retained under this service's current enablement policy.
+    pub fn workspace_caps(&self) -> Result<zeus_file_workspace::paths::RootCaps> {
+        zeus_file_workspace::paths::RootCaps::from_retained(self.roots.clone())
+            .map_err(crate::transfers::from_shared)
+    }
+
     /// Open a descendant directory through a retained root; every intermediate link is refused.
     pub fn directory(&self, path: &Path) -> Result<zeus_fs::DirectoryCap> {
         let path = self.path(&shown(path))?;
