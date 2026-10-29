@@ -83,6 +83,16 @@ pub mod codes {
         ("api.conflict", ErrorClass::Conflict, false),
         // Artifact lifecycle plans never authorize blind retries with refreshed parameters.
         ("artifact.plan_stale", ErrorClass::Conflict, false),
+        (
+            "artifact.maintenance_reconciliation_required",
+            ErrorClass::Conflict,
+            false,
+        ),
+        (
+            "artifact.event_resync_required",
+            ErrorClass::Conflict,
+            false,
+        ),
         ("artifact.plan_expired", ErrorClass::Conflict, false),
         (
             "artifact.lifecycle_reconciliation_required",

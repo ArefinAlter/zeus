@@ -5,6 +5,8 @@
 //! table still enforces who may call them.
 
 use std::sync::Arc;
+use zeus_api::methods::ArtifactsMaintenanceStatus;
+use zeus_api::methods::{ArtifactsEvents, ArtifactsMaintenanceApply, ArtifactsMaintenancePreview};
 
 use zeus_api::Router;
 use zeus_api::methods::daemon::{PingParams, PingResult};
@@ -150,6 +152,25 @@ pub fn build_router<B: Backend>(backend: Arc<B>) -> Router {
     let router = forward!(
         router,
         backend,
+        ArtifactsMaintenancePreview,
+        artifacts_maintenance_preview
+    );
+    let router = forward!(
+        router,
+        backend,
+        ArtifactsMaintenanceApply,
+        artifacts_maintenance_apply
+    );
+    let router = forward!(router, backend, ArtifactsEvents, artifacts_events);
+    let router = forward!(
+        router,
+        backend,
+        ArtifactsMaintenanceStatus,
+        artifacts_maintenance_status
+    );
+    let router = forward!(
+        router,
+        backend,
         ArtifactsLifecyclePreview,
         artifacts_lifecycle_preview
     );
@@ -248,6 +269,10 @@ mod tests {
                         | "artifacts.list"
                         | "artifacts.lineage"
                         | "artifacts.ingest"
+                        | "artifacts.maintenance.preview"
+                        | "artifacts.maintenance.apply"
+                        | "artifacts.events"
+                        | "artifacts.maintenance.status"
                         | "artifacts.lifecycle.preview"
                         | "artifacts.lifecycle.apply"
                 )

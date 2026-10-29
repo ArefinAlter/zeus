@@ -269,6 +269,19 @@ pub const METHODS: &[MethodSpec] = &[
         .gated("files.roots")
         .mutates()
         .only_role(ClientRole::Service),
+    MethodSpec::needs("artifacts.maintenance.preview", FilesWrite)
+        .gated("artifacts")
+        .later(),
+    MethodSpec::needs("artifacts.maintenance.apply", FilesWrite)
+        .gated("artifacts")
+        .mutates()
+        .later(),
+    MethodSpec::needs("artifacts.maintenance.status", FilesRead)
+        .gated("artifacts")
+        .later(),
+    MethodSpec::needs("artifacts.events", FilesRead)
+        .gated("artifacts")
+        .later(),
     MethodSpec::needs("artifacts.get", FilesRead)
         .gated("artifacts")
         .later(),

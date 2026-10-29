@@ -266,3 +266,174 @@ pub struct ArtifactsLifecycleApplyResult {
     /// This retry key reused its pending request or completed durable receipt.
     pub replayed: bool,
 }
+
+/// Bounded artifact maintenance; none of these operations authorizes another operation or a provider.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ArtifactMaintenanceOperation {
+    /// Verify exact stored objects and move mismatches into private damaged storage after human approval.
+    Scrub {
+        ///1–64 visible active records;32MiB total observed bytes.
+        artifact_ids: Vec<ArtifactId>,
+    },
+    /// Restore an absent/damaged object from exact verified bytes; requires a human decision.
+    Repair {
+        /// Visible active record whose immutable content is restored.
+        artifact_id: ArtifactId,
+        /// Existing source within a permitted root; at most16MiB.
+        path: String,
+    },
+
+    /// Export up to64 visible active records to a new bundle file; optional verified content is bounded.
+    Export {
+        /// Exact records.
+        artifact_ids: Vec<ArtifactId>,
+        /// New absolute destination inside an authorized root.
+        path: String,
+        /// Include present content; quarantined byte export is refused.
+        #[serde(default)]
+        include_objects: bool,
+    },
+    /// Import a validated bundle. Existing immutable source identities replay without overwrite.
+    Import {
+        /// Existing regular bundle inside an authorized root.
+        path: String,
+    },
+    /// Select exact unprotected CAS objects. Requires non-service owner access and human approval.
+    Collect {
+        /// Permit evictable active content as well as unreferenced content.
+        #[serde(default)]
+        quota_pressure: bool,
+        ///1–128 exact targets.
+        limit: u32,
+    },
+}
+/// Retained filesystem identities bound to a preview, reopened and compared before execution.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ArtifactFileBinding {
+    /// Exact absolute filename.
+    pub path: String,
+    /// Authorized configured root.
+    pub root: String,
+    /// Root identity.
+    pub root_id: zeus_types::FileId,
+    /// Existing parent directory identity.
+    pub parent_id: zeus_types::FileId,
+    /// Source identity; null for a new destination.
+    pub file_id: Option<zeus_types::FileId>,
+}
+/// Exact versioned plan. Details contain bounded core bundle or collection facts, never authority.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ArtifactMaintenancePlan {
+    /// Plan format1.
+    pub version: u32,
+    /// Local store identity.
+    pub store_id: zeus_types::StoreId,
+    /// Local store directory identity.
+    pub store_root_id: zeus_types::FileId,
+    /// Complete requested effect.
+    pub operation: ArtifactMaintenanceOperation,
+    /// Source or destination binding; collection has no user-file target.
+    pub file: Option<ArtifactFileBinding>,
+    /// Exact content manifest/record revisions or collection targets.
+    pub details: serde_json::Value,
+    /// Always true for collection; callers cannot downgrade it.
+    pub requires_approval: bool,
+    /// No more than15minutes after preview.
+    pub expires_at: Timestamp,
+}
+/// Read-only maintenance preview parameters.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ArtifactsMaintenancePreviewParams {
+    /// Requested operation.
+    pub operation: ArtifactMaintenanceOperation,
+}
+/// Save this complete preview for a later explicit apply.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ArtifactsMaintenancePreviewResult {
+    /// Exact plan.
+    pub plan: ArtifactMaintenancePlan,
+    /// BLAKE3 of canonical tagged plan.
+    pub plan_hash: Hex256,
+}
+/// Execute or request approval for one exact saved plan.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ArtifactsMaintenanceApplyParams {
+    /// Exact plan.
+    pub plan: ArtifactMaintenancePlan,
+    /// Preview hash.
+    pub plan_hash: Hex256,
+    /// Owner-scoped retry key,1–128 printable bytes.
+    pub idempotency_key: String,
+}
+/// Durable result or a pending human decision; never an implied grant.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct ArtifactsMaintenanceApplyResult {
+    /// Content verified by an integrity check.
+    pub verified_objects: Vec<Hex256>,
+    /// Content marked damaged and retained privately by an integrity check.
+    pub damaged_objects: Vec<Hex256>,
+    /// completed, awaiting_approval, in_progress, interrupted, reconciliation_required, or cancelled_before_start.
+    pub status: String,
+    /// Stable error code on an interrupted operation; no private path/error text.
+    pub error_code: Option<String>,
+    /// Known absent exact targets; not proof of which process removed them.
+    pub absent_objects: Option<u32>,
+    /// Exact targets still not known absent.
+    pub remaining_objects: Option<u32>,
+    /// An export may have published before its receipt: inspect it; never adopt a file as success.
+    pub reconciliation_required: bool,
+
+    /// Effect is complete.
+    pub applied: bool,
+    /// Exact human approval if needed.
+    pub approval_id: Option<ApprovalId>,
+    /// Local records after an import.
+    pub artifact_ids: Vec<ArtifactId>,
+    /// Bytes in the reviewed export or collection.
+    pub size_bytes: u64,
+    /// Existing durable result/pending request.
+    pub replayed: bool,
+}
+/// Replay the oldest retained artifact audit events after a sequence; no event subscription is implied.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ArtifactsEventsParams {
+    /// Last consumed sequence,0 to start.
+    #[serde(default)]
+    pub after_seq: u64,
+    ///1–100 events, default20.
+    #[serde(default)]
+    pub limit: Option<u32>,
+    /// Expected audit chain; a different chain requires a resync.
+    #[serde(default)]
+    pub chain_id: Option<zeus_types::ChainId>,
+}
+/// Privacy-reduced artifact events retain chain pointers and explicit intent/completion semantics.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct ArtifactsEventsResult {
+    /// First retained audit sequence; older records may have been rotated out.
+    pub earliest_seq: u64,
+    /// The requested cursor predates retained history; refresh records before relying on replay.
+    pub history_truncated: bool,
+    /// Only visible artifact facts; not complete records.
+    pub events: Vec<serde_json::Value>,
+    /// Continue here, without dropping older matching events.
+    pub next_seq: u64,
+    /// More matching events were retained.
+    pub has_more: bool,
+    /// Consistent chain head.
+    pub head: zeus_types::AuditHead,
+    /// Current implemented format; no migration is needed for this feature.
+    pub store_format_version: u32,
+}
+
+/// Read an owner-scoped maintenance receipt without starting or retrying effects, even after plan expiry.
+pub type ArtifactsMaintenanceStatusParams = ArtifactsMaintenanceApplyParams;
+/// Complete, partial or pending recovery facts.
+pub type ArtifactsMaintenanceStatusResult = ArtifactsMaintenanceApplyResult;

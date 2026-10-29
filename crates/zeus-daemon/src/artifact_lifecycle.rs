@@ -14,21 +14,21 @@ const PREVIEW_TTL_MS: u64 = 15 * 60 * 1_000;
 #[derive(Default)]
 pub(super) struct ActiveCopies(Arc<std::sync::Mutex<std::collections::HashSet<String>>>);
 
-struct ActiveCopy {
+pub(super) struct ActiveCopy {
     copies: Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
     key: String,
 }
 
 impl ActiveCopies {
-    fn contains(&self, key: &str) -> ApiResult<bool> {
+    pub(super) fn contains(&self, key: &str) -> ApiResult<bool> {
         Ok(self.0.lock().map_err(|_| internal())?.contains(key))
     }
 
-    fn occupied(&self) -> ApiResult<bool> {
+    pub(super) fn occupied(&self) -> ApiResult<bool> {
         Ok(!self.0.lock().map_err(|_| internal())?.is_empty())
     }
 
-    fn start(&self, key: &str) -> ApiResult<ActiveCopy> {
+    pub(super) fn start(&self, key: &str) -> ApiResult<ActiveCopy> {
         let mut keys = self.0.lock().map_err(|_| internal())?;
         if !keys.is_empty() {
             return Err(ApiError::new(
@@ -506,6 +506,25 @@ impl RuntimeBackend {
         let (effect, _active_copy) = effect.map_err(|_| internal())?;
         effect?;
         let result = self.lifecycle_receipt(&p.plan, progress.approval_id)?;
+        {
+            use zeus_verify::audit::{AuditEntry, AuditOutcome, AuditSink};
+            let mut event = AuditEntry::new(
+                Timestamp::now(),
+                ctx.identity.action_actor(),
+                "artifact.lifecycle_completed",
+                AuditOutcome::Ok,
+            );
+            event
+                .data
+                .insert("artifact_id".into(), serde_json::json!(p.plan.artifact_id));
+            event
+                .data
+                .insert("plan_hash".into(), serde_json::json!(p.plan_hash));
+            event
+                .data
+                .insert("blake3".into(), serde_json::json!(p.plan.blake3));
+            self.audit.append(event).map_err(error)?;
+        }
         self.store_receipt(Some((key, receipt)), &result)?;
         Ok(result)
     }

@@ -1796,6 +1796,34 @@ impl Backend for RuntimeBackend {
     ) -> ApiResult<FilesUndoResult> {
         self.undo(ctx, p).await
     }
+    async fn artifacts_maintenance_preview(
+        &self,
+        ctx: &CallContext,
+        p: ArtifactsMaintenancePreviewParams,
+    ) -> ApiResult<ArtifactsMaintenancePreviewResult> {
+        self.artifact_maintenance_preview(ctx, p).await
+    }
+    async fn artifacts_maintenance_apply(
+        &self,
+        ctx: &CallContext,
+        p: ArtifactsMaintenanceApplyParams,
+    ) -> ApiResult<ArtifactsMaintenanceApplyResult> {
+        self.artifact_maintenance_apply(ctx, p).await
+    }
+    async fn artifacts_maintenance_status(
+        &self,
+        ctx: &CallContext,
+        p: ArtifactsMaintenanceStatusParams,
+    ) -> ApiResult<ArtifactsMaintenanceStatusResult> {
+        self.artifact_maintenance_status(ctx, p).await
+    }
+    async fn artifacts_events(
+        &self,
+        ctx: &CallContext,
+        p: ArtifactsEventsParams,
+    ) -> ApiResult<ArtifactsEventsResult> {
+        self.artifact_events(ctx, p).await
+    }
     async fn artifacts_get(
         &self,
         ctx: &CallContext,
@@ -1870,6 +1898,8 @@ mod artifact_api;
 mod artifact_ingest;
 #[path = "artifact_lifecycle.rs"]
 mod artifact_lifecycle;
+#[path = "artifact_maintenance.rs"]
+mod artifact_maintenance;
 #[path = "clients.rs"]
 mod clients;
 #[path = "configuration.rs"]
