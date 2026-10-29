@@ -29,6 +29,7 @@ import { Connectors } from './views/Connectors'
 import { AddUrl } from './views/dialogs/AddUrl'
 import { SiteGrabber } from './views/dialogs/SiteGrabber'
 import { Downloads, VIEWS, inView } from './views/downloads/Downloads'
+import { DownloadProgressDialog } from './views/downloads/DownloadProgressDialog'
 import { Inbox } from './views/Inbox'
 import { Files } from './views/Files'
 import { Uploads } from './views/Uploads'
@@ -561,6 +562,7 @@ export function App() {
       {ui.dialog?.kind === 'addUrl' ? <AddUrl {...(ui.dialog.url ? { initial: ui.dialog.url } : {})} onClose={() => openDialog(null)} /> : null}
       {ui.dialog?.kind === 'site' ? <SiteGrabber onClose={() => openDialog(null)} /> : null}
       {ui.dialog?.kind === 'stop' ? <StopDialog onClose={() => openDialog(null)} /> : null}
+      {ui.dialog?.kind === 'downloadProgress' ? <DownloadProgressDialog jobId={ui.dialog.jobId} onClose={() => openDialog(null)} /> : null}
       <Toasts />
     </>
   )
