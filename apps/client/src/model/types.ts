@@ -128,6 +128,7 @@ export interface Queue {
   limitKiBps: number | null
   /** For a synchronization queue: check every this many hours. */
   syncEveryHours: number
+  syncFiles?: { job_id: string; pending_job_id: string | null; last_checked_ms: number | null; next_check_ms: number; status: string }[]
   order: string[]
   lastStarted?: number
 }

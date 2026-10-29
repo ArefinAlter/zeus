@@ -175,7 +175,7 @@ export function Downloads({ view, queue, focus }: { view: string; queue: string 
         label: 'Add to queue',
         icon: 'queue',
         disabled: !selected.length,
-        sub: [...queues.filter((q) => q.kind === 'download').map((q) => ({ label: q.name, icon: 'queue' as const, run: () => setQueue(ids, q.id) })), { label: 'No queue', run: () => setQueue(ids, null) }],
+        sub: [...queues.filter((q) => NATIVE || q.kind === 'download').map((q) => ({ label: q.name, icon: 'queue' as const, run: () => setQueue(ids, q.id) })), { label: 'No queue', run: () => setQueue(ids, null) }],
       },
       { label: 'Priority', icon: 'up', disabled: !selected.length, sub: (['high', 'normal', 'low'] as const).map((p) => ({ label: p, run: () => setPriority(ids, p) })) },
       { sep: true, label: '' },

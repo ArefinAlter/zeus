@@ -2,26 +2,34 @@
 use crate::{paths, scan, store::Row};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
-use zeus_app::failure::{Failure, Result};
+use zeus_app::failure::Result;
 
 /// Read one page in stable path order, retaining at most `limit + 1` entries in memory.
 /// Links and reparse points are omitted; opening a folder always rechecks the read grant.
 pub fn list(path: &str, after: &str, limit: usize, roots: &[String]) -> Result<Value> {
-    let folder = paths::resolve_inside(path, roots)?;
-    if !folder.is_dir() {
-        return Err(Failure::invalid("Choose a folder to browse."));
-    }
+    list_pinned(path, after, limit, &paths::RootCaps::capture(roots)?)
+}
+
+/// Read one bounded page through the settings service's retained read roots.
+pub fn list_pinned(
+    path: &str,
+    after: &str,
+    limit: usize,
+    roots: &paths::RootCaps,
+) -> Result<Value> {
+    let folder = roots.path(path)?;
+    let directory = roots.directory(&folder)?;
     let limit = limit.clamp(1, 500);
     let mut rows = BTreeMap::new();
     let mut skipped = 0usize;
-    for entry in std::fs::read_dir(&folder)? {
-        let entry = entry?;
-        let p = entry.path();
+    for entry in directory.iter_names().map_err(paths::cap_failure)? {
+        let name = entry.map_err(paths::cap_failure)?;
+        let p = folder.join(&name);
         let key = paths::shown(&p);
         if key.as_str() <= after {
             continue;
         }
-        let meta = match std::fs::symlink_metadata(&p) {
+        let meta = match directory.entry_os_metadata(&name) {
             Ok(m) if !scan::is_link(&m) && (m.is_file() || m.is_dir()) => m,
             _ => {
                 skipped += 1;

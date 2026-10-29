@@ -15,7 +15,7 @@ workspace = true
 [features]
 # `runtime` pulls in the HTML/JSON extraction engines. Wire-type consumers (zeus-api) disable it.
 default = ["runtime"]
-runtime = ["dep:scraper", "dep:jsonpath-rust", "dep:regex", "dep:time", "dep:tokio", "dep:zeus-fs"]
+runtime = ["dep:scraper", "dep:jsonpath-rust", "dep:regex", "dep:time", "dep:tokio", "dep:zeus-fs", "dep:quick-xml", "dep:flate2"]
 
 [dependencies]
 # core:begin
@@ -32,6 +32,8 @@ blake3.workspace = true
 scraper = { workspace = true, optional = true }
 jsonpath-rust = { workspace = true, optional = true }
 regex = { workspace = true, optional = true }
+quick-xml = { workspace = true, optional = true }
+flate2 = { workspace = true, optional = true }
 
 time = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true }

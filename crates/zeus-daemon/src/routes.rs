@@ -13,15 +13,28 @@ use zeus_api::methods::{
     ArtifactsLifecycleApply, ArtifactsLifecyclePreview, ArtifactsLineage, ArtifactsList, AuditTail,
     AuditVerify, ClientsAdd, ClientsList, ClientsRevoke, ConfigGet, ConfigSet, DaemonKillSwitch,
     DaemonPing, DaemonShutdown, DaemonStatus, DoctorRun, EventsSubscribe, EventsUnsubscribe,
-    FilesList, FilesOrganize, FilesRootsRegister, FilesUndo, JobsControl, JobsEnqueue, JobsGet,
-    JobsList, JobsProbe, JobsVerify, JobsWait, LlmAuthCancel, LlmAuthSignOut, LlmAuthStart,
-    LlmAuthStatus, LlmConfigure, LlmStatus, QueuesConfigure, QueuesControl, QueuesDelete,
-    QueuesList, QueuesPut, SessionsList, SessionsRequest, SessionsRevoke, WorkflowsControl,
-    WorkflowsDryRun, WorkflowsGet, WorkflowsList, WorkflowsManifest, WorkflowsPlan, WorkflowsRun,
+    FilesList, FilesOperationGet, FilesOrganize, FilesRootsRegister, FilesUndo, JobsControl,
+    JobsEnqueue, JobsGet, JobsList, JobsProbe, JobsVerify, JobsWait, LlmAuthCancel, LlmAuthSignOut,
+    LlmAuthStart, LlmAuthStatus, LlmConfigure, LlmStatus, QueuesConfigure, QueuesControl,
+    QueuesDelete, QueuesList, QueuesPut, SessionsList, SessionsRequest, SessionsRevoke,
+    WorkflowsControl, WorkflowsDryRun, WorkflowsGet, WorkflowsList, WorkflowsManifest,
+    WorkflowsPlan, WorkflowsRun,
 };
 use zeus_api::methods::{
     CloudAccountsConfigure, CloudAccountsList, CloudAccountsRevoke, CloudControl, CloudGet,
     CloudList, CloudPlan, CloudSubmit,
+};
+use zeus_api::methods::{
+    CloudOAuthBegin, CloudOAuthCancel, CloudOAuthDisconnect, CloudOAuthFinish, CloudOAuthRefresh,
+    CloudOAuthStatusMethod,
+};
+use zeus_api::methods::{
+    InboxEntriesAdd, InboxEntriesRemove, InboxPackageArchive, InboxPackageGet, InboxPackagePut,
+    InboxPackagesList, InboxPreview, InboxSubmissionGet, InboxSubmissionRetry, InboxSubmit,
+};
+use zeus_api::methods::{
+    SourcesAccounts, SourcesConfigure, SourcesControl, SourcesGet, SourcesInspect, SourcesList,
+    SourcesRevoke, SourcesSubmit,
 };
 use zeus_types::Timestamp;
 
@@ -33,6 +46,12 @@ macro_rules! forward {
         $router.route::<$marker, _, _>(move |ctx, params| {
             let backend = Arc::clone(&backend);
             async move {
+                backend.team_admit(
+                    stringify!($method),
+                    &serde_json::to_value(&params).map_err(|_| {
+                        zeus_api::ApiError::invalid_params("Invalid operation parameters")
+                    })?,
+                )?;
                 crate::consent::REQUESTER_KIND
                     .scope(ctx.identity.kind, backend.$method(&ctx, params))
                     .await
@@ -48,6 +67,40 @@ pub fn build_router<B: Backend>(backend: Arc<B>) -> Router {
             server_time: Timestamp::now(),
         })
     });
+    let router = forward!(router, backend, InboxPackagePut, inbox_package_put);
+    let router = forward!(router, backend, InboxPackagesList, inbox_packages_list);
+    let router = forward!(router, backend, InboxPackageGet, inbox_package_get);
+    let router = forward!(router, backend, InboxPackageArchive, inbox_package_archive);
+    let router = forward!(router, backend, InboxEntriesAdd, inbox_entries_add);
+    let router = forward!(router, backend, InboxEntriesRemove, inbox_entries_remove);
+    let router = forward!(router, backend, InboxPreview, inbox_preview);
+    let router = forward!(router, backend, InboxSubmit, inbox_submit);
+    let router = forward!(router, backend, InboxSubmissionGet, inbox_submission_get);
+    let router = forward!(
+        router,
+        backend,
+        InboxSubmissionRetry,
+        inbox_submission_retry
+    );
+    let router = forward!(router, backend, CloudOAuthBegin, cloud_oauth_begin);
+    let router = forward!(router, backend, CloudOAuthFinish, cloud_oauth_finish);
+    let router = forward!(router, backend, CloudOAuthStatusMethod, cloud_oauth_status);
+    let router = forward!(router, backend, CloudOAuthCancel, cloud_oauth_cancel);
+    let router = forward!(router, backend, CloudOAuthRefresh, cloud_oauth_refresh);
+    let router = forward!(
+        router,
+        backend,
+        CloudOAuthDisconnect,
+        cloud_oauth_disconnect
+    );
+    let router = forward!(router, backend, SourcesAccounts, sources_accounts);
+    let router = forward!(router, backend, SourcesConfigure, sources_configure);
+    let router = forward!(router, backend, SourcesRevoke, sources_revoke);
+    let router = forward!(router, backend, SourcesInspect, sources_inspect);
+    let router = forward!(router, backend, SourcesSubmit, sources_submit);
+    let router = forward!(router, backend, SourcesList, sources_list);
+    let router = forward!(router, backend, SourcesGet, sources_get);
+    let router = forward!(router, backend, SourcesControl, sources_control);
     let router = forward!(router, backend, CloudAccountsList, cloud_accounts_list);
     let router = forward!(
         router,
@@ -76,6 +129,7 @@ pub fn build_router<B: Backend>(backend: Arc<B>) -> Router {
     let router = forward!(router, backend, QueuesDelete, queues_delete);
     let router = forward!(router, backend, QueuesControl, queues_control);
     let router = forward!(router, backend, QueuesConfigure, queues_configure);
+    let router = forward!(router, backend, zeus_api::methods::EventsRead, events_read);
     let router = forward!(router, backend, EventsSubscribe, events_subscribe);
     let router = forward!(router, backend, EventsUnsubscribe, events_unsubscribe);
     let router = forward!(router, backend, SessionsList, sessions_list);
@@ -87,6 +141,7 @@ pub fn build_router<B: Backend>(backend: Arc<B>) -> Router {
     let router = forward!(router, backend, FilesList, files_list);
     let router = forward!(router, backend, FilesRootsRegister, files_roots_register);
     let router = forward!(router, backend, FilesOrganize, files_organize);
+    let router = forward!(router, backend, FilesOperationGet, files_operation_get);
     let router = forward!(router, backend, FilesUndo, files_undo);
     let router = forward!(router, backend, ArtifactsGet, artifacts_get);
     let router = forward!(router, backend, ArtifactsList, artifacts_list);
@@ -291,5 +346,55 @@ mod tests {
             )
             .await;
         assert_eq!(not_object.error.unwrap().code, -32602);
+    }
+    #[tokio::test]
+    async fn team_gate_precedes_new_effects_for_human_and_agent_but_preserves_reads() {
+        struct Restricted(crate::team::policy::Guard);
+        #[async_trait::async_trait]
+        impl Backend for Restricted {
+            fn team_admit(
+                &self,
+                method: &str,
+                params: &serde_json::Value,
+            ) -> zeus_api::ApiResult<()> {
+                crate::team::admit(&self.0, method, params)
+            }
+        }
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("team")).unwrap();
+        std::fs::write(dir.path().join("team/pin.json"), b"{}").unwrap();
+        let router = build_router(Arc::new(Restricted(crate::team::policy::Guard::new(
+            dir.path(),
+            "daemon",
+        ))));
+        for identity in [
+            ctx(ClientKind::Human, ClientRole::Cli),
+            ctx(ClientKind::Agent, ClientRole::Mcp),
+        ] {
+            let response = router
+                .dispatch(
+                    &identity,
+                    Request::new(
+                        1,
+                        "jobs.probe",
+                        Some(serde_json::json!({"url":"https://example.com/file"})),
+                    ),
+                )
+                .await;
+            assert_eq!(
+                response.error.unwrap().data.unwrap().code.as_str(),
+                codes::PERMISSION_DENIED
+            );
+            let read = router
+                .dispatch(
+                    &identity,
+                    Request::new(2, "jobs.list", Some(serde_json::json!({}))),
+                )
+                .await;
+            assert_eq!(
+                read.error.unwrap().data.unwrap().code.as_str(),
+                codes::NOT_IMPLEMENTED
+            );
+        }
     }
 }

@@ -3,8 +3,9 @@
 //! Organising is a dry run unless `--apply` is given, and applying only raises a `destructive_op` approval: files
 //! move after a person approves it with `zeus approvals approve` (05 section 9.6, 07 section 4.1).
 use clap::Subcommand;
+use zeus_api::methods::files::FilesOperationGetParams;
 use zeus_api::methods::files::{FileStep, FilesListParams, FilesOrganizeParams, FilesUndoParams};
-use zeus_api::methods::{FilesList, FilesOrganize, FilesUndo};
+use zeus_api::methods::{FilesList, FilesOperationGet, FilesOrganize, FilesUndo};
 use zeus_api::{ApiError, ApiResult, Client, PageRequest, call};
 
 use crate::commands::CmdOutput;
@@ -43,6 +44,11 @@ pub enum FilesCommand {
         /// Make a retried command safe: the same key returns the first result.
         #[arg(long)]
         idempotency_key: Option<String>,
+    },
+    /// Read current durable organization progress without performing an effect.
+    Status {
+        /// Operation returned by organize or undo.
+        operation_id: String,
     },
     /// Plan the reversal of an applied operation; it runs after a person approves it.
     Undo {
@@ -128,6 +134,24 @@ pub async fn run<C: Client + ?Sized>(
                 .map(|f| serde_json::to_value(f).unwrap_or_default())
                 .collect();
             Ok(CmdOutput::new(text, &page).with_items(items))
+        }
+        FilesCommand::Status { operation_id } => {
+            let result = call::<FilesOperationGet, _>(
+                client,
+                FilesOperationGetParams {
+                    operation_id: operation_id.clone(),
+                },
+            )
+            .await?;
+            let text = format!(
+                "{}: {} ({} done, {} skipped, {} pending)",
+                sanitize(&result.operation_id),
+                sanitize(&result.state),
+                result.completed,
+                result.skipped,
+                result.pending
+            );
+            Ok(CmdOutput::new(text, &result))
         }
         FilesCommand::Organize {
             dir,

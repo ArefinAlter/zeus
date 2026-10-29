@@ -12,10 +12,11 @@ members = [
     "crates/zeus-a2a",
     "crates/zeus-a2a-bridge",
     "crates/zeus-cloud",
+    "crates/zeus-sources",
 ]
 
 [workspace.package]
-version = "0.0.1-beta.1"
+version = "0.1.0-alpha.1"
 edition = "2024"
 rust-version = "1.90"
 license = "Apache-2.0"
@@ -48,16 +49,17 @@ zeus-http = { path = "../zeus-core/crates/zeus-http", version = "0.1.0" }
 zeus-engine = { path = "../zeus-core/crates/zeus-engine", version = "0.1.0" }
 
 # ---- zeus-app crates ----
-zeus-api = { path = "crates/zeus-api", version = "0.0.1-beta.1" }
-zeus-daemon = { path = "crates/zeus-daemon", version = "0.0.1-beta.1" }
-zeus-mcp = { path = "crates/zeus-mcp", version = "0.0.1-beta.1" }
-zeus-cli = { path = "crates/zeus-cli", version = "0.0.1-beta.1" }
-zeus-native-host = { path = "crates/zeus-native-host", version = "0.0.1-beta.1" }
-zeus-workflow = { path = "crates/zeus-workflow", version = "0.0.1-beta.1", default-features = false }
-zeus-llm = { path = "crates/zeus-llm", version = "0.0.1-beta.1", default-features = false }
-zeus-a2a = { path = "crates/zeus-a2a", version = "0.0.1-beta.1" }
-zeus-a2a-bridge = { path = "crates/zeus-a2a-bridge", version = "0.0.1-beta.1" }
-zeus-cloud = { path = "crates/zeus-cloud", version = "0.0.1-beta.1" }
+zeus-api = { path = "crates/zeus-api", version = "0.1.0-alpha.1" }
+zeus-daemon = { path = "crates/zeus-daemon", version = "0.1.0-alpha.1" }
+zeus-mcp = { path = "crates/zeus-mcp", version = "0.1.0-alpha.1" }
+zeus-cli = { path = "crates/zeus-cli", version = "0.1.0-alpha.1" }
+zeus-native-host = { path = "crates/zeus-native-host", version = "0.1.0-alpha.1" }
+zeus-workflow = { path = "crates/zeus-workflow", version = "0.1.0-alpha.1", default-features = false }
+zeus-llm = { path = "crates/zeus-llm", version = "0.1.0-alpha.1", default-features = false }
+zeus-a2a = { path = "crates/zeus-a2a", version = "0.1.0-alpha.1" }
+zeus-a2a-bridge = { path = "crates/zeus-a2a-bridge", version = "0.1.0-alpha.1" }
+zeus-cloud = { path = "crates/zeus-cloud", version = "0.1.0-alpha.1" }
+zeus-sources = { path = "crates/zeus-sources", version = "0.1.0-alpha.1", default-features = false }
 zeus-artifact = { path = "../zeus-core/crates/zeus-artifact", version = "0.1.0" }
 
 # ---- async runtime and utilities ----
@@ -104,6 +106,8 @@ scraper = "0.27"
 jsonpath-rust = "1.0"
 regex = "1.13"
 indexmap = { version = "2.14", features = ["serde"] }
+quick-xml = "0.42"
+flate2 = "1.1"
 
 # ---- identifiers, time, text ----
 url = { version = "2.5", features = ["serde"] }
@@ -118,6 +122,8 @@ unicode-segmentation = "1.13"
 # ---- crypto and secrets ----
 blake3 = "1.8"
 sha2 = "0.11"
+hmac = "0.13"
+sha1 = "0.11"
 # Legacy Baidu chunk protocol only; SHA-256 remains the integrity/approval digest.
 md-5 = "0.11"
 ed25519-dalek = { version = "3.0", features = ["zeroize"] }
@@ -129,6 +135,8 @@ keyring = "4.2"
 # AWS-LC also backs rustls and avoids RustCrypto's vulnerable elliptic-curve dependency.
 # Its RSA verifier requires 2048–8192-bit identity-provider keys.
 jsonwebtoken = { version = "10.4", default-features = false, features = ["aws_lc_rs"] }
+# Optional source SDK: explicit no-payload-upload mode, no implicit HTTP server.
+librqbit = { version = "9.0.1", default-features = false, features = ["rust-tls", "disable-upload"] }
 
 # ---- platform and filesystem ----
 directories = "6"

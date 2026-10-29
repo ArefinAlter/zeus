@@ -258,7 +258,7 @@ where
     if complete {
         Err(Failure::new(
             "app.incomplete_history",
-            "The history exceeds the verification limit; no file change was allowed.",
+            "The list exceeds the complete-read limit; the operation was not completed.",
         ))
     } else {
         Ok(items)

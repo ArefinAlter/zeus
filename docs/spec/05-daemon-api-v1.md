@@ -429,7 +429,7 @@ Rules:
 | `jobs.read` | `jobs.probe`, `jobs.list`, `jobs.get`, `jobs.wait`, `jobs.verify`; `queues.list`; `cloud.accounts.list`, `cloud.list`, `cloud.get` | yes | yes | yes | yes |
 | `jobs.write` | `jobs.enqueue`; `cloud.plan`, `cloud.submit` | yes | yes | yes | yes |
 | `jobs.control` | `jobs.control`, `cloud.control`, `queues.put`, `queues.delete`, `queues.control`, `queues.configure` | yes | yes | yes | yes |
-| `events.read` | `events.subscribe`, `events.unsubscribe` | yes | yes | yes | yes |
+| `events.read` | `events.read`, `events.subscribe`, `events.unsubscribe` | yes | yes | yes | yes |
 | `sessions.read` | `sessions.list` | yes | yes | yes | yes |
 | `sessions.request` | `sessions.request` (raises an approval, never grants) | yes | yes | yes | yes |
 | `sessions.revoke` | `sessions.revoke` | no | no | yes | yes |
@@ -528,6 +528,7 @@ ADR 0011 introduces the `service` kind for first-party programs that use the dae
 | `queues.delete` | MVP | `jobs.control` | A H Ad | yes | The built-in queue `main` cannot be deleted. Refused for services. |
 | `queues.control` | MVP | `jobs.control` | A S H Ad | yes | `start`, `stop`, `assign`, `unassign`, `move`, `ack_finish`; a service may only move its own jobs. |
 | `queues.configure` | MVP | `jobs.control` | A H Ad | yes | Speed limiter and scheduler defaults. Refused for services. |
+| `events.read` | MVP | `events.read` | A S H Ad | no | Capability `events.read`; bounded replay. |
 | `events.subscribe` | MVP | `events.read` | A S H Ad | no | Capability `events`. |
 | `events.unsubscribe` | MVP | `events.read` | A S H Ad | no | Capability `events`. |
 | `sessions.list` | MVP | `sessions.read` | A S H Ad | no | Grants, never material. Paged. |
@@ -590,6 +591,7 @@ Capabilities follow 00 section 4.1. A daemon advertises a capability only when i
 |---|---|---|---|
 | `events` | `events.subscribe`, `events.unsubscribe`, `events.event`, `events.lagged` | MVP | MUST offer |
 | `events.replay` | `since_seq` of `events.subscribe` | MVP | MUST offer |
+| `events.read` | bounded replay with store/lifetime-bound cursors | Alpha | Offer when implemented |
 | `jobs.wait` | `jobs.wait` | MVP | MUST offer |
 | `idempotency` | `idempotency_key` on mutating methods | MVP | MUST offer |
 | `nm.relay` | `nm.frame` | MVP | MUST offer |
@@ -765,6 +767,22 @@ The condition is evaluated first against the state at the time of the call. Resu
 Re-hashes the file of a `completed` job and compares it with the digests recorded at completion and, if given, `expected_sha256`. A job in another state is `api.invalid_transition`; a missing file is `fs.dest_missing`. Result: `sha256`, `blake3`, `size_bytes`, `detected_mime`, `matches_recorded`, `matches_expected`, `quarantined`, `quarantine_reasons`. The call reads the whole file and counts against the `probe` bucket.
 
 ### 9.3 `events.*`
+
+#### `events.read`
+
+A bounded durable replay page for polling frontends; permission and negotiated capability `events.read` are required. This is a read-only local IPC method and creates no subscription or listener. Parameters: optional `cursor` (`store_id`, `instance_id`, `seq`) and `limit` (1–128 scanned records, default 64). An absent cursor starts at the oldest retained event. The daemon captures the journal head and page in one read transaction. It scans no more than `limit` records and returns no more than 512 KiB of serialized event JSON; the enclosing response adds a small fixed envelope.
+
+The result contains visible redacted `events`, the next `cursor`, `head_seq`, `has_more`, nullable `reset`, and `history_lost`. The cursor advances across invisible records: an empty visible page can still have `has_more`. Clients MUST persist the returned cursor with its events, never ahead of them. Gaps between visible sequences alone do not imply loss. Only a gap in the underlying journal sets `history_lost`, including when all remaining history was pruned.
+
+Replacing the journal, restarting the daemon, or supplying a cursor ahead of the head restarts replay and returns `store_changed`, `daemon_restarted`, or `cursor_ahead`. Restart replay is conservative so a restored backup cannot silently reuse old sequence positions. Clients clear their old event cache on `reset`, show retention loss, and refresh job snapshots. Event history is descriptive: replay MUST NOT overwrite a newer job snapshot. Ephemeral progress is excluded; it remains available through subscriptions or fresh job snapshots.
+
+```json validate=daemon-api.v1#/$defs/Request
+{"jsonrpc":"2.0","id":23,"method":"events.read","params":{"limit":64}}
+```
+
+```json validate=daemon-api.v1#/$defs/EventsReadResponse
+{"jsonrpc":"2.0","id":23,"result":{"events":[],"cursor":{"store_id":"01K8M4VZ390000000000000001","instance_id":"abcd1234","seq":8},"head_seq":12,"has_more":true,"reset":null,"history_lost":false}}
+```
 
 #### `events.subscribe`
 
@@ -1555,3 +1573,51 @@ Decided while writing this document; the code and the named documents are to fol
 | O7 | `tool.call` records the daemon method, not the MCP tool name that 04's example shows. | Let bridges pass the outer tool name as an untrusted, length-limited `_meta` member that the daemon records verbatim. |
 | O8 | A `never` entry can only be created by denying an approval (07 open issue O1). | A human-only `sessions.block {origin, surface}` method, once 01 allows a `never` grant without an approval. |
 | O9 | Agents see every job, including the user's browser handoffs, because rescue flows need them (06 open issue O3 raises the privacy side). | Keep for v1; consider a configuration switch that limits agents to their own jobs plus handoffs the human forwards explicitly. |
+
+## 20. Durable intake packages (desktop alpha0.1)
+
+Intake retains private `NewJob` requests before a reviewed enqueue. Ownership is the authenticated credential ID, never a caller-supplied source identity. Original URL/header/referrer/hint fields are not returned in any package, preview or dispatch view. Every mutating method requires a1–128-byte idempotency key, binds the entire typed request to that owner and rejects changed-payload retries. Package edits require the current revision.
+
+| Method | Permission | Result and boundary |
+|---|---|---|
+| `inbox.packages.put` | `jobs.write` | Create a daemon-minted package or edit its current name/default destination. |
+| `inbox.packages.list` | `jobs.read` | Owner-filtered metadata page, at most100 records. |
+| `inbox.packages.get` | `jobs.read` | Metadata plus a redacted entry page, at most100 entries/256KiB with a continuation cursor. `include_history` defaults false. |
+| `inbox.packages.archive` | `jobs.write` | Archive/unarchive metadata, preserving downloads and receipts. |
+| `inbox.entries.add` | `jobs.write` | Add1–200 requests/512KiB with exact typed-request deduplication within the package. |
+| `inbox.entries.remove` | `jobs.write` | Remove1–500 intake references only; associated downloads remain intact. |
+| `inbox.preview` | `jobs.write` | Save an immutable ten-minute review of at most50 pending requests: concrete safe filename/destination, collision facts and separate approval requirements. No download starts. |
+| `inbox.submit` | `jobs.write` | Persist a dispatch intent, then enqueue its exact reviewed requests with `overwrite=fail`; no approval is decided. |
+| `inbox.submissions.get` | `jobs.read` | One pending/completed dispatch projection, excluding its hidden requests and retry key. |
+| `inbox.submissions.retry` | `jobs.write` | Reconcile only the named dispatch using its original hidden request/key; never replace it with a new batch. |
+
+The three read methods accept an explicit `owner_credential_id` inspection selector only for human-capable credentials. Agent/service credentials, including the desktop GUI credential, are refused that selector by policy and backend checks. The selector never permits cross-owner mutation or execution. `packages.get(include_history=true)` returns at most16 saved redacted previews and the newest20 dispatch views, bounded to768KiB/256KiB respectively. An oversized explicit history returns `api.payload_too_large` with guidance to read metadata/entries without history and inspect a specific dispatch. Session material and original requests stay private during human inspection too.
+
+An unresolved dispatch fences package edits. Its durable intent precedes `jobs.enqueue`; the existing per-item enqueue receipts recover accepted job IDs after interruption. A restart does not automatically dispatch pending packages. See [the executable alpha intake contract](../alpha-0.1/INBOX.md) for retained-state bounds and [the normative schema](schema/inbox.v1.schema.json). These methods add no network listener, root registration or approval authority.
+
+```json validate=daemon-api.v1#/$defs/InboxPackagesPutRequest
+{"jsonrpc":"2.0","id":600,"method":"inbox.packages.put","params":{"untrusted_name":"Research package","default_dest_dir":null,"idempotency_key":"research-package-1"}}
+```
+
+
+## Immutable source acquisition extension (alpha 0.1)
+
+The normative shapes are `schema/sources.v1.schema.json`; daemon request/response envelopes are also registered in `schema/daemon-api.v1.schema.json`. This extension does not add a listener or a new caller-selected identity.
+
+| Method | Permission | Boundary |
+|---|---|---|
+| `sources.accounts.list` | `jobs.read` | Public configured scopes visible to this requester; human terminals may inspect all scopes. |
+| `sources.accounts.configure` / `sources.accounts.revoke` | `config.write`, human-only | Verified terminal, exact reviewed revision, explicit authenticated client IDs, hidden write-only credentials. |
+| `sources.inspect` / `sources.submit` | `jobs.write` | Durable retry key; account revision, immutable object, requester, budgets and reviewed destination remain bound. |
+| `sources.list` / `sources.get` | `jobs.read` | Own operations only; no owner override. |
+| `sources.control` | `jobs.control` | Owner-bound pause/resume/cancel; resume cannot renew the original deadline, grant or byte ceiling. |
+
+An inspect request names an existing S3, Hugging Face or torrent account and its exact revision. S3 binds a version or strong entity validator; Hub requires a full commit. Torrent input is explicit bounded metainfo plus selected file indices and numeric peers. Reviews expire after ten minutes and expose provider integrity semantics, size, notices and a bounded metainfo file table. Raw credentials, signed URLs and metainfo never appear in results.
+
+Submit persists an owned operation before starting network work. HTTP jobs use held admission with an exact private operation/job/owner binding; public labels do not create source authority. Byte charges are cumulative and durable, including retries. The daemon rechecks the account revision, credential validity/permission, kill switch, original deadline and destination identity before reads/commits. Torrent publication uses verified private staging, retained directory capabilities, no-overwrite rename and per-file SHA-256 receipts. Interrupted work opens paused; successful final publication is distinct from provider acceptance.
+
+Account configuration grants only the named source scope to explicitly selected client IDs. It does not grant arbitrary write roots or authorize another account. Agents cannot configure/revoke source accounts. Human account changes revoke prior operation authority. Retained serialized records are bounded to 4096 entries and 256 MiB, preserving headroom for existing operation transitions; exhaustion is an explicit refusal. Database allocation and temporary staging add filesystem overhead beyond that payload cap.
+
+Torrent tracker, magnet and DHT discovery, inbound peer listeners and payload upload are disabled. The receive counter counts piece writes, including corrupt/retried data; handshake/control overhead is separately constrained by peer/rate/time limits. The alpha does not claim this is a strict whole-network billing meter. See [R05 evidence and operator flow](../alpha-0.1/SOURCE-ADAPTERS-PLAN.md).
+
+Source errors use the same stable envelope: `sources.denied`, `sources.budget` and `sources.canceled` are `policy_denied`; `sources.changed`, `sources.destination_exists` and `sources.restart_review_required` are `conflict`; `sources.integrity` is `integrity`; `sources.credential` is `auth_expired`; `sources.unsupported` is `unsupported`; `sources.failed`, `sources.capacity` and `sources.transfer_failed` are `unavailable`. They are not blindly retryable: the caller must reconcile the durable operation and existing authority before resuming.

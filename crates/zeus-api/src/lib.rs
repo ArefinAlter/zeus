@@ -61,6 +61,8 @@ pub mod capabilities {
     pub const EVENTS: &str = "events";
     /// Durable event replay from `since_seq`.
     pub const EVENTS_REPLAY: &str = "events.replay";
+    /// Bounded durable replay with store/lifetime-bound cursors.
+    pub const EVENTS_READ: &str = "events.read";
     /// `jobs.wait` long polling.
     pub const JOBS_WAIT: &str = "jobs.wait";
     /// Idempotency keys on mutating methods.
@@ -84,6 +86,7 @@ pub mod capabilities {
     pub const ALL: &[&str] = &[
         EVENTS,
         EVENTS_REPLAY,
+        EVENTS_READ,
         JOBS_WAIT,
         IDEMPOTENCY,
         NM_RELAY,

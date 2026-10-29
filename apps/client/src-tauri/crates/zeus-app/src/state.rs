@@ -29,6 +29,7 @@ pub const SLICES: &[&str] = &[
     "killswitch",
     "prefs",
     "keybindings",
+    "workflow_drafts",
 ];
 
 const MAX_SLICE: usize = 2 * 1024 * 1024;

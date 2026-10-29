@@ -29,6 +29,10 @@ pub struct Entry {
     pub dir: bool,
     /// The scan that last saw it (not persisted).
     pub scan: u32,
+    /// Lossy trigram mask for fast negative filename checks, rebuilt from paths after loading.
+    pub(crate) name_mask: u128,
+    /// Lossy trigram mask for fast negative full-path checks.
+    pub(crate) path_mask: u128,
 }
 
 /// One row as the page reads it.
@@ -130,6 +134,8 @@ impl Index {
                     mtime,
                     dir,
                     scan,
+                    name_mask: trigram_mask(path.rsplit(['/', '\\']).next().unwrap_or(path)),
+                    path_mask: trigram_mask(path),
                 };
                 self.record(gen_, path);
                 true
@@ -146,6 +152,8 @@ impl Index {
                         mtime,
                         dir,
                         scan,
+                        name_mask: trigram_mask(path.rsplit(['/', '\\']).next().unwrap_or(path)),
+                        path_mask: trigram_mask(path),
                     },
                 );
                 self.record(gen_, path);
@@ -303,29 +311,47 @@ impl Index {
         }
         let mut at = 4;
         let take = |n: usize, at: &mut usize| -> Option<&[u8]> {
-            let s = body.get(*at..*at + n)?;
+            let s = body.get(*at..at.checked_add(n)?)?;
             *at += n;
             Some(s)
         };
         let generation = u64::from_le_bytes(take(8, &mut at)?.try_into().ok()?);
         let last = i64::from_le_bytes(take(8, &mut at)?.try_into().ok()?);
         let count = u64::from_le_bytes(take(8, &mut at)?.try_into().ok()?);
+        if count > CAP as u64 {
+            return None;
+        }
         let mut entries = BTreeMap::new();
         for _ in 0..count {
             let len = u32::from_le_bytes(take(4, &mut at)?.try_into().ok()?) as usize;
+            if len == 0 || len > 32768 {
+                return None;
+            }
             let key = std::str::from_utf8(take(len, &mut at)?).ok()?.to_owned();
+            if key.contains('\0') || entries.contains_key(&key) {
+                return None;
+            }
             let size = u64::from_le_bytes(take(8, &mut at)?.try_into().ok()?);
             let mtime = i64::from_le_bytes(take(8, &mut at)?.try_into().ok()?);
-            let dir = take(1, &mut at)?[0] == 1;
+            let dir = match take(1, &mut at)?[0] {
+                0 => false,
+                1 => true,
+                _ => return None,
+            };
             entries.insert(
-                key,
+                key.clone(),
                 Entry {
                     size,
                     mtime,
                     dir,
                     scan: 0,
+                    name_mask: trigram_mask(key.rsplit(['/', '\\']).next().unwrap_or(&key)),
+                    path_mask: trigram_mask(&key),
                 },
             );
+        }
+        if at != body.len() {
+            return None;
         }
         Some(Self {
             entries,
@@ -344,8 +370,24 @@ impl Index {
 
     /// Read the snapshot at `path`.
     pub fn load(path: &Path) -> Option<Self> {
+        if std::fs::metadata(path).ok()?.len() > 512 * 1024 * 1024 {
+            return None;
+        }
         Self::from_snapshot(&std::fs::read(path).ok()?)
     }
+}
+
+/// A two-bit trigram Bloom mask. A missing bit proves absence; collisions only cost an exact check.
+pub(crate) fn trigram_mask(text: &str) -> u128 {
+    let folded = text.to_lowercase();
+    let mut mask = 0u128;
+    for part in folded.as_bytes().windows(3) {
+        let value = (u32::from(part[0]) << 16) | (u32::from(part[1]) << 8) | u32::from(part[2]);
+        let mixed = value.wrapping_mul(0x9e37_79b1).rotate_left(13);
+        mask |= 1u128 << (mixed & 127);
+        mask |= 1u128 << ((mixed >> 7) & 127);
+    }
+    mask
 }
 
 fn fnv(bytes: &[u8]) -> u64 {

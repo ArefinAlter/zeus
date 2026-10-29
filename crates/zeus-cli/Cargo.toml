@@ -12,6 +12,10 @@ publish.workspace = true
 [lints]
 workspace = true
 
+[features]
+default = ["mcp-http"]
+mcp-http = ["zeus-mcp/http"]
+
 [lib]
 name = "zeus_cli"
 path = "src/lib.rs"
@@ -21,6 +25,7 @@ name = "zeus"
 path = "src/main.rs"
 
 [dependencies]
+base64.workspace = true
 zeus-api.workspace = true
 zeus-a2a-bridge.workspace = true
 zeus-mcp.workspace = true
@@ -48,6 +53,7 @@ which.workspace = true
 zeus-native-host.workspace = true
 ulid.workspace = true
 blake3.workspace = true
+zeroize.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 windows-sys.workspace = true

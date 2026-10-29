@@ -2,7 +2,7 @@
 //
 // The first part gives the exact configuration for each assistant, pointing at the `zeus` program installed beside this
 // app and at this app's own engine, and tests it with a real MCP handshake. The second part is browser integration.
-// Whatever an assistant can do is what the thirteen MCP tools allow; none of them can decide an approval.
+// Whatever an assistant can do is what the fifteen MCP tools allow; none of them can decide an approval.
 
 import { useEffect, useState } from 'preact/hooks'
 
@@ -125,7 +125,7 @@ function Capabilities() {
           </div>
         ))}
       </div>
-      <p class="muted small">A tool's access level is a limit this app's own agent applies. An outside assistant connects with the standard agent credential, which allows all thirteen tools; what it asks for still goes through the same checks in the engine.</p>
+      <p class="muted small">A tool's access level is a limit this app's own agent applies. An outside assistant connects with the standard agent credential, which allows all fifteen tools; what it asks for still goes through the same checks in the engine.</p>
       <SettingsGroup title="What an assistant never does, whatever it is told" note="These hold for every assistant and every access level.">
         {NEVER.map((n) => (
           <div class="row">
@@ -162,7 +162,7 @@ export function Connect() {
   return (
     <div class="page">
       <PageHead title="Connect" sub="Let an AI assistant, and your browser, use Zeus on this computer." />
-      <SettingsGroup title="Connect your AI assistant" note="Assistants such as Claude Code, Cursor and Codex can check links, start downloads, watch them and verify the files, through Zeus's thirteen tools. They start the zeus program that was installed with this app.">
+      <SettingsGroup title="Connect your AI assistant" note="Assistants such as Claude Code, Cursor and Codex can check links, start downloads, watch them and verify the files, through Zeus's fifteen tools. They start the zeus program that was installed with this app.">
         {err ? <Notice kind="error">{err}</Notice> : null}
         {cfg ? (
           <div class="row stack">

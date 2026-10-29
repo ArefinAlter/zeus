@@ -173,20 +173,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_parent_table_cannot_carry_an_ineffective_setting() {
+    fn segment_size_can_be_set_directly_or_through_the_scheduler_table() {
         let old = DaemonConfig::default();
         let mut scheduler = serde_json::to_value(&old.scheduler).unwrap();
         scheduler["segment_size_mib"] = serde_json::json!(32);
-        let error = apply_setting(&old, "scheduler", scheduler).unwrap_err();
-        assert_eq!(
-            error.envelope().code.as_str(),
-            zeus_api::error::codes::NOT_IMPLEMENTED
-        );
-        // The same table without that change is accepted.
-        let mut scheduler = serde_json::to_value(&old.scheduler).unwrap();
-        scheduler["concurrent_jobs"] = serde_json::json!(8);
         let (config, _) = apply_setting(&old, "scheduler", scheduler).unwrap();
-        assert_eq!(config.scheduler.concurrent_jobs, 8);
+        assert_eq!(config.scheduler.segment_size_mib, 32);
+        let (config, _) =
+            apply_setting(&old, "scheduler.segment_size_mib", serde_json::json!(8)).unwrap();
+        assert_eq!(config.scheduler.segment_size_mib, 8);
     }
 
     #[test]
@@ -237,11 +232,6 @@ mod tests {
                 "api.rate_limits.human.read_per_s",
                 serde_json::json!(5),
                 "api.invalid_params",
-            ),
-            (
-                "scheduler.segment_size_mib",
-                serde_json::json!(8),
-                "api.not_implemented",
             ),
         ] {
             let error = apply_setting(&old, key, value).unwrap_err();

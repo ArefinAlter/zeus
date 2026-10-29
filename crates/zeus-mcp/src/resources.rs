@@ -18,6 +18,16 @@ use zeus_types::{JobId, RunId};
 /// URI templates served by Zeus, as `(template, name, description)`.
 pub const RESOURCE_TEMPLATES: &[(&str, &str, &str)] = &[
     (
+        "zeus://inbox/packages/{id}{?limit,cursor}",
+        "inbox-package",
+        "One owner-scoped redacted intake entry page; no raw source requests.",
+    ),
+    (
+        "zeus://inbox/packages/{id}/submissions/{batch}",
+        "inbox-submission",
+        "One owner-scoped durable batch receipt.",
+    ),
+    (
         "zeus://jobs/{id}",
         "job",
         "One download job with progress and state (URLs redacted).",
@@ -39,6 +49,8 @@ pub const RESOURCE_TEMPLATES: &[(&str, &str, &str)] = &[
 pub enum ResourceUri {
     /// `zeus://workflow/plan-schema`: the full candidate plan schema.
     PlanSchema,
+    /// Owner-scoped intake schemas, packages or durable batch receipts.
+    Inbox(crate::inbox::InboxResource),
     /// `zeus://jobs/{id}`.
     Job(JobId),
     /// `zeus://runs/{id}/manifest`.
@@ -50,6 +62,9 @@ pub enum ResourceUri {
 impl ResourceUri {
     /// Parse a URI. Anything else is `None` (the transport answers "resource not found").
     pub fn parse(uri: &str) -> Option<Self> {
+        if uri.starts_with("zeus://inbox/") {
+            return crate::inbox::InboxResource::parse(uri).map(Self::Inbox);
+        }
         let rest = uri.strip_prefix("zeus://")?;
         let parts: Vec<&str> = rest.split('/').collect();
         match parts.as_slice() {
@@ -65,6 +80,7 @@ impl ResourceUri {
 /// Read a resource as JSON text.
 pub async fn read_resource<C: Client>(client: &Arc<C>, uri: &ResourceUri) -> ApiResult<String> {
     match uri {
+        ResourceUri::Inbox(resource) => crate::inbox::read(client.as_ref(), resource).await,
         ResourceUri::PlanSchema => {
             serde_json::to_string(&schemars::schema_for!(zeus_workflow::Plan))
                 .map_err(|_| ApiError::internal("serialize plan schema"))

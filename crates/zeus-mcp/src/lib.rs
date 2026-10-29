@@ -10,21 +10,26 @@
 //! |---|---|
 //! | [`args`] | Tool inputs (compact, agent-facing). |
 //! | [`output`] | Tool outputs (small by construction). Strings that come from remote servers or files live in fields named `untrusted_*`. |
-//! | [`catalogue`] | Thirteen implemented tools from the generated normative catalogue; conversion to `rmcp` definitions. |
+//! | [`catalogue`] | Fourteen implemented tools from the generated normative catalogue; conversion to `rmcp` definitions. |
 //! | [`server`] | [`ZeusTools`]: dispatch of a tool call to the daemon through any [`zeus_api::Client`], with error mapping and recovery hints. |
 //! | [`resources`] | `zeus://` resources and the `rescue-failed-download` prompt. |
-//! | [`transport`] | Working `rmcp` stdio binding; the optional Streamable HTTP bridge remains unavailable. |
+//! | [`transport`] | `rmcp` stdio and optional authenticated loopback Streamable HTTP. |
 //!
 //! Tool names use only `[a-z0-9_]` and are at most 64 characters (00 section 3).
 
 #![forbid(unsafe_code)]
 
+pub mod apps;
 pub mod args;
 pub mod catalogue;
 pub mod cloud;
+#[cfg(feature = "http")]
+pub mod http_bridge;
+pub mod inbox;
 pub mod output;
 pub mod resources;
 pub mod server;
+pub mod sources;
 pub mod transport;
 pub mod workspace;
 

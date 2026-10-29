@@ -25,7 +25,7 @@ const TEMPLATES: { id: string; label: string; types: string; depth: number }[] =
 const STEPS = ['Start page', 'How deep', 'File types', 'Rules', 'Preview']
 
 export function SiteGrabber({ onClose }: { onClose: () => void }) {
-  const queues = useStore((s) => s.queues.filter((q) => q.kind === 'download'))
+  const queues = useStore((s) => s.queues.filter((q) => NATIVE || q.kind === 'download'))
   const [step, setStep] = useState(0)
   const [name, setName] = useState('project_1')
   const [template, setTemplate] = useState('docs')

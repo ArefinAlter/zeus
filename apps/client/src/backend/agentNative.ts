@@ -1,5 +1,5 @@
 // The desktop app's agent: a real model called by the engine's Rust process with the person's own key, using the same
-// thirteen tools any MCP client of Zeus gets. This module is the page's side of it: configuration of the provider
+// fifteen tools any MCP client of Zeus gets. This module is the page's side of it: configuration of the provider
 // ladder, consent, and a run, which is a request that returns an id and an event log the page reads by polling.
 //
 // Nothing here sees a key after the person typed it: it goes to the engine in one request and comes back only as
@@ -45,7 +45,7 @@ export interface AgentConfigView {
   default_price_out_per_mtok: number
   max_tokens: number
   keystore: { backend: 'os' | 'file'; initialized: boolean; unlocked: boolean }
-  kinds: { kind: string; label: string; default_base_url: string; needs_key: boolean }[]
+  kinds: { kind: string; label: string; default_base_url: string; needs_key: boolean; installed?: boolean | null }[]
   usage: { today: { input_tokens: number; output_tokens: number; usd: number; calls: number }; daily_cap_usd: number }
 }
 

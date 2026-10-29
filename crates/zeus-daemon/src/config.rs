@@ -29,10 +29,8 @@ pub enum ConfigError {
     Invalid(String),
 }
 
-/// Keys that parse and validate but do not change behaviour yet. `config.set` refuses them and startup warns when
-/// the file changes them, so nobody mistakes them for working controls. The engine currently issues ranged requests
-/// of one commit unit (4 MiB) instead of planning 8 to 32 MiB segments.
-pub const INEFFECTIVE_KEYS: &[&str] = &["scheduler.segment_size_mib"];
+/// Configuration compatibility list. All scheduler controls now affect execution after restart.
+pub const INEFFECTIVE_KEYS: &[&str] = &[];
 
 /// Whether `new` changes any of [`INEFFECTIVE_KEYS`] from `old`, however it was reached: setting a parent table
 /// replaces its children too.
@@ -434,14 +432,14 @@ mod tests {
     }
 
     #[test]
-    fn ineffective_settings_are_detected_whichever_key_changed_them() {
+    fn scheduler_controls_are_effective() {
         let old = DaemonConfig::default();
         let mut new = old.clone();
         new.scheduler.concurrent_jobs += 1;
         assert!(!changes_ineffective(&old, &new));
         // As `config.set key="scheduler"` with a whole table would.
         new.scheduler.segment_size_mib = 32;
-        assert!(changes_ineffective(&old, &new));
+        assert!(!changes_ineffective(&old, &new));
     }
 
     #[test]

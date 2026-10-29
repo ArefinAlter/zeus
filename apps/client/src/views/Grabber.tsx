@@ -22,6 +22,7 @@ import { SEP, baseOf, parentOf } from '../lib/paths.ts'
 import { href } from '../lib/router'
 import { Chip, Empty, Notice, PageHead, Provenance } from '../ui/components'
 import { Icon } from '../ui/icons'
+import { MediaGrabber } from './MediaGrabber'
 import '../styles/grabber.css'
 
 const SAMPLE = [
@@ -91,7 +92,7 @@ function planNote(l: GrabberLink, plan: PlanRow | undefined, collides: boolean) 
 
 export function Grabber() {
   const links = useStore((s) => s.grabber)
-  const queues = useStore((s) => s.queues.filter((q) => q.kind === 'download'))
+  const queues = useStore((s) => s.queues.filter((q) => NATIVE || q.kind === 'download'))
   const roots = useStore((s) => s.settings.saveTo.writeRoots)
   const defaultOverwrite = useStore((s) => s.settings.downloads.duplicates)
   const [text, setText] = useState('')
@@ -156,6 +157,7 @@ export function Grabber() {
   return (
     <div class="page">
       <PageHead title="Link grabber" sub="Paste links or a whole page. Nothing downloads until you review the batch and start it." />
+      {NATIVE ? <MediaGrabber /> : null}
       <div class="pastebox">
         <textarea
           aria-label="Links or a page to grab from"

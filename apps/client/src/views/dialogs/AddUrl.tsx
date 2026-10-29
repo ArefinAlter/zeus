@@ -19,7 +19,7 @@ import { Chip, Dialog, Notice } from '../../ui/components'
 import { Icon } from '../../ui/icons'
 
 export function AddUrl({ initial, onClose }: { initial?: string; onClose: () => void }) {
-  const queues = useStore((s) => s.queues.filter((q) => q.kind === 'download'))
+  const queues = useStore((s) => s.queues.filter((q) => NATIVE || q.kind === 'download'))
   const settings = useStore((s) => s.settings)
   const [url, setUrl] = useState(initial ?? '')
   const [probed, setProbed] = useState<string | null>(null)

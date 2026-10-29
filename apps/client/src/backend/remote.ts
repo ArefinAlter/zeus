@@ -238,6 +238,13 @@ export interface DaemonStatus {
   uptime_ms: number
 }
 
+export interface RemoteHistory {
+  entries: { seq: number; ts: string; job_id: string; kind: string; state: string | null }[]
+  replaying: boolean
+  history_lost: boolean
+  limited: boolean
+}
+
 export interface RemoteJob {
   id: string
   state: string
@@ -328,6 +335,7 @@ export interface EnqueueResult {
 }
 
 export const api = {
+  history: () => request<RemoteHistory>('/native/v1/events'),
   status: () => request<{ daemon: DaemonStatus | null; failure: { code: string; message: string } | null; updated_ms: number }>('/api/v1/status'),
   jobs: () => request<{ items: RemoteJob[]; updated_ms: number; failure: { code: string; message: string } | null }>('/api/v1/jobs'),
   preview: (urls: string[], subdir: string) => request<PreviewResult>('/api/v1/links/preview', 'POST', { urls, subdir }),
@@ -438,7 +446,9 @@ export interface EngineSettings {
 export interface QueueView {
   id: string
   name: string
-  kind: string
+  kind: 'download' | 'sync'
+  sync_every_hours?: number
+  sync_files?: { job_id: string; pending_job_id: string | null; last_checked_ms: number | null; next_check_ms: number; status: string }[]
   max_concurrent: number
   retries: number
   retry_delay_s: number
@@ -461,7 +471,8 @@ export interface QueueView {
 export interface QueuesList {
   queues: QueueView[]
   limiter: { enabled: boolean; limit_kib_s: number; schedule_enabled: boolean; from: string; to: string; days: number[]; active_now?: boolean }
-  defaults: { timezone: 'local' | 'utc'; missed_window: 'skip' | 'run_once'; stop_behaviour: 'pause' | 'finish_current'; default_queue: string }
+  defaults: { timezone: 'local' | 'utc'; missed_window: 'skip' | 'run_once'; stop_behaviour: 'pause' | 'finish_current'; default_queue: string; network_mode?: 'auto' | 'unmetered' | 'metered'; pause_on_metered?: boolean }
+  network?: { cost: 'unknown' | 'unmetered' | 'metered'; paused: boolean; held_jobs: number }
   now_ms: number
   utc_offset_min?: number
   kill_switch_engaged: boolean

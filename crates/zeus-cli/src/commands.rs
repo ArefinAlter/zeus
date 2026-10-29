@@ -210,6 +210,8 @@ pub async fn run_remote<C: Client + ?Sized>(
     terminal: Option<&mut Terminal>,
 ) -> ApiResult<CmdOutput> {
     match command {
+        Command::Inbox(command) => crate::inbox::run(command, client, global.dry_run).await,
+        Command::Sources(command) => crate::sources::run(command, client, global.dry_run).await,
         Command::Cloud(command) => crate::cloud::run(command, client, global.dry_run).await,
         Command::Workflow(command) => crate::workflow::run(command, client, global.dry_run).await,
         Command::Files(command) => crate::files::run(command, client, global.dry_run).await,
@@ -677,30 +679,48 @@ fn default_key(urls: &[String]) -> String {
 }
 
 fn get_inputs(args: &GetArgs) -> ApiResult<Vec<String>> {
+    get_inputs_with_stdin(args, std::io::stdin().lock())
+}
+
+fn get_inputs_with_stdin(args: &GetArgs, stdin: impl std::io::Read) -> ApiResult<Vec<String>> {
     use std::io::Read;
     const MAX_BYTES: u64 = 1024 * 1024;
+    fn text(reader: impl Read) -> ApiResult<String> {
+        let mut text = String::new();
+        reader
+            .take(MAX_BYTES + 1)
+            .read_to_string(&mut text)
+            .map_err(|_| {
+                ApiError::invalid_params("URL input must be readable UTF-8 of at most 1 MiB")
+            })?;
+        if text.len() as u64 > MAX_BYTES {
+            return Err(ApiError::invalid_params(
+                "URL input must be readable UTF-8 of at most 1 MiB",
+            ));
+        }
+        Ok(text)
+    }
     let mut urls = args.urls.clone();
     if let Some(path) = &args.input_file {
-        let error = || {
-            ApiError::invalid_params(
-                "URL input must be a readable UTF-8 regular file of at most 1 MiB",
-            )
+        let contents = if path == std::path::Path::new("-") {
+            // This is URL data only. Approval answers still come exclusively from the controlling terminal.
+            text(stdin)?
+        } else {
+            let error = || {
+                ApiError::invalid_params(
+                    "URL input must be a readable UTF-8 regular file of at most 1 MiB",
+                )
+            };
+            let file = std::fs::File::open(path).map_err(|_| error())?;
+            let metadata = file.metadata().map_err(|_| error())?;
+            if !metadata.is_file() || metadata.len() > MAX_BYTES {
+                return Err(error());
+            }
+            text(file)?
         };
-        let file = std::fs::File::open(path).map_err(|_| error())?;
-        let metadata = file.metadata().map_err(|_| error())?;
-        if !metadata.is_file() || metadata.len() > MAX_BYTES {
-            return Err(error());
-        }
-        // Bound the read even if another process grows the file after metadata().
-        let mut text = String::new();
-        file.take(MAX_BYTES + 1)
-            .read_to_string(&mut text)
-            .map_err(|_| error())?;
-        if text.len() as u64 > MAX_BYTES {
-            return Err(error());
-        }
         urls.extend(
-            text.trim_start_matches('\u{feff}')
+            contents
+                .trim_start_matches('\u{feff}')
                 .lines()
                 .map(str::trim)
                 .filter(|line| !line.is_empty() && !line.starts_with('#'))
@@ -1617,6 +1637,23 @@ mod tests {
         )
         .unwrap();
         assert!(get_inputs(args).is_err());
+    }
+
+    #[test]
+    fn stdin_url_intake_is_bounded_and_preserves_exact_signed_urls() {
+        let cli = parse(&["get", "--input-file", "-", "https://example.org/first"]);
+        let Command::Get(args) = &cli.command else {
+            panic!("expected get");
+        };
+        let signed = "https://example.org/file?sig=STDIN-CANARY&part=2";
+        let bytes =
+            format!("\u{feff}# data only\r\n{signed}\r\n{signed}\nhttps://example.org/first\n");
+        let urls = get_inputs_with_stdin(args, std::io::Cursor::new(bytes)).unwrap();
+        assert_eq!(urls, vec!["https://example.org/first", signed]);
+        let too_big = vec![b'x'; 1024 * 1024 + 1];
+        let error = get_inputs_with_stdin(args, std::io::Cursor::new(too_big)).unwrap_err();
+        assert!(!error.to_string().contains("STDIN-CANARY"));
+        assert!(get_inputs_with_stdin(args, std::io::Cursor::new([0xff, 0xfe])).is_err());
     }
 
     #[tokio::test]

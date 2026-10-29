@@ -276,6 +276,12 @@ pub struct CloudDeliveryView {
     pub approval_id: Option<ApprovalId>,
     /// Confirmed provider bytes.
     pub committed_bytes: u64,
+    /// Bytes prepared locally for staged upload, separate from provider-confirmed bytes.
+    #[serde(default)]
+    pub source_bytes_done: u64,
+    /// Full prepared source passed size/hash verification for the approved plan.
+    #[serde(default)]
+    pub source_verified: bool,
     /// Actual remote completion evidence, never inferred from a 202.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub artifact: Option<RemoteArtifact>,

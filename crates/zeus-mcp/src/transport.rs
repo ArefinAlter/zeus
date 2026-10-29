@@ -9,8 +9,8 @@ use rmcp::{ErrorData, ServerHandler, ServiceExt};
 use std::sync::Arc;
 use zeus_api::{ApiError, ApiResult, Client};
 
-struct McpServer<C: Client> {
-    client: Arc<C>,
+pub(crate) struct McpServer<C: Client> {
+    pub(crate) client: Arc<C>,
 }
 
 fn tool_result(outcome: ToolOutcome) -> CallToolResult {
@@ -36,15 +36,18 @@ fn no_cursor(request: Option<PaginatedRequestParams>) -> Result<(), ErrorData> {
 
 impl<C: Client + 'static> ServerHandler for McpServer<C> {
     fn get_info(&self) -> ServerConfig {
-        ServerConfig::new(
-            ServerCapabilities::builder()
-                .enable_tools()
-                .enable_resources()
-                .enable_prompts()
-                .build(),
-        )
-        .with_server_info(Implementation::new("zeus", env!("CARGO_PKG_VERSION")))
-        .with_instructions(SERVER_INSTRUCTIONS)
+        let mut capabilities = ServerCapabilities::builder()
+            .enable_tools()
+            .enable_resources()
+            .enable_prompts()
+            .build();
+        capabilities.extensions = Some(std::collections::BTreeMap::from([(
+            "io.modelcontextprotocol/ui".into(),
+            crate::apps::extension(),
+        )]));
+        ServerConfig::new(capabilities)
+            .with_server_info(Implementation::new("zeus", env!("CARGO_PKG_VERSION")))
+            .with_instructions(SERVER_INSTRUCTIONS)
     }
     async fn list_tools(
         &self,
@@ -75,6 +78,12 @@ impl<C: Client + 'static> ServerHandler for McpServer<C> {
     ) -> Result<ListResourcesResult, ErrorData> {
         no_cursor(request)?;
         Ok(ListResourcesResult::with_all_items(vec![
+            crate::apps::resource(),
+            Resource::new(crate::inbox::SCHEMA_URI, "inbox-parameter-schemas")
+                .with_description(
+                    "Closed typed parameters for zeus_inbox; owner selectors are not exposed.",
+                )
+                .with_mime_type("application/json"),
             Resource::new("zeus://workflow/plan-schema", "workflow-plan-schema")
                 .with_description(
                     "Candidate plan schema for zeus_workflow; read before writing selectors.",
@@ -91,20 +100,26 @@ impl<C: Client + 'static> ServerHandler for McpServer<C> {
         _: RequestContext<RoleServer>,
     ) -> Result<ListResourceTemplatesResult, ErrorData> {
         no_cursor(request)?;
-        Ok(ListResourceTemplatesResult::with_all_items(vec![
-            ResourceTemplate::new("zeus://jobs/{id}", "job")
-                .with_description("Download state and progress; URLs are redacted.")
-                .with_mime_type("application/json"),
-            ResourceTemplate::new("zeus://runs/{id}/manifest", "run-manifest")
-                .with_description("Bounded redacted provenance records of an owned workflow run.")
-                .with_mime_type("application/json"),
-        ]))
+        Ok(ListResourceTemplatesResult::with_all_items(
+            crate::resources::RESOURCE_TEMPLATES
+                .iter()
+                .filter(|(uri, _, _)| uri.contains('{'))
+                .map(|(uri, name, description)| {
+                    ResourceTemplate::new(*uri, *name)
+                        .with_description(*description)
+                        .with_mime_type("application/json")
+                })
+                .collect(),
+        ))
     }
     async fn read_resource(
         &self,
         request: ReadResourceRequestParams,
         _: RequestContext<RoleServer>,
     ) -> Result<ReadResourceResponse, ErrorData> {
+        if request.uri == crate::apps::MONITOR_URI {
+            return Ok(ReadResourceResult::new(vec![crate::apps::contents()]).into());
+        }
         let uri = ResourceUri::parse(&request.uri)
             .ok_or_else(|| ErrorData::invalid_params("Unknown Zeus resource", None))?;
         let contents = resources::read_resource(&self.client, &uri)
@@ -175,16 +190,14 @@ pub async fn serve_stdio<C: Client + 'static>(client: Arc<C>) -> ApiResult<()> {
     Ok(())
 }
 
-/// Optional HTTP bridge remains unavailable until its token and Origin checks are implemented.
+/// Serve the optional authenticated, origin-checked loopback HTTP bridge.
 #[cfg(feature = "http")]
-pub async fn serve_http<C: Client>(
-    _client: Arc<C>,
-    _port: u16,
-    _bearer_token_hash: [u8; 32],
+pub async fn serve_http<C: Client + 'static>(
+    client: Arc<C>,
+    port: u16,
+    bearer_token_hash: [u8; 32],
 ) -> ApiResult<()> {
-    Err(ApiError::not_implemented(
-        "MCP HTTP bridge (bearer authentication and Origin validation)",
-    ))
+    crate::http_bridge::serve(client, port, bearer_token_hash).await
 }
 
 #[cfg(test)]
@@ -290,12 +303,39 @@ mod tests {
         )
         .await;
         let tools = catalogue["result"]["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 13);
+        assert_eq!(tools.len(), 15);
+        assert!(tools.iter().any(|tool| tool["name"] == "zeus_sources"));
         assert!(
             !tools
                 .iter()
                 .any(|tool| tool["name"].as_str().unwrap().contains("approve"))
         );
+        let templates = exchange(
+            &mut reader,
+            &mut writer,
+            json!({"jsonrpc":"2.0","id":4,"method":"resources/templates/list","params":{}}),
+        )
+        .await;
+        assert!(
+            templates["result"]["resourceTemplates"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|v| v["uriTemplate"] == "zeus://inbox/packages/{id}{?limit,cursor}")
+        );
+        let resources = exchange(
+            &mut reader,
+            &mut writer,
+            json!({"jsonrpc":"2.0","id":5,"method":"resources/list","params":{}}),
+        )
+        .await;
+        assert!(resources["result"]["resources"].as_array().unwrap().iter().any(|v| v["uri"] == crate::apps::MONITOR_URI && v["mimeType"] == crate::apps::MIME));
+        let app = exchange(&mut reader, &mut writer, json!({"jsonrpc":"2.0","id":6,"method":"resources/read","params":{"uri":crate::apps::MONITOR_URI}})).await;
+        assert_eq!(
+            app["result"]["contents"][0]["_meta"]["ui"]["csp"]["connectDomains"],
+            json!([])
+        );
+        assert_eq!(app["result"]["contents"][0]["mimeType"], crate::apps::MIME);
         let failure = exchange(&mut reader, &mut writer, json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"zeus_probe","arguments":{"url":"not a URL"}}})).await;
         assert_eq!(failure["result"]["isError"], true);
         assert!(failure["result"]["structuredContent"]["code"].is_string());

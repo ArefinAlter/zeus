@@ -29,10 +29,15 @@ import { Connectors } from './views/Connectors'
 import { AddUrl } from './views/dialogs/AddUrl'
 import { SiteGrabber } from './views/dialogs/SiteGrabber'
 import { Downloads, VIEWS, inView } from './views/downloads/Downloads'
+import { Inbox } from './views/Inbox'
 import { Files } from './views/Files'
 import { Uploads } from './views/Uploads'
+import { Sources } from './views/Sources'
 import { Grabber } from './views/Grabber'
 import { Queues } from './views/Queues'
+import { Runs } from './views/Runs'
+import { Library } from './views/Library'
+import { TeamNative } from './views/TeamNative'
 import { SETTINGS_SECTIONS, Settings } from './views/settings'
 import { Skills } from './views/Skills'
 
@@ -40,8 +45,13 @@ const TITLES: Record<string, string> = {
   downloads: 'Downloads',
   grabber: 'Link grabber',
   queues: 'Queues and scheduler',
+  runs: 'Workflow runs',
+  library: 'Artifact library and rules',
+  team: 'Team',
+  inbox: 'Inbox',
   files: 'Files',
   uploads: 'Uploads',
+  sources: 'Connected sources',
   agent: 'Agent',
   skills: 'Skills',
   approvals: 'Approvals',
@@ -61,8 +71,18 @@ function Page({ path, query }: { path: string[]; query: URLSearchParams }) {
       return <Grabber />
     case 'queues':
       return <Queues {...(query.get('q') ? { queueId: query.get('q') as string } : {})} {...(query.get('tab') ? { tab: query.get('tab') as string } : {})} />
+    case 'runs':
+      return <Runs />
+    case 'library':
+      return <Library />
+    case 'team':
+      return <TeamNative />
     case 'uploads':
       return <Uploads initialPath={query.get('path') ?? ''} initialName={query.get('name') ?? ''} />
+    case 'sources':
+      return <Sources />
+    case 'inbox':
+      return <Inbox />
     case 'files':
       return <Files {...(query.get('path') ? { initialPath: query.get('path') as string } : {})} />
     case 'agent':
@@ -171,7 +191,7 @@ function StatusBar() {
       </button>
       <span class="hide-narrow">{index.state === 'scanning' ? `indexing ${Math.round(index.progress * 100)} %` : `index current`}</span>
       <span class="sb-pill" title={LIVE ? (NATIVE ? 'The Zeus engine on this computer: a bundled zeusd that this app set up and runs' : HOSTED ? 'A real zeusd on the pre-alpha server, in a private sandbox' : 'Your own zeusd through zeus-web-bridge') : 'This release runs on sample data with no backend'}>
-        Pre-alpha release · {LIVE ? (NATIVE ? 'this computer' : HOSTED ? 'hosted zeusd' : 'your zeusd') : 'sample data'}
+        Alpha release · {LIVE ? (NATIVE ? 'this computer' : HOSTED ? 'hosted zeusd' : 'your zeusd') : 'sample data'}
       </span>
     </footer>
   )
@@ -185,7 +205,7 @@ function ConnLink() {
   return (
     <a class={`conn ${ok ? 'ok' : 'bad'}`} href={href('settings', LIVE ? 'daemon' : 'about')} title={title}>
       <span class="dot" />
-      <span class="name">Pre-alpha release</span>
+      <span class="name">Alpha release</span>
     </a>
   )
 }

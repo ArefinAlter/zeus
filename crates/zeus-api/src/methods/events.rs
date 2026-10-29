@@ -8,6 +8,59 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use zeus_types::{Event, JobId, RunId};
 
+/// Checkpoint for bounded replay, bound to the store and daemon lifetime.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct EventCursor {
+    /// Journal identity; replacing a profile cannot reuse its cursor.
+    pub store_id: zeus_types::StoreId,
+    /// Daemon lifetime; replay after restart also covers restored backups.
+    pub instance_id: String,
+    /// Last scanned sequence, including events outside this credential's view.
+    pub seq: u64,
+}
+
+/// `events.read`: read one bounded durable batch without opening a subscription.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct EventsReadParams {
+    /// Absent: start from the oldest retained event.
+    #[serde(default)]
+    pub cursor: Option<EventCursor>,
+    /// Maximum records scanned, including invisible records; 1–128, default 64.
+    #[serde(default)]
+    pub limit: Option<u32>,
+}
+
+/// Why replay restarted from the oldest retained event.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum EventReset {
+    /// The journal was replaced.
+    StoreChanged,
+    /// The daemon restarted (possibly using a restored journal).
+    DaemonRestarted,
+    /// The supplied position exceeds the journal head.
+    CursorAhead,
+}
+
+/// One durable page, limited to 128 scanned records and 512 KiB of event JSON.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct EventsReadResult {
+    /// Visible, redacted events in ascending sequence order. May be empty even with `has_more`.
+    pub events: Vec<Event>,
+    /// Persist with the events, never before them. Use even when `events` is empty.
+    pub cursor: EventCursor,
+    /// Journal head in the same read transaction as this page.
+    pub head_seq: u64,
+    /// More records remained at the captured head.
+    pub has_more: bool,
+    /// Clear cached history and re-read jobs when this is present.
+    pub reset: Option<EventReset>,
+    /// A gap exists in the underlying journal, not merely in the credential's filtered view.
+    pub history_lost: bool,
+}
+
 /// `events.subscribe` parameters.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct SubscribeParams {

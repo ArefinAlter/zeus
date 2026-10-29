@@ -1,5 +1,5 @@
 // The Connect page and Settings, Browser integration in Chromium against the real engine: the assistant tabs show the
-// configuration, the connection test lists thirteen tools, the browser panel lists browsers with honest status and its
+// configuration, the connection test lists fourteen tools, the browser panel lists browsers with honest status and its
 // install button opens a consent dialog that writes nothing until it is confirmed. Screenshots to --out.
 // Run: ZEUS_UI_DIR=dist/harness-d node tests/acceptance/ui-connect.mjs
 
@@ -37,8 +37,8 @@ for (const [tab, needle] of [['Cursor', '"mcpServers"'], ['Codex', '[mcp_servers
 }
 await page.click('[role=tab]:has-text("Claude Code")')
 await page.click('button:has-text("Test the connection")')
-await page.waitForSelector('text=/Connected: zeus .*13 tools/', { timeout: 40000 })
-check('the connection test lists thirteen tools', true)
+await page.waitForSelector('text=/Connected: zeus .*14 tools/', { timeout: 40000 })
+check('the connection test lists fourteen tools', true)
 await page.screenshot({ path: `${out}/connect-test.png`, fullPage: true })
 
 await page.waitForSelector('.browser-table', { timeout: 20000 })

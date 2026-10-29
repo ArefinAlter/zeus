@@ -11,11 +11,11 @@ use std::{
 };
 use tokio::sync::Mutex;
 use zeus_api::methods::{
-    admin::*, artifacts::*, cloud::*, daemon::*, events::*, files::*, jobs::*, queues::*,
-    sessions::*, workflows::*,
+    admin::*, artifacts::*, cloud::*, cloud_oauth::*, daemon::*, events::*, files::*, inbox::*,
+    jobs::*, queues::*, sessions::*, sources::*, workflows::*,
 };
 use zeus_api::{ApiError, ApiResult, CallContext, Page};
-use zeus_engine::{Engine, EngineBuilder, EngineConfig};
+use zeus_engine::{Engine, EngineBuilder, EngineConfig, TransferTuning};
 use zeus_journal::{Journal, JournalOptions};
 use zeus_types::{
     ApprovalState, EventSeq, GrantState, JobSpec, JobState, Surface, Timestamp, ToEnvelope,
@@ -65,15 +65,18 @@ pub struct RuntimeBackend {
     pub shutdown: zeus_api::server::ShutdownController,
     mutations: Mutex<()>,
     receipts: crate::mutations::MutationStore,
+    inbox: crate::inbox::InboxStore,
     models: crate::models::ModelService,
     outbox: Arc<std::sync::Mutex<crate::outbox::Outbox>>,
     pub(crate) workflows: Arc<crate::workflows::WorkflowService>,
     pub(crate) cloud: Arc<crate::cloud::CloudService>,
+    sources: Arc<crate::sources::SourceService>,
     /// Download queues, their scheduler and the speed limiter's settings.
     pub(crate) queues: Arc<crate::queues::QueueService>,
     subscriptions: Mutex<HashMap<String, (zeus_types::ConnectionId, tokio::task::AbortHandle)>>,
     deferred_audit: crate::deferred_audit::DeferredAudit,
     state_dir: PathBuf,
+    team: crate::team::policy::Guard,
     credentials: Arc<crate::provision::FileCredentialStore>,
     /// Authenticated connections and their credential, for `clients.revoke`.
     connections: std::sync::Mutex<HashMap<zeus_types::ConnectionId, zeus_api::auth::CredentialId>>,
@@ -87,18 +90,31 @@ pub struct RuntimeBackend {
 }
 
 impl RuntimeBackend {
+    fn team_approval(&self, id: zeus_types::ApprovalId) -> ApiResult<()> {
+        if !self.team.configured() {
+            return Ok(());
+        }
+        let approval = self
+            .journal
+            .read(|tx| tx.approval(id))
+            .map_err(error)?
+            .ok_or_else(|| ApiError::invalid_params("Unknown approval"))?;
+        for feature in crate::team::approval_features(approval.kind)? {
+            self.team.admit(feature).map_err(|_| {
+                ApiError::new(
+                    zeus_api::error::codes::PERMISSION_DENIED,
+                    "Team policy does not allow this approval's effect.",
+                )
+            })?;
+        }
+        Ok(())
+    }
+
     /// Open persistent state and recover unfinished transfers before accepting clients.
     pub async fn open(state_dir: PathBuf, config: DaemonConfig) -> ApiResult<Arc<Self>> {
         config
             .validate()
             .map_err(|_| ApiError::invalid_params("invalid daemon configuration"))?;
-        if config.scheduler.segment_size_mib
-            != crate::config::SchedulerConfig::default().segment_size_mib
-        {
-            tracing::warn!(
-                "scheduler.segment_size_mib is not used by the engine yet; ranged requests use the commit unit"
-            );
-        }
         let roots = config.effective_write_roots();
         let default = roots
             .first()
@@ -196,12 +212,55 @@ impl RuntimeBackend {
         let default_transport: Arc<dyn zeus_http::HttpTransport> = Arc::new(
             zeus_http::ReqwestTransport::new(&engine_config.http).map_err(|_| internal())?,
         );
+        let requester_records = credentials.clone();
+        let source_roots = credentials.clone();
+        let configured_roots = config.effective_write_roots();
+        let sources = crate::sources::SourceService::open(
+            &state_dir,
+            journal.clone(),
+            Arc::new(zeus_cloud::OsCredentialStore {
+                service: "dev.zeus".into(),
+            }),
+            default_transport.clone(),
+            config.effective_write_roots(),
+            Arc::new(move |id| {
+                zeus_api::auth::CredentialId::parse(id)
+                    .ok()
+                    .and_then(|id| requester_records.record(&id))
+                    .is_some_and(|record| {
+                        !record.revoked
+                            && record
+                                .permissions
+                                .contains(&zeus_api::Permission::JobsWrite)
+                    })
+            }),
+            Arc::new(move |id| {
+                let Ok(id) = zeus_api::auth::CredentialId::parse(id) else {
+                    return vec![];
+                };
+                let Some(record) = source_roots.record(&id) else {
+                    return vec![];
+                };
+                if record.revoked {
+                    return vec![];
+                }
+                if record.kind == zeus_api::ClientKind::Service {
+                    source_roots.roots(&id)
+                } else {
+                    configured_roots.clone()
+                }
+            }),
+        )?;
         let transports = Arc::new(crate::limiter::LimitedFactory::new(
-            workflows.transport_factory(),
+            sources.transport_factory(workflows.transport_factory()),
             default_transport,
             limits,
         ));
         let engine = EngineBuilder::new(engine_config)
+            .transfer_tuning(TransferTuning {
+                segment_bytes: u64::from(config.scheduler.segment_size_mib) << 20,
+                ..TransferTuning::default()
+            })
             .clock(clock)
             .session_provider(browser.clone())
             .proxy_fetch(browser.clone())
@@ -212,13 +271,48 @@ impl RuntimeBackend {
             .build()
             .await
             .map_err(error)?;
+        let queue_credentials = credentials.clone();
         queues.attach(Arc::new(crate::queues::EnginePort {
             engine: engine.clone(),
             journal: journal.clone(),
+            team: crate::team::policy::Guard::new(&state_dir, "queues"),
+            authorize_sync: Arc::new(move |spec, path| {
+                let Some(id) = spec
+                    .source
+                    .client_id
+                    .as_deref()
+                    .and_then(|id| zeus_api::auth::CredentialId::parse(id).ok())
+                else {
+                    return false;
+                };
+                let Some(record) = queue_credentials.record(&id) else {
+                    return false;
+                };
+                if record.revoked
+                    || !record
+                        .permissions
+                        .contains(&zeus_api::Permission::JobsWrite)
+                {
+                    return false;
+                }
+                if record.kind != zeus_api::ClientKind::Service {
+                    return true;
+                }
+                let Some(parent) = path.parent().and_then(|p| p.canonicalize().ok()) else {
+                    return false;
+                };
+                queue_credentials
+                    .roots(&id)
+                    .iter()
+                    .filter_map(|root| root.canonicalize().ok())
+                    .any(|root| parent.starts_with(root))
+            }),
         }));
         workflows.attach_engine(engine.clone())?;
+        sources.attach_engine(engine.clone())?;
         let trust = crate::trust::TrustedPrograms::load_or_initialize(&state_dir)?;
         let receipts = crate::mutations::MutationStore::open(&state_dir.join("api-receipts.redb"))?;
+        let inbox = crate::inbox::InboxStore::open(&state_dir.join("inbox.redb"))?;
         let models = crate::models::ModelService::open(
             &state_dir,
             Arc::new(zeus_llm::secrets::OsKeyringStore {
@@ -258,10 +352,12 @@ impl RuntimeBackend {
             audit,
             browser,
             receipts,
+            inbox,
             models,
             outbox,
             workflows,
             cloud,
+            sources,
             queues,
             info: DaemonInfo {
                 version: env!("CARGO_PKG_VERSION").into(),
@@ -273,6 +369,7 @@ impl RuntimeBackend {
             mutations: Mutex::new(()),
             subscriptions: Mutex::new(HashMap::new()),
             deferred_audit,
+            team: crate::team::policy::Guard::new(&state_dir, "daemon"),
             state_dir,
             credentials,
             connections: Default::default(),
@@ -404,6 +501,213 @@ impl RuntimeBackend {
 
 #[async_trait]
 impl Backend for RuntimeBackend {
+    fn team_admit(&self, method: &str, params: &serde_json::Value) -> ApiResult<()> {
+        crate::team::admit(&self.team, method, params)
+    }
+    async fn inbox_package_put(
+        &self,
+        ctx: &CallContext,
+        p: InboxPackagePutParams,
+    ) -> ApiResult<InboxMutationResult> {
+        let _gate = self.inbox.gate.lock().await;
+        self.inbox.put(ctx.identity.credential_id.as_str(), &p)
+    }
+
+    async fn inbox_packages_list(
+        &self,
+        ctx: &CallContext,
+        p: InboxPackagesListParams,
+    ) -> ApiResult<InboxPackagesListResult> {
+        let owner = self.inbox_inspect_owner(ctx, p.owner_credential_id.as_deref())?;
+        self.inbox.list(&owner, &p)
+    }
+
+    async fn inbox_package_get(
+        &self,
+        ctx: &CallContext,
+        p: InboxPackageGetParams,
+    ) -> ApiResult<InboxPackageGetResult> {
+        let owner = self.inbox_inspect_owner(ctx, p.owner_credential_id.as_deref())?;
+        self.inbox.get(&owner, &p)
+    }
+
+    async fn inbox_package_archive(
+        &self,
+        ctx: &CallContext,
+        p: InboxPackageArchiveParams,
+    ) -> ApiResult<InboxMutationResult> {
+        let _gate = self.inbox.gate.lock().await;
+        self.inbox.archive(ctx.identity.credential_id.as_str(), &p)
+    }
+
+    async fn inbox_entries_add(
+        &self,
+        ctx: &CallContext,
+        p: InboxEntriesAddParams,
+    ) -> ApiResult<InboxEntriesAddResult> {
+        let _gate = self.inbox.gate.lock().await;
+        self.inbox.add(ctx.identity.credential_id.as_str(), &p)
+    }
+
+    async fn inbox_entries_remove(
+        &self,
+        ctx: &CallContext,
+        p: InboxEntriesRemoveParams,
+    ) -> ApiResult<InboxMutationResult> {
+        let _gate = self.inbox.gate.lock().await;
+        self.inbox.remove(ctx.identity.credential_id.as_str(), &p)
+    }
+
+    async fn inbox_preview(
+        &self,
+        ctx: &CallContext,
+        p: InboxPreviewParams,
+    ) -> ApiResult<InboxPreviewResult> {
+        self.inbox_preview_impl(ctx, p).await
+    }
+
+    async fn inbox_submit(
+        &self,
+        ctx: &CallContext,
+        p: InboxSubmitParams,
+    ) -> ApiResult<InboxSubmitResult> {
+        self.inbox_submit_impl(ctx, p).await
+    }
+
+    async fn inbox_submission_get(
+        &self,
+        ctx: &CallContext,
+        p: InboxSubmissionGetParams,
+    ) -> ApiResult<InboxSubmissionView> {
+        let owner = self.inbox_inspect_owner(ctx, p.owner_credential_id.as_deref())?;
+        self.inbox.view_batch(&owner, &p)
+    }
+
+    async fn inbox_submission_retry(
+        &self,
+        ctx: &CallContext,
+        p: InboxSubmissionRetryParams,
+    ) -> ApiResult<InboxSubmitResult> {
+        self.inbox_retry_impl(ctx, p).await
+    }
+
+    async fn cloud_oauth_begin(
+        &self,
+        ctx: &CallContext,
+        p: CloudOAuthBeginParams,
+    ) -> ApiResult<CloudOAuthBeginResult> {
+        let actor = self.model_human(ctx)?;
+        self.cloud.oauth_begin(&ctx.identity, actor, p).await
+    }
+    async fn cloud_oauth_finish(
+        &self,
+        ctx: &CallContext,
+        p: CloudOAuthFinishParams,
+    ) -> ApiResult<CloudOAuthStatus> {
+        let actor = self.model_human(ctx)?;
+        self.cloud.oauth_finish(&ctx.identity, actor, p).await
+    }
+    async fn cloud_oauth_status(
+        &self,
+        ctx: &CallContext,
+        p: CloudOAuthStatusParams,
+    ) -> ApiResult<CloudOAuthStatus> {
+        let actor = self.model_human(ctx)?;
+        self.cloud.oauth_status(&ctx.identity, actor, p).await
+    }
+    async fn cloud_oauth_cancel(
+        &self,
+        ctx: &CallContext,
+        p: CloudOAuthCancelParams,
+    ) -> ApiResult<CloudOAuthStatus> {
+        let actor = self.model_human(ctx)?;
+        self.cloud.oauth_cancel(&ctx.identity, actor, p).await
+    }
+    async fn cloud_oauth_refresh(
+        &self,
+        ctx: &CallContext,
+        p: CloudOAuthRefreshParams,
+    ) -> ApiResult<CloudOAuthStatus> {
+        let actor = self.model_human(ctx)?;
+        self.cloud.oauth_refresh(&ctx.identity, actor, p).await
+    }
+    async fn cloud_oauth_disconnect(
+        &self,
+        ctx: &CallContext,
+        p: CloudOAuthDisconnectParams,
+    ) -> ApiResult<CloudOAuthDisconnectResult> {
+        let actor = self.model_human(ctx)?;
+        self.cloud.oauth_disconnect(&ctx.identity, actor, p).await
+    }
+    async fn sources_accounts(
+        &self,
+        ctx: &CallContext,
+        _p: SourcesReadParams,
+    ) -> ApiResult<SourcesAccountsResult> {
+        self.sources.accounts(&ctx.identity)
+    }
+    async fn sources_configure(
+        &self,
+        ctx: &CallContext,
+        p: SourcesAccountConfigureParams,
+    ) -> ApiResult<SourcesAccountMutationResult> {
+        let actor = self.model_human(ctx)?;
+        self.sources.configure(&ctx.identity, actor, p).await
+    }
+    async fn sources_revoke(
+        &self,
+        ctx: &CallContext,
+        p: SourcesAccountRevokeParams,
+    ) -> ApiResult<SourcesAccountMutationResult> {
+        let actor = self.model_human(ctx)?;
+        self.sources.revoke(&ctx.identity, actor, p).await
+    }
+    async fn sources_inspect(
+        &self,
+        ctx: &CallContext,
+        p: SourcesInspectParams,
+    ) -> ApiResult<SourcePlanView> {
+        self.sources.inspect(&ctx.identity, p).await
+    }
+    async fn sources_submit(
+        &self,
+        ctx: &CallContext,
+        p: SourcesSubmitParams,
+    ) -> ApiResult<SourceOperationView> {
+        self.sources.submit(&ctx.identity, p).await
+    }
+    async fn sources_list(
+        &self,
+        ctx: &CallContext,
+        _p: SourcesReadParams,
+    ) -> ApiResult<SourcesListResult> {
+        self.sources.list(&ctx.identity)
+    }
+    async fn sources_get(
+        &self,
+        ctx: &CallContext,
+        p: SourcesGetParams,
+    ) -> ApiResult<SourceOperationView> {
+        self.sources.get(&ctx.identity, p)
+    }
+    async fn sources_control(
+        &self,
+        ctx: &CallContext,
+        p: SourcesControlParams,
+    ) -> ApiResult<SourceOperationView> {
+        let operation = self.sources.get(
+            &ctx.identity,
+            SourcesGetParams {
+                operation_id: p.operation_id.clone(),
+            },
+        )?;
+        if let Some(job_id) = operation.job_id {
+            self.queues
+                .on_explicit_control(job_id, p.action == SourceControlAction::Pause)
+                .await?;
+        }
+        self.sources.control(&ctx.identity, p).await
+    }
     async fn cloud_accounts_list(
         &self,
         _ctx: &CallContext,
@@ -940,6 +1244,14 @@ impl Backend for RuntimeBackend {
         p: JobsControlParams,
     ) -> ApiResult<JobsControlResult> {
         self.require_jobs_visible(ctx, &[p.job_id])?;
+        if matches!(
+            p.action,
+            ControlAction::Pause | ControlAction::Cancel | ControlAction::Resume
+        ) {
+            self.queues
+                .on_explicit_control(p.job_id, matches!(p.action, ControlAction::Pause))
+                .await?;
+        }
         let _gate = self.mutations.lock().await;
         let action = match p.action {
             ControlAction::Pause => zeus_engine::api::ControlAction::Pause,
@@ -1052,6 +1364,13 @@ impl Backend for RuntimeBackend {
     ) -> ApiResult<QueuesConfigureResult> {
         self.queues_configure_impl(ctx, p).await
     }
+    async fn events_read(
+        &self,
+        ctx: &CallContext,
+        p: EventsReadParams,
+    ) -> ApiResult<EventsReadResult> {
+        self.read_events(ctx, p)
+    }
     async fn events_subscribe(
         &self,
         ctx: &CallContext,
@@ -1125,6 +1444,7 @@ impl Backend for RuntimeBackend {
             .trust
             .terminal_evidence(ctx, p.channel, p.confirmation)?;
         if p.outcome == DecideOutcome::Approve {
+            self.team_approval(p.approval_id)?;
             self.admit()?;
         }
         let (approval, grant) = self.consent.decide(&ctx.identity, &p, evidence).await?;
@@ -1460,6 +1780,14 @@ impl Backend for RuntimeBackend {
     ) -> ApiResult<FilesOrganizeResult> {
         self.organize(ctx, p).await
     }
+    async fn files_operation_get(
+        &self,
+        ctx: &CallContext,
+        p: FilesOperationGetParams,
+    ) -> ApiResult<FilesOperationGetResult> {
+        self.organizer
+            .operation_view(&ctx.identity, &self.visible_roots(ctx), &p.operation_id)
+    }
     async fn files_undo(
         &self,
         ctx: &CallContext,
@@ -1559,3 +1887,10 @@ mod queue_tests;
 #[cfg(test)]
 #[path = "runtime_tests.rs"]
 mod tests;
+
+#[path = "inbox_api.rs"]
+mod inbox_api;
+
+#[cfg(test)]
+#[path = "inbox_runtime_tests.rs"]
+mod inbox_runtime_tests;

@@ -23,6 +23,8 @@ pub mod kill_switch;
 pub mod nm;
 pub mod provision;
 pub mod routes;
+/// Optional signed team restrictions.
+pub mod team;
 
 pub use backend::{Backend, NotImplementedBackend};
 pub use config::DaemonConfig;
@@ -63,3 +65,7 @@ pub mod workflows;
 
 /// Approval-bound, durable cloud delivery operations.
 pub mod cloud;
+/// Immutable source account, review and acquisition orchestration.
+pub mod sources;
+
+mod inbox;

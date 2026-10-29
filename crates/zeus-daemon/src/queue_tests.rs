@@ -7,15 +7,20 @@ use zeus_api::methods::queues::{OnFinish, QueueDef};
 
 /// A server that answers any path with `data`, honouring one `Range` (always as 206, as the engine expects).
 async fn server(data: Vec<u8>) -> (String, tokio::task::JoinHandle<()>) {
+    versioned_server(Arc::new(std::sync::Mutex::new(data))).await
+}
+
+async fn versioned_server(
+    data: Arc<std::sync::Mutex<Vec<u8>>>,
+) -> (String, tokio::task::JoinHandle<()>) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());
-    let data = Arc::new(data);
     let task = tokio::spawn(async move {
         loop {
             let Ok((mut stream, _)) = listener.accept().await else {
                 break;
             };
-            let data = data.clone();
+            let data = data.lock().unwrap().clone();
             tokio::spawn(async move {
                 let mut request = Vec::new();
                 let mut buf = [0; 1024];
@@ -49,9 +54,10 @@ async fn server(data: Vec<u8>) -> (String, tokio::task::JoinHandle<()>) {
                     return;
                 }
                 let header = format!(
-                    "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes {start}-{end}/{}\r\nContent-Length: {}\r\nETag: \"fixture-1\"\r\nContent-Type: application/octet-stream\r\nConnection: close\r\n\r\n",
+                    "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes {start}-{end}/{}\r\nContent-Length: {}\r\nETag: \"{}\"\r\nContent-Type: application/octet-stream\r\nConnection: close\r\n\r\n",
                     data.len(),
-                    end - start + 1
+                    end - start + 1,
+                    blake3::hash(&data).to_hex()
                 );
                 if stream.write_all(header.as_bytes()).await.is_ok() {
                     let _ = stream.write_all(&data[start..=end]).await;
@@ -486,6 +492,154 @@ async fn a_service_sees_only_its_own_jobs_in_queues_and_cannot_change_them() {
             .await
             .is_err()
     );
+    backend.engine.shutdown().await.unwrap();
+    http.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn synchronization_downloads_changed_bytes_beside_the_original_file() {
+    use zeus_api::methods::queues::{NetworkMode, QueueDefaults, QueueKind, SyncStatus};
+    let dir = tempfile::tempdir().unwrap();
+    let backend = setup(dir.path()).await;
+    let (ctx, _rx) = context(dir.path(), "cli");
+    backend
+        .queues
+        .configure(
+            None,
+            Some(QueueDefaults {
+                network_mode: NetworkMode::Unmetered,
+                ..Default::default()
+            }),
+        )
+        .await
+        .unwrap();
+    let data = Arc::new(std::sync::Mutex::new(vec![17_u8; 32 * 1024]));
+    let (base, http) = versioned_server(data.clone()).await;
+    backend
+        .queues
+        .put(QueueDef {
+            id: "versions".into(),
+            name: "Versions".into(),
+            kind: QueueKind::Sync,
+            ..serde_json::from_value(serde_json::json!({"id":"x","name":"x"})).unwrap()
+        })
+        .await
+        .unwrap();
+    backend
+        .queues
+        .control(
+            QueueAction::Start {
+                id: "versions".into(),
+            },
+            &|_| true,
+        )
+        .await
+        .unwrap();
+    let enqueued = backend
+        .jobs_enqueue(
+            &ctx,
+            EnqueueParams {
+                jobs: vec![job(
+                    &format!("{base}/version.bin"),
+                    "version.bin",
+                    "versions",
+                )],
+                dry_run: false,
+                idempotency_key: None,
+            },
+        )
+        .await
+        .unwrap();
+    let old = enqueued.jobs[0].job_id.unwrap();
+    drive(&backend, &[old], Duration::from_secs(15), || {
+        state_of(&backend, old) == JobState::Completed
+    })
+    .await;
+    let old_result = backend
+        .journal
+        .job(old)
+        .unwrap()
+        .unwrap()
+        .job
+        .result
+        .unwrap();
+    backend.queues.tick().await.unwrap(); // Register the first completed version.
+    *data.lock().unwrap() = vec![29_u8; 48 * 1024];
+    backend.queues.tick().await.unwrap(); // Probe and enqueue the changed representation.
+    let watch = backend
+        .queues
+        .queue_view("versions", &|_| true)
+        .await
+        .unwrap()
+        .sync_files[0]
+        .clone();
+    let new = watch
+        .pending_job_id
+        .expect("changed validators must create a new job");
+    drive(&backend, &[new], Duration::from_secs(15), || {
+        state_of(&backend, new) == JobState::Completed
+    })
+    .await;
+    backend.queues.tick().await.unwrap();
+    let new_result = backend
+        .journal
+        .job(new)
+        .unwrap()
+        .unwrap()
+        .job
+        .result
+        .unwrap();
+    assert_ne!(old_result.path, new_result.path);
+    assert_eq!(
+        std::path::Path::new(&old_result.path).parent(),
+        std::path::Path::new(&new_result.path).parent()
+    );
+    assert_eq!(
+        std::fs::read(&old_result.path).unwrap(),
+        vec![17_u8; 32 * 1024]
+    );
+    assert_eq!(
+        std::fs::read(&new_result.path).unwrap(),
+        vec![29_u8; 48 * 1024]
+    );
+    let watch = backend
+        .queues
+        .queue_view("versions", &|_| true)
+        .await
+        .unwrap()
+        .sync_files[0]
+        .clone();
+    assert_eq!(watch.job_id, new);
+    assert_eq!(watch.status, SyncStatus::Updated);
+    assert!(watch.pending_job_id.is_none());
+    backend
+        .credentials
+        .revoke(
+            &dir.path().join("state/credentials"),
+            &ctx.identity.credential_id,
+            Timestamp::now(),
+        )
+        .unwrap();
+    backend
+        .queues
+        .control(
+            QueueAction::Start {
+                id: "versions".into(),
+            },
+            &|_| true,
+        )
+        .await
+        .unwrap();
+    backend.queues.tick().await.unwrap();
+    let denied = backend
+        .queues
+        .queue_view("versions", &|_| true)
+        .await
+        .unwrap()
+        .sync_files[0]
+        .clone();
+    assert_eq!(denied.status, SyncStatus::PolicyBlocked);
+    assert!(denied.pending_job_id.is_none());
     backend.engine.shutdown().await.unwrap();
     http.abort();
 }

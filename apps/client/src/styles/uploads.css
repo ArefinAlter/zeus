@@ -10,5 +10,5 @@
 .upload-card { display: grid; gap: 10px; padding: 16px; border: 1px solid var(--line); border-radius: 8px; min-width: 0; }
 .upload-card > button { justify-self: start; }
 .upload-card code, .upload-card p { overflow-wrap: anywhere; }
-.upload-card .row-actions { display: flex; gap: 8px; }
+.upload-card .row-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 @media (max-width: 900px) { .upload-form { grid-template-columns: minmax(0, 1fr); } }

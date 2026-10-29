@@ -169,7 +169,7 @@ function pending(s: State) {
 type Scenario = (c: Ctx, text: string) => Promise<void>
 
 const HELP = [
-  'I work through the same thirteen tools any MCP client of Zeus gets. With **Read only** access I can check links, read jobs, files, artifacts and site permissions. With **Download** I can also start, pause and retry downloads and ask you for a site login. With **Organize and deliver** I can propose file organizing, workflow runs and cloud deliveries, each of which waits for your review.',
+  'I work through the same fourteen tools any MCP client of Zeus gets. With **Read only** access I can check links, read jobs, files, artifacts and site permissions. With **Download** I can also start, pause and retry downloads and ask you for a site login. With **Organize and deliver** I can propose file organizing, workflow runs and cloud deliveries, each of which waits for your review.',
   '',
   'I cannot approve anything, see a cookie or a password, or open a downloaded file, and nothing in the instructions or a skill changes that.',
   '',

@@ -1,11 +1,11 @@
 // Queues and the scheduler, and the speed limiter. A queue has its own start and stop times, days, how many files run
 // at once, retries, a rate limit and what happens when it finishes; a synchronization queue checks finished files for
-// newer versions on a period. zeusd does not schedule queues yet (IMPLEMENTATION_STATUS), so the page says so; the
-// rules it shows are tested in model/schedule.ts and followed by this release's backend.
+// newer versions on a period. The native daemon owns durable download queues, synchronization, scheduling
+// and applied rate limits; hosted/scripted backends retain their separate capability descriptions.
 
 import { useState } from 'preact/hooks'
 
-import { HOSTED, LIVE } from '../backend/live'
+import { HOSTED, LIVE, NATIVE } from '../backend/live'
 import { addQueue, deleteQueue, getState, moveInQueue, queueName, setLimiter, setQueue, startQueue, stopQueue, updateQueue, useStore } from '../backend/store'
 import { describeSchedule, limiterActive, minutesUntil, nextStart, parseHm, stopAfter } from '../model/schedule.ts'
 import type { OnFinish, Queue, Weekday } from '../model/types.ts'
@@ -149,10 +149,10 @@ function FilesTab({ q }: { q: Queue }) {
                   </td>
                   <td class="num">{j.state === 'downloading' && j.rate ? fmtEta(((j.size ?? 0) - j.done) / j.rate) : '–'}</td>
                   <td class="actions-cell">
-                    <button type="button" class="icon-btn small" aria-label="Move up" disabled={i === 0} onClick={() => moveInQueue(q.id, j.id, -1)}>
+                    <button type="button" class="icon-btn small" aria-label="Move up" disabled={i === 0 || (NATIVE && j.state === 'completed')} onClick={() => moveInQueue(q.id, j.id, -1)}>
                       <Icon name="up" />
                     </button>
-                    <button type="button" class="icon-btn small" aria-label="Move down" disabled={i === rows.length - 1} onClick={() => moveInQueue(q.id, j.id, 1)}>
+                    <button type="button" class="icon-btn small" aria-label="Move down" disabled={i === rows.length - 1 || (NATIVE && j.state === 'completed')} onClick={() => moveInQueue(q.id, j.id, 1)}>
                       <Icon name="down" />
                     </button>
                     <button type="button" class="icon-btn small" aria-label="Take out of the queue" title="Take out of the queue" onClick={() => setQueue([j.id], null)}>
@@ -190,10 +190,12 @@ function LimitsTab({ q }: { q: Queue }) {
 
 function SyncTab({ q, now }: { q: Queue; now: number }) {
   const files = useStore((s) => s.jobs.filter((j) => j.queue === q.id))
+  const watches = q.syncFiles ?? []
+  const lastCheck = Math.max(0, ...watches.map((w) => w.last_checked_ms ?? 0))
   return (
     <>
       <SettingsGroup title="Synchronization" note="A synchronization queue asks each server whether a finished file changed (by its validators) and downloads the new version beside the old one. Nothing is overwritten.">
-        <SettingRow title="Check every" desc={q.lastStarted ? `Last checked ${fmtWhen(q.lastStarted, now)}.` : 'Not checked yet.'}>
+        <SettingRow title="Check every" desc={lastCheck ? `Last checked ${fmtWhen(lastCheck, now)}.` : 'Not checked yet.'}>
           <NumberInput label="Hours" value={q.syncEveryHours} min={1} max={720} onChange={(v) => updateQueue(q.id, { syncEveryHours: v })} unit="hours" />
         </SettingRow>
       </SettingsGroup>
@@ -214,7 +216,13 @@ function SyncTab({ q, now }: { q: Queue; now: number }) {
                   <tr>
                     <td>{j.name}</td>
                     <td class="mono small">{j.host}</td>
-                    <td class="muted">unchanged (validators matched)</td>
+                    <td class="muted">{(() => {
+                      const watch = watches.find((w) => w.job_id === j.id || w.pending_job_id === j.id)
+                      if (!NATIVE) return 'No native check recorded'
+                      if (!watch) return 'Waiting for this download to finish'
+                      const labels: Record<string, string> = { waiting: 'Waiting for first check', unchanged: 'Unchanged (strong validators matched)', downloading: 'Downloading a new version', updated: 'New version saved', unverifiable: 'Cannot verify automatically: strong validators or an unpinned request are needed', needs_session: 'Provider session required', policy_blocked: 'Current policy or requester permissions block a new download', failed: 'Check or download failed; previous version retained' }
+                      return `${labels[watch.status] ?? watch.status}${watch.last_checked_ms ? ` · ${fmtWhen(watch.last_checked_ms, now)}` : ''}`
+                    })()}</td>
                   </tr>
                 ))}
               </tbody>
@@ -364,6 +372,11 @@ export function Queues({ queueId, tab }: { queueId?: string; tab?: string }) {
                 Name
                 <input value={q.name} disabled={q.builtin} onChange={(e) => updateQueue(q.id, { name: (e.target as HTMLInputElement).value.trim() || q.name })} />
               </label>
+              {NATIVE && !q.builtin ? <label class="field">Queue behavior
+                <select aria-label="Queue behavior" value={q.kind} onChange={(e) => updateQueue(q.id, { kind: (e.target as HTMLSelectElement).value as Queue['kind'] })}>
+                  <option value="download">Download once</option><option value="sync">Watch for new versions</option>
+                </select>
+              </label> : null}
               <Tabs
                 value={sub}
                 onChange={(t) => go({ tab: t })}
@@ -378,7 +391,9 @@ export function Queues({ queueId, tab }: { queueId?: string; tab?: string }) {
         </div>
       </div>
       <Provenance>
-        {LIVE
+        {NATIVE
+          ? 'Your local engine owns download queues, periodic version checks, metered-network holds, schedules and speed limits, including recovery after restart. Desktop finishing actions run while Zeus is open. '
+          : LIVE
           ? `zeusd does not schedule queues or limit speed yet. Queues and their schedules are kept by ${HOSTED ? 'the pre-alpha service for this sandbox' : 'this device'} and run while this window is open: a waiting download goes to zeusd when its queue starts it. The limiter's settings are stored, not applied. `
           : 'zeusd does not schedule queues yet; its documentation lists daemon scheduling as open work. In this release the queues, times and limits run in the app on sample downloads. '}
         {q ? `Queue: ${queueName(q.id)}.` : ''}

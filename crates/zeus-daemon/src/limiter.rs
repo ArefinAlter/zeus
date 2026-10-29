@@ -360,6 +360,32 @@ impl zeus_engine::JobTransportFactory for LimitedFactory {
     ) -> Result<(), zeus_types::ErrorEnvelope> {
         self.inner.validate_commit(spec, txn, range)
     }
+
+    fn for_job_id(
+        &self,
+        job_id: zeus_types::JobId,
+        spec: &JobSpec,
+    ) -> Result<Option<Arc<dyn HttpTransport>>, zeus_types::ErrorEnvelope> {
+        let base = self
+            .inner
+            .for_job_id(job_id, spec)?
+            .unwrap_or_else(|| self.default.clone());
+        Ok(Some(Arc::new(ThrottledTransport::new(
+            base,
+            self.limits.clone(),
+            Membership::of(spec),
+        ))))
+    }
+
+    fn validate_job_commit(
+        &self,
+        job_id: zeus_types::JobId,
+        spec: &JobSpec,
+        txn: &dyn zeus_journal::ReadTxn,
+        range: zeus_types::ByteRange,
+    ) -> Result<(), zeus_types::ErrorEnvelope> {
+        self.inner.validate_job_commit(job_id, spec, txn, range)
+    }
 }
 
 #[cfg(test)]

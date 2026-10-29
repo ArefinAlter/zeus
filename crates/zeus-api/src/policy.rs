@@ -103,6 +103,44 @@ use Permission::*;
 
 /// Every method of the daemon API. See ARCHITECTURE section 5.4.
 pub const METHODS: &[MethodSpec] = &[
+    MethodSpec::needs("inbox.packages.put", JobsWrite).mutates(),
+    MethodSpec::needs("inbox.packages.list", JobsRead),
+    MethodSpec::needs("inbox.packages.get", JobsRead),
+    MethodSpec::needs("inbox.packages.archive", JobsWrite).mutates(),
+    MethodSpec::needs("inbox.entries.add", JobsWrite).mutates(),
+    MethodSpec::needs("inbox.entries.remove", JobsWrite).mutates(),
+    MethodSpec::needs("inbox.preview", JobsWrite).mutates(),
+    MethodSpec::needs("inbox.submit", JobsWrite).mutates(),
+    MethodSpec::needs("inbox.submissions.get", JobsRead),
+    MethodSpec::needs("inbox.submissions.retry", JobsWrite).mutates(),
+    MethodSpec::needs("cloud.oauth.begin", ConfigWrite)
+        .mutates()
+        .human(),
+    MethodSpec::needs("cloud.oauth.finish", ConfigWrite)
+        .mutates()
+        .human(),
+    MethodSpec::needs("cloud.oauth.status", ConfigWrite).human(),
+    MethodSpec::needs("cloud.oauth.cancel", ConfigWrite)
+        .mutates()
+        .human(),
+    MethodSpec::needs("cloud.oauth.refresh", ConfigWrite)
+        .mutates()
+        .human(),
+    MethodSpec::needs("cloud.oauth.disconnect", ConfigWrite)
+        .mutates()
+        .human(),
+    MethodSpec::needs("sources.accounts.list", JobsRead),
+    MethodSpec::needs("sources.accounts.configure", ConfigWrite)
+        .mutates()
+        .human(),
+    MethodSpec::needs("sources.accounts.revoke", ConfigWrite)
+        .mutates()
+        .human(),
+    MethodSpec::needs("sources.inspect", JobsWrite).mutates(),
+    MethodSpec::needs("sources.submit", JobsWrite).mutates(),
+    MethodSpec::needs("sources.list", JobsRead),
+    MethodSpec::needs("sources.get", JobsRead),
+    MethodSpec::needs("sources.control", JobsControl).mutates(),
     MethodSpec::needs("cloud.accounts.list", JobsRead),
     MethodSpec::needs("cloud.accounts.configure", ConfigWrite)
         .mutates()
@@ -138,6 +176,7 @@ pub const METHODS: &[MethodSpec] = &[
     MethodSpec::needs("queues.control", JobsControl).mutates(),
     MethodSpec::needs("queues.configure", JobsControl).mutates(),
     MethodSpec::needs("events.subscribe", EventsRead).gated("events"),
+    MethodSpec::needs("events.read", EventsRead).gated("events.read"),
     MethodSpec::needs("events.unsubscribe", EventsRead).gated("events"),
     MethodSpec::needs("sessions.list", SessionsRead),
     MethodSpec::needs("sessions.request", SessionsRequest).mutates(),
@@ -150,6 +189,7 @@ pub const METHODS: &[MethodSpec] = &[
         .mutates()
         .human(),
     MethodSpec::needs("files.list", FilesRead),
+    MethodSpec::needs("files.operation.get", FilesRead).gated("files.organize"),
     MethodSpec::needs("files.organize", FilesWrite)
         .gated("files.organize")
         .mutates()
@@ -291,6 +331,16 @@ pub fn authorize(
     {
         return Err(ApiError::permission_denied(spec.name));
     }
+    if matches!(
+        spec.name,
+        "inbox.packages.list" | "inbox.packages.get" | "inbox.submissions.get"
+    ) && params
+        .get("owner_credential_id")
+        .is_some_and(|v| !v.is_null())
+        && !identity.kind.is_human_capable()
+    {
+        return Err(ApiError::human_required("cross-owner inbox inspection"));
+    }
     let human_by_param = spec
         .human_param
         .is_some_and(|name| params.get(name).and_then(Value::as_bool).unwrap_or(false));
@@ -368,6 +418,24 @@ mod tests {
     }
 
     #[test]
+    fn bounded_history_requires_read_permission_and_its_own_capability() {
+        let method = lookup("events.read").unwrap();
+        let mut agent = identity(ClientKind::Agent, ClientRole::Gui);
+        assert!(authorize(Some(&agent), method, &serde_json::json!({})).is_ok());
+        agent.permissions.remove(&Permission::EventsRead);
+        assert!(authorize(Some(&agent), method, &serde_json::json!({})).is_err());
+        let old = ["events".to_string(), "events.replay".to_string()]
+            .into_iter()
+            .collect();
+        assert!(require_capabilities(method, &serde_json::json!({}), &old).is_err());
+        assert!(
+            require_capabilities(method, &serde_json::json!({}), &crate::capabilities::all())
+                .is_ok()
+        );
+        assert!(!method.mutating && !method.human_only);
+    }
+
+    #[test]
     fn an_agent_can_call_no_human_only_method_even_with_every_agent_permission() {
         let agent = identity(ClientKind::Agent, ClientRole::Mcp);
         for method in METHODS {
@@ -414,9 +482,19 @@ mod tests {
             .map(|m| m.name)
             .collect();
         let expected: BTreeSet<&str> = [
+            "inbox.packages.put",
+            "inbox.packages.archive",
+            "inbox.entries.add",
+            "inbox.entries.remove",
+            "inbox.preview",
+            "inbox.submit",
+            "inbox.submissions.retry",
             "cloud.plan",
             "cloud.submit",
             "cloud.control",
+            "sources.inspect",
+            "sources.submit",
+            "sources.control",
             "jobs.enqueue",
             "jobs.control",
             "queues.put",
@@ -446,6 +524,31 @@ mod tests {
             let result = authorize(None, method, &serde_json::json!({}));
             let pre_auth = matches!(method.name, "daemon.hello" | "daemon.authenticate");
             assert_eq!(result.is_ok(), pre_auth, "{}", method.name);
+        }
+    }
+
+    #[test]
+    fn cross_owner_inbox_inspection_requires_a_human_capable_credential() {
+        let agent = identity(ClientKind::Agent, ClientRole::Mcp);
+        let human = identity(ClientKind::Human, ClientRole::Cli);
+        for name in [
+            "inbox.packages.list",
+            "inbox.packages.get",
+            "inbox.submissions.get",
+        ] {
+            let spec = lookup(name).unwrap();
+            assert!(authorize(Some(&agent), spec, &serde_json::json!({})).is_ok());
+            let params =
+                serde_json::json!({"owner_credential_id":"cli_01M45NHJ2AHWMXT8JVJ7BEEJX7"});
+            assert_eq!(
+                authorize(Some(&agent), spec, &params)
+                    .unwrap_err()
+                    .envelope()
+                    .code
+                    .as_str(),
+                codes::HUMAN_REQUIRED
+            );
+            assert!(authorize(Some(&human), spec, &params).is_ok());
         }
     }
 

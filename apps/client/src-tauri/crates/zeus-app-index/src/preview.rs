@@ -1,15 +1,19 @@
 //! The preview pane: a text head, an image, or a card of facts, for one file the person selected.
 //!
-//! Reads at most 64 KiB of text and 4 MiB of image. SVG is shown as source text and never rendered. A file the daemon
-//! quarantined is never read at all.
+//! Returns at most 64 KiB of text or 4 MiB of image. Optional text line counting is bounded at
+//! 4 MiB; all reads reuse the opened file. SVG is source text only. Native routes refuse quarantined files before reading.
 
-use std::io::Read;
+use std::io::{Read, Seek};
 use std::path::Path;
 
 use base64::Engine as _;
 use serde_json::{Value, json};
 
-use crate::scan::mtime_ms;
+use crate::{
+    paths::{RootCaps, shown},
+    read::{OpenedRead, changed},
+};
+use zeus_app::failure::Result;
 
 /// Bytes of text shown.
 pub const TEXT_LIMIT: usize = 64 * 1024;
@@ -177,83 +181,102 @@ pub fn mime_of(name: &str) -> &'static str {
     }
 }
 
-/// Build the preview of an existing, already vetted path. Does blocking I/O.
+/// Preview an explicitly trusted local path, capturing its parent as authority. Native routes
+/// instead use `build_pinned` with the settings service's existing root identities.
 pub fn build(path: &Path, shown_path: &str) -> Value {
+    let root = path.parent().unwrap_or(path);
+    match RootCaps::capture(&[shown(root)]) {
+        Ok(roots) => build_pinned(path, shown_path, &roots),
+        Err(_) => refused(shown_path),
+    }
+}
+fn refused(path: &str) -> Value {
+    json!({"kind":"refused","reason":"changed_or_unavailable","path":path,"message":"That item changed or could not be read inside the enabled folders. Select it again."})
+}
+fn with(mut base: Value, extra: Value) -> Value {
+    if let (Some(o), Some(e)) = (base.as_object_mut(), extra.as_object()) {
+        for (k, v) in e {
+            o.insert(k.clone(), v.clone());
+        }
+    }
+    base
+}
+/// Build a bounded preview using only retained directories and the same opened regular file.
+/// The caller checks current quarantine facts before entering this function.
+pub fn build_pinned(path: &Path, shown_path: &str, roots: &RootCaps) -> Value {
+    build_scoped(path, shown_path, roots).unwrap_or_else(|_| refused(shown_path))
+}
+fn build_scoped(path: &Path, shown_path: &str, roots: &RootCaps) -> Result<Value> {
     let name = path
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
-    let Ok(meta) = std::fs::metadata(path) else {
-        return json!({"kind": "refused", "reason": "missing", "message": "That file no longer exists."});
-    };
-    let base = json!({
-        "path": shown_path,
-        "name": name,
-        "size": meta.len(),
-        "modified_ms": mtime_ms(&meta),
-        "mime": mime_of(&name),
-    });
-    let with = |mut b: Value, extra: Value| {
-        if let (Some(o), Some(e)) = (b.as_object_mut(), extra.as_object()) {
-            for (k, v) in e {
-                o.insert(k.clone(), v.clone());
-            }
-        }
-        b
-    };
-    if meta.is_dir() {
-        return with(base, json!({"kind": "folder"}));
-    }
-    let Ok(mut file) = std::fs::File::open(path) else {
-        return with(
-            base,
-            json!({"kind": "meta", "reason": "unreadable", "message": "Zeus cannot read this file."}),
+    if let Ok(dir) = roots.directory(path) {
+        let meta = dir.metadata().map_err(crate::paths::cap_failure)?;
+        return Ok(
+            json!({"path":shown_path,"name":name,"kind":"folder","size":0,"modified_ms":meta.mtime_ms,"mime":mime_of(&name)}),
         );
-    };
-    let mut head = vec![0u8; TEXT_LIMIT.min(meta.len() as usize)];
-    let n = file.read(&mut head).unwrap_or(0);
-    head.truncate(n);
+    }
+    let mut input = OpenedRead::open(roots, path)?;
+    let base = json!({"path":shown_path,"name":name,"size":input.before.len,"modified_ms":input.before.mtime_ms,"mime":mime_of(&name)});
+    let result = file_preview(&mut input, &name, base)?;
+    input.check_unchanged()?;
+    Ok(result)
+}
+fn bounded_bytes(input: &mut (impl Read + Seek), limit: u64) -> Result<Vec<u8>> {
+    input.rewind()?;
+    let mut bytes = Vec::new();
+    input.take(limit + 1).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > limit {
+        return Err(changed());
+    }
+    Ok(bytes)
+}
+fn file_preview(input: &mut OpenedRead, name: &str, base: Value) -> Result<Value> {
+    let mut head = Vec::new();
+    (&mut input.file)
+        .take(TEXT_LIMIT as u64)
+        .read_to_end(&mut head)?;
     if let Some(kind) = sniff_image(&head) {
-        if meta.len() > IMAGE_LIMIT {
-            return with(
+        if input.before.len > IMAGE_LIMIT {
+            return Ok(with(
                 base,
-                json!({"kind": "meta", "reason": "too_large", "message": "This picture is larger than 4 MiB; Zeus shows its facts only."}),
-            );
+                json!({"kind":"meta","reason":"too_large","message":"This picture is larger than 4 MiB; Zeus shows its facts only."}),
+            ));
         }
-        let Ok(bytes) = std::fs::read(path) else {
-            return with(base, json!({"kind": "meta", "reason": "unreadable"}));
-        };
+        let bytes = bounded_bytes(&mut input.file, IMAGE_LIMIT)?;
         let (w, h) = dimensions(kind, &bytes).unwrap_or((0, 0));
         let url = format!(
             "data:{};base64,{}",
             kind.mime(),
             base64::engine::general_purpose::STANDARD.encode(&bytes)
         );
-        return with(
+        return Ok(with(
             base,
-            json!({"kind": "image", "mime": kind.mime(), "data_url": url, "width": w, "height": h}),
-        );
+            json!({"kind":"image","mime":kind.mime(),"data_url":url,"width":w,"height":h}),
+        ));
     }
     if let Some(text) = as_text(&head) {
-        let truncated = meta.len() as usize > head.len();
-        let lines = (meta.len() <= COUNT_LINES_UP_TO)
-            .then(|| {
-                std::fs::read(path).ok().map(|b| {
-                    b.iter().filter(|c| **c == b'\n').count()
-                        + usize::from(!b.is_empty() && b.last() != Some(&b'\n'))
-                })
-            })
-            .flatten();
+        let truncated = input.before.len > head.len() as u64;
+        let lines = if input.before.len <= COUNT_LINES_UP_TO {
+            let bytes = bounded_bytes(&mut input.file, COUNT_LINES_UP_TO)?;
+            Some(
+                bytes.iter().filter(|c| **c == b'\n').count()
+                    + usize::from(!bytes.is_empty() && bytes.last() != Some(&b'\n')),
+            )
+        } else {
+            None
+        };
         let svg = name.to_lowercase().ends_with(".svg");
-        return with(
+        return Ok(with(
             base,
-            json!({"kind": "text", "text": text, "truncated": truncated, "lines": lines, "note": if svg { Value::from("Shown as source; Zeus never renders an SVG.") } else { Value::Null }}),
-        );
+            json!({"kind":"text","text":text,"truncated":truncated,"lines":lines,"note":if svg {Value::from("Shown as source; Zeus never renders an SVG.")} else {Value::Null}}),
+        ));
     }
-    with(
+    Ok(with(
         base,
-        json!({"kind": "meta", "reason": "binary", "message": "No preview for this kind of file."}),
-    )
+        json!({"kind":"meta","reason":"binary","message":"No preview for this kind of file."}),
+    ))
 }
 
 #[cfg(test)]
@@ -342,5 +365,34 @@ mod tests {
         let v = build(&svg, "x.svg");
         assert_eq!(v["kind"], "text");
         assert!(v["note"].as_str().unwrap().contains("never renders"));
+    }
+    #[test]
+    fn image_growth_cannot_exceed_preview_read_bounds() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("image.png");
+        std::fs::write(&path, tiny_png(2, 3)).unwrap();
+        let roots = RootCaps::capture(&[shown(dir.path())]).unwrap();
+        let mut input = OpenedRead::open(&roots, &path).unwrap();
+        // Grow after opened metadata was captured, preserving the original image header.
+        let mut grown = tiny_png(2, 3);
+        grown.resize(IMAGE_LIMIT as usize + 100, 0);
+        std::fs::write(&path, grown).unwrap();
+        assert!(file_preview(&mut input, "image.png", json!({})).is_err());
+        assert_eq!(input.file.stream_position().unwrap(), IMAGE_LIMIT + 1);
+        let fresh = build_pinned(&path, "image.png", &roots);
+        assert_eq!(fresh["kind"], "meta");
+        assert_eq!(fresh["reason"], "too_large");
+    }
+    #[test]
+    fn long_text_does_not_trigger_unbounded_line_counting() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("text.txt");
+        std::fs::write(&path, vec![b'x'; COUNT_LINES_UP_TO as usize + 1]).unwrap();
+        let roots = RootCaps::capture(&[shown(dir.path())]).unwrap();
+        let out = build_pinned(&path, "text.txt", &roots);
+        assert_eq!(out["kind"], "text");
+        assert_eq!(out["text"].as_str().unwrap().len(), TEXT_LIMIT);
+        assert!(out["lines"].is_null());
+        assert_eq!(out["truncated"], true);
     }
 }

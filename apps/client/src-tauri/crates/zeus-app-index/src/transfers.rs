@@ -2,8 +2,7 @@
 use crate::{
     facts::{FileFacts, quarantined_under},
     ops::quarantine_refusal,
-    paths::{resolve_inside, shown},
-    scan,
+    paths::{RootCaps, cap_failure, shown},
 };
 use serde_json::{Value, json};
 use std::{
@@ -60,8 +59,8 @@ impl Transfers {
         &self,
         from: String,
         to: String,
-        reads: Vec<String>,
-        writes: Vec<String>,
+        reads: RootCaps,
+        writes: RootCaps,
         facts: Arc<HashMap<String, FileFacts>>,
     ) -> Result<Value> {
         let mut jobs = self.jobs.lock().unwrap();
@@ -82,7 +81,7 @@ impl Transfers {
         jobs.insert(id.clone(), job.clone());
         let out = job.snapshot(&id);
         tokio::task::spawn_blocking(move || {
-            match copy_tree(&from, &to, &reads, &writes, &facts, &job) {
+            match copy_tree_pinned(&from, &to, &reads, &writes, &facts, &job) {
                 Ok(()) => *job.state.lock().unwrap() = "complete".into(),
                 Err(e) => {
                     *job.error.lock().unwrap() = if job.target.lock().unwrap().is_empty() {
@@ -129,24 +128,13 @@ impl Transfers {
 
 struct Node {
     path: PathBuf,
-    directory: bool,
-    size: u64,
+    meta: zeus_fs::FileMeta,
 }
-fn checked(path: &Path, roots: &[String]) -> Result<PathBuf> {
-    let metadata = std::fs::symlink_metadata(path)?;
-    if scan::is_link(&metadata) || !(metadata.is_dir() || metadata.is_file()) {
-        return Err(Failure::invalid(
-            "Folder copies cannot include links, junctions or special files.",
-        ));
-    }
-    let canonical = resolve_inside(&shown(path), roots)?;
-    if canonical != path {
-        return Err(Failure::invalid(
-            "The source changed while copying. Choose it again.",
-        ));
-    }
-    Ok(canonical)
+fn checked(path: &Path, roots: &RootCaps) -> Result<zeus_fs::FileMeta> {
+    let (parent, name) = roots.parent(path)?;
+    parent.entry_metadata(&name).map_err(cap_failure)
 }
+#[cfg(test)]
 fn copy_tree(
     from: &str,
     dest: &str,
@@ -155,14 +143,27 @@ fn copy_tree(
     facts: &HashMap<String, FileFacts>,
     job: &Job,
 ) -> Result<()> {
-    if scan::is_link(&std::fs::symlink_metadata(from)?) {
-        return Err(Failure::invalid(
-            "Choose the source itself, rather than a link or junction.",
-        ));
-    }
-    let source = resolve_inside(from, reads)?;
-    let dest = resolve_inside(dest, writes)?;
-    if !dest.is_dir() || dest.starts_with(&source) {
+    copy_tree_pinned(
+        from,
+        dest,
+        &RootCaps::capture(reads)?,
+        &RootCaps::capture(writes)?,
+        facts,
+        job,
+    )
+}
+fn copy_tree_pinned(
+    from: &str,
+    dest: &str,
+    reads: &RootCaps,
+    writes: &RootCaps,
+    facts: &HashMap<String, FileFacts>,
+    job: &Job,
+) -> Result<()> {
+    let source = reads.path(from)?;
+    let dest = writes.path(dest)?;
+    let dest_cap = writes.directory(&dest)?;
+    if dest.starts_with(&source) {
         return Err(Failure::invalid(
             "Choose an existing destination outside the source folder.",
         ));
@@ -174,20 +175,13 @@ fn copy_tree(
         .file_name()
         .ok_or_else(|| Failure::invalid("Copy a file or folder, rather than a drive root."))?;
     let target = dest.join(name);
-    if std::fs::symlink_metadata(&target).is_ok() {
-        return Err(Failure::new(
-            "app.exists",
-            "That name already exists in the destination.",
-        ));
-    }
     // Preflight the whole bounded tree before creating output: no silently skipped links or hidden items.
     let mut pending = vec![source.clone()];
     let mut nodes = Vec::new();
     let mut total = 0u64;
     while let Some(path) = pending.pop() {
         job.check()?;
-        checked(&path, reads)?;
-        let meta = std::fs::symlink_metadata(&path)?;
+        let meta = checked(&path, reads)?;
         if nodes.len() + pending.len() >= 100_000
             || path.strip_prefix(&source).unwrap().components().count() > 128
         {
@@ -195,53 +189,59 @@ fn copy_tree(
                 "Copy at most 100,000 entries and 128 folder levels at a time.",
             ));
         }
-        if meta.is_dir() {
-            for entry in std::fs::read_dir(&path)? {
-                pending.push(entry?.path());
+        if meta.is_dir {
+            for name in reads
+                .directory(&path)?
+                .entry_names(100_000 - nodes.len() - pending.len())
+                .map_err(cap_failure)?
+            {
+                pending.push(path.join(name));
                 if nodes.len() + pending.len() >= 100_000 {
                     return Err(Failure::invalid("Copy at most 100,000 entries at a time."));
                 }
             }
         } else {
             total = total
-                .checked_add(meta.len())
+                .checked_add(meta.len)
                 .ok_or_else(|| Failure::invalid("The copy is too large."))?;
         }
-        nodes.push(Node {
-            path,
-            directory: meta.is_dir(),
-            size: meta.len(),
-        });
+        nodes.push(Node { path, meta });
     }
     job.total.store(total, Ordering::Relaxed);
     *job.state.lock().unwrap() = "copying".into();
     *job.target.lock().unwrap() = shown(&target);
     for node in nodes {
         job.check()?;
-        checked(&node.path, reads)?;
-        let output = if node.path == source {
-            target.clone()
-        } else {
-            target.join(node.path.strip_prefix(&source).unwrap())
-        };
-        // Recheck the destination parent before every creation; refuse a newly inserted junction.
-        let parent = output.parent().unwrap();
-        let parent_canonical = resolve_inside(&shown(parent), writes)?;
-        if parent_canonical != parent {
-            return Err(Failure::invalid("The destination changed while copying."));
+        let (source_parent, source_name) = reads.parent(&node.path)?;
+        if source_parent
+            .entry_metadata(&source_name)
+            .map_err(cap_failure)?
+            != node.meta
+        {
+            return Err(Failure::invalid(
+                "The source changed while copying. Choose it again.",
+            ));
         }
-        if node.directory {
-            std::fs::create_dir(&output)?;
+        let relative = if node.path == source {
+            PathBuf::from(name)
+        } else {
+            Path::new(name).join(node.path.strip_prefix(&source).unwrap())
+        };
+        let parent = dest_cap
+            .open_dir(relative.parent().unwrap())
+            .map_err(cap_failure)?;
+        let output_name = relative.file_name().unwrap();
+        if node.meta.is_dir {
+            parent.create_dir(output_name).map_err(cap_failure)?;
             continue;
         }
-        let mut input = std::fs::File::open(&node.path)?;
-        if input.metadata()?.len() != node.size {
+        let mut input = source_parent.open_read(&source_name).map_err(cap_failure)?;
+        // The open source, not a later path lookup, is what the byte-copy loop consumes.
+        let id = zeus_fs::opened_file_metadata(&input).map_err(cap_failure)?;
+        if id != node.meta {
             return Err(Failure::invalid("A source file changed while copying."));
         }
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&output)?;
+        let mut file = parent.create_new(output_name).map_err(cap_failure)?;
         let result = (|| -> Result<()> {
             use std::io::{Read, Write};
             let mut buffer = [0u8; 65536];
@@ -253,21 +253,31 @@ fn copy_tree(
                     break;
                 }
                 copied += n as u64;
-                if copied > node.size {
+                if copied > node.meta.len {
                     return Err(Failure::invalid("A source file changed while copying."));
                 }
                 file.write_all(&buffer[..n])?;
                 job.bytes.fetch_add(n as u64, Ordering::Relaxed);
             }
-            if copied != node.size {
+            if copied != node.meta.len {
+                return Err(Failure::invalid("A source file changed while copying."));
+            }
+            if zeus_fs::opened_file_metadata(&input).map_err(cap_failure)? != node.meta {
                 return Err(Failure::invalid("A source file changed while copying."));
             }
             file.sync_all()?;
             Ok(())
         })();
-        drop(file);
         if let Err(e) = result {
-            let _ = std::fs::remove_file(&output);
+            if parent.discard_created(output_name, file).is_err() {
+                return Err(Failure::new(
+                    "app.copy_incomplete",
+                    format!(
+                        "{} Its incomplete destination could not be removed; inspect it before retrying.",
+                        e.message
+                    ),
+                ));
+            }
             return Err(e);
         }
         job.files.fetch_add(1, Ordering::Relaxed);

@@ -326,10 +326,10 @@ export function ConnectionSettings() {
     <>
       <PageHead title="Connection and proxy" sub={NOTE} />
       <SettingsGroup title="Network">
-        <SettingRow title="Connection" desc="On a metered connection Zeus can hold large downloads." planned>
+        <SettingRow title="Connection" desc={NATIVE ? `Network cost: ${c.cost ?? 'unknown'}. Detect uses Windows or NetworkManager hints; choose Metered when no hint is available.` : 'Choose the network-cost policy.'} planned={!NATIVE}>
           <Select label="Connection" value={c.type} onChange={(v) => set({ type: v })} options={[['auto', 'Detect'], ['lan', 'Unmetered'], ['cellular', 'Metered']]} />
         </SettingRow>
-        <SettingRow title="Pause on a metered connection" planned>
+        <SettingRow title="Pause on a metered connection" desc={NATIVE ? `Holds active downloads and synchronization probes. ${c.policyHeld ?? 0} downloads held by this policy. Manual pauses remain paused.` : undefined} planned={!NATIVE}>
           <Switch label="Pause on metered" checked={c.meteredPause} onChange={(v) => set({ meteredPause: v })} />
         </SettingRow>
         <SettingRow title="Use IPv6" desc={NATIVE ? 'zeusd uses whatever the operating system offers; there is no switch.' : undefined} planned={NATIVE}>
@@ -650,7 +650,7 @@ export function AgentSettings() {
       </SettingsGroup>
       <SettingsGroup title="Use Zeus from your own agent">
         <div class="row stack">
-          <div class="desc">Any MCP client gets the same thirteen tools over stdio. Register the server once:</div>
+          <div class="desc">Any MCP client gets the same fourteen tools over stdio. Register the server once:</div>
           <CodeCopy text="claude mcp add zeus -- zeus mcp" />
         </div>
       </SettingsGroup>

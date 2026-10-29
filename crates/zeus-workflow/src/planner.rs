@@ -55,6 +55,15 @@ pub trait PageFetcher: Send + Sync {
             headers: Default::default(),
         })
     }
+    /// Fetch a document with the runtime's content negotiation. Existing embedders retain their
+    /// ordinary document hook; HTTP embedders can override this to send the bounded Accept choice.
+    #[cfg(feature = "runtime")]
+    async fn fetch_document_request(
+        &self,
+        request: &crate::runtime::FetchRequest,
+    ) -> Result<crate::runtime::Document, PlannerError> {
+        self.fetch_document(&request.url).await
+    }
 }
 
 /// Produces dry-run reports.
@@ -206,7 +215,7 @@ impl DryRunPlanner for BoundedPlanner {
             async fn fetch(&self, r: FetchRequest) -> RuntimeResult<Document> {
                 let document = self
                     .fetcher
-                    .fetch_document(&r.url)
+                    .fetch_document_request(&r)
                     .await
                     .map_err(|_| RuntimeError::Port("workflow.sample_fetch_failed"))?;
                 if document.body.len() > 512 * 1024 {

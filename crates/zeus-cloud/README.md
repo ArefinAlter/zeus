@@ -48,7 +48,12 @@ available for explicit reconciliation or cleanup.
 its Debug output is redacted. It must never be put in public API responses, audit records, model
 inputs, or events. Tokens are nonserializable, zeroizing `SecretString` values, obtained explicitly
 or through `CredentialStore`; the `os-keyring` feature provides account-scoped keyring access.
-There is no token refresh or OAuth enrollment wizard in this crate. Rclone requires a trusted
+The `oauth` module implements native Google/Yandex PKCE authorization, Baidu device authorization,
+bounded token refresh and supported remote revocation. The daemon binds these to human-reviewed
+account scopes; `zeus cloud auth login` owns the controlling terminal and exact loopback receiver.
+Access, refresh and optional app-password material share one private keyring object. Provider app
+registration and real account consent remain external setup steps; no ambient credentials are read.
+See [native cloud sign-in](../../docs/alpha-0.1/CLOUD-OAUTH.md). Rclone requires a trusted
 executable and protected configuration. The daemon pins their hashes at human authorization;
 the adapter rechecks configured pins before every subprocess launch. A same-user file swap between
 the hash check and process open remains a local trust-boundary limitation. Credentials are not

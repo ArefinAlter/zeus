@@ -20,16 +20,20 @@ use zeus_api::methods::artifacts::{
     ArtifactsListParams, ArtifactsListResult,
 };
 use zeus_api::methods::cloud::*;
+use zeus_api::methods::cloud_oauth::*;
 use zeus_api::methods::daemon::{
     KillSwitchParams, KillSwitchResult, ShutdownParams, ShutdownResult, StatusParams, StatusResult,
 };
 use zeus_api::methods::events::{
-    SubscribeParams, SubscribeResult, UnsubscribeParams, UnsubscribeResult,
+    EventsReadParams, EventsReadResult, SubscribeParams, SubscribeResult, UnsubscribeParams,
+    UnsubscribeResult,
 };
 use zeus_api::methods::files::{
-    FilesListParams, FilesListResult, FilesOrganizeParams, FilesOrganizeResult,
-    FilesRootsRegisterParams, FilesRootsRegisterResult, FilesUndoParams, FilesUndoResult,
+    FilesListParams, FilesListResult, FilesOperationGetParams, FilesOperationGetResult,
+    FilesOrganizeParams, FilesOrganizeResult, FilesRootsRegisterParams, FilesRootsRegisterResult,
+    FilesUndoParams, FilesUndoResult,
 };
+use zeus_api::methods::inbox::*;
 use zeus_api::methods::jobs::{
     EnqueueParams, EnqueueResult, JobsControlParams, JobsControlResult, JobsGetParams,
     JobsGetResult, JobsListParams, JobsListResult, JobsVerifyParams, JobsVerifyResult,
@@ -45,6 +49,7 @@ use zeus_api::methods::sessions::{
     ApprovalsListParams, ApprovalsListResult, SessionsListParams, SessionsListResult,
     SessionsRequestParams, SessionsRequestResult, SessionsRevokeParams, SessionsRevokeResult,
 };
+use zeus_api::methods::sources::*;
 use zeus_api::methods::workflows::*;
 use zeus_api::{ApiError, ApiResult, CallContext};
 
@@ -54,6 +59,8 @@ macro_rules! backend {
         /// backend still derives the actor and the source from `ctx.identity`, never from request parameters.
         #[async_trait]
         pub trait Backend: Send + Sync + 'static {
+            /// Additional installation-wide restrictions before any new backend effect.
+            fn team_admit(&self, method: &str, params: &serde_json::Value) -> ApiResult<()> { let _ = (method, params); Ok(()) }
             $(
                 $(#[$meta])*
                 async fn $name(&self, ctx: &CallContext, params: $params) -> ApiResult<$result> {
@@ -66,6 +73,55 @@ macro_rules! backend {
 }
 
 backend! {
+    /// Immutable source operation: sources.accounts.list.
+    sources_accounts(SourcesReadParams) -> SourcesAccountsResult;
+    /// Immutable source operation: sources.accounts.configure.
+    sources_configure(SourcesAccountConfigureParams) -> SourcesAccountMutationResult;
+    /// Immutable source operation: sources.accounts.revoke.
+    sources_revoke(SourcesAccountRevokeParams) -> SourcesAccountMutationResult;
+    /// Immutable source operation: sources.inspect.
+    sources_inspect(SourcesInspectParams) -> SourcePlanView;
+    /// Immutable source operation: sources.submit.
+    sources_submit(SourcesSubmitParams) -> SourceOperationView;
+    /// Immutable source operation: sources.list.
+    sources_list(SourcesReadParams) -> SourcesListResult;
+    /// Immutable source operation: sources.get.
+    sources_get(SourcesGetParams) -> SourceOperationView;
+    /// Immutable source operation: sources.control.
+    sources_control(SourcesControlParams) -> SourceOperationView;
+
+    /// Durable owner-scoped `inbox.package.put`.
+    inbox_package_put(InboxPackagePutParams) -> InboxMutationResult;
+    /// Durable owner-scoped `inbox.packages.list`.
+    inbox_packages_list(InboxPackagesListParams) -> InboxPackagesListResult;
+    /// Durable owner-scoped `inbox.package.get`.
+    inbox_package_get(InboxPackageGetParams) -> InboxPackageGetResult;
+    /// Durable owner-scoped `inbox.package.archive`.
+    inbox_package_archive(InboxPackageArchiveParams) -> InboxMutationResult;
+    /// Durable owner-scoped `inbox.entries.add`.
+    inbox_entries_add(InboxEntriesAddParams) -> InboxEntriesAddResult;
+    /// Durable owner-scoped `inbox.entries.remove`.
+    inbox_entries_remove(InboxEntriesRemoveParams) -> InboxMutationResult;
+    /// Durable owner-scoped `inbox.preview`.
+    inbox_preview(InboxPreviewParams) -> InboxPreviewResult;
+    /// Durable owner-scoped `inbox.submit`.
+    inbox_submit(InboxSubmitParams) -> InboxSubmitResult;
+    /// Durable owner-scoped `inbox.submission.get`.
+    inbox_submission_get(InboxSubmissionGetParams) -> InboxSubmissionView;
+    /// Durable owner-scoped `inbox.submission.retry`.
+    inbox_submission_retry(InboxSubmissionRetryParams) -> InboxSubmitResult;
+    /// Human-only `cloud.oauth.begin`.
+    cloud_oauth_begin(CloudOAuthBeginParams) -> CloudOAuthBeginResult;
+    /// Human-only `cloud.oauth.finish`.
+    cloud_oauth_finish(CloudOAuthFinishParams) -> CloudOAuthStatus;
+    /// Human-only `cloud.oauth.status`.
+    cloud_oauth_status(CloudOAuthStatusParams) -> CloudOAuthStatus;
+    /// Human-only `cloud.oauth.cancel`.
+    cloud_oauth_cancel(CloudOAuthCancelParams) -> CloudOAuthStatus;
+    /// Human-only `cloud.oauth.refresh`.
+    cloud_oauth_refresh(CloudOAuthRefreshParams) -> CloudOAuthStatus;
+    /// Human-only `cloud.oauth.disconnect`.
+    cloud_oauth_disconnect(CloudOAuthDisconnectParams) -> CloudOAuthDisconnectResult;
     /// `cloud.accounts.list`.
     cloud_accounts_list(CloudAccountsListParams) -> CloudAccountsListResult;
     /// `cloud.accounts.configure`.
@@ -114,6 +170,8 @@ backend! {
     queues_configure(QueuesConfigureParams) -> QueuesConfigureResult;
     /// `events.subscribe`: replays durable events, then pushes through `ctx.notifier`.
     events_subscribe(SubscribeParams) -> SubscribeResult;
+    /// `events.read`: bounded replay under the same entity visibility rules.
+    events_read(EventsReadParams) -> EventsReadResult;
     /// `events.unsubscribe`.
     events_unsubscribe(UnsubscribeParams) -> UnsubscribeResult;
     /// `sessions.list`.
@@ -132,6 +190,8 @@ backend! {
     files_list(FilesListParams) -> FilesListResult;
     /// `files.organize`: dry run by default; applying raises a `destructive_op` approval.
     files_organize(FilesOrganizeParams) -> FilesOrganizeResult;
+    /// `files.operation.get`: owner-scoped durable organization status.
+    files_operation_get(FilesOperationGetParams) -> FilesOperationGetResult;
     /// `files.undo`: plans the inverse of an applied operation behind a new approval.
     files_undo(FilesUndoParams) -> FilesUndoResult;
     /// `files.roots.register` (role `service` only).

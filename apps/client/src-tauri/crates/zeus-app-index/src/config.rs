@@ -269,6 +269,35 @@ impl Excluder {
         false
     }
 
+    /// Attribute exclusion through retained directories; uncertain ancestor metadata is skipped.
+    pub fn skips_by_attributes_pinned(
+        &self,
+        path: &Path,
+        root: &Path,
+        roots: &crate::paths::RootCaps,
+    ) -> bool {
+        if !self.hidden && !self.system {
+            return false;
+        }
+        let Ok(relative) = path.strip_prefix(root) else {
+            return true;
+        };
+        let mut walk = root.to_path_buf();
+        for component in relative.components() {
+            walk.push(component.as_os_str());
+            match roots.os_metadata(&walk) {
+                Ok(Some(meta))
+                    if self.skips_attributes(&component.as_os_str().to_string_lossy(), &meta) =>
+                {
+                    return true;
+                }
+                Err(_) => return true,
+                _ => (),
+            }
+        }
+        false
+    }
+
     /// True when the file's attributes mark it hidden or system and the settings skip those.
     pub fn skips_attributes(&self, name: &str, meta: &std::fs::Metadata) -> bool {
         #[cfg(windows)]

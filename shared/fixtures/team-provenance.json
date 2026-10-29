@@ -1,0 +1,10 @@
+{
+  "payloadType": "application/vnd.verne.zeus.team-provenance+json;version=1",
+  "payload": "eyJhY3Rvcl9pZCI6IjFiZTBiNjE3ZjUxZmFhMGY1MDY1NzkzNDM0NGI2NDc1YWRjZDA3NDc5ZWU3YjhlYTFjOTliNzJhNzI3NmQwY2MiLCJhcnRpZmFjdCI6eyJzaGEyNTYiOiJhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhIiwic2l6ZV9ieXRlcyI6MTIzLCJzb3VyY2Vfa2luZCI6Imh0dHAifSwiYXNzZXJ0aW9uX2tpbmQiOiJjbGllbnRfcmVwb3J0ZWQiLCJpc3N1ZXIiOiJodHRwczovL3RlYW0uZXhhbXBsZS5jb20iLCJvYnNlcnZlZF9hdCI6IjIwMjctMDEtMTVUMDg6MDA6MDAuMDAwWiIsInNjaGVtYV92ZXJzaW9uIjoxLCJ0ZW5hbnRfaWQiOiJhbHBoYSJ9",
+  "signatures": [
+    {
+      "keyid": "fixture",
+      "sig": "fifdZ96Rp50pYILzlYxDnT+GVj4GTuBKN0dqA6kR7bVltSAu/jH+XqzPbGAtyIebUNm/GRWfomhKwnk0gSxPBg=="
+    }
+  ]
+}

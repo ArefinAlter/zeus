@@ -26,3 +26,5 @@ T3 Code supports an installed CLI login and a separate **Connect with ChatGPT** 
 Atlas supports external agents as ACP JSON-RPC subprocesses. Its [architecture](https://github.com/pacifio/atlas/blob/main/docs/architecture.md) distinguishes that from its own in-process agent. Detection of an installed executable is an offer to connect, not evidence that every consumer subscription is available.
 
 This release uses the installed-agent route described above. It does not yet implement an app-specific ChatGPT OAuth connection, Antigravity's separate native sign-in approach, or a verified Grok Build adapter. Provider eligibility, quotas and permission requirements still apply; using a supported harness cannot guarantee an account outcome.
+
+Official Grok Build now documents its own [`grok login` and ACP/headless interfaces](https://docs.x.ai/build/overview). That updates the available integration options; the Grok adapter remains unimplemented here. The existence of its executable or a successful model-list command is not proof of a signed-in subscription. Its tool configuration and permission protocol need the same closed-boundary validation before it is enabled.

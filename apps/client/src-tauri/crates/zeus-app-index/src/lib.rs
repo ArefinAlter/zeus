@@ -1,20 +1,26 @@
 //! The Zeus app's file index (scan, watcher, search data, preview, file operations).
 //!
 //! The index covers the download folders and any folders the person adds, kept current by the file system watcher and
-//! saved to a snapshot so the next start needs no scan. The page searches it with the Everything-style syntax in its own
-//! code (the entries are small and the page already holds them); this crate keeps the entries true and serves the
-//! preview of one file. File operations here are the person's clicks, inside download and explicitly managed folders, and they never
+//! saved to a snapshot and reconciled on restart. Native search executes bounded parsed queries in Rust
+//! and returns generation-bound pages. Optional Everything SDK2 queries are explicit, scoped live pages.
+//! This crate also serves previews, size/duplicate inspection and durable native operation receipts. File operations here are the person's clicks, inside download and explicitly managed folders, and they never
 //! touch a file the daemon quarantined.
 
 #![forbid(unsafe_code)]
 
+pub mod analytics;
+pub mod archive;
 pub mod browse;
 pub mod config;
+pub mod everything;
 pub mod facts;
+pub mod history;
 pub mod ops;
 pub mod paths;
 pub mod preview;
+mod read;
 pub mod scan;
+pub mod search;
 pub mod service;
 pub mod store;
 pub mod transfers;
@@ -30,13 +36,16 @@ use zeus_app::App;
 use zeus_app::ext::{Extension, Reply};
 use zeus_app::failure::{Failure, Result};
 
-use crate::config::{IndexConfig, norm};
+use crate::config::{Excluder, IndexConfig, norm};
 use crate::service::{Cmd, Service};
 
 /// The module registered by `zeus-app-ext`.
 pub struct Module {
     svc: Arc<Service>,
     transfers: transfers::Transfers,
+    history: Arc<history::Journal>,
+    archives: Arc<archive::Archives>,
+    everything: Arc<everything::Everything>,
 }
 
 impl Module {
@@ -45,6 +54,15 @@ impl Module {
         Arc::new(Self {
             svc: Service::start(app),
             transfers: transfers::Transfers::default(),
+            everything: Arc::new(everything::Everything::new(
+                config::index_dir(&app.home).join("everything"),
+            )),
+            archives: Arc::new(archive::Archives::new(
+                config::index_dir(&app.home).join("archives"),
+            )),
+            history: Arc::new(history::Journal::new(
+                config::index_dir(&app.home).join("operations.json"),
+            )),
         })
     }
 }
@@ -73,7 +91,8 @@ fn config_json(cfg: &IndexConfig) -> Value {
 
 async fn preview_route(svc: &Arc<Service>, app: &Arc<App>, body: &Value) -> Result<Value> {
     let path = str_of(body, "path").to_owned();
-    let resolved = paths::resolve_inside(&path, &svc.read_roots())?;
+    let roots = svc.file_capabilities(false)?;
+    let resolved = roots.path(&path)?;
     let shown = paths::shown(&resolved);
     let table = Some(guarded_facts(svc, app).await?);
     let facts = table.as_ref().and_then(|t| t.get(&norm(&shown)).cloned());
@@ -89,7 +108,7 @@ async fn preview_route(svc: &Arc<Service>, app: &Arc<App>, body: &Value) -> Resu
     }
     let p = resolved.clone();
     let s = shown.clone();
-    let mut out = tokio::task::spawn_blocking(move || preview::build(&p, &s))
+    let mut out = tokio::task::spawn_blocking(move || preview::build_pinned(&p, &s, &roots))
         .await
         .map_err(|_| Failure::new("app.io", "The preview failed."))?;
     if out["kind"] == "folder" {
@@ -182,40 +201,44 @@ fn launch(p: &std::path::Path, reveal: bool) -> Result<()> {
         .map_err(|_| Failure::new("app.open", "No file manager could be started."))
 }
 
-async fn rename_route(svc: &Arc<Service>, app: &Arc<App>, body: &Value) -> Result<Value> {
+async fn relocate_route(
+    module: &Module,
+    app: &Arc<App>,
+    body: &Value,
+    rename: bool,
+) -> Result<Value> {
+    let svc = &module.svc;
     let facts = guarded_facts(svc, app).await?;
-    let r = ops::rename(
-        str_of(body, "path"),
-        str_of(body, "name"),
-        &svc.write_roots(),
-        &facts,
-    )?;
+    let roots = svc.file_capabilities(true)?;
+    let from = roots.path(str_of(body, "path"))?;
+    let to = if rename {
+        let name = str_of(body, "name");
+        paths::check_name(name)?;
+        from.parent()
+            .ok_or_else(|| Failure::invalid("That path has no parent."))?
+            .join(name)
+    } else {
+        let dest = roots.path(str_of(body, "dir"))?;
+        roots.directory(&dest)?;
+        dest.join(
+            from.file_name()
+                .ok_or_else(|| Failure::invalid("That path has no name."))?,
+        )
+    };
+    let journal = module.history.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        journal.relocate_pinned(&paths::shown(&from), &paths::shown(&to), &roots, &facts)
+    })
+    .await
+    .map_err(|_| Failure::new("app.io", "The operation task stopped; review its receipt."))??;
     touched(
         svc,
         &[
-            r["from"].as_str().unwrap_or_default(),
-            r["path"].as_str().unwrap_or_default(),
+            result["from"].as_str().unwrap_or_default(),
+            result["path"].as_str().unwrap_or_default(),
         ],
     );
-    Ok(r)
-}
-
-async fn move_route(svc: &Arc<Service>, app: &Arc<App>, body: &Value) -> Result<Value> {
-    let facts = guarded_facts(svc, app).await?;
-    let r = ops::move_to(
-        str_of(body, "path"),
-        str_of(body, "dir"),
-        &svc.write_roots(),
-        &facts,
-    )?;
-    touched(
-        svc,
-        &[
-            r["from"].as_str().unwrap_or_default(),
-            r["path"].as_str().unwrap_or_default(),
-        ],
-    );
-    Ok(r)
+    Ok(result)
 }
 
 async fn delete_route(svc: &Arc<Service>, app: &Arc<App>, body: &Value) -> Result<Value> {
@@ -273,6 +296,13 @@ impl Extension for Module {
                     ))
                 }
                 "POST /native/v1/index/changes" => {
+                    if body.get("summary_only").and_then(Value::as_bool) == Some(true) {
+                        let generation = svc.index.lock().map(|i| i.generation).unwrap_or(0);
+                        return Some(Ok(with_status(
+                            svc,
+                            json!({"generation":generation,"reset":false,"files":[],"upserts":[],"removes":[]}),
+                        )));
+                    }
                     let since = body.get("since").and_then(Value::as_u64).unwrap_or(0);
                     let delta = svc.index.lock().map(|i| i.delta(since)).ok();
                     Some(match delta {
@@ -281,6 +311,263 @@ impl Extension for Module {
                             .map_err(Failure::from),
                         None => Err(Failure::new("app.io", "The index is busy.")),
                     })
+                }
+                "POST /native/v1/index/search" => {
+                    let request = match serde_json::from_value::<search::Request>(body.clone()) {
+                        Ok(r) => r,
+                        Err(_) => {
+                            return Some(Err(Failure::invalid("Invalid native search request.")));
+                        }
+                    };
+                    let roots = svc.read_roots();
+                    let index = svc.index.clone();
+                    Some(
+                        tokio::task::spawn_blocking(move || {
+                            let index = index
+                                .lock()
+                                .map_err(|_| Failure::new("app.io", "The index is busy."))?;
+                            serde_json::to_value(search::query(&index, &request, &roots)?)
+                                .map_err(Failure::from)
+                        })
+                        .await
+                        .unwrap_or_else(|_| {
+                            Err(Failure::new("app.io", "The search task stopped."))
+                        }),
+                    )
+                }
+                "GET /native/v1/index/analytics" => {
+                    let roots = svc.read_roots();
+                    let index = svc.index.clone();
+                    Some(
+                        tokio::task::spawn_blocking(move || {
+                            let index = index
+                                .lock()
+                                .map_err(|_| Failure::new("app.io", "The index is busy."))?;
+                            Ok(analytics::summarize(&index, &roots))
+                        })
+                        .await
+                        .unwrap_or_else(|_| {
+                            Err(Failure::new("app.io", "The size summary task stopped."))
+                        }),
+                    )
+                }
+                "POST /native/v1/files/duplicates/verify" => {
+                    let paths: Vec<String> = body
+                        .get("paths")
+                        .cloned()
+                        .and_then(|v| serde_json::from_value(v).ok())
+                        .unwrap_or_default();
+                    let facts = match guarded_facts(svc, app).await {
+                        Ok(f) => f,
+                        Err(e) => return Some(Err(e)),
+                    };
+                    let roots = match svc.file_capabilities(false) {
+                        Ok(roots) => roots,
+                        Err(error) => return Some(Err(error)),
+                    };
+                    Some(
+                        tokio::task::spawn_blocking(move || {
+                            analytics::verify_duplicates_pinned(&paths, &roots, &facts)
+                        })
+                        .await
+                        .unwrap_or_else(|_| {
+                            Err(Failure::new("app.io", "Duplicate verification stopped."))
+                        }),
+                    )
+                }
+                "GET /native/v1/files/archives" => Some(Ok(self.archives.list())),
+                "POST /native/v1/files/archive/prepare" => {
+                    let request = match serde_json::from_value::<archive::Prepare>(body.clone()) {
+                        Ok(r) => r,
+                        Err(_) => {
+                            return Some(Err(Failure::invalid("Invalid archive preview request.")));
+                        }
+                    };
+                    let facts = match guarded_facts(svc, app).await {
+                        Ok(f) => f,
+                        Err(e) => return Some(Err(e)),
+                    };
+                    let reads = match svc.file_capabilities(false) {
+                        Ok(r) => r,
+                        Err(e) => return Some(Err(e)),
+                    };
+                    let writes = match svc.file_capabilities(true) {
+                        Ok(r) => r,
+                        Err(e) => return Some(Err(e)),
+                    };
+                    let manager = self.archives.clone();
+                    Some(
+                        tokio::task::spawn_blocking(move || {
+                            manager.prepare_pinned(&request, &reads, &writes, &facts)
+                        })
+                        .await
+                        .unwrap_or_else(|_| {
+                            Err(Failure::new(
+                                "app.archive",
+                                "The archive preview task stopped.",
+                            ))
+                        }),
+                    )
+                }
+                "POST /native/v1/files/archive/start" => {
+                    let facts = match guarded_facts(svc, app).await {
+                        Ok(f) => f,
+                        Err(e) => return Some(Err(e)),
+                    };
+                    let reads = match svc.file_capabilities(false) {
+                        Ok(r) => r,
+                        Err(e) => return Some(Err(e)),
+                    };
+                    let writes = match svc.file_capabilities(true) {
+                        Ok(r) => r,
+                        Err(e) => return Some(Err(e)),
+                    };
+                    Some(
+                        self.archives
+                            .start_pinned(str_of(body, "id"), reads, writes, facts),
+                    )
+                }
+                "POST /native/v1/files/archive/reconcile" => {
+                    let id = str_of(body, "id").to_owned();
+                    let writes = match svc.file_capabilities(true) {
+                        Ok(r) => r,
+                        Err(e) => return Some(Err(e)),
+                    };
+                    let manager = self.archives.clone();
+                    let facts = match guarded_facts(svc, app).await {
+                        Ok(f) => f,
+                        Err(e) => return Some(Err(e)),
+                    };
+                    Some(
+                        tokio::task::spawn_blocking(move || {
+                            manager.reconcile_pinned(&id, &writes, &facts)
+                        })
+                        .await
+                        .unwrap_or_else(|_| {
+                            Err(Failure::new(
+                                "app.archive",
+                                "Archive reconciliation stopped; inspect its receipt.",
+                            ))
+                        }),
+                    )
+                }
+                "POST /native/v1/files/archive/cancel" => {
+                    Some(self.archives.cancel(str_of(body, "id")))
+                }
+                "POST /native/v1/files/archive/dismiss" => {
+                    Some(self.archives.dismiss(str_of(body, "id")))
+                }
+                "POST /native/v1/files/archive/cleanup" => {
+                    let id = str_of(body, "id").to_owned();
+                    let writes = match svc.file_capabilities(true) {
+                        Ok(r) => r,
+                        Err(e) => return Some(Err(e)),
+                    };
+                    let manager = self.archives.clone();
+                    Some(
+                        tokio::task::spawn_blocking(move || manager.cleanup_pinned(&id, &writes))
+                            .await
+                            .unwrap_or_else(|_| {
+                                Err(Failure::new(
+                                    "app.archive",
+                                    "The archive cleanup task stopped.",
+                                ))
+                            }),
+                    )
+                }
+                "GET /native/v1/files/history" => Some(Ok(self.history.list())),
+                "POST /native/v1/files/history/undo"
+                | "POST /native/v1/files/history/reconcile" => {
+                    let id = str_of(body, "id").to_owned();
+                    let roots = match svc.file_capabilities(true) {
+                        Ok(r) => r,
+                        Err(e) => return Some(Err(e)),
+                    };
+                    let journal = self.history.clone();
+                    let undo = route.ends_with("/undo");
+                    let facts = match guarded_facts(svc, app).await {
+                        Ok(f) => f,
+                        Err(e) => return Some(Err(e)),
+                    };
+                    let result = tokio::task::spawn_blocking(move || {
+                        if undo {
+                            journal.undo_pinned(&id, &roots, &facts)
+                        } else {
+                            journal.reconcile(&id, &roots.paths())
+                        }
+                    })
+                    .await
+                    .unwrap_or_else(|_| {
+                        Err(Failure::new(
+                            "app.io",
+                            "The operation task stopped; inspect its receipt.",
+                        ))
+                    });
+                    svc.rescan(None);
+                    Some(result)
+                }
+                "GET /native/v1/index/everything/config" => Some(Ok(self.everything.config())),
+                "POST /native/v1/index/everything/inspect" => {
+                    let path = str_of(body, "path").to_owned();
+                    Some(
+                        tokio::task::spawn_blocking(move || everything::inspect(&path))
+                            .await
+                            .unwrap_or_else(|_| {
+                                Err(Failure::new("app.io", "Helper inspection stopped."))
+                            }),
+                    )
+                }
+                "PUT /native/v1/index/everything/config" => {
+                    let settings =
+                        match serde_json::from_value::<everything::Settings>(body.clone()) {
+                            Ok(s) => s,
+                            Err(_) => {
+                                return Some(Err(Failure::invalid(
+                                    "Invalid Everything integration settings.",
+                                )));
+                            }
+                        };
+                    let provider = self.everything.clone();
+                    Some(
+                        tokio::task::spawn_blocking(move || provider.configure(settings))
+                            .await
+                            .unwrap_or_else(|_| {
+                                Err(Failure::new("app.io", "The helper settings task stopped."))
+                            }),
+                    )
+                }
+                "POST /native/v1/index/everything/search" => {
+                    let request = match serde_json::from_value::<everything::Request>(body.clone())
+                    {
+                        Ok(r) => r,
+                        Err(_) => {
+                            return Some(Err(Failure::invalid(
+                                "Invalid Everything search request.",
+                            )));
+                        }
+                    };
+                    let reads = match svc.file_capabilities(false) {
+                        Ok(r) => r,
+                        Err(e) => return Some(Err(e)),
+                    };
+                    let exclusions =
+                        Excluder::new(&svc.cfg.lock().map(|c| c.clone()).unwrap_or_default());
+                    let result = self
+                        .everything
+                        .query_pinned(&request, &reads, &exclusions)
+                        .await;
+                    // Native settings can revoke a read scope while the helper is running.
+                    if svc
+                        .file_capabilities(false)
+                        .and_then(|roots| roots.directory(std::path::Path::new(&request.root)))
+                        .is_err()
+                    {
+                        return Some(Err(Failure::new(
+                            "app.path_outside",
+                            "This read scope was revoked during the query.",
+                        )));
+                    }
+                    Some(result.and_then(|v| serde_json::to_value(v).map_err(Failure::from)))
                 }
                 "GET /native/v1/index/status" => Some(Ok(svc.status())),
                 "GET /native/v1/index/config" => Some(Ok(svc
@@ -297,7 +584,10 @@ impl Extension for Module {
                 "POST /native/v1/files/list" => {
                     let path = str_of(body, "path").to_owned();
                     let after = str_of(body, "after").to_owned();
-                    let roots = svc.read_roots();
+                    let roots = match svc.file_capabilities(false) {
+                        Ok(r) => r,
+                        Err(e) => return Some(Err(e)),
+                    };
                     let limit = body
                         .get("limit")
                         .and_then(Value::as_u64)
@@ -306,7 +596,7 @@ impl Extension for Module {
                     let facts = svc.facts.table(app).await;
                     Some(
                         tokio::task::spawn_blocking(move || {
-                            let mut page = browse::list(&path, &after, limit, &roots)?;
+                            let mut page = browse::list_pinned(&path, &after, limit, &roots)?;
                             if let Some(rows) = page["files"].as_array_mut() {
                                 for row in rows {
                                     let quarantined = facts.as_ref().is_some_and(|t| {
@@ -332,11 +622,19 @@ impl Extension for Module {
                         Ok(f) => f,
                         Err(e) => return Some(Err(e)),
                     };
+                    let reads = match svc.file_capabilities(false) {
+                        Ok(r) => r,
+                        Err(e) => return Some(Err(e)),
+                    };
+                    let writes = match svc.file_capabilities(true) {
+                        Ok(r) => r,
+                        Err(e) => return Some(Err(e)),
+                    };
                     Some(self.transfers.start(
                         str_of(body, "path").to_owned(),
                         str_of(body, "dir").to_owned(),
-                        svc.read_roots(),
-                        svc.write_roots(),
+                        reads,
+                        writes,
                         facts,
                     ))
                 }
@@ -347,14 +645,20 @@ impl Extension for Module {
                 "POST /native/v1/files/copy" => {
                     let from = str_of(body, "path").to_owned();
                     let to = str_of(body, "dir").to_owned();
-                    let reads = svc.read_roots();
-                    let writes = svc.write_roots();
+                    let reads = match svc.file_capabilities(false) {
+                        Ok(r) => r,
+                        Err(e) => return Some(Err(e)),
+                    };
+                    let writes = match svc.file_capabilities(true) {
+                        Ok(r) => r,
+                        Err(e) => return Some(Err(e)),
+                    };
                     let facts = match guarded_facts(svc, app).await {
                         Ok(f) => f,
                         Err(e) => return Some(Err(e)),
                     };
                     let result = tokio::task::spawn_blocking(move || {
-                        ops::copy_to(&from, &to, &reads, &writes, &facts)
+                        ops::copy_to_pinned(&from, &to, &reads, &writes, &facts)
                     })
                     .await;
                     svc.rescan(None);
@@ -367,9 +671,12 @@ impl Extension for Module {
                 "POST /native/v1/files/mkdir" => {
                     let parent = str_of(body, "parent").to_owned();
                     let name = str_of(body, "name").to_owned();
-                    let roots = svc.write_roots();
+                    let roots = match svc.file_capabilities(true) {
+                        Ok(r) => r,
+                        Err(e) => return Some(Err(e)),
+                    };
                     let result = tokio::task::spawn_blocking(move || {
-                        ops::create_folder(&parent, &name, &roots)
+                        ops::create_folder_pinned(&parent, &name, &roots)
                     })
                     .await;
                     svc.rescan(None);
@@ -379,8 +686,8 @@ impl Extension for Module {
                 }
                 "POST /native/v1/files/preview" => Some(preview_route(svc, app, body).await),
                 "POST /native/v1/files/open" => Some(open_route(svc, app, body).await),
-                "POST /native/v1/files/rename" => Some(rename_route(svc, app, body).await),
-                "POST /native/v1/files/move" => Some(move_route(svc, app, body).await),
+                "POST /native/v1/files/rename" => Some(relocate_route(self, app, body, true).await),
+                "POST /native/v1/files/move" => Some(relocate_route(self, app, body, false).await),
                 "POST /native/v1/files/delete" => Some(delete_route(svc, app, body).await),
                 _ => None,
             }
@@ -390,6 +697,7 @@ impl Extension for Module {
     fn shutdown<'a>(&'a self) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
         Box::pin(async move {
             self.transfers.cancel_all();
+            self.archives.cancel_all();
             let (tx, rx) = oneshot::channel();
             self.svc.send(Cmd::Stop(tx));
             let _ = tokio::time::timeout(std::time::Duration::from_secs(5), rx).await;

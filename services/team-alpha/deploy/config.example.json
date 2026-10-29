@@ -1,0 +1,20 @@
+{
+  "origin": "https://team.example.com",
+  "issuer": "https://identity.example.com",
+  "client_id": "REGISTERED_OIDC_CLIENT_ID",
+  "audience": "REGISTERED_OIDC_CLIENT_ID",
+  "token_auth_method": "client_secret_basic",
+  "oidc_origins": ["https://identity.example.com"],
+  "groups_claim": "groups",
+  "database": "/var/lib/zeus-team/metadata.sqlite",
+  "listen_host": "127.0.0.1",
+  "listen_port": 18560,
+  "teams": [{
+    "id": "verne",
+    "label": "Verne",
+    "features": {"downloads": true, "cloud_delivery": true, "workflows": true, "metadata_sync": true, "provenance": true},
+    "bootstrap_members": [{"issuer": "https://identity.example.com", "subject": "EXACT_ADMIN_OIDC_SUBJECT", "role": "admin"}],
+    "group_roles": []
+  }],
+  "signing": {"active_key": "team_2026_01", "key_files": {"team_2026_01": "/etc/zeus-team/team_2026_01.pem"}}
+}

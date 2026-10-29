@@ -38,6 +38,8 @@ pub enum Kind {
     Cursor,
     /// The locally installed Antigravity CLI, using its own sign-in.
     Antigravity,
+    /// The official Grok Build CLI, using a dedicated signed-in profile.
+    Grok,
     /// Anthropic Messages API.
     Anthropic,
     /// OpenAI Chat Completions.
@@ -73,11 +75,12 @@ pub enum Wire {
 
 impl Kind {
     /// Every kind, in the order the ladder lists them.
-    pub const ALL: [Kind; 14] = [
+    pub const ALL: [Kind; 15] = [
         Kind::Codex,
         Kind::Claude,
         Kind::Cursor,
         Kind::Antigravity,
+        Kind::Grok,
         Kind::Anthropic,
         Kind::Openai,
         Kind::Google,
@@ -103,7 +106,7 @@ impl Kind {
     pub fn is_subscription(self) -> bool {
         matches!(
             self,
-            Self::Codex | Self::Claude | Self::Cursor | Self::Antigravity
+            Self::Codex | Self::Claude | Self::Cursor | Self::Antigravity | Self::Grok
         )
     }
 
@@ -114,6 +117,7 @@ impl Kind {
             Kind::Claude => "https://claude.local-agent.invalid/v1",
             Kind::Cursor => "https://cursor.local-agent.invalid/v1",
             Kind::Antigravity => "https://antigravity.local-agent.invalid/v1",
+            Kind::Grok => "https://grok.local-agent.invalid/v1",
             Kind::Anthropic => "https://api.anthropic.com",
             Kind::Openai => "https://api.openai.com/v1",
             Kind::Google => "https://generativelanguage.googleapis.com/v1beta",
@@ -137,6 +141,7 @@ impl Kind {
                 | Kind::Claude
                 | Kind::Cursor
                 | Kind::Antigravity
+                | Kind::Grok
         )
     }
 
@@ -147,6 +152,7 @@ impl Kind {
             Kind::Claude => "Claude Code (existing sign-in)",
             Kind::Cursor => "Cursor (existing sign-in)",
             Kind::Antigravity => "Antigravity (existing sign-in)",
+            Kind::Grok => "Grok Build (dedicated sign-in)",
             Kind::Anthropic => "Anthropic",
             Kind::Openai => "OpenAI",
             Kind::Google => "Google Gemini",

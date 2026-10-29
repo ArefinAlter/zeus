@@ -1114,6 +1114,35 @@ async fn organizing_files_waits_for_a_person_runs_exactly_once_and_can_be_undone
         .unwrap();
     contract("FilesOrganizeResult", &applied);
     let operation = applied.operation_id.clone().unwrap();
+    let status_params = zeus_api::methods::files::FilesOperationGetParams {
+        operation_id: operation.clone(),
+    };
+    let status = backend
+        .files_operation_get(&agent, status_params.clone())
+        .await
+        .unwrap();
+    assert_eq!(status.state, "awaiting_approval");
+    assert_eq!(
+        (status.completed, status.skipped, status.pending),
+        (0, 0, 3)
+    );
+    let (other, _other_rx) = context(dir.path(), "gui");
+    assert_eq!(
+        backend
+            .files_operation_get(&other, status_params.clone())
+            .await
+            .unwrap_err()
+            .envelope()
+            .code
+            .as_str(),
+        "api.not_found"
+    );
+    assert!(
+        backend
+            .organizer
+            .operation_view(&agent.identity, &[], &operation)
+            .is_err()
+    );
     backend.maintain().await.unwrap();
     assert!(inbox.join("a.pdf").is_file() && !inbox.join("papers").exists());
     approve(applied.approval_id.unwrap(), DecideOutcome::Approve).await;
@@ -1121,6 +1150,15 @@ async fn organizing_files_waits_for_a_person_runs_exactly_once_and_can_be_undone
     assert_eq!(
         backend.organizer.summary(&operation).unwrap(),
         ("applied".into(), 3, 0)
+    );
+    let status = backend
+        .files_operation_get(&agent, status_params)
+        .await
+        .unwrap();
+    assert_eq!(status.state, "applied");
+    assert_eq!(
+        (status.completed, status.skipped, status.pending),
+        (3, 0, 0)
     );
     assert_eq!(
         std::fs::read_to_string(inbox.join("papers/a.pdf")).unwrap(),

@@ -1,4 +1,4 @@
-//! The Zeus app's in-app agent: model providers with the person's own keys, and the thirteen Zeus tools.
+//! The Zeus app's in-app agent: model providers with the person's own keys, and the fifteen Zeus tools.
 //!
 //! Provider traffic is made here, by the Rust process, directly to the provider the person chose; the page has no
 //! network access and never sees a key. Keys live in the operating system's credential store (or an encrypted file).
@@ -97,7 +97,7 @@ impl Core {
             "default_price_out_per_mtok": config.default_price_out_per_mtok,
             "max_tokens": config.max_tokens,
             "keystore": self.keys.status(),
-            "kinds": Kind::ALL.iter().map(|k| json!({"kind": k, "label": k.label(), "default_base_url": k.default_base_url(), "needs_key": k.needs_key()})).collect::<Vec<_>>(),
+            "kinds": Kind::ALL.iter().map(|k| json!({"kind": k, "label": k.label(), "default_base_url": k.default_base_url(), "needs_key": k.needs_key(), "installed": provider::local_agent::agent_for_url(k.default_base_url()).map(provider::local_agent::installed)})).collect::<Vec<_>>(),
             "usage": self.ledger.view(&config, None),
         })
     }

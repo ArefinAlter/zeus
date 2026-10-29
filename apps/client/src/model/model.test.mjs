@@ -255,11 +255,11 @@ test('scopes are computed from the request, and the stronger confirmations', () 
 
 // ---------------------------------------------------------------- the agent's tools
 
-test('the tool table is the thirteen MCP tools and none decides, reads a secret or runs a shell', () => {
-  assert.equal(TOOLS.length, 13)
+test('the tool table is the fifteen MCP tools and none decides, reads a secret or runs a shell', () => {
+  assert.equal(TOOLS.length, 15)
   assert.deepEqual(
     TOOLS.map((t) => t.name).sort(),
-    ['zeus_artifacts', 'zeus_cloud', 'zeus_control', 'zeus_enqueue', 'zeus_files', 'zeus_files_list', 'zeus_probe', 'zeus_session_list', 'zeus_session_request', 'zeus_status', 'zeus_verify', 'zeus_wait', 'zeus_workflow'],
+    ['zeus_artifacts', 'zeus_cloud', 'zeus_control', 'zeus_enqueue', 'zeus_files', 'zeus_files_list', 'zeus_inbox', 'zeus_probe', 'zeus_session_list', 'zeus_session_request', 'zeus_sources', 'zeus_status', 'zeus_verify', 'zeus_wait', 'zeus_workflow'],
   )
   for (const t of TOOLS) assert.doesNotMatch(t.name, /approve|decide|grant|cookie|secret|shell|exec|open_file/i)
   assert.ok(NEVER.some((n) => /approval/.test(n)))

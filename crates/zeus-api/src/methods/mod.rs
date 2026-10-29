@@ -11,12 +11,15 @@ use serde::de::DeserializeOwned;
 pub mod admin;
 pub mod artifacts;
 pub mod cloud;
+pub mod cloud_oauth;
 pub mod daemon;
 pub mod events;
 pub mod files;
+pub mod inbox;
 pub mod jobs;
 pub mod queues;
 pub mod sessions;
+pub mod sources;
 pub mod workflows;
 
 /// A method of the daemon API: its wire name and types.
@@ -58,15 +61,67 @@ macro_rules! rpc_methods {
 use self::admin::*;
 use self::artifacts::*;
 use self::cloud::*;
+use self::cloud_oauth::*;
 use self::daemon::*;
 use self::events::*;
 use self::files::*;
+use self::inbox::*;
 use self::jobs::*;
 use self::queues::*;
 use self::sessions::*;
+use self::sources::*;
 use self::workflows::*;
 
 rpc_methods! {
+    /// Immutable source API: sources.accounts.list.
+    SourcesAccounts = "sources.accounts.list" (SourcesReadParams) -> SourcesAccountsResult;
+    /// Immutable source API: sources.accounts.configure.
+    SourcesConfigure = "sources.accounts.configure" (SourcesAccountConfigureParams) -> SourcesAccountMutationResult;
+    /// Immutable source API: sources.accounts.revoke.
+    SourcesRevoke = "sources.accounts.revoke" (SourcesAccountRevokeParams) -> SourcesAccountMutationResult;
+    /// Immutable source API: sources.inspect.
+    SourcesInspect = "sources.inspect" (SourcesInspectParams) -> SourcePlanView;
+    /// Immutable source API: sources.submit.
+    SourcesSubmit = "sources.submit" (SourcesSubmitParams) -> SourceOperationView;
+    /// Immutable source API: sources.list.
+    SourcesList = "sources.list" (SourcesReadParams) -> SourcesListResult;
+    /// Immutable source API: sources.get.
+    SourcesGet = "sources.get" (SourcesGetParams) -> SourceOperationView;
+    /// Immutable source API: sources.control.
+    SourcesControl = "sources.control" (SourcesControlParams) -> SourceOperationView;
+
+    /// Create or edit one owned durable intake package.
+    InboxPackagePut = "inbox.packages.put" (InboxPackagePutParams) -> InboxMutationResult;
+    /// List owned package metadata.
+    InboxPackagesList = "inbox.packages.list" (InboxPackagesListParams) -> InboxPackagesListResult;
+    /// Read an owned package's redacted entry page.
+    InboxPackageGet = "inbox.packages.get" (InboxPackageGetParams) -> InboxPackageGetResult;
+    /// Archive metadata without cancelling associated downloads.
+    InboxPackageArchive = "inbox.packages.archive" (InboxPackageArchiveParams) -> InboxMutationResult;
+    /// Retain bounded private intake records with exact deduplication.
+    InboxEntriesAdd = "inbox.entries.add" (InboxEntriesAddParams) -> InboxEntriesAddResult;
+    /// Remove metadata only, preserving existing downloads and receipts.
+    InboxEntriesRemove = "inbox.entries.remove" (InboxEntriesRemoveParams) -> InboxMutationResult;
+    /// Save at most fifty immutable destination/approval projections.
+    InboxPreview = "inbox.preview" (InboxPreviewParams) -> InboxPreviewResult;
+    /// Dispatch a reviewed batch through the existing enqueue authority.
+    InboxSubmit = "inbox.submit" (InboxSubmitParams) -> InboxSubmitResult;
+    /// Inspect a recoverable owned dispatch without raw requests.
+    InboxSubmissionGet = "inbox.submissions.get" (InboxSubmissionGetParams) -> InboxSubmissionView;
+    /// Reconcile/retry the original private dispatch payload and key.
+    InboxSubmissionRetry = "inbox.submissions.retry" (InboxSubmissionRetryParams) -> InboxSubmitResult;
+    /// Human-only native cloud sign-in start.
+    CloudOAuthBegin = "cloud.oauth.begin" (CloudOAuthBeginParams) -> CloudOAuthBeginResult;
+    /// Human-only one-use callback or device poll.
+    CloudOAuthFinish = "cloud.oauth.finish" (CloudOAuthFinishParams) -> CloudOAuthStatus;
+    /// Human-only OAuth lifecycle status.
+    CloudOAuthStatusMethod = "cloud.oauth.status" (CloudOAuthStatusParams) -> CloudOAuthStatus;
+    /// Cancel one sign-in flow.
+    CloudOAuthCancel = "cloud.oauth.cancel" (CloudOAuthCancelParams) -> CloudOAuthStatus;
+    /// Explicit human-requested credential refresh.
+    CloudOAuthRefresh = "cloud.oauth.refresh" (CloudOAuthRefreshParams) -> CloudOAuthStatus;
+    /// Local disable plus explicit supported remote revocation.
+    CloudOAuthDisconnect = "cloud.oauth.disconnect" (CloudOAuthDisconnectParams) -> CloudOAuthDisconnectResult;
     /// `cloud.accounts.list`.
     CloudAccountsList = "cloud.accounts.list" (CloudAccountsListParams) -> CloudAccountsListResult;
     /// `cloud.accounts.configure`.
@@ -122,6 +177,8 @@ rpc_methods! {
     /// Change the speed limiter and the scheduler defaults.
     QueuesConfigure = "queues.configure" (QueuesConfigureParams) -> QueuesConfigureResult;
 
+    /// Read a bounded durable event page.
+    EventsRead = "events.read" (EventsReadParams) -> EventsReadResult;
     /// Subscribe to events.
     EventsSubscribe = "events.subscribe" (SubscribeParams) -> SubscribeResult;
     /// Cancel a subscription.
@@ -145,6 +202,8 @@ rpc_methods! {
     FilesList = "files.list" (FilesListParams) -> FilesListResult;
     /// Plan or apply an organization of files (later).
     FilesOrganize = "files.organize" (FilesOrganizeParams) -> FilesOrganizeResult;
+    /// Read durable organization progress in the caller's view.
+    FilesOperationGet = "files.operation.get" (FilesOperationGetParams) -> FilesOperationGetResult;
     /// Convert files (later).
     FilesConvert = "files.convert" (FilesConvertParams) -> FilesConvertResult;
     /// Undo a previous file operation from the trash journal (later).

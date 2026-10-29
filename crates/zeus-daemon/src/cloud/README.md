@@ -9,9 +9,12 @@ explicit mode, exact source identity, size, optional expected SHA-256 and limits
 only after an independently verified physical terminal approves those facts. Agents can request and
 control their own deliveries but cannot configure accounts or create approval authority. A changed
 account revision invalidates existing plans and pauses active work; it does not silently migrate an
-old approval onto a new account. Configuration uses explicit bearer credentials in the OS keyring
-or an explicitly chosen rclone configuration file. OAuth enrollment and native token refresh are
-not implemented; expired credentials require human configuration and review.
+old approval onto a new account. Configuration uses explicit bearer credentials, native OAuth
+keyring bundles, or an explicitly chosen rclone configuration file. Google/Yandex PKCE and Baidu
+device authorization are initiated only by the verified human terminal; regular transfers refresh
+near-expiry native credentials under a per-account lock. Refresh dispatch uncertainty is persisted
+before HTTP so a potentially rotated credential is not silently replayed after interruption.
+See [native cloud sign-in](../../../../docs/alpha-0.1/CLOUD-OAUTH.md).
 
 Completed-job sources must belong to the caller (human clients may inspect all), must be completed,
 and must not be quarantined. They support staged upload and are never deleted. Public HTTP(S) URL

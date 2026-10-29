@@ -95,7 +95,7 @@ pub struct GetArgs {
     /// One or more http(s) URLs.
     #[arg(required_unless_present = "input_file", num_args = 1..)]
     pub urls: Vec<String>,
-    /// Read one HTTP(S) URL per line (UTF-8, at most 1 MiB). Blank lines and # comments are ignored.
+    /// Read one HTTP(S) URL per line; use - for stdin (UTF-8, at most 1 MiB). Blank lines and # comments are ignored.
     /// Combined inputs allow at most 50 unique URLs; exact duplicates are removed in input order.
     #[arg(short = 'i', long)]
     pub input_file: Option<PathBuf>,
@@ -319,6 +319,12 @@ pub enum ConfigCommand {
 /// The commands.
 #[derive(Debug, Clone, Subcommand)]
 pub enum Command {
+    /// Review and acquire immutable S3, Hugging Face and bounded torrent sources.
+    #[command(subcommand)]
+    Sources(crate::sources::SourcesCommand),
+    /// Retain URL collections and review or recover bounded download batches.
+    #[command(subcommand)]
+    Inbox(crate::inbox::InboxCommand),
     /// Plan and manage explicitly approved cloud deliveries.
     #[command(subcommand)]
     Cloud(crate::cloud::CloudCommand),
@@ -409,9 +415,15 @@ pub enum Command {
     Daemon(DaemonCommand),
     /// Run the MCP server on stdio for an agent.
     Mcp {
-        /// Serve Streamable HTTP on 127.0.0.1 instead (needs the `http` feature; off by default).
+        /// Serve authenticated Streamable HTTP on 127.0.0.1 instead (mcp-http build feature).
         #[arg(long)]
         http: bool,
+        /// Existing owner-only JSON bearer file; otherwise use the installation's MCP token file.
+        #[arg(long, requires = "http")]
+        token_file: Option<PathBuf>,
+        /// Create the installation's dedicated bearer file, refusing an existing file. No token is printed.
+        #[arg(long, requires = "http", conflicts_with = "token_file")]
+        init_token: bool,
         /// Port for --http.
         #[arg(long, default_value_t = 4747)]
         port: u16,

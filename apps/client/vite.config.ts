@@ -40,7 +40,7 @@ const NO_STORAGE = new Set(['hosted', 'site'])
 export default defineConfig(({ mode }) => ({
   base: './',
   define: {
-    __APP_VERSION__: JSON.stringify(process.env.npm_package_version ?? '0.0.1-alpha'),
+    __APP_VERSION__: JSON.stringify(process.env.npm_package_version ?? '0.1.0-alpha.1'),
     'import.meta.env.VITE_ZEUS_BACKEND': JSON.stringify(process.env.VITE_ZEUS_BACKEND ?? BACKEND[mode] ?? 'scripted'),
     'import.meta.env.VITE_ZEUS_NO_STORAGE': JSON.stringify(NO_STORAGE.has(mode) ? '1' : (process.env.VITE_ZEUS_NO_STORAGE ?? '')),
   },

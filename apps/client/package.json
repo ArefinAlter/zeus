@@ -1,8 +1,8 @@
 {
   "name": "zeus-client",
   "private": true,
-  "version": "0.0.1-beta.1",
-  "description": "Zeus pre-alpha client: downloads, link grabber, queues, files search, agent threads and approvals. Talks to a real zeusd through zeus-web-bridge (hosted or local); a scripted backend remains for offline builds and tests.",
+  "version": "0.1.0-alpha.1",
+  "description": "Zeus alpha desktop: downloads, media, file management, reviewed uploads, workflows, artifact library and optional team connections. The native app supervises its own engine; hosted and isolated test backends remain separate.",
   "license": "Apache-2.0",
   "author": "Verne Ltd.",
   "type": "module",

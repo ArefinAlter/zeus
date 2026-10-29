@@ -201,8 +201,9 @@ pub struct NewCredential<'a> {
     pub permissions: Option<BTreeSet<Permission>>,
 }
 
-/// What the `app` credential of the standalone desktop app may do: the agent ceiling minus file writes and
-/// workflow runs, plus nothing human-only.
+/// What the `app` credential of the standalone desktop app may do: download/workflow requests and
+/// controls and confined artifact/organizer requests, plus nothing human-only. Destructive effects
+/// and workflow execution still need separately attested approvals (ADRs 0017 and 0018).
 pub const APP_PERMISSIONS: &[Permission] = &[
     Permission::JobsRead,
     Permission::JobsWrite,
@@ -211,12 +212,42 @@ pub const APP_PERMISSIONS: &[Permission] = &[
     Permission::SessionsRead,
     Permission::ApprovalsRead,
     Permission::FilesRead,
+    Permission::FilesWrite,
     Permission::WorkflowsPlan,
+    Permission::WorkflowsRun,
     Permission::ConfigRead,
     Permission::AuditRead,
     Permission::LlmRead,
     Permission::DaemonRead,
 ];
+
+/// Upgrade only the exact shipped pre-alpha app profile. Never widen an administrator's
+/// narrowed profile, revive a revoked credential, or change another GUI/agent identity.
+fn upgrade_app_capabilities(record: &mut StoredCredential) -> bool {
+    let legacy: BTreeSet<_> = APP_PERMISSIONS
+        .iter()
+        .copied()
+        .filter(|permission| {
+            !matches!(
+                permission,
+                Permission::WorkflowsRun | Permission::FilesWrite
+            )
+        })
+        .collect();
+    let mut workflow_profile = legacy.clone();
+    workflow_profile.insert(Permission::WorkflowsRun);
+    if record.name.as_deref() == Some("app")
+        && record.kind == ClientKind::Agent
+        && record.role == ClientRole::Gui
+        && !record.revoked
+        && (record.permissions == legacy || record.permissions == workflow_profile)
+    {
+        record.permissions = APP_PERMISSIONS.iter().copied().collect();
+        true
+    } else {
+        false
+    }
+}
 
 /// Names of the provisioned credentials; `clients.add` cannot reuse them.
 pub const RESERVED_NAMES: &[&str] = &["cli", "agent", "a2a", "host", "gui", "app"];
@@ -298,6 +329,7 @@ impl FileCredentialStore {
         }
         for record in &mut stored {
             narrow_native_host(record);
+            upgrade_app_capabilities(record);
         }
         let credentials = stored
             .iter()
@@ -676,6 +708,7 @@ pub fn provision(paths: &ZeusPaths, now: Timestamp) -> Result<ProvisionReport, P
     let mut permissions_migrated = false;
     for record in &mut records {
         permissions_migrated |= narrow_native_host(record);
+        permissions_migrated |= upgrade_app_capabilities(record);
     }
 
     for (name, kind, role) in DEFAULT_CREDENTIALS {
@@ -887,15 +920,14 @@ mod tests {
         for denied in [
             Permission::ApprovalsDecide,
             Permission::ConfigWrite,
-            Permission::FilesWrite,
             Permission::DaemonAdmin,
             Permission::SessionsRevoke,
             Permission::KillSwitch,
             Permission::LlmConfigure,
-            Permission::WorkflowsRun,
         ] {
             assert!(!app.permissions.contains(&denied), "{denied}");
         }
+        assert!(app.permissions.contains(&Permission::WorkflowsRun));
         assert!(
             app.permissions
                 .iter()
@@ -916,6 +948,73 @@ mod tests {
             (host.kind, host.role),
             (ClientKind::Human, ClientRole::NativeHost)
         );
+    }
+
+    #[test]
+    fn desktop_upgrade_preserves_identity_revocation_and_narrowed_profiles() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths(dir.path());
+        provision(&paths, Timestamp::now()).unwrap();
+        let path = paths.state_dir.join("credentials.json");
+        let mut original: StoreFile =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        let app = original
+            .credentials
+            .iter_mut()
+            .find(|r| r.name.as_deref() == Some("app"))
+            .unwrap();
+        app.permissions.remove(&Permission::WorkflowsRun);
+        app.permissions.remove(&Permission::FilesWrite);
+        let legacy = app.clone();
+        let token_before = std::fs::read(paths.credential_file("app")).unwrap();
+        write_private(&path, &serde_json::to_vec(&original).unwrap()).unwrap();
+        // Loading an existing installation upgrades the in-memory permission record even
+        // when the supervisor does not need to rerun first-launch provisioning.
+        let loaded = FileCredentialStore::load(&path).unwrap();
+        let id = load_client_credential(&paths, "app").unwrap().id;
+        assert!(
+            loaded
+                .get(&id)
+                .unwrap()
+                .permissions
+                .contains(&Permission::WorkflowsRun)
+        );
+        provision(&paths, Timestamp::now()).unwrap();
+        let after: StoreFile = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        let updated = after
+            .credentials
+            .iter()
+            .find(|r| r.id == legacy.id)
+            .unwrap();
+        assert_eq!(updated.auth_key, legacy.auth_key);
+        assert_eq!(updated.created_at, legacy.created_at);
+        assert_eq!(
+            std::fs::read(paths.credential_file("app")).unwrap(),
+            token_before
+        );
+        assert!(updated.permissions.contains(&Permission::WorkflowsRun));
+        assert!(updated.permissions.contains(&Permission::FilesWrite));
+        let mut interim = legacy.clone();
+        interim.permissions.insert(Permission::WorkflowsRun);
+        assert!(upgrade_app_capabilities(&mut interim));
+        assert!(interim.permissions.contains(&Permission::FilesWrite));
+        assert!(!upgrade_app_capabilities(&mut interim));
+        assert!(!updated.permissions.contains(&Permission::ApprovalsDecide));
+        for variant in 0..5 {
+            let mut record = legacy.clone();
+            match variant {
+                0 => {
+                    record.permissions.remove(&Permission::JobsWrite);
+                }
+                1 => record.revoked = true,
+                2 => record.name = Some("gui".into()),
+                3 => record.kind = ClientKind::Human,
+                _ => record.role = ClientRole::Mcp,
+            }
+            let before = serde_json::to_value(&record).unwrap();
+            assert!(!upgrade_app_capabilities(&mut record));
+            assert_eq!(serde_json::to_value(record).unwrap(), before);
+        }
     }
 
     #[test]

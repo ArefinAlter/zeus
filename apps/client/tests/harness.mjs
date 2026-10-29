@@ -26,6 +26,8 @@ export async function startHarness({ home, fresh = false, env = {} } = {}) {
     stdio: ['ignore', 'pipe', 'pipe'],
     windowsHide: true,
   })
+  let exited = false
+  const closed = new Promise((resolve) => child.once('exit', () => { exited = true; resolve() }))
   let stderr = ''
   child.stderr.on('data', (d) => (stderr += d))
   const info = await new Promise((resolve, reject) => {
@@ -73,12 +75,15 @@ export async function startHarness({ home, fresh = false, env = {} } = {}) {
     },
     /** Stop the harness cleanly (zeusd stops too); `kill` ends the app process at once and leaves zeusd running (a crash). */
     async stop({ kill = false } = {}) {
-      if (kill) child.kill()
-      else {
-        await fetch(info.url + '/__harness/shutdown', { method: 'POST', headers: { authorization: `Bearer ${info.token}` } }).catch(() => undefined)
-        setTimeout(() => child.kill(), 30000).unref()
-      }
-      await new Promise((r) => (child.exitCode !== null ? r() : child.once('exit', r)))
+      if (exited) return
+      // Subscribe at spawn time: shutdown may exit before its HTTP response resolves.
+      const timer = setTimeout(() => { if (!exited) child.kill() }, 30000)
+      timer.unref()
+      try {
+        if (kill) child.kill()
+        else await fetch(info.url + '/__harness/shutdown', { method: 'POST', headers: { authorization: `Bearer ${info.token}` }, signal: AbortSignal.timeout(5000) }).catch(() => undefined)
+        await closed
+      } finally { clearTimeout(timer) }
     },
     stderr: () => stderr,
   }

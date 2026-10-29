@@ -1,4 +1,54 @@
 use crate::{runtime::*, *};
+
+#[tokio::test]
+async fn sitemap_dry_run_negotiates_xml_then_html_and_keeps_signed_locations() {
+    struct Negotiated(std::sync::Mutex<Vec<String>>);
+    #[async_trait::async_trait]
+    impl PageFetcher for Negotiated {
+        async fn fetch(&self, _: &str) -> Result<PageSample, crate::planner::PlannerError> {
+            Err(crate::planner::PlannerError::Fetch(
+                "typed request hook was not used".into(),
+            ))
+        }
+        async fn fetch_document_request(
+            &self,
+            request: &FetchRequest,
+        ) -> Result<Document, crate::planner::PlannerError> {
+            self.0.lock().unwrap().push(request.url.clone());
+            let (body, content_type) = match (request.url.as_str(), request.accept.as_str()) {
+                ("https://portal.example.org/map.xml", "application/xml,text/xml;q=0.9") => (
+                    "<urlset><url><loc>https://portal.example.org/listing?sig=A%2Bb&amp;x=1</loc></url></urlset>".into(), "application/xml"),
+                ("https://portal.example.org/listing?sig=A%2Bb&x=1", "text/html,application/xhtml+xml;q=0.9,*/*;q=0.1") => (page("Negotiated paper", "/one.pdf"), "text/html"),
+                _ => return Err(crate::planner::PlannerError::Fetch("content negotiation rejected".into())),
+            };
+            Ok(Document {
+                final_url: request.url.clone(),
+                status: 200,
+                content_type: content_type.into(),
+                body,
+                headers: Default::default(),
+            })
+        }
+    }
+    let mut p = plan();
+    p.pagination = None;
+    p.sources = vec![Source::Sitemap {
+        url: "https://portal.example.org/map.xml".into(),
+        loc_pattern: None,
+    }];
+    let fetcher = Negotiated(Default::default());
+    let report = BoundedPlanner.dry_run(&p, &fetcher, 5).await.unwrap();
+    assert!(report.complete);
+    assert_eq!(report.sampled_pages, 2);
+    assert_eq!(report.sample.len(), 1);
+    assert_eq!(
+        *fetcher.0.lock().unwrap(),
+        [
+            "https://portal.example.org/map.xml",
+            "https://portal.example.org/listing?sig=A%2Bb&x=1"
+        ]
+    );
+}
 use async_trait::async_trait;
 use std::{
     collections::BTreeMap,
@@ -354,4 +404,102 @@ async fn declared_listing_sizes_reserve_budget_without_becoming_integrity_claims
     let jobs = port.jobs.lock().unwrap();
     assert_eq!(jobs[0].declared_size, Some(1234));
     assert_eq!(jobs[0].spec.expected_size, None);
+}
+
+#[tokio::test]
+async fn sitemap_index_and_page_frontier_survive_restore_without_duplicate_jobs() {
+    let mut p = plan();
+    p.pagination = None;
+    p.budgets.max_pages = 10;
+    p.sources = vec![Source::Sitemap {
+        url: "https://portal.example.org/map.xml".into(),
+        loc_pattern: Some("/listing/".into()),
+    }];
+    let port = Memory::new();
+    port.pages.lock().unwrap().extend([
+        ("https://portal.example.org/map.xml".into(),"<sitemapindex><sitemap><loc>https://portal.example.org/part.xml</loc></sitemap><sitemap><loc>https://portal.example.org/map.xml</loc></sitemap></sitemapindex>".into()),
+        ("https://portal.example.org/part.xml".into(),"<urlset><url><loc>https://portal.example.org/listing/one?sig=A%2Bb&amp;x=1</loc></url><url><loc>https://portal.example.org/skipped</loc></url><url><loc>https://portal.example.org/listing/one?sig=A%2Bb&amp;x=1</loc></url></urlset>".into()),
+        ("https://portal.example.org/listing/one?sig=A%2Bb&x=1".into(),page("Paper one","/one.pdf")),
+    ]);
+    let mut runtime =
+        WorkflowRuntime::new(p.clone(), zeus_types::IdGenerator::new().run_id()).unwrap();
+    runtime.step(&port).await.unwrap();
+    assert_eq!(runtime.report().pages_fetched, 1);
+    assert_eq!(port.jobs.lock().unwrap().len(), 0);
+    runtime = WorkflowRuntime::restore(p.clone(), runtime.snapshot().clone()).unwrap();
+    runtime.step(&port).await.unwrap();
+    assert_eq!(runtime.report().pages_fetched, 2);
+    runtime = WorkflowRuntime::restore(p, runtime.snapshot().clone()).unwrap();
+    runtime.step(&port).await.unwrap();
+    runtime.step(&port).await.unwrap();
+    assert_eq!(runtime.report().status, RunStatus::Completed);
+    assert_eq!(runtime.report().pages_fetched, 3);
+    assert_eq!(port.jobs.lock().unwrap().len(), 1);
+    let requests = port.requests.lock().unwrap();
+    assert_eq!(requests.len(), 3);
+    assert_eq!(
+        requests[2],
+        "https://portal.example.org/listing/one?sig=A%2Bb&x=1"
+    );
+}
+#[tokio::test]
+async fn sitemap_bootstrap_commit_failure_never_loses_or_executes_a_partial_frontier() {
+    let mut p = plan();
+    p.pagination = None;
+    p.budgets.max_pages = 5;
+    p.sources = vec![Source::Sitemap {
+        url: "https://portal.example.org/map.xml".into(),
+        loc_pattern: None,
+    }];
+    let port = Memory::new();
+    port.pages.lock().unwrap().insert(
+        "https://portal.example.org/map.xml".into(),
+        "<urlset><url><loc>https://portal.example.org/listing</loc></url></urlset>".into(),
+    );
+    let mut runtime = WorkflowRuntime::new(p, zeus_types::IdGenerator::new().run_id()).unwrap();
+    port.fail_commit.store(true, Ordering::SeqCst);
+    assert!(runtime.step(&port).await.is_err());
+    assert_eq!(runtime.report().pages_fetched, 0);
+    assert_eq!(runtime.snapshot().chains.len(), 1);
+    assert!(port.jobs.lock().unwrap().is_empty());
+    runtime.step(&port).await.unwrap();
+    assert_eq!(runtime.report().pages_fetched, 1);
+    assert_eq!(runtime.snapshot().chains.len(), 2);
+}
+#[tokio::test]
+async fn sitemap_scope_failure_pauses_and_page_budget_counts_bootstrap_requests() {
+    let mut p = plan();
+    p.pagination = None;
+    p.budgets.max_pages = 1;
+    p.sources = vec![Source::Sitemap {
+        url: "https://portal.example.org/map.xml".into(),
+        loc_pattern: None,
+    }];
+    let port = Memory::new();
+    port.pages.lock().unwrap().insert(
+        "https://portal.example.org/map.xml".into(),
+        "<urlset><url><loc>https://portal.example.org/listing</loc></url></urlset>".into(),
+    );
+    let mut runtime =
+        WorkflowRuntime::new(p.clone(), zeus_types::IdGenerator::new().run_id()).unwrap();
+    runtime.step(&port).await.unwrap();
+    runtime.step(&port).await.unwrap();
+    runtime.step(&port).await.unwrap();
+    assert_eq!(runtime.report().status, RunStatus::BudgetExhausted);
+    assert_eq!(
+        runtime.report().stop_reason.as_deref(),
+        Some("budget_pages")
+    );
+    assert_eq!(port.requests.lock().unwrap().len(), 1);
+    assert!(port.jobs.lock().unwrap().is_empty());
+    let port = Memory::new();
+    port.pages.lock().unwrap().insert(
+        "https://portal.example.org/map.xml".into(),
+        "<urlset><url><loc>https://private.example/forbidden</loc></url></urlset>".into(),
+    );
+    let mut runtime = WorkflowRuntime::new(p, zeus_types::IdGenerator::new().run_id()).unwrap();
+    assert!(runtime.step(&port).await.is_err());
+    assert_eq!(runtime.report().status, RunStatus::Paused);
+    assert_eq!(runtime.snapshot().chains.len(), 1);
+    assert!(port.jobs.lock().unwrap().is_empty());
 }

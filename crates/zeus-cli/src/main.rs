@@ -5,8 +5,10 @@ use std::process::ExitCode;
 use std::sync::Arc;
 
 use clap::Parser;
+#[cfg(not(feature = "mcp-http"))]
+use zeus_api::ApiError;
+use zeus_api::ApiResult;
 use zeus_api::endpoint::ZeusPaths;
-use zeus_api::{ApiError, ApiResult};
 use zeus_cli::cli::{Cli, Command};
 use zeus_cli::commands::{self, CmdOutput};
 use zeus_cli::connect::{Identity, connect};
@@ -43,9 +45,33 @@ fn print(output: &CmdOutput, settings: Output) {
 async fn run(cli: &Cli, paths: &ZeusPaths, settings: Output) -> ApiResult<CmdOutput> {
     match &cli.command {
         Command::Tui => zeus_cli::tui::run(paths).await.map(|()| CmdOutput::empty()),
-        Command::Mcp { http: true, .. } => Err(ApiError::not_implemented(
-            "MCP HTTP requires an authenticated Origin-checked bridge; use zeus mcp for stdio",
-        )),
+        Command::Mcp {
+            http: true,
+            port,
+            token_file,
+            init_token,
+        } => {
+            #[cfg(feature = "mcp-http")]
+            {
+                let path = token_file
+                    .clone()
+                    .unwrap_or_else(|| paths.state_dir.join("mcp-http-token.json"));
+                if *init_token {
+                    zeus_cli::mcp_http::initialize_token(&paths.state_dir)?;
+                }
+                let hash = zeus_mcp::http_bridge::token_file_hash(&path)?;
+                let client = connect(paths, Identity::Agent).await?;
+                zeus_mcp::transport::serve_http(Arc::new(client), *port, hash).await?;
+                Ok(CmdOutput::empty())
+            }
+            #[cfg(not(feature = "mcp-http"))]
+            {
+                let _ = (port, token_file, init_token);
+                Err(ApiError::not_implemented(
+                    "this build has no mcp-http feature; use stdio or a build with mcp-http",
+                ))
+            }
+        }
         Command::Mcp { .. } => {
             let client = connect(paths, Identity::Agent).await?;
             zeus_mcp::transport::serve_stdio(Arc::new(client))

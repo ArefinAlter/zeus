@@ -246,6 +246,17 @@ impl WorkflowRuntime {
             || digest_keys(&snapshot.keys) != snapshot.keys_digest
             || snapshot.keys.len() > 2_000_000
             || snapshot.chains.len() > 100_000
+            || snapshot.chains.iter().any(|chain| {
+                chain.source_index >= plan.sources.len()
+                    || chain.sitemap_depth.is_some_and(|depth| {
+                        depth > plan.budgets.max_depth
+                            || chain.pagination.is_some()
+                            || !matches!(
+                                plan.sources[chain.source_index],
+                                crate::Source::Sitemap { .. }
+                            )
+                    })
+            })
         {
             return Err(RuntimeError::CheckpointConflict);
         }
@@ -416,7 +427,8 @@ impl WorkflowRuntime {
             next.report.stop_reason = Some("duplicate_page".into());
             return self.save(port, next, &[]).await;
         }
-        let document = match self.fetch(port, &url).await {
+        let sitemap_depth = next.chains[chain_index].sitemap_depth;
+        let document = match self.fetch_kind(port, &url, sitemap_depth.is_some()).await {
             Ok(d) => d,
             Err(error) => {
                 next.report.status = RunStatus::Paused;
@@ -443,6 +455,28 @@ impl WorkflowRuntime {
             next.report.status = RunStatus::Paused;
             next.last_error = Some("workflow.page_error".into());
             record_page_error(&mut next, &RuntimeError::Port("workflow.page_error"));
+            return self.save(port, next, &[]).await;
+        }
+        if let Some(depth) = sitemap_depth {
+            let discovery = self.sitemap_frontier(&next, chain_index, depth, &document);
+            let chains = match discovery {
+                Ok(chains) => chains,
+                Err(error) => {
+                    next.report.status = RunStatus::Paused;
+                    next.last_error = Some("workflow.sitemap_error".into());
+                    record_page_error(&mut next, &error);
+                    self.save(port, next, &[]).await?;
+                    return Err(error);
+                }
+            };
+            next.report.pages_fetched += 1;
+            next.chains[chain_index].pages += 1;
+            next.chains[chain_index].visited.insert(document_key);
+            next.chains[chain_index].next_url = None;
+            next.chains.extend(chains);
+            next.elapsed_ms = next
+                .elapsed_ms
+                .saturating_add(started.elapsed().as_millis() as u64);
             return self.save(port, next, &[]).await;
         }
         let extracted = match extract::extract(
@@ -736,7 +770,82 @@ impl WorkflowRuntime {
         }
         self.save(port, next, &intents).await
     }
+    fn sitemap_frontier(
+        &self,
+        next: &RunSnapshot,
+        chain_index: usize,
+        depth: u8,
+        document: &Document,
+    ) -> RuntimeResult<Vec<Chain>> {
+        let source_index = next.chains[chain_index].source_index;
+        let Some(crate::Source::Sitemap { loc_pattern, .. }) = self.plan.sources.get(source_index)
+        else {
+            return Err(RuntimeError::CheckpointConflict);
+        };
+        let map = crate::sitemap::parse(&document.body, &document.final_url)?;
+        let pattern = loc_pattern
+            .as_deref()
+            .map(|p| regex::RegexBuilder::new(p).size_limit(1 << 20).build())
+            .transpose()
+            .map_err(|_| RuntimeError::Policy("workflow.sitemap_pattern"))?;
+        let mut known: BTreeSet<_> = next
+            .chains
+            .iter()
+            .map(|chain| {
+                (
+                    chain.source_index,
+                    chain.sitemap_depth.is_some(),
+                    chain.first_url.clone(),
+                )
+            })
+            .collect();
+        let mut added = vec![];
+        for url in map.locations {
+            if !allowed(&self.plan, &url) {
+                return Err(RuntimeError::Policy("workflow.domain_not_allowed"));
+            }
+            let candidates = if map.kind == crate::sitemap::Kind::Index {
+                if known.contains(&(source_index, true, url.clone())) {
+                    continue;
+                }
+                if depth >= self.plan.budgets.max_depth {
+                    return Err(RuntimeError::Policy("workflow.sitemap_depth"));
+                }
+                vec![pagination::sitemap_chain(source_index, url, depth + 1)]
+            } else {
+                if pattern
+                    .as_ref()
+                    .is_some_and(|pattern| !pattern.is_match(&url))
+                {
+                    continue;
+                }
+                pagination::sitemap_pages(&self.plan, source_index, vec![url])
+                    .map_err(|d| RuntimeError::Invalid(vec![d]))?
+            };
+            for candidate in candidates {
+                if known.insert((
+                    source_index,
+                    candidate.sitemap_depth.is_some(),
+                    candidate.first_url.clone(),
+                )) {
+                    if next.chains.len() + added.len() >= 100_000 {
+                        return Err(RuntimeError::Policy("workflow.sitemap_limit"));
+                    }
+                    added.push(candidate);
+                }
+            }
+        }
+        Ok(added)
+    }
     async fn fetch(&self, port: &dyn RuntimePort, url: &str) -> RuntimeResult<Document> {
+        self.fetch_kind(port, url, false).await
+    }
+    async fn fetch_kind(
+        &self,
+        port: &dyn RuntimePort,
+        url: &str,
+        sitemap: bool,
+    ) -> RuntimeResult<Document> {
         if !allowed(&self.plan, url) {
             return Err(RuntimeError::Policy("workflow.domain_not_allowed"));
         }
@@ -751,9 +860,13 @@ impl WorkflowRuntime {
                 max_concurrency_per_host: self.plan.fetch.max_concurrency_per_host,
                 session_origin: self.plan.session.as_ref().map(|s| s.origin.clone()),
                 max_body_bytes: 8 * 1024 * 1024,
-                accept: match self.plan.extract.items {
-                    Selector::JsonPath { .. } => "application/json",
-                    _ => "text/html,application/xhtml+xml;q=0.9,*/*;q=0.1",
+                accept: if sitemap {
+                    "application/xml,text/xml;q=0.9"
+                } else {
+                    match self.plan.extract.items {
+                        Selector::JsonPath { .. } => "application/json",
+                        _ => "text/html,application/xhtml+xml;q=0.9,*/*;q=0.1",
+                    }
                 }
                 .into(),
             })

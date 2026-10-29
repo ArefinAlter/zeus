@@ -3,7 +3,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -41,6 +41,7 @@ struct StatusInner {
     roots_done: usize,
     verifying: bool,
     watcher: bool,
+    snapshot_error: bool,
 }
 
 /// The shared state of the service.
@@ -52,12 +53,15 @@ pub struct Service {
     pub index: Arc<Mutex<Index>>,
     status: Mutex<StatusInner>,
     progress: Progress,
-    tx: mpsc::UnboundedSender<Cmd>,
+    tx: mpsc::Sender<Cmd>,
+    watcher_gap: Arc<AtomicBool>,
+    watcher_gaps: AtomicU64,
     cancel: AtomicBool,
     scan_seq: AtomicU32,
     dirty: AtomicBool,
     /// What zeusd knows about files.
     pub facts: FactsCache,
+    root_identities: Mutex<HashMap<String, crate::paths::RootIdentity>>,
     root_scans: Mutex<HashMap<String, (Instant, i64)>>,
     /// The folders the watcher is set on right now.
     watched: Mutex<Vec<String>>,
@@ -73,7 +77,7 @@ impl Service {
     /// Create the service and start its task. Inside a Tokio runtime.
     pub fn start(app: &Arc<zeus_app::App>) -> Arc<Self> {
         let home = app.home.clone();
-        let (tx, rx) = mpsc::unbounded_channel();
+        let (tx, rx) = mpsc::channel(1024);
         let download = download_roots(&home);
         let cfg =
             IndexConfig::load(&index_dir(&home).join("index.json")).with_download_roots(&download);
@@ -89,7 +93,19 @@ impl Service {
                 let _ = std::fs::remove_file(&scopes);
             }
         }
-        let loaded = Index::load(&index_dir(&home).join("index.bin"));
+        let root_identities = cfg
+            .roots
+            .iter()
+            .filter_map(|r| {
+                crate::paths::RootIdentity::capture(Path::new(&r.path))
+                    .map(|id| (norm(&r.path), id))
+            })
+            .collect();
+        let loaded = Index::load(&index_dir(&home).join("index.bin")).map(|mut ix| {
+            let g = ix.begin();
+            ix.keep_only(g, &roots);
+            ix
+        });
         let had_snapshot = loaded.is_some();
         let svc = Arc::new(Self {
             home,
@@ -101,10 +117,13 @@ impl Service {
             }),
             progress: Progress::default(),
             tx,
+            watcher_gap: Arc::new(AtomicBool::new(false)),
+            watcher_gaps: AtomicU64::new(0),
             cancel: AtomicBool::new(false),
             scan_seq: AtomicU32::new(1),
             dirty: AtomicBool::new(false),
             facts: FactsCache::default(),
+            root_identities: Mutex::new(root_identities),
             root_scans: Mutex::new(HashMap::new()),
             watched: Mutex::new(Vec::new()),
         });
@@ -115,7 +134,16 @@ impl Service {
 
     /// Ask the task to do something.
     pub fn send(&self, cmd: Cmd) {
-        let _ = self.tx.send(cmd);
+        match self.tx.try_send(cmd) {
+            Ok(()) => {}
+            Err(mpsc::error::TrySendError::Full(cmd)) => {
+                let tx = self.tx.clone();
+                tokio::spawn(async move {
+                    let _ = tx.send(cmd).await;
+                });
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => {}
+        }
     }
 
     /// Ask for a rescan and stop a scan in progress from blocking it.
@@ -127,17 +155,36 @@ impl Service {
         });
     }
 
-    /// The folders that are indexed (included ones).
+    fn root_current(&self, path: &str) -> bool {
+        self.root_identities
+            .lock()
+            .map(|m| {
+                m.get(&norm(path))
+                    .is_some_and(crate::paths::RootIdentity::current)
+            })
+            .unwrap_or(false)
+    }
+
+    /// The folders that are indexed (included ones with the enabled directory identity intact).
     pub fn included(&self) -> Vec<RootCfg> {
         self.cfg
             .lock()
-            .map(|c| c.roots.iter().filter(|r| r.include).cloned().collect())
+            .map(|c| {
+                c.roots
+                    .iter()
+                    .filter(|r| r.include && self.root_current(&r.path))
+                    .cloned()
+                    .collect()
+            })
             .unwrap_or_default()
     }
 
     /// Download folders plus the folders explicitly enabled for management.
     pub fn write_roots(&self) -> Vec<String> {
-        let mut roots = download_roots(&self.home);
+        let mut roots: Vec<_> = download_roots(&self.home)
+            .into_iter()
+            .filter(|r| self.root_current(r))
+            .collect();
         roots.extend(
             self.included()
                 .into_iter()
@@ -150,6 +197,33 @@ impl Service {
     /// Folders the app may read for previews: every included folder.
     pub fn read_roots(&self) -> Vec<String> {
         self.included().into_iter().map(|r| r.path).collect()
+    }
+
+    /// Retain root authority for a local operation using the identities captured at enablement.
+    pub fn file_capabilities(
+        &self,
+        writable: bool,
+    ) -> zeus_app::failure::Result<crate::paths::RootCaps> {
+        let paths = if writable {
+            self.write_roots()
+        } else {
+            self.read_roots()
+        };
+        let pins = self.root_identities.lock().map_err(|_| {
+            zeus_app::failure::Failure::new("app.io", "Folder permissions are busy.")
+        })?;
+        let selected = paths
+            .iter()
+            .map(|p| {
+                pins.get(&norm(p)).cloned().ok_or_else(|| {
+                    zeus_app::failure::Failure::new(
+                        "app.path_changed",
+                        "An enabled folder changed.",
+                    )
+                })
+            })
+            .collect::<zeus_app::failure::Result<Vec<_>>>()?;
+        crate::paths::RootCaps::from_pins(&selected)
     }
 
     /// Replace the configuration (from the page), save it, and apply it.
@@ -172,8 +246,27 @@ impl Service {
             let _ = std::fs::remove_file(&scopes);
             return Err(error.into());
         }
+        if let Ok(mut pins) = self.root_identities.lock() {
+            // Explicit settings can re-enable a directory that was replaced while Zeus was running.
+            *pins = merged
+                .roots
+                .iter()
+                .filter_map(|r| {
+                    crate::paths::RootIdentity::capture(Path::new(&r.path))
+                        .map(|id| (norm(&r.path), id))
+                })
+                .collect();
+        }
         if let Ok(mut c) = self.cfg.lock() {
             *c = merged.clone();
+        }
+        // A settings change revokes cached metadata synchronously, before the next background scan.
+        if let Ok(mut ix) = self.index.lock() {
+            let g = ix.begin();
+            let paths: Vec<_> = ix.entries.keys().cloned().collect();
+            for p in paths {
+                ix.remove_tree(g, &p);
+            }
         }
         self.cancel.store(true, Ordering::SeqCst);
         self.send(Cmd::Reconfigure);
@@ -189,6 +282,10 @@ impl Service {
             .map(|i| (i.entries.len(), i.generation, i.last_scan, i.capped))
             .unwrap_or((0, 0, None, false));
         let per_root = self.cfg.lock().map(|c| c.roots.clone()).unwrap_or_default();
+        let unavailable = per_root
+            .iter()
+            .filter(|r| r.include && !self.root_current(&r.path))
+            .count();
         let roots: Vec<Value> = per_root
             .iter()
             .map(|r| {
@@ -197,7 +294,7 @@ impl Service {
                 json!({
                     "path": r.path, "include": r.include, "download": r.download, "monitor_changes": r.monitor_changes,
                     "rescan_every_hours": r.rescan_every_hours, "entries": count, "last_scan": scanned,
-                    "exists": Path::new(&r.path).is_dir(), "manage_files": r.manage_files,
+                    "exists": Path::new(&r.path).is_dir(), "manage_files": r.manage_files, "identity_current":self.root_current(&r.path),
                 })
             })
             .collect();
@@ -215,6 +312,13 @@ impl Service {
             "generation": generation,
             "last_scan": last_scan,
             "watcher": st.watcher,
+            "change_backend": "directory_watcher",
+            "usn_journal": false,
+            "watcher_gaps": self.watcher_gaps.load(Ordering::Relaxed),
+            "unreadable_directories": self.progress.unreadable.load(Ordering::Relaxed),
+            "snapshot_error": st.snapshot_error,
+            "unavailable_roots": unavailable,
+            "freshness": if st.scanning || st.verifying {"reconciling"} else if unavailable>0 || self.progress.unreadable.load(Ordering::Relaxed)>0 {"scan_incomplete"} else if st.watcher {"watching"} else {"periodic_scan"},
             "capped": capped,
             "cap": crate::store::CAP,
             "roots": roots,
@@ -233,11 +337,12 @@ impl Service {
 
     fn save_snapshot(&self) {
         let bytes = self.index.lock().ok().map(|i| i.snapshot());
-        if let Some(b) = bytes {
-            let _ = std::fs::create_dir_all(index_dir(&self.home));
-            let _ = zeus_app::engine_config::write_atomic(&self.snapshot_path(), &b);
-        }
-        self.dirty.store(false, Ordering::SeqCst);
+        let saved = bytes.is_some_and(|b| {
+            std::fs::create_dir_all(index_dir(&self.home)).is_ok()
+                && zeus_app::engine_config::write_atomic(&self.snapshot_path(), &b).is_ok()
+        });
+        self.set_status(|s| s.snapshot_error = !saved);
+        self.dirty.store(!saved, Ordering::SeqCst);
     }
 
     fn excluder(&self) -> Excluder {
@@ -246,6 +351,7 @@ impl Service {
 
     async fn scan_roots(self: &Arc<Self>, only: Option<String>) {
         self.cancel.store(false, Ordering::SeqCst);
+        self.progress.unreadable.store(0, Ordering::Relaxed);
         let roots: Vec<RootCfg> = self
             .included()
             .into_iter()
@@ -265,9 +371,20 @@ impl Service {
             let path = PathBuf::from(&root.path);
             let ex = self.excluder();
             let scan_id = self.scan_seq.fetch_add(1, Ordering::SeqCst);
-            let _ = tokio::task::spawn_blocking(move || {
-                if path.is_dir() {
-                    scan::scan_root(&svc.index, &path, &ex, scan_id, &svc.progress, &svc.cancel);
+            let _ = tokio::task::spawn_blocking(move || match svc.file_capabilities(false) {
+                Ok(roots) => {
+                    scan::scan_root_pinned(
+                        &svc.index,
+                        &path,
+                        &ex,
+                        scan_id,
+                        &svc.progress,
+                        &svc.cancel,
+                        &roots,
+                    );
+                }
+                Err(_) => {
+                    svc.progress.unreadable.fetch_add(1, Ordering::Relaxed);
                 }
             })
             .await;
@@ -278,7 +395,8 @@ impl Service {
             }
             self.set_status(|s| s.roots_done += 1);
         }
-        let completed = !self.cancel.load(Ordering::SeqCst);
+        let completed = !self.cancel.load(Ordering::SeqCst)
+            && self.progress.unreadable.load(Ordering::Relaxed) == 0;
         if let Ok(mut ix) = self.index.lock() {
             let paths: Vec<String> = self
                 .included()
@@ -302,17 +420,18 @@ impl Service {
 
     fn start_watcher(&self) -> Option<notify::RecommendedWatcher> {
         let tx = self.tx.clone();
+        let gap = self.watcher_gap.clone();
         let mut w =
             notify::recommended_watcher(move |res: notify::Result<notify::Event>| match res {
                 Ok(ev) => {
-                    if ev.need_rescan() {
-                        let _ = tx.send(Cmd::RescanAll);
-                    } else if !ev.paths.is_empty() {
-                        let _ = tx.send(Cmd::Fs(ev.paths));
+                    if ev.need_rescan()
+                        || (!ev.paths.is_empty() && tx.try_send(Cmd::Fs(ev.paths)).is_err())
+                    {
+                        gap.store(true, Ordering::SeqCst);
                     }
                 }
                 Err(_) => {
-                    let _ = tx.send(Cmd::RescanAll);
+                    gap.store(true, Ordering::SeqCst);
                 }
             })
             .ok()?;
@@ -341,6 +460,9 @@ impl Service {
         let ex = self.excluder();
         let scan_id = self.scan_seq.fetch_add(1, Ordering::SeqCst);
         let included = self.included();
+        let Ok(caps) = self.file_capabilities(false) else {
+            return;
+        };
         let roots: Vec<(String, PathBuf)> = included
             .iter()
             .map(|r| (norm(&r.path), PathBuf::from(&r.path)))
@@ -353,18 +475,25 @@ impl Service {
                 roots.iter().any(|(r, root)| {
                     (k == *r || k.starts_with(&format!("{r}{}", std::path::MAIN_SEPARATOR)))
                         && !ex.skips_below(p, root)
-                        && !ex.skips_by_attributes_below(p, root)
+                        && !ex.skips_by_attributes_pinned(p, root, &caps)
                 })
             })
             .collect();
         list.sort();
+        let mut refreshed: HashSet<PathBuf> = HashSet::new();
         for p in list {
-            scan::refresh_path(&self.index, &p, &ex, scan_id);
+            if p.ancestors().any(|parent| refreshed.contains(parent)) {
+                continue;
+            }
+            if !scan::refresh_path_pinned(&self.index, &p, &ex, scan_id, &caps) {
+                self.progress.unreadable.fetch_add(1, Ordering::Relaxed);
+            }
+            refreshed.insert(p);
         }
         self.dirty.store(true, Ordering::SeqCst);
     }
 
-    async fn run(self: Arc<Self>, mut rx: mpsc::UnboundedReceiver<Cmd>) {
+    async fn run(self: Arc<Self>, mut rx: mpsc::Receiver<Cmd>) {
         // The snapshot is served at once; a scan then verifies it.
         self.send(Cmd::RescanAll);
         let mut watcher = self.start_watcher();
@@ -394,6 +523,11 @@ impl Service {
                                     continue;
                                 }
                                 pending.insert(p);
+                                if pending.len()>16_384 {
+                                    pending.clear();first=None;
+                                    self.watcher_gap.store(true,Ordering::SeqCst);
+                                    break;
+                                }
                             }
                             if first.is_none() && !pending.is_empty() {
                                 first = Some(Instant::now());
@@ -417,6 +551,11 @@ impl Service {
                     }
                 }
                 _ = ticker.tick() => {
+                    if self.watcher_gap.swap(false,Ordering::SeqCst) {
+                        self.watcher_gaps.fetch_add(1,Ordering::Relaxed);
+                        self.set_status(|s|s.verifying=true);
+                        self.scan_roots(None).await;
+                    }
                     // The watcher's events are applied when the folder has been quiet for a moment, or after 1.5 s of noise.
                     if let Some(f) = first
                         && (last_event.elapsed() >= Duration::from_millis(300) || f.elapsed() >= Duration::from_millis(1500)) {
@@ -434,6 +573,10 @@ impl Service {
                         last_roots_check = Instant::now();
                         // The download folders can change in Settings; follow them.
                         let download = download_roots(&self.home);
+                        // Pin newly materialized configured download roots once. Never silently replace an old pin.
+                        if let Ok(mut pins)=self.root_identities.lock(){
+                            for root in &download {if !pins.contains_key(&norm(root)) && let Some(id)=crate::paths::RootIdentity::capture(Path::new(root)){pins.insert(norm(root),id);}}
+                        }
                         let changed = self.cfg.lock().map(|c| {
                             let have: Vec<String> = c.roots.iter().filter(|r| r.download).map(|r| norm(&r.path)).collect();
                             let want: Vec<String> = download.iter().map(|d| norm(d)).collect();

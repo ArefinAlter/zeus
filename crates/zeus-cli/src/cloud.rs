@@ -85,6 +85,9 @@ pub enum CloudAction {
 /// `zeus cloud` command tree.
 #[derive(Debug, Clone, Subcommand)]
 pub enum CloudCommand {
+    /// Native provider sign-in, refresh and disconnect at a verified human terminal.
+    #[command(subcommand)]
+    Auth(crate::cloud_oauth::CloudAuthCommand),
     /// Inspect or configure cloud accounts.
     #[command(subcommand)]
     Accounts(AccountsCommand),
@@ -279,6 +282,7 @@ pub async fn run<C: Client + ?Sized>(
         ));
     }
     match command {
+        CloudCommand::Auth(command) => crate::cloud_oauth::run(command, client, dry_run).await,
         CloudCommand::Accounts(AccountsCommand::List) => Ok(output(
             &call::<CloudAccountsList, _>(client, CloudAccountsListParams::default()).await?,
         )),
@@ -345,7 +349,7 @@ pub async fn run<C: Client + ?Sized>(
         )),
     }
 }
-fn line(terminal: &mut Terminal, prompt: &str) -> ApiResult<String> {
+pub(crate) fn line(terminal: &mut Terminal, prompt: &str) -> ApiResult<String> {
     terminal
         .output
         .write_all(prompt.as_bytes())
@@ -366,7 +370,7 @@ fn line(terminal: &mut Terminal, prompt: &str) -> ApiResult<String> {
     }
     Ok(value)
 }
-fn confirm(terminal: &mut Terminal, verb: &str) -> ApiResult<bool> {
+pub(crate) fn confirm(terminal: &mut Terminal, verb: &str) -> ApiResult<bool> {
     terminal.output.flush().map_err(human_error)?;
     std::thread::sleep(std::time::Duration::from_millis(750));
     terminal.discard_pending().map_err(human_error)?;
@@ -377,7 +381,7 @@ fn confirm(terminal: &mut Terminal, verb: &str) -> ApiResult<bool> {
     .trim()
         == verb)
 }
-fn canceled() -> CmdOutput {
+pub(crate) fn canceled() -> CmdOutput {
     CmdOutput::new(
         "Canceled; no account change was requested.",
         &serde_json::json!({"changed":false}),

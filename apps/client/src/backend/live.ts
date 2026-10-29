@@ -26,6 +26,7 @@ import type { Settings } from './settings.ts'
 import { ulid } from './rand.ts'
 import type { IndexDelta, IndexRow } from './files.ts'
 import { filesApi, indexFromWire, nudgeIndexSync, startIndexSync } from './files.ts'
+import { historyLabel } from '../model/eventHistory.ts'
 
 export const LIVE = backend().kind !== 'scripted'
 export const HOSTED = backend().kind === 'hosted'
@@ -91,6 +92,8 @@ export interface LiveInfo {
   /** Native: the engine's life (starting, ready, restarting, failed) and whether settings wait for a restart. */
   engine?: EngineInfo['status'] | null
   engineDirty?: boolean
+  /** Durable native history has its own status; a failed read never clears its last successful page. */
+  history?: { replaying: boolean; lost: boolean; limited: boolean; unavailable: boolean }
 }
 
 // The store is imported lazily through these hooks to avoid an import cycle at module evaluation.
@@ -162,6 +165,7 @@ export function subdirOf(dir: string): string {
 // ---------------------------------------------------------------- mapping zeusd views to the client's model
 
 const remoteJobs = new Map<string, RemoteJob>()
+const durableHistory = new Map<string, Job['events']>()
 /** Native: the queue each job belongs to and the jobs zeusd holds back for a queue that is not running. */
 const queueOfJob = new Map<string, string>()
 const heldJobs = new Set<string>()
@@ -204,7 +208,7 @@ function toJob(r: RemoteJob, prev: Job | undefined): Job {
   const state = (NATIVE && heldJobs.has(r.id) && r.state === 'paused' ? 'queued' : r.state) as JobState
   const art = s.live?.artifacts.find((a) => a.job_id === r.id)
   const active = ['probing', 'downloading', 'verifying', 'finalizing'].includes(state)
-  const events = prev?.events ?? [{ t: Date.parse(r.created_at), text: 'Enqueued in zeusd' }]
+  const events = (NATIVE ? durableHistory.get(r.id) : prev?.events) ?? [{ t: Date.parse(r.created_at), text: 'Enqueued in zeusd' }]
   const gone = NATIVE && state === 'completed' && indexReady && !!r.path && !indexMap.has(r.path) && !fileJobIds.has(r.id)
   const job: Job = {
     id: r.id,
@@ -279,7 +283,7 @@ export function rebuildJobs(): void {
     let j = toJob(r, prev.get(r.id))
     const was = lastState.get(r.id)
     if (was !== undefined && was !== r.state) {
-      j = { ...j, events: [...j.events.slice(-30), { t: Date.now(), text: `zeusd: ${r.state.replace('_', ' ')}` }] }
+      if (!NATIVE) j = { ...j, events: [...j.events.slice(-30), { t: Date.now(), text: `zeusd: ${r.state.replace('_', ' ')}` }] }
       if (r.state === 'completed' || r.state === 'failed') finished.push(j)
     }
     lastState.set(r.id, r.state)
@@ -347,7 +351,7 @@ export function applyIndexDelta(d: IndexDelta): void {
   if (d.state === 'current') indexReady = true
   const s = S.get()
   const prev = s.index
-  const next = { state: d.state, progress: d.progress, generation: d.generation, lastScan: d.last_scan ?? prev.lastScan, scanning: d.scanning, entries: d.entries, watcher: d.watcher, capped: d.capped, verifying: d.verifying }
+  const next = { state: d.state, progress: d.progress, generation: d.generation, lastScan: d.last_scan ?? prev.lastScan, scanning: d.scanning, entries: d.entries, watcher: d.watcher, capped: d.capped, verifying: d.verifying, freshness: d.freshness, watcherGaps: d.watcher_gaps, unreadableDirectories: d.unreadable_directories, unavailableRoots: d.unavailable_roots, snapshotError: d.snapshot_error }
   if (JSON.stringify(prev) !== JSON.stringify(next)) S.set({ index: next })
   if (changed || (firstTime && s.files.length === 0)) rebuildNativeFiles()
   if (changed || firstTime) rebuildJobs()
@@ -445,15 +449,49 @@ function connected(failure: LiveInfo['failure']): void {
   S.set({ live: { ...s.live, connected: !failure, failure } })
 }
 
+let jobsBusy = false
 async function pollJobs(): Promise<void> {
+  if (jobsBusy) return
+  jobsBusy = true
   try {
     const r = await api.jobs()
+    connected(r.failure)
+    if (r.failure) return
     remoteJobs.clear()
     for (const j of r.items) remoteJobs.set(j.id, j)
-    connected(r.failure)
     rebuildJobs()
   } catch (e) {
     connected(e instanceof RemoteError ? { code: e.code, message: e.message } : { code: 'client.error', message: 'The backend could not be read.' })
+  } finally {
+    jobsBusy = false
+  }
+}
+
+let historyBusy = false
+async function pollHistory(): Promise<void> {
+  if (!NATIVE || historyBusy) return
+  historyBusy = true
+  try {
+    const page = await api.history()
+    const next = new Map<string, Job['events']>()
+    for (const e of page.entries) {
+      const text = historyLabel(e.kind, e.state)
+      const t = Date.parse(e.ts)
+      if (!text || !Number.isFinite(t)) continue
+      const events = next.get(e.job_id) ?? []
+      events.push({ t, text })
+      next.set(e.job_id, events)
+    }
+    durableHistory.clear()
+    for (const [id, events] of next) durableHistory.set(id, events)
+    const live = S.get().live
+    if (live) S.set({ live: { ...live, history: { replaying: page.replaying, lost: page.history_lost, limited: page.limited, unavailable: false } } })
+    rebuildJobs()
+  } catch {
+    const live = S.get().live
+    if (live) S.set({ live: { ...live, history: { replaying: false, lost: false, limited: false, ...live.history, unavailable: true } } })
+  } finally {
+    historyBusy = false
   }
 }
 
@@ -486,7 +524,7 @@ function queueFromDaemon(q: QueuesList['queues'][number]): Queue {
   return {
     id: q.id,
     name: q.name,
-    kind: 'download',
+    kind: q.kind,
     builtin: q.builtin,
     running: q.running,
     maxConcurrent: q.max_concurrent,
@@ -502,7 +540,8 @@ function queueFromDaemon(q: QueuesList['queues'][number]): Queue {
     },
     onFinish: q.on_finish,
     limitKiBps: q.limit_kib_s,
-    syncEveryHours: 24,
+    syncEveryHours: q.sync_every_hours ?? 24,
+    syncFiles: q.sync_files ?? [],
     order: q.order,
     ...(q.last_started_ms ? { lastStarted: q.last_started_ms } : {}),
   }
@@ -513,7 +552,8 @@ export function queueToDaemon(q: Queue): Record<string, unknown> {
   return {
     id: q.id,
     name: q.name,
-    kind: 'download',
+    kind: q.kind,
+    sync_every_hours: q.syncEveryHours,
     max_concurrent: q.maxConcurrent,
     retries: q.retries,
     retry_delay_s: 60,
@@ -560,15 +600,16 @@ export async function pollQueues(): Promise<void> {
       days: r.limiter.days as typeof prev.limiter.days,
     }
     // The scheduler's defaults live in zeusd: it is the source of truth, the Settings page shows and edits them.
-    const fromDaemon = { defaultQueue: r.defaults.default_queue, timezone: r.defaults.timezone, missedWindow: r.defaults.missed_window, stopBehaviour: r.defaults.stop_behaviour }
+    const fromDaemon = { defaultQueue: r.defaults.default_queue, timezone: r.defaults.timezone, missedWindow: r.defaults.missed_window, stopBehaviour: r.defaults.stop_behaviour, connection: r.defaults.network_mode === 'metered' ? 'cellular' as const : r.defaults.network_mode === 'unmetered' ? 'lan' as const : 'auto' as const, meteredPause: r.defaults.pause_on_metered ?? true }
     const daemonKey = JSON.stringify(fromDaemon)
     let settings = prev.settings
     if (daemonKey !== lastDefaultsKey && !defaultsBusy) {
       lastDefaultsKey = daemonKey
-      if (JSON.stringify({ defaultQueue: settings.scheduler.defaultQueue, timezone: settings.scheduler.timezone, missedWindow: settings.scheduler.missedWindow, stopBehaviour: settings.scheduler.stopBehaviour }) !== daemonKey) {
-        settings = { ...settings, scheduler: { ...settings.scheduler, ...fromDaemon } }
+      if (JSON.stringify({ defaultQueue: settings.scheduler.defaultQueue, timezone: settings.scheduler.timezone, missedWindow: settings.scheduler.missedWindow, stopBehaviour: settings.scheduler.stopBehaviour, connection: settings.connection.type, meteredPause: settings.connection.meteredPause }) !== daemonKey) {
+        settings = { ...settings, scheduler: { ...settings.scheduler, defaultQueue: fromDaemon.defaultQueue, timezone: fromDaemon.timezone, missedWindow: fromDaemon.missedWindow, stopBehaviour: fromDaemon.stopBehaviour }, connection: { ...settings.connection, type: fromDaemon.connection, meteredPause: fromDaemon.meteredPause } }
       }
     }
+    settings = { ...settings, connection: { ...settings.connection, cost: r.network?.cost ?? 'unknown', policyHeld: r.network?.held_jobs ?? 0 } }
     S.set({ queues, limiter, settings, killSwitch: r.kill_switch_engaged || prev.killSwitch })
     rebuildJobs()
     for (const q of r.queues) {
@@ -635,7 +676,7 @@ export async function configureLimiter(limiter: { enabled: boolean; limitKiBps: 
 }
 
 export async function configureDefaults(d: { timezone: 'local' | 'utc'; missedWindow: 'skip' | 'run_once'; stopBehaviour: 'pause' | 'finish_current'; defaultQueue: string }): Promise<void> {
-  await native.queueOp('configure', { defaults: { timezone: d.timezone, missed_window: d.missedWindow, stop_behaviour: d.stopBehaviour, default_queue: d.defaultQueue } })
+  await native.queueOp('configure', { defaults: { timezone: d.timezone, missed_window: d.missedWindow, stop_behaviour: d.stopBehaviour, default_queue: d.defaultQueue, network_mode: S.get().settings.connection.type === 'cellular' ? 'metered' : S.get().settings.connection.type === 'lan' ? 'unmetered' : 'auto', pause_on_metered: S.get().settings.connection.meteredPause } })
   await pollQueues()
 }
 
@@ -716,7 +757,7 @@ function watchEngineSettings(): void {
     if (!s.live?.loaded || !s.live) return
     // A change of the scheduler's defaults goes to zeusd at once.
     const sc = s.settings.scheduler
-    const wanted = JSON.stringify({ defaultQueue: sc.defaultQueue, timezone: sc.timezone, missedWindow: sc.missedWindow, stopBehaviour: sc.stopBehaviour })
+    const wanted = JSON.stringify({ defaultQueue: sc.defaultQueue, timezone: sc.timezone, missedWindow: sc.missedWindow, stopBehaviour: sc.stopBehaviour, connection: s.settings.connection.type, meteredPause: s.settings.connection.meteredPause })
     if (lastDefaultsKey && wanted !== lastDefaultsKey && !defaultsBusy) {
       defaultsBusy = true
       void configureDefaults({ timezone: sc.timezone, missedWindow: sc.missedWindow, stopBehaviour: sc.stopBehaviour, defaultQueue: sc.defaultQueue })
@@ -1157,7 +1198,7 @@ export function startLive(hooks: StoreHooks): void {
           // Built from zeusd's file list instead.
         }
       }
-      await Promise.all([pollJobs(), refreshFiles(false), pollSlow(), pollQueues(), pollEngine()])
+      await Promise.all([pollJobs(), pollHistory(), refreshFiles(false), pollSlow(), pollQueues(), pollEngine()])
     } catch (e) {
       connected(e instanceof RemoteError ? { code: e.code, message: e.message } : { code: 'client.error', message: 'The backend could not be reached.' })
       setTimeout(() => void boot(), 5000)
@@ -1170,6 +1211,7 @@ export function startLive(hooks: StoreHooks): void {
         return
       }
       void pollJobs()
+      void pollHistory()
       if (NATIVE && n % 2 === 0) void pollQueues()
       if (NATIVE && n % 3 === 0) void pollEngine()
       if (n % 4 === 0) void pollSlow()

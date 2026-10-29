@@ -1,6 +1,6 @@
 //! The closed tool table and how the agent runs it.
 //!
-//! The table is the thirteen tools of `zeus-mcp` and nothing else: no tool decides an approval, creates or widens a
+//! The table is the fifteen tools of `zeus-mcp` and nothing else: no tool decides an approval, creates or widens a
 //! grant, reads a cookie, runs a shell command or opens a file, so no access level, skill or instruction can add one.
 //! Calls run in this process through `zeus_mcp::ZeusTools` over a separate daemon connection that holds the
 //! installation's `agent` credential: exactly the authority any external MCP client has, never the app's own.
@@ -84,22 +84,80 @@ pub const TABLE: &[ToolAccess] = &[
     (
         "zeus_artifacts",
         Access::Read,
-        &[("ingest", Access::Download)],
+        &[
+            ("ingest", Access::Download),
+            ("lifecycle_preview", Access::Organize),
+            ("lifecycle_apply", Access::Organize),
+        ],
+    ),
+    (
+        "zeus_inbox",
+        Access::Read,
+        &[
+            ("packages_list", Access::Read),
+            ("package_get", Access::Read),
+            ("submission_get", Access::Read),
+            ("package_put", Access::Download),
+            ("package_archive", Access::Download),
+            ("entries_add", Access::Download),
+            ("entries_remove", Access::Download),
+            ("preview", Access::Download),
+            ("submit", Access::Download),
+            ("submission_retry", Access::Download),
+        ],
     ),
     ("zeus_enqueue", Access::Download, &[]),
+    (
+        "zeus_sources",
+        Access::Read,
+        &[
+            ("accounts", Access::Read),
+            ("list", Access::Read),
+            ("get", Access::Read),
+            ("inspect", Access::Download),
+            ("submit", Access::Download),
+            ("control", Access::Download),
+        ],
+    ),
     ("zeus_control", Access::Download, &[]),
     ("zeus_session_request", Access::Download, &[]),
-    ("zeus_files", Access::Organize, &[]),
+    (
+        "zeus_files",
+        Access::Organize,
+        &[
+            ("status", Access::Read),
+            ("organize", Access::Organize),
+            ("undo", Access::Organize),
+        ],
+    ),
     ("zeus_workflow", Access::Organize, &[]),
     ("zeus_cloud", Access::Organize, &[]),
 ];
 
 /// The action named in a call's arguments (`request.action` for the multi-action tools, `action` for zeus_control).
+fn request_data(args: &Value) -> Option<std::borrow::Cow<'_, Value>> {
+    let request = args.get("request")?;
+    if let Some(text) = request.as_str() {
+        serde_json::from_str(text).ok().map(std::borrow::Cow::Owned)
+    } else {
+        Some(std::borrow::Cow::Borrowed(request))
+    }
+}
+
+/// Read actions from ordinary and stringified object arguments before any execution coercion.
 pub fn action_of(args: &Value) -> Option<String> {
-    args.pointer("/request/action")
-        .or_else(|| args.get("action"))
-        .and_then(Value::as_str)
-        .map(str::to_owned)
+    request_data(args)
+        .and_then(|request| {
+            request
+                .get("action")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        })
+        .or_else(|| {
+            args.get("action")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        })
 }
 
 fn deciding(action: &str) -> bool {
@@ -150,6 +208,33 @@ impl Policy {
         {
             return Err("no tool decides an approval; only a person does".into());
         }
+        if name == "zeus_inbox" {
+            if action
+                .as_deref()
+                .is_none_or(|a| !actions.iter().any(|(known, _)| *known == a))
+            {
+                return Err("there is no such inbox action".into());
+            }
+            if request_data(args)
+                .is_some_and(|request| request.pointer("/parameters/owner_credential_id").is_some())
+            {
+                return Err("the agent cannot select another inbox owner".into());
+            }
+        }
+        if name == "zeus_files"
+            && action
+                .as_deref()
+                .is_none_or(|a| !actions.iter().any(|(known, _)| *known == a))
+        {
+            return Err("there is no such file action".into());
+        }
+        if name == "zeus_sources"
+            && action
+                .as_deref()
+                .is_none_or(|a| !actions.iter().any(|(known, _)| *known == a))
+        {
+            return Err("there is no such source action".into());
+        }
         if !self.enabled.iter().any(|e| e == name) {
             return Err("it is switched off in Settings, Agent".into());
         }
@@ -183,6 +268,8 @@ impl Policy {
     }
 }
 
+const INBOX_GUIDE: &str = "Use request:{action,parameters}. package_put parameters:{untrusted_name,default_dest_dir?,package_id?,expected_revision?}; packages_list:{limit?,cursor?,include_archived?}; package_get:{package_id,limit?,cursor?,pending_only?}; package_archive:{package_id,expected_revision,archived}; entries_add:{package_id,expected_revision,entries:[{job:{url,filename?,dest_dir?,expected_sha256?},untrusted_label?}]}; entries_remove:{package_id,expected_revision,entry_ids}; preview:{package_id,expected_revision,entry_ids?}; submit:{package_id,expected_revision,preview_id}; submission_get/submission_retry:{package_id,batch_id}. IDs/revisions come from prior results. Intake adds no downloads. Review concrete destinations/collisions before explicit submit; a review covers at most50 pending entries, intake at most200 per call. Never add owner_credential_id, approval decisions or human selectors. Read replies contain redacted source addresses.";
+
 /// The tool definitions offered to a model: the catalogue's schemas, without the idempotency key (this layer adds it).
 pub fn specs(offered: &[&str]) -> Vec<ToolSpec> {
     zeus_mcp::catalogue()
@@ -198,7 +285,11 @@ pub fn specs(offered: &[&str]) -> Vec<ToolSpec> {
             }
             ToolSpec {
                 name: t.name.to_owned(),
-                description: t.description.to_owned(),
+                description: if t.name == "zeus_inbox" {
+                    format!("{} {}", t.description, INBOX_GUIDE)
+                } else {
+                    t.description.to_owned()
+                },
                 schema,
             }
         })
@@ -265,6 +356,56 @@ pub fn coerce(schema: &Value, value: &mut Value) {
         }
         _ => {}
     }
+}
+
+/// A redacted public timeline projection; never pass this projection back as executable parameters.
+pub fn input_preview(value: &Value) -> Value {
+    fn clean(value: &Value) -> Value {
+        match value {
+            Value::Object(map) => Value::Object(
+                map.iter()
+                    .map(|(key, value)| {
+                        let lower = key.to_ascii_lowercase();
+                        let projected = if matches!(
+                            lower.as_str(),
+                            "extra_headers"
+                                | "hint_url"
+                                | "referrer"
+                                | "idempotency_key"
+                                | "cookie"
+                                | "authorization"
+                                | "password"
+                                | "token"
+                                | "client_secret"
+                                | "metainfo_base64"
+                                | "credential"
+                        ) {
+                            Value::String("[private request material]".into())
+                        } else if matches!(lower.as_str(), "request" | "parameters")
+                            && value.is_string()
+                        {
+                            serde_json::from_str::<Value>(value.as_str().unwrap_or_default())
+                                .map(|v| clean(&v))
+                                .unwrap_or_else(|_| Value::String("[invalid request data]".into()))
+                        } else {
+                            clean(value)
+                        };
+                        (key.clone(), projected)
+                    })
+                    .collect(),
+            ),
+            Value::Array(rows) => Value::Array(rows.iter().map(clean).collect()),
+            Value::String(text) if text.starts_with("http://") || text.starts_with("https://") => {
+                Value::String(
+                    zeus_types::HttpUrl::parse(text)
+                        .map(|url| url.redact(zeus_types::RedactMode::Log).to_string())
+                        .unwrap_or_else(|_| "[invalid resource address]".into()),
+                )
+            }
+            _ => value.clone(),
+        }
+    }
+    trim_value(&clean(value), 600, 30)
 }
 
 /// Shorten what goes to the model: strings, lists and the whole text are bounded.
@@ -622,13 +763,78 @@ mod tests {
     }
 
     #[test]
+    fn organization_status_is_read_only_but_mutations_are_not() {
+        let read = policy(Access::Read);
+        assert!(
+            read.check(
+                "zeus_files",
+                &json!({"request":{"action":"status","operation_id":"fop_fixture"}})
+            )
+            .is_ok()
+        );
+        assert!(
+            read.check("zeus_files", &json!({"request":{"action":"organize"}}))
+                .is_err()
+        );
+        assert!(
+            policy(Access::Organize)
+                .check("zeus_files", &json!({"request":{"action":"unknown"}}))
+                .is_err()
+        );
+    }
+
+    #[test]
     fn the_table_is_exactly_the_mcp_catalogue() {
         let mut ours: Vec<&str> = TABLE.iter().map(|(n, _, _)| *n).collect();
         let mut theirs: Vec<&str> = zeus_mcp::catalogue().iter().map(|t| t.name).collect();
         ours.sort_unstable();
         theirs.sort_unstable();
         assert_eq!(ours, theirs);
-        assert_eq!(TABLE.len(), 13);
+        assert_eq!(TABLE.len(), 15);
+    }
+
+    #[test]
+    fn source_authority_and_private_metainfo_are_not_broadened_by_tools() {
+        for action in ["accounts", "list", "get"] {
+            assert!(
+                policy(Access::Read)
+                    .check(
+                        "zeus_sources",
+                        &json!({"request":{"action":action,"parameters":{}}})
+                    )
+                    .is_ok()
+            );
+        }
+        for action in ["inspect", "submit", "control"] {
+            let params = json!({"request":serde_json::to_string(&json!({"action":action,"parameters":{}})).unwrap()});
+            assert!(policy(Access::Read).check("zeus_sources", &params).is_err());
+            assert!(
+                policy(Access::Download)
+                    .check("zeus_sources", &params)
+                    .is_ok()
+            );
+        }
+        for action in [
+            "configure",
+            "revoke",
+            "accounts.configure",
+            "approve",
+            "unknown",
+        ] {
+            assert!(
+                policy(Access::Organize)
+                    .check("zeus_sources", &json!({"request":{"action":action}}))
+                    .is_err()
+            );
+        }
+        let input = json!({"request":{"action":"inspect","parameters":{"metainfo_base64":"private-torrent-canary","credential":"private-credential-canary"}}});
+        let shown = serde_json::to_string(&input_preview(&input)).unwrap();
+        assert!(!shown.contains("private-torrent-canary"));
+        assert!(!shown.contains("private-credential-canary"));
+        assert_eq!(
+            input["request"]["parameters"]["metainfo_base64"],
+            "private-torrent-canary"
+        );
     }
 
     #[test]
@@ -704,6 +910,80 @@ mod tests {
             policy(Access::Organize)
                 .check("zeus_cloud", &json!({"request": {"action": "accounts"}}))
                 .is_ok()
+        );
+    }
+
+    #[test]
+    fn inbox_actions_and_artifact_lifecycle_obey_thread_authority() {
+        let read = policy(Access::Read);
+        let download = policy(Access::Download);
+        let organize = policy(Access::Organize);
+        for action in ["packages_list", "package_get", "submission_get"] {
+            assert!(
+                read.check(
+                    "zeus_inbox",
+                    &json!({"request":{"action":action,"parameters":{}}})
+                )
+                .is_ok()
+            );
+        }
+        for action in [
+            "package_put",
+            "package_archive",
+            "entries_add",
+            "entries_remove",
+            "preview",
+            "submit",
+            "submission_retry",
+        ] {
+            let args = json!({"request":{"action":action,"parameters":{}}});
+            assert!(read.check("zeus_inbox", &args).is_err());
+            assert!(download.check("zeus_inbox", &args).is_ok());
+        }
+        for action in ["lifecycle_preview", "lifecycle_apply"] {
+            let args = json!({"request":{"action":action}});
+            assert!(read.check("zeus_artifacts", &args).is_err());
+            assert!(download.check("zeus_artifacts", &args).is_err());
+            assert!(organize.check("zeus_artifacts", &args).is_ok());
+        }
+        let encoded = json!({"request":"{\"action\":\"lifecycle_apply\",\"preview\":{}}"});
+        assert!(read.check("zeus_artifacts", &encoded).is_err());
+        assert!(download.check("zeus_artifacts", &encoded).is_err());
+        assert!(organize.check("zeus_artifacts", &encoded).is_ok());
+        let encoded_owner = json!({"request":"{\"action\":\"package_get\",\"parameters\":{\"owner_credential_id\":\"cli_other\"}}"});
+        assert!(organize.check("zeus_inbox", &encoded_owner).is_err());
+        for action in ["approve", "grant", "raw_rpc", "owner_inspect", ""] {
+            assert!(
+                organize
+                    .check("zeus_inbox", &json!({"request":{"action":action}}))
+                    .is_err()
+            );
+        }
+        assert!(organize.check("zeus_inbox",&json!({"request":{"action":"package_get","parameters":{"owner_credential_id":"cli_other"}}})).is_err());
+    }
+    #[test]
+    fn timeline_input_redacts_intake_request_material_without_changing_execution() {
+        let input = json!({"idempotency_key":"private-retry","request":{"action":"entries_add","parameters":{"entries":[{"job":{"url":"https://user:pass@example.org/file?token=secret#fragment","hint_url":"https://example.org/hint?private=hint","referrer":"https://example.org/referrer","extra_headers":{"Authorization":"Bearer header-secret"}}}]}}});
+        let saved = input.clone();
+        let text = input_preview(&input).to_string();
+        for secret in [
+            "private-retry",
+            "user:pass",
+            "token=secret",
+            "fragment",
+            "private=hint",
+            "header-secret",
+        ] {
+            assert!(!text.contains(secret), "timeline leaked {secret}");
+        }
+        assert_eq!(input, saved);
+        assert!(text.contains("entries_add"));
+        assert!(text.contains("example.org/file"));
+        let encoded = json!({"request":serde_json::to_string(&input["request"]).unwrap()});
+        assert!(
+            !input_preview(&encoded)
+                .to_string()
+                .contains("header-secret")
         );
     }
 

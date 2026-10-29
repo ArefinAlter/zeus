@@ -17,6 +17,7 @@ pub mod engine_config;
 pub mod ext;
 pub mod failure;
 pub mod held;
+pub mod history;
 pub mod home;
 pub mod links;
 pub mod osopen;
@@ -25,6 +26,7 @@ pub mod routes;
 pub mod shell;
 pub mod state;
 pub mod supervisor;
+pub mod team;
 pub mod terminal;
 
 #[cfg(feature = "http-harness")]
@@ -44,6 +46,8 @@ use crate::supervisor::Supervisor;
 
 /// The running app engine.
 pub struct App {
+    /// Optional signed team restriction and metadata connection.
+    pub team: team::Team,
     /// The app's folders.
     pub home: AppHome,
     /// The connection to zeusd.
@@ -52,6 +56,8 @@ pub struct App {
     pub supervisor: Arc<Supervisor>,
     /// Settings and lists the client keeps.
     pub state: StateStore,
+    /// Durable, bounded display history replayed from zeusd.
+    pub history: history::History,
     /// Requests the app itself holds (site-grabber plans, file moves).
     pub held: Held,
     /// Start at sign-in, the notification-area icon, notifications.
@@ -83,7 +89,9 @@ impl App {
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| d.as_millis() as u64);
         Ok(Arc::new(Self {
+            team: team::Team::new(&home),
             state: StateStore::new(&home),
+            history: history::History::new(&home),
             held: Held::new(&home),
             shell: shell::Shell::new(&home),
             reviews: Reviews::default(),
@@ -99,6 +107,10 @@ impl App {
 
     /// Serve one route of the closed table: `"GET /api/v1/jobs"`, `"POST /native/v1/queues/put"`, ...
     pub async fn call(self: &Arc<Self>, route: &str, body: Value) -> Result<Value> {
+        self.team.guard_route(route, &body)?;
+        if let Some(reply) = self.team.dispatch(route, &body).await {
+            return reply;
+        }
         let extensions: Vec<Arc<dyn ext::Extension>> = self
             .extensions
             .read()

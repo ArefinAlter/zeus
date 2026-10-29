@@ -9,7 +9,7 @@
 import { createReadStream, existsSync, statSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { createRequire } from 'node:module'
-import { extname, join, normalize } from 'node:path'
+import { extname, join, normalize, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const here = fileURLToPath(new URL('.', import.meta.url))
@@ -20,10 +20,11 @@ const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '
 
 /** Serve a built folder on a free loopback port. */
 export function serveDir(dir) {
+  dir = resolve(dir)
   const server = createServer((req, res) => {
     const url = new URL(req.url ?? '/', 'http://x')
     let p = normalize(join(dir, decodeURIComponent(url.pathname)))
-    if (!p.startsWith(dir)) return res.writeHead(403).end()
+    if (p !== dir && !p.startsWith(dir + sep)) return res.writeHead(403).end()
     if (existsSync(p) && statSync(p).isDirectory()) p = join(p, 'index.html')
     if (!existsSync(p)) return res.writeHead(404).end('not found')
     res.writeHead(200, { 'content-type': TYPES[extname(p)] ?? 'application/octet-stream' })
@@ -40,11 +41,19 @@ export async function openUi(h, { width = 1360, height = 880, theme } = {}) {
   const browser = await chromium.launch({ headless: true })
   const context = await browser.newContext({ viewport: { width, height }, ...(theme ? { colorScheme: theme } : {}) })
   const page = await context.newPage()
+  page.setDefaultTimeout(15000)
+  page.setDefaultNavigationTimeout(30000)
   const errors = []
   page.on('pageerror', (e) => errors.push(String(e)))
   page.on('console', (m) => m.type() === 'error' && errors.push(`${m.text()} ${m.location()?.url ?? ''}`))
-  await page.goto(`http://127.0.0.1:${site.port}/index.html?harness=${encodeURIComponent(h.url)}&token=${h.token}`)
-  await page.waitForSelector('.statusbar', { timeout: 30000 })
+  try {
+    await page.goto(`http://127.0.0.1:${site.port}/index.html?harness=${encodeURIComponent(h.url)}&token=${h.token}`)
+    await page.waitForSelector('.statusbar', { timeout: 30000 })
+  } catch (error) {
+    await browser.close()
+    await site.close()
+    throw error
+  }
   return {
     page,
     context,

@@ -383,6 +383,9 @@ impl CloudService {
         };
         self.store.mutate_delivery(&row.view.delivery_id, |stored| {
             stored.view.cleanup_pending = failed;
+            if !failed {
+                stored.source_checkpoint = None;
+            }
             if failed {
                 stored.view.reason = Some("cloud.local_cleanup_failed".into());
             } else if stored.view.reason.as_deref() == Some("cloud.local_cleanup_failed") {
@@ -398,13 +401,8 @@ impl CloudService {
         account: &Account,
         cancel: &CancellationToken,
     ) -> ApiResult<Outcome> {
-        let credential = account
-            .credential_key
-            .as_ref()
-            .map(|key| self.credentials.get(key))
-            .transpose()
-            .map_err(cloud_error)?;
-        let provider = self
+        let credential = self.account_credential(account, false, cancel).await?;
+        let mut provider = self
             .factory
             .connect(&account.config, credential, cancel)
             .await
@@ -522,6 +520,16 @@ impl CloudService {
         self.guard(&row.view.delivery_id)?;
         let (source, request) = source::upload_source(self, row, cancel).await?;
         self.guard(&row.view.delivery_id)?;
+        if account.oauth.is_some() {
+            // Preparing a large staged source can outlast the earlier access token.
+            let credential = self.account_credential(account, false, cancel).await?;
+            provider = self
+                .factory
+                .connect(&account.config, credential, cancel)
+                .await
+                .map_err(cloud_error)?;
+            self.guard(&row.view.delivery_id)?;
+        }
         let artifact = provider
             .upload(&request, source, row.checkpoint.clone(), &sink, cancel)
             .await

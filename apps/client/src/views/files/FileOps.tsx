@@ -79,8 +79,8 @@ export function RenameDialog({ path, name, onClose }: { path: string; name: stri
   )
 }
 
-export function MoveDialog({ path, dir, roots, folders, onClose, copy = false }: { path: string; dir: string; roots: string[]; folders: string[]; onClose: () => void; copy?: boolean }) {
-  const [value, setValue] = useState(dir)
+export function MoveDialog({ path, dir, roots, folders, onClose, copy = false, initialDestination }: { path: string; dir: string; roots: string[]; folders: string[]; onClose: () => void; copy?: boolean; initialDestination?: string }) {
+  const [value, setValue] = useState(initialDestination ?? dir)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [job, setJob] = useState<CopyJob | null>(null)
@@ -113,6 +113,7 @@ export function MoveDialog({ path, dir, roots, folders, onClose, copy = false }:
   }
   return (
     <Dialog title={copy ? "Copy to a folder" : "Move to a folder"} onClose={onClose}>
+      <p class="small break">Source: <span class="mono">{path}</span></p>
       <label class="field">
         Folder
         <input
@@ -131,7 +132,7 @@ export function MoveDialog({ path, dir, roots, folders, onClose, copy = false }:
         </datalist>
       </label>
       <p class="muted small">
-        Inside a folder enabled for file management ({roots.join(', ') || 'none'}). {copy ? 'Choose an existing folder. Folder copies include all regular files, including hidden items; links and junctions are refused.' : 'A folder that does not exist yet is created.'} If the folder has a file of the same name the move is refused; Zeus never replaces a file. Example: {joinPath(roots[0] ?? '', 'Sorted')}.
+        Inside a folder enabled for file management ({roots.join(', ') || 'none'}). {copy ? 'Choose an existing folder. Folder copies include all regular files, including hidden items; links and junctions are refused.' : 'Choose an existing destination folder. Same-drive moves have guarded undo in Storage and history; use Copy for another drive.'} An existing destination of the same name is refused; Zeus never replaces a file. Example: {joinPath(roots[0] ?? '', 'Sorted')}.
       </p>
       {job ? <p role="status">{job.state} · {fmtBytes(job.bytes)} / {fmtBytes(job.total_bytes)} · {job.files} files{job.path ? <><br /><span class="mono">{job.path}</span></> : null}</p> : null}
       {error ? <Notice kind="error">{error}</Notice> : null}
