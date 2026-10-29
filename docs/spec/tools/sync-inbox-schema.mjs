@@ -26,6 +26,12 @@ for(const definition of Object.values(defs))for(const [name,property]of Object.e
 }
 for(const name of ['url','hint_url','referrer','extra_headers'])if(defs.NewJob?.properties?.[name])Object.assign(defs.NewJob.properties[name],{'x-zeus-secret':true,writeOnly:true})
 if(defs.InboxIntakeItem?.properties?.job)Object.assign(defs.InboxIntakeItem.properties.job,{writeOnly:true,'x-zeus-secret':true})
+Object.assign(defs.InboxPackagePutParams.properties.initial_entries,{minItems:1,maxItems:200,writeOnly:true,'x-zeus-secret':true})
+Object.assign(defs.InboxPackagePutParams.properties.rules,{maxItems:32})
+Object.assign(defs.InboxPackageView.properties.rules,{maxItems:32})
+Object.assign(defs.InboxRule.properties.id,{minLength:1,maxLength:64,pattern:'^[A-Za-z0-9_-]+$'})
+Object.assign(defs.InboxRule.properties.filename_prefix,{minLength:1,maxLength:64,pattern:'^[A-Za-z0-9_-]+$'})
+Object.assign(defs.InboxRule.properties.filename_suffix,{minLength:2,maxLength:32,pattern:'^\\.[A-Za-z0-9._-]+$'})
 Object.assign(defs.InboxEntriesAddParams.properties.entries,{minItems:1,maxItems:200})
 Object.assign(defs.InboxEntriesRemoveParams.properties.entry_ids,{minItems:1,maxItems:500,uniqueItems:true})
 Object.assign(defs.InboxPreviewParams.properties.entry_ids,{maxItems:50,uniqueItems:true})

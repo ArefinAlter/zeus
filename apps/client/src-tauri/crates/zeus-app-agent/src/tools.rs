@@ -268,7 +268,7 @@ impl Policy {
     }
 }
 
-const INBOX_GUIDE: &str = "Use request:{action,parameters}. package_put parameters:{untrusted_name,default_dest_dir?,package_id?,expected_revision?}; packages_list:{limit?,cursor?,include_archived?}; package_get:{package_id,limit?,cursor?,pending_only?}; package_archive:{package_id,expected_revision,archived}; entries_add:{package_id,expected_revision,entries:[{job:{url,filename?,dest_dir?,expected_sha256?},untrusted_label?}]}; entries_remove:{package_id,expected_revision,entry_ids}; preview:{package_id,expected_revision,entry_ids?}; submit:{package_id,expected_revision,preview_id}; submission_get/submission_retry:{package_id,batch_id}. IDs/revisions come from prior results. Intake adds no downloads. Review concrete destinations/collisions before explicit submit; a review covers at most50 pending entries, intake at most200 per call. Never add owner_credential_id, approval decisions or human selectors. Read replies contain redacted source addresses.";
+const INBOX_GUIDE: &str = "Use request:{action,parameters}. package_put parameters:{untrusted_name,default_dest_dir?,rules?,initial_entries?(create only),package_id?,expected_revision?}; packages_list:{limit?,cursor?,include_archived?}; package_get:{package_id,limit?,cursor?,pending_only?}; package_archive:{package_id,expected_revision,archived}; entries_add:{package_id,expected_revision,entries:[{job:{url,filename?,dest_dir?,expected_sha256?},untrusted_label?}]}; entries_remove:{package_id,expected_revision,entry_ids}; preview:{package_id,expected_revision,entry_ids?}; submit:{package_id,expected_revision,preview_id}; submission_get/submission_retry:{package_id,batch_id}. IDs/revisions come from prior results. rules is an ordered array (max32) of {id,origin?,filename_suffix?,dest_dir?,filename_prefix?}: first match, exact origin, no wildcards; omission preserves rules and [] clears them. initial_entries uses entries_add item shape and atomically creates the package with its requests. Intake adds no downloads. Review concrete destinations/collisions before explicit submit; a review covers at most50 pending entries, intake at most200 per call. Never add owner_credential_id, approval decisions or human selectors. Read replies contain redacted source addresses.";
 
 /// The tool definitions offered to a model: the catalogue's schemas, without the idempotency key (this layer adds it).
 pub fn specs(offered: &[&str]) -> Vec<ToolSpec> {
@@ -985,6 +985,19 @@ mod tests {
                 .to_string()
                 .contains("header-secret")
         );
+    }
+
+    #[test]
+    fn seeded_intake_projection_redacts_nested_private_fields_and_leaves_execution_unchanged() {
+        let request = json!({"action":"package_put","parameters":{"untrusted_name":"Collected requests","initial_entries":[{"job":{"url":"https://example.org/file?token=ZEUS-CANARY-seed-url","extra_headers":{"Authorization":"ZEUS-CANARY-seed-header"},"referrer":"https://example.org/?token=ZEUS-CANARY-seed-referrer"}}]}});
+        let input =
+            json!({"request":request.to_string(),"idempotency_key":"ZEUS-CANARY-seed-retry"});
+        let original = input.clone();
+        let public = input_preview(&input).to_string();
+        assert!(!public.contains("ZEUS-CANARY"));
+        assert!(public.contains("package_put"));
+        assert!(public.contains("example.org/file"));
+        assert_eq!(input, original);
     }
 
     #[test]

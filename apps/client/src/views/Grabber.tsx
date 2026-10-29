@@ -19,7 +19,9 @@ import type { CategoryId } from '../model/types.ts'
 import { fmtBytes } from '../model/units.ts'
 import { HOSTED, LIVE, NATIVE } from '../backend/live'
 import { SEP, baseOf, parentOf } from '../lib/paths.ts'
-import { href } from '../lib/router'
+import { href, navigate } from '../lib/router'
+import { inboxApi, type InboxPackage } from '../backend/inbox'
+import { packageForLinks, intakeKey } from '../model/inboxIntake'
 import { Chip, Empty, Notice, PageHead, Provenance } from '../ui/components'
 import { Icon } from '../ui/icons'
 import { MediaGrabber } from './MediaGrabber'
@@ -95,6 +97,8 @@ export function Grabber() {
   const queues = useStore((s) => s.queues.filter((q) => NATIVE || q.kind === 'download'))
   const roots = useStore((s) => s.settings.saveTo.writeRoots)
   const defaultOverwrite = useStore((s) => s.settings.downloads.duplicates)
+  const [savingInbox,setSavingInbox]=useState(false)
+  const [inboxError,setInboxError]=useState('')
   const [text, setText] = useState('')
   const [summary, setSummary] = useState<ReturnType<typeof grabberAdd> | null>(null)
   const [review, setReview] = useState<Review | null>(null)
@@ -135,6 +139,15 @@ export function Grabber() {
   const liveReview = useStore((s) => (review ? s.reviews.find((r) => r.id === review.id) : undefined))
   const remote = liveReview?.remote
   const plan = (i: number): PlanRow | undefined => remote?.plan?.find((p) => p.index === i)
+  const saveInbox = async () => {
+    setSavingInbox(true);setInboxError('')
+    try {
+      const request=packageForLinks(selected),idempotency_key=await intakeKey(request)
+      const result=await inboxApi.request<{package:InboxPackage}>('package-put',{...request,idempotency_key})
+      navigate(href('inbox',{package:result.package.id}))
+    } catch { setInboxError('The selection could not be confirmed in Inbox. Retry the same selection to recover its saved package without duplicating it.') }
+    finally { setSavingInbox(false) }
+  }
   const preview = () => {
     const r = grabberPreview(sel, { overwrite: overwrite ?? defaultOverwrite })
     if (typeof r === 'string') {
@@ -415,12 +428,15 @@ export function Grabber() {
                 </select>
               </label>
             ) : null}
+            {NATIVE?<button type="button" class="btn" disabled={savingInbox||!selected.length} onClick={()=>void saveInbox()}>{savingInbox?'Saving to Inbox…':'Save selection to Inbox'}</button>:null}
             {!review ? (
               <button type="button" class="btn primary" disabled={!selected.length || badFolders.length > 0} title={badFolders.length ? 'A folder is outside the download folders' : undefined} onClick={preview}>
                 <Icon name="eye" /> Preview downloads
               </button>
             ) : null}
           </div>
+          {NATIVE?<p class="muted small">Save to Inbox keeps the selected requests for later review, with existing files protected. Saving the same selection reopens its package. Review and start downloads from Inbox.</p>:null}
+          {inboxError?<Notice kind="error">{inboxError}</Notice>:null}
           {reviewErr ? <Notice kind="error">{reviewErr}</Notice> : null}
           {badFolders.length ? <Notice kind="warn">{folderProblem(badFolders[0]?.dir ?? '', roots, ci)}</Notice> : null}
           {review ? (

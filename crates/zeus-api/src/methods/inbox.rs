@@ -63,6 +63,26 @@ identifier!(
     "One durable enqueue-dispatch receipt (`iba_<ULID>`)."
 );
 
+/// One bounded first-match package rule. It changes reviewed defaults, never execution authority.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct InboxRule {
+    /// Stable local identifier,1–64 ASCII letters, digits, underscores or hyphens.
+    pub id: String,
+    /// Exact normalized HTTP(S) origin; no credentials, path, query or wildcard.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<zeus_types::Origin>,
+    /// Case-insensitive suffix of the requested filename, such as `.pdf` or `.tar.gz`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filename_suffix: Option<String>,
+    /// Default destination for matching entries without an explicit destination.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dest_dir: Option<String>,
+    /// ASCII filename prefix (letters, digits, `_` or `-`), applied before safe-name planning.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filename_prefix: Option<String>,
+}
+
 /// Public package metadata, derived for the authenticated owner only.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct InboxPackageView {
@@ -74,6 +94,9 @@ pub struct InboxPackageView {
     pub untrusted_name: String,
     /// Suggested destination; actual scope and collision decisions belong to preview/enqueue.
     pub default_dest_dir: Option<String>,
+    /// Ordered first-match rules, at most32. Empty in older saved packages.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rules: Vec<InboxRule>,
     /// Archived packages retain their receipts and do not cancel existing downloads.
     pub archived: bool,
     /// Still awaiting a successful enqueue.
@@ -122,6 +145,13 @@ pub struct InboxPackagePutParams {
     /// Optional destination default inside engine write roots at preview/dispatch time.
     #[serde(default)]
     pub default_dest_dir: Option<String>,
+    /// Replace ordered rules (at most32). Omission preserves existing rules; [] explicitly clears.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rules: Option<Vec<InboxRule>>,
+    /// Create only: atomically retain1–200 private requests with the package (512KiB total call).
+    /// Omission creates an empty package. Updates must omit this field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub initial_entries: Option<Vec<InboxIntakeItem>>,
     /// Binds this entire mutation to one owner-scoped retry key.
     pub idempotency_key: String,
 }
@@ -262,6 +292,9 @@ pub struct InboxPreviewEntry {
     pub redacted_url: RedactedUrl,
     /// Reviewed filename after safe naming/collision planning, if valid.
     pub filename: Option<String>,
+    /// First matching rule, if any; bound to the exact reviewed package revision.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub matched_rule: Option<String>,
     /// Reviewed destination path, never an authority grant.
     pub dest_path: Option<String>,
     /// Enqueue would wait for a separate human approval.

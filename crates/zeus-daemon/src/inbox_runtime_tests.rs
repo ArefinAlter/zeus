@@ -185,3 +185,65 @@ async fn inbox_pending_dispatch_reconciles_existing_enqueue_receipt_after_restar
     );
     backend.engine.shutdown().await.unwrap();
 }
+
+#[tokio::test]
+async fn inbox_rule_changes_invalidate_review_and_outside_destinations_never_gain_scope() {
+    let dir = tempfile::tempdir().unwrap();
+    let backend = setup(dir.path()).await;
+    let (ctx, _rx) = context(dir.path(), "agent");
+    let pkg = package(
+        &backend,
+        &ctx,
+        serde_json::json!([{"job":{"url":"https://example.org/report.pdf"}}]),
+    )
+    .await;
+    let configured=backend.inbox_package_put(&ctx,serde_json::from_value(serde_json::json!({"package_id":pkg.id,"expected_revision":pkg.revision,"untrusted_name":"Runtime fixture","rules":[{"id":"papers","filename_suffix":".pdf","filename_prefix":"paper_"}],"idempotency_key":"rules"})).unwrap()).await.unwrap().package;
+    let preview = backend
+        .inbox_preview(
+            &ctx,
+            InboxPreviewParams {
+                package_id: pkg.id.clone(),
+                expected_revision: configured.revision,
+                entry_ids: vec![],
+                idempotency_key: "rule-preview".into(),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(preview.ready_entries, 1);
+    assert_eq!(preview.entries[0].matched_rule.as_deref(), Some("papers"));
+    assert_eq!(
+        preview.entries[0].filename.as_deref(),
+        Some("paper_report.pdf")
+    );
+    let outside = tempfile::tempdir().unwrap();
+    let changed=backend.inbox_package_put(&ctx,serde_json::from_value(serde_json::json!({"package_id":pkg.id,"expected_revision":configured.revision,"untrusted_name":"Runtime fixture","rules":[{"id":"outside","filename_suffix":".pdf","dest_dir":outside.path()}],"idempotency_key":"outside-rules"})).unwrap()).await.unwrap().package;
+    let stale = backend
+        .inbox_submit(
+            &ctx,
+            InboxSubmitParams {
+                package_id: pkg.id.clone(),
+                expected_revision: preview.package_revision,
+                preview_id: preview.preview_id,
+                idempotency_key: "stale-rule-submit".into(),
+            },
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(stale.envelope().code.as_str(), "api.conflict");
+    let refused = backend
+        .inbox_preview(
+            &ctx,
+            InboxPreviewParams {
+                package_id: pkg.id,
+                expected_revision: changed.revision,
+                entry_ids: vec![],
+                idempotency_key: "outside-preview".into(),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(refused.ready_entries, 0);
+    assert!(refused.entries[0].error.is_some());
+    assert_eq!(std::fs::read_dir(outside.path()).unwrap().count(), 0);
+}

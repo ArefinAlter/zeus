@@ -61,6 +61,20 @@ pub enum InboxCommand {
         #[arg(long)]
         idempotency_key: String,
     },
+    /// Replace a package's ordered rules from bounded JSON. Use [] to clear them.
+    Rules {
+        /// Existing owned package.
+        package: String,
+        /// Exact revision from the current package.
+        #[arg(long)]
+        revision: u64,
+        /// JSON array of at most32 rules and160KiB; read from stdin with -.
+        #[arg(short = 'i', long)]
+        input_file: PathBuf,
+        /// Retry only the identical metadata edit.
+        #[arg(long)]
+        idempotency_key: String,
+    },
     /// Retain1–200 URL requests from a UTF-8 file or stdin (-), without starting them.
     Add {
         /// Existing package.
@@ -250,6 +264,43 @@ fn read_input(path: &Path) -> ApiResult<Vec<InboxIntakeItem>> {
     }
     urls(file)
 }
+fn read_rules(path: &Path) -> ApiResult<Vec<InboxRule>> {
+    let parse = |reader: &mut dyn Read| -> ApiResult<Vec<InboxRule>> {
+        let mut bytes = Vec::new();
+        reader
+            .take(163_841)
+            .read_to_end(&mut bytes)
+            .map_err(|_| ApiError::invalid_params("rules input is unreadable"))?;
+        if bytes.len() > 163_840 {
+            return Err(ApiError::invalid_params("rules JSON exceeds 160 KiB"));
+        }
+        let rules: Vec<InboxRule> = serde_json::from_slice(&bytes).map_err(|_| {
+            ApiError::invalid_params("rules must be a JSON array of typed package rules")
+        })?;
+        if rules.len() > 32 {
+            return Err(ApiError::invalid_params(
+                "at most 32 package rules are supported",
+            ));
+        }
+        Ok(rules)
+    };
+    if path == Path::new("-") {
+        return parse(&mut std::io::stdin().lock());
+    }
+    let mut file = std::fs::File::open(path)
+        .map_err(|_| ApiError::invalid_params("rules input is not readable"))?;
+    if !file
+        .metadata()
+        .map_err(|_| ApiError::invalid_params("rules metadata unavailable"))?
+        .is_file()
+    {
+        return Err(ApiError::invalid_params(
+            "rules input must be a regular file",
+        ));
+    }
+    parse(&mut file)
+}
+
 /// Execute typed intake calls. --dry-run validates add data but never persists or dispatches it.
 pub async fn run<C: Client + ?Sized>(
     command: &InboxCommand,
@@ -266,6 +317,13 @@ pub async fn run<C: Client + ?Sized>(
             return Ok(CmdOutput::new(
                 format!("{} valid URL requests; nothing retained", entries.len()),
                 &serde_json::json!({"dry_run":true,"entries":entries.len()}),
+            ));
+        }
+        if let InboxCommand::Rules { input_file, .. } = command {
+            let rules = read_rules(input_file)?;
+            return Ok(CmdOutput::new(
+                "typed rules parsed; daemon semantic validation occurs on save; nothing changed",
+                &serde_json::json!({"dry_run":true,"rules":rules.len(),"semantic_validation":false}),
             ));
         }
         return Ok(CmdOutput::new(
@@ -331,11 +389,49 @@ pub async fn run<C: Client + ?Sized>(
                     expected_revision: None,
                     untrusted_name: name.clone(),
                     default_dest_dir: dest.clone(),
+                    rules: None,
+                    initial_entries: None,
                     idempotency_key: key(idempotency_key)?,
                 },
             )
             .await?,
         ),
+        InboxCommand::Rules {
+            package,
+            revision,
+            input_file,
+            idempotency_key,
+        } => {
+            let rules = read_rules(input_file)?;
+            let current = call::<InboxPackageGet, C>(
+                client,
+                InboxPackageGetParams {
+                    package_id: package.parse()?,
+                    owner_credential_id: None,
+                    include_history: false,
+                    page: page(1, &None)?,
+                    pending_only: false,
+                },
+            )
+            .await?
+            .package;
+            output(
+                "inbox.packages.put",
+                &call::<InboxPackagePut, C>(
+                    client,
+                    InboxPackagePutParams {
+                        package_id: Some(current.id),
+                        expected_revision: Some(*revision),
+                        untrusted_name: current.untrusted_name,
+                        default_dest_dir: current.default_dest_dir,
+                        rules: Some(rules),
+                        initial_entries: None,
+                        idempotency_key: key(idempotency_key)?,
+                    },
+                )
+                .await?,
+            )
+        }
         InboxCommand::Add {
             package,
             revision,
