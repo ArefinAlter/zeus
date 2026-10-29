@@ -13,7 +13,7 @@ use crate::plan::Plan;
 use crate::report::{Diagnostic, DryRunReport};
 
 /// A fetched page, truncated to what validation needs.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct PageSample {
     /// The page URL after redaction.
     pub url_redacted: String,
@@ -22,6 +22,12 @@ pub struct PageSample {
     pub content_type: Option<String>,
     /// Up to 512 KiB of the body. Untrusted content: it is parsed, never interpreted as instructions.
     pub body: String,
+}
+
+impl std::fmt::Debug for PageSample {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("PageSample([PRIVATE])")
+    }
 }
 
 /// Failures of planning.

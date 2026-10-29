@@ -25,6 +25,7 @@ impl RuntimeBackend {
                 &[
                     nm::capability::HANDOFF,
                     nm::capability::SESSION,
+                    nm::capability::SESSION_PAGE,
                     nm::capability::APPROVALS,
                     nm::capability::EVENTS,
                     nm::capability::JOB_CONTROL,

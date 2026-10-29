@@ -17,6 +17,31 @@ fn failure() -> TransportError {
         "workflow network policy refused or request failed",
     )
 }
+/// Browser workflows never inherit a site grant when their exact run grant is revoked or expires.
+pub(crate) fn workflow_session_live(
+    journal: &zeus_journal::Journal,
+    plan: &Plan,
+    run: zeus_types::RunId,
+) -> bool {
+    let Some(session) = &plan.session else {
+        return true;
+    };
+    let Ok(grants) = journal.read(|tx| tx.grants()) else {
+        return false;
+    };
+    let now = zeus_types::Timestamp::now();
+    !grants.iter().any(|g| {
+        g.origin == session.origin
+            && g.scope == zeus_types::GrantScope::Never
+            && g.is_effective_at(now)
+    }) && grants.iter().any(|g| {
+        g.origin == session.origin
+            && g.scope == zeus_types::GrantScope::Workflow
+            && g.run_id == Some(run)
+            && g.is_effective_at(now)
+            && g.decided_by.is_human_on_trust_surface()
+    })
+}
 /// Every selected destination address is vetted before opening a connection.
 pub(crate) fn public_ip(ip: IpAddr) -> bool {
     match ip {
@@ -273,7 +298,8 @@ impl WorkflowNetwork {
             })
             .map_err(|_| failure())?
             .ok_or_else(failure)?;
-        if a.state != zeus_types::ApprovalState::Approved
+        if !workflow_session_live(&self.journal, &record.plan, run)
+            || a.state != zeus_types::ApprovalState::Approved
             || a.run_id != Some(run)
             || a.facts
                 .as_ref()
@@ -553,14 +579,44 @@ impl WorkflowNetwork {
             body: Box::pin(body),
         })
     }
-    pub async fn document(
-        self: &Arc<Self>,
+    /// Browser-managed networking has no native peer pinning. Keep it separate and review it explicitly.
+    pub(crate) async fn browser_preflight(
+        &self,
         plan: &Plan,
-        url: &str,
+        url: &url::Url,
+        origin: &zeus_types::Origin,
         run: Option<zeus_types::RunId>,
-    ) -> RuntimeResult<Document> {
-        self.document_with_accept(plan, url, run, "text/html,application/json;q=0.9,*/*;q=0.1")
+    ) -> RuntimeResult<tokio::sync::OwnedSemaphorePermit> {
+        let denied = || RuntimeError::Policy("workflow.browser_network_refused");
+        if !browser_url_allowed(url, origin, &plan.allowed_domains) {
+            return Err(denied());
+        }
+        self.check_authority(run).map_err(|_| denied())?;
+        let robots = self.robots(url, plan, run).await.map_err(|_| denied())?;
+        if !robots.permits(url) {
+            return Err(denied());
+        }
+        let permit = self
+            .gate(url, plan.fetch.min_interval_ms.max(robots.delay_ms), 1, run)
             .await
+            .map_err(|_| denied())?;
+        // This is a preflight only: the browser resolves independently afterwards. No peer-pinning claim.
+        let addresses: Vec<_> = tokio::time::timeout(
+            Duration::from_secs(5),
+            tokio::net::lookup_host((
+                url.host_str().ok_or_else(denied)?,
+                url.port_or_known_default().ok_or_else(denied)?,
+            )),
+        )
+        .await
+        .map_err(|_| denied())?
+        .map_err(|_| denied())?
+        .collect();
+        if addresses.is_empty() || addresses.iter().any(|peer| !public_ip(peer.ip())) {
+            return Err(denied());
+        }
+        self.check_authority(run).map_err(|_| denied())?;
+        Ok(permit)
     }
     pub async fn document_with_accept(
         self: &Arc<Self>,
@@ -654,6 +710,22 @@ impl WorkflowNetwork {
         }
         Err(RuntimeError::Policy("workflow.redirect_limit"))
     }
+}
+fn browser_url_allowed(url: &url::Url, origin: &zeus_types::Origin, domains: &[String]) -> bool {
+    let Some(url::Host::Domain(host)) = url.host() else {
+        return false;
+    };
+    url.scheme() == "https"
+        && url.username().is_empty()
+        && url.password().is_none()
+        && url.fragment().is_none()
+        && url.origin().ascii_serialization() == origin.to_string()
+        && host.contains('.')
+        && !host.ends_with('.')
+        && !["localhost", "local", "internal", "home", "lan"]
+            .iter()
+            .any(|suffix| host == *suffix || host.ends_with(&format!(".{suffix}")))
+        && zeus_workflow::validate::host_allowed(host, domains)
 }
 struct Scoped {
     network: Arc<WorkflowNetwork>,
@@ -755,6 +827,80 @@ impl zeus_engine::JobTransportFactory for Factory {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn workflow_documents_and_jobs_never_fall_back_to_site_consent() {
+        let temp = tempfile::tempdir().unwrap();
+        let journal = zeus_journal::Journal::open(
+            &temp.path().join("grants.redb"),
+            &Default::default(),
+            Arc::new(zeus_control::SystemClock::new()),
+        )
+        .unwrap();
+        let ids = zeus_types::IdGenerator::new();
+        let run = ids.run_id();
+        let now = zeus_types::Timestamp::now();
+        let plan: Plan = serde_json::from_value(serde_json::json!({"plan_version":0,"name":"fixture","allowed_domains":["example.org"],
+            "session":{"origin":"https://example.org","document_mode":"browser_origin"},"sources":[{"type":"start_urls","urls":["https://example.org/list"]}],
+            "extract":{"items":{"kind":"css","query":"a[href]"},"fields":{"url":{"extract":{"kind":"attr","name":"href"}}}},
+            "fetch":{"min_interval_ms":1000,"max_concurrency_per_host":1},"budgets":{"max_pages":2,"max_files":2,"max_bytes":1000,"max_duration_ms":10000,"max_depth":1},"sinks":{"dest_dir":"fixture"}})).unwrap();
+        let site: zeus_types::SessionGrant = serde_json::from_value(serde_json::json!({"id":ids.grant_id(),"origin":"https://example.org","scope":"site","state":"active",
+            "created_at":now,"expires_at":now.saturating_add_ms(60000),"approval_id":ids.approval_id(),"decided_by":{"kind":"human","surface":"extension_popup"},"uses":0,"renewable":false})).unwrap();
+        journal.transact(|tx| tx.put_grant(&site)).unwrap();
+        assert!(!workflow_session_live(&journal, &plan, run));
+        let mut exact = site.clone();
+        exact.id = ids.grant_id();
+        exact.scope = zeus_types::GrantScope::Workflow;
+        exact.run_id = Some(run);
+        journal.transact(|tx| tx.put_grant(&exact)).unwrap();
+        assert!(workflow_session_live(&journal, &plan, run));
+        assert!(!workflow_session_live(&journal, &plan, ids.run_id()));
+        exact.state = zeus_types::GrantState::Revoked;
+        journal.transact(|tx| tx.put_grant(&exact)).unwrap();
+        assert!(!workflow_session_live(&journal, &plan, run));
+        exact.state = zeus_types::GrantState::Active;
+        exact.expires_at = Some(now);
+        journal.transact(|tx| tx.put_grant(&exact)).unwrap();
+        assert!(!workflow_session_live(&journal, &plan, run));
+    }
+    #[test]
+    fn browser_network_requires_an_exact_public_https_domain() {
+        let origin = "https://portal.example.org".parse().unwrap();
+        let domains = vec!["portal.example.org".into()];
+        assert!(browser_url_allowed(
+            &url::Url::parse("https://portal.example.org/page?q=data").unwrap(),
+            &origin,
+            &domains
+        ));
+        for text in [
+            "http://portal.example.org/page",
+            "https://127.1/page",
+            "https://[::1]/page",
+            "https://localhost/page",
+            "https://device.local/page",
+            "https://device.internal/page",
+            "https://portal.example.org:444/page",
+            "https://other.example.org/page",
+            "https://user:pass@portal.example.org/page",
+            "https://portal.example.org/page#fragment",
+        ] {
+            let url = url::Url::parse(text).unwrap();
+            assert!(!browser_url_allowed(&url, &origin, &domains));
+        }
+        for host in [
+            "device.local",
+            "device.internal",
+            "machine.home",
+            "host.lan",
+            "localhost",
+            "127.0.0.1",
+            "[::1]",
+        ] {
+            let text = format!("https://{host}/page");
+            let url = url::Url::parse(&text).unwrap();
+            let own_origin = url.origin().ascii_serialization().parse().unwrap();
+            assert!(!browser_url_allowed(&url, &own_origin, &[host.into()]));
+        }
+    }
     #[test]
     fn private_special_and_mapped_peers_are_refused() {
         for text in [

@@ -12,6 +12,8 @@ use zeus_verify::audit::{AuditEntry, AuditOutcome, AuditSink};
 
 #[path = "consent_artifacts.rs"]
 mod artifact_lifecycle;
+#[path = "consent_browser.rs"]
+mod browser_review;
 
 fn error(e: impl ToEnvelope) -> ApiError {
     e.to_envelope().into()
@@ -626,7 +628,8 @@ impl ConsentManager {
             "issued_at":now,"expires_at":expires,"allowed_scopes":scopes,"confirmation":if scopes.is_empty(){serde_json::json!({"approve":"typed_code"})}else{serde_json::json!({"workflow":"typed_code"})},
             "reason_codes":["workflow.plan_ready"],"agent_says_blake3":null,"plan_id":plan_id,"plan_blake3":plan_hash,"run_id":run_id,"renewal_of":null,
             "untrusted_title":clean(&plan.name),"allowed_domains":plan.allowed_domains.iter().take(20).collect::<Vec<_>>(),"allowed_domains_omitted":plan.allowed_domains.len().saturating_sub(20),
-            "session_origin":origin,"budgets":plan.budgets,"pace":{"min_interval_ms":plan.fetch.min_interval_ms,"max_concurrency_per_host":plan.fetch.max_concurrency_per_host},
+            "session_origin":origin,"browser_document_mode":plan.session.as_ref().and_then(|s| s.document_mode),"browser_profile_id":plan.session.as_ref().and_then(|s| s.profile_id.as_deref()),
+            "browser_network":plan.session.as_ref().and_then(|s| s.document_mode).map(|_| "Browser resolves and connects under its own network policy after public DNS preflight. Native peer pinning is unavailable; redirects are denied."),"budgets":plan.budgets,"pace":{"min_interval_ms":plan.fetch.min_interval_ms,"max_concurrency_per_host":plan.fetch.max_concurrency_per_host},
             "robots_txt":"obey","dest_dir":plan.sinks.dest_dir,"estimate":estimate});
         let a: Approval = serde_json::from_value(serde_json::json!({"id":id,"kind":"workflow_plan","state":"pending","run_id":run_id,"origin":origin,
             "allowed_scopes":scopes,"reason_codes":["workflow.plan_ready"],"summary":{"title":"Run approved download plan"},"created_at":now,"expires_at":expires,
@@ -794,14 +797,20 @@ impl ConsentManager {
         if p.confirmation == ConfirmationLevel::OsAuth {
             return Err(ApiError::human_required("OS authentication is unavailable"));
         }
-        if !matches!(
-            a.kind,
-            ApprovalKind::SessionGrant
-                | ApprovalKind::Handoff
-                | ApprovalKind::WorkflowPlan
-                | ApprovalKind::CloudDelivery
-                | ApprovalKind::DestructiveOp
-        ) {
+        let browser_network_review = a.kind == ApprovalKind::PolicyException
+            && a.facts.as_ref().is_some_and(|f| {
+                f.get("rule").and_then(|v| v.as_str()) == Some("browser_managed_network")
+            });
+        if !browser_network_review
+            && !matches!(
+                a.kind,
+                ApprovalKind::SessionGrant
+                    | ApprovalKind::Handoff
+                    | ApprovalKind::WorkflowPlan
+                    | ApprovalKind::CloudDelivery
+                    | ApprovalKind::DestructiveOp
+            )
+        {
             return Err(ApiError::not_implemented("this approval kind"));
         }
         // Only valid approve decisions count against the daemon-wide rate; a flood can always be denied (07 section 9.2).
@@ -1175,6 +1184,7 @@ mod tests {
         }
     }
     include!("consent_batch_tests.rs");
+    include!("consent_browser_tests.rs");
     #[tokio::test]
     async fn session_requests_are_bound_isolated_and_do_not_grant() {
         let temp = tempfile::tempdir().unwrap();

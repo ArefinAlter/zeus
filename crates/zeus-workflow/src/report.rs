@@ -178,6 +178,9 @@ pub struct RunReport {
     /// Effective workflow session grant; null for public-page runs.
     #[serde(default)]
     pub grant_id: Option<GrantId>,
+    /// The reviewed browser document mode; its workflow approval must be decided in that browser.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub browser_document_mode: Option<crate::SessionDocumentMode>,
     /// Reservation time; legacy checkpoints may not retain it separately.
     #[serde(default)]
     pub created_at: Option<Timestamp>,

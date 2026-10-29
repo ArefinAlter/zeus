@@ -20,6 +20,8 @@ use zeus_workflow::*;
 #[path = "workflow_receipts.rs"]
 mod receipts;
 use receipts::{Binding, ControlPort};
+#[path = "workflow_browser.rs"]
+mod browser_documents;
 const RECORDS: TableDefinition<&str, &[u8]> = TableDefinition::new("workflow_records_v1");
 fn fail() -> ApiError {
     ApiError::internal("durable workflow state unavailable")
@@ -51,6 +53,8 @@ struct Draft {
     samples: Vec<PageSample>,
     updated_at: Timestamp,
     dry: Option<DryRunReport>,
+    #[serde(default)]
+    browser: Option<browser_documents::BrowserReview>,
 }
 #[derive(Clone, Serialize, Deserialize)]
 struct ExportReceipt {
@@ -411,6 +415,7 @@ pub struct WorkflowService {
     consent: Arc<crate::consent::ConsentManager>,
     audit: Arc<dyn AuditSink>,
     engine: OnceLock<zeus_engine::Engine>,
+    browser: OnceLock<Arc<crate::browser::BrowserBroker>>,
     roots: Vec<PathBuf>,
     /// The registered roots of a service caller; services plan only inside them (05 section 7.6).
     service_roots: OnceLock<ServiceRoots>,
@@ -444,6 +449,7 @@ impl WorkflowService {
             consent,
             audit,
             engine: OnceLock::new(),
+            browser: OnceLock::new(),
             roots,
             service_roots: OnceLock::new(),
             gate: Mutex::new(()),
@@ -653,12 +659,6 @@ impl WorkflowService {
                 "sampling needs 1 to 3 start URLs and a bounded goal",
             ));
         }
-        if p.session_origin.is_some() {
-            return Err(ApiError::new(
-                "workflow.capability_missing",
-                "authenticated document sampling requires browser page support",
-            ));
-        }
         let id = p.plan_id.clone().unwrap_or_else(|| {
             PlanId::parse(
                 &zeus_types::IdGenerator::new()
@@ -679,13 +679,53 @@ impl WorkflowService {
                 "draft capacity reached",
             ));
         }
+        let browser = self
+            .prepare_browser_review(identity, &id, &p, old.as_ref())
+            .await?;
+        let initial = Draft {
+            owner: identity.credential_id.to_string(),
+            plan: old.as_ref().and_then(|d| d.plan.clone()),
+            samples: old.as_ref().map(|d| d.samples.clone()).unwrap_or_default(),
+            updated_at: Timestamp::now(),
+            dry: None,
+            browser: browser.clone(),
+        };
+        self.store.put(&format!("draft:{id}"), &initial)?;
+        if let Some(review) = browser.as_ref().filter(|review| {
+            !self.browser_review_ready(&id, identity.credential_id.as_str(), review)
+        }) {
+            let result = WorkflowsPlanResult {
+                replayed: false,
+                plan_id: id.clone(),
+                browser_review: Some(review.approval_id),
+                samples: vec![],
+                plan_schema: serde_json::to_value(schemars::schema_for!(Plan))
+                    .map_err(|_| fail())?,
+                diagnostics: vec![],
+                plan: None,
+                plan_hash: None,
+                draft: None,
+            };
+            self.store.put_with_receipt(
+                &format!("draft:{id}"),
+                &initial,
+                binding.as_ref(),
+                &result,
+            )?;
+            return Ok(result);
+        }
         let mut samples = old.as_ref().map(|d| d.samples.clone()).unwrap_or_default();
         if samples.is_empty() {
             let sample_plan = sampling_plan(&p.start_urls)?;
             for url in &p.start_urls {
                 let doc = self
-                    .network
-                    .document(&sample_plan, url, None)
+                    .preview_document(
+                        &id,
+                        identity.credential_id.as_str(),
+                        &sample_plan,
+                        url,
+                        "text/html,application/json;q=0.9,*/*;q=0.1",
+                    )
                     .await
                     .map_err(runtime_error)?;
                 let mut body = doc.body;
@@ -700,7 +740,32 @@ impl WorkflowService {
             }
         }
         let mut diagnostics = Vec::new();
-        let accepted = if let Some(candidate) = p.candidate {
+        let accepted = if let Some(mut candidate) = p.candidate {
+            if candidate
+                .session
+                .as_ref()
+                .map(|s| (&s.origin, s.document_mode))
+                != p.session_origin
+                    .as_ref()
+                    .map(|origin| (origin, p.browser_document_mode))
+            {
+                return Err(ApiError::invalid_params(
+                    "candidate session must match its reviewed sampling mode",
+                ));
+            }
+            if let (Some(session), Some(review)) = (&mut candidate.session, browser.as_ref()) {
+                if session
+                    .profile_id
+                    .as_ref()
+                    .is_some_and(|profile| profile != &review.profile_id)
+                {
+                    return Err(ApiError::new(
+                        "api.conflict",
+                        "candidate browser profile differs from the reviewed profile",
+                    ));
+                }
+                session.profile_id = Some(review.profile_id.clone());
+            }
             diagnostics = validate_plan(&candidate);
             diagnostics.extend(validate_samples(&candidate, &samples));
             if !has_errors(&diagnostics) {
@@ -726,10 +791,15 @@ impl WorkflowService {
             samples: samples.clone(),
             updated_at: Timestamp::now(),
             dry: None,
+            browser: self
+                .store
+                .get::<Draft>(&format!("draft:{id}"))?
+                .and_then(|d| d.browser),
         };
         let result = WorkflowsPlanResult {
             replayed: false,
             plan_id: id.clone(),
+            browser_review: None,
             samples,
             plan_schema: serde_json::to_value(schemars::schema_for!(Plan)).map_err(|_| fail())?,
             diagnostics,
@@ -758,6 +828,8 @@ impl WorkflowService {
         struct Samples<'a> {
             service: &'a WorkflowService,
             plan: &'a Plan,
+            plan_id: &'a PlanId,
+            owner: &'a str,
         }
         #[async_trait]
         impl PageFetcher for Samples<'_> {
@@ -767,8 +839,13 @@ impl WorkflowService {
             ) -> Result<PageSample, zeus_workflow::planner::PlannerError> {
                 let doc = self
                     .service
-                    .network
-                    .document(self.plan, url, None)
+                    .preview_document(
+                        self.plan_id,
+                        self.owner,
+                        self.plan,
+                        url,
+                        "text/html,application/json;q=0.9,*/*;q=0.1",
+                    )
                     .await
                     .map_err(|_| {
                         zeus_workflow::planner::PlannerError::Fetch(
@@ -791,8 +868,13 @@ impl WorkflowService {
             ) -> Result<Document, zeus_workflow::planner::PlannerError> {
                 let mut doc = self
                     .service
-                    .network
-                    .document(self.plan, url, None)
+                    .preview_document(
+                        self.plan_id,
+                        self.owner,
+                        self.plan,
+                        url,
+                        "text/html,application/json;q=0.9,*/*;q=0.1",
+                    )
                     .await
                     .map_err(|_| {
                         zeus_workflow::planner::PlannerError::Fetch(
@@ -810,8 +892,13 @@ impl WorkflowService {
             ) -> Result<Document, zeus_workflow::planner::PlannerError> {
                 let doc = self
                     .service
-                    .network
-                    .document_with_accept(self.plan, &request.url, None, &request.accept)
+                    .preview_document(
+                        self.plan_id,
+                        self.owner,
+                        self.plan,
+                        &request.url,
+                        &request.accept,
+                    )
                     .await
                     .map_err(|_| {
                         zeus_workflow::planner::PlannerError::Fetch(
@@ -832,6 +919,8 @@ impl WorkflowService {
                 &Samples {
                     service: self,
                     plan: &plan,
+                    plan_id: &p.plan_id,
+                    owner: identity.credential_id.as_str(),
                 },
                 p.sample_items,
             )
@@ -842,6 +931,10 @@ impl WorkflowService {
                     "bounded sampling did not complete",
                 )
             })?;
+        draft.browser = self
+            .store
+            .get::<Draft>(&format!("draft:{}", p.plan_id))?
+            .and_then(|d| d.browser);
         draft.dry = Some(report.clone());
         draft.updated_at = Timestamp::now();
         self.store.put(&format!("draft:{}", p.plan_id), &draft)?;
@@ -1008,6 +1101,29 @@ impl WorkflowService {
         };
         let elapsed = self.store.elapsed(&row);
         let mut report = row.snapshot.report;
+        report.browser_document_mode = row.plan.session.as_ref().and_then(|s| s.document_mode);
+        if let Some(session) = &row.plan.session {
+            report.grant_id = if crate::workflow_network::workflow_session_live(
+                &self.journal,
+                &row.plan,
+                report.run_id,
+            ) {
+                self.journal
+                    .read(|tx| tx.grants())
+                    .map_err(|_| fail())?
+                    .into_iter()
+                    .find(|grant| {
+                        grant.origin == session.origin
+                            && grant.scope == zeus_types::GrantScope::Workflow
+                            && grant.run_id == Some(report.run_id)
+                            && grant.is_effective_at(Timestamp::now())
+                            && grant.decided_by.is_human_on_trust_surface()
+                    })
+                    .map(|grant| grant.id)
+            } else {
+                None
+            };
+        }
         report.plan_id = Some(row.plan_id);
         report.approval_id = row.approval_id;
         report.elapsed_ms = elapsed;
@@ -1481,6 +1597,24 @@ impl WorkflowService {
                 self.pause_runs("policy.kill_switch_engaged")?;
                 continue;
             }
+            if row.plan.session.is_some()
+                && (!self.consent.requester_active(&row.owner)
+                    || !crate::workflow_network::workflow_session_live(
+                        &self.journal,
+                        &row.plan,
+                        id,
+                    ))
+            {
+                self.store.mutate_run(id, |current| {
+                    current.snapshot.report.status = RunStatus::Paused;
+                    current.snapshot.report.pause_reason = Some("session".into());
+                    current.snapshot.checkpoint_seq =
+                        current.snapshot.checkpoint_seq.saturating_add(1);
+                    Ok(())
+                })?;
+                let _ = self.control_jobs(id, RunAction::Pause).await;
+                continue;
+            }
             if !row.start_audited {
                 let mut entry = zeus_verify::AuditEntry::new(
                     Timestamp::now(),
@@ -1634,6 +1768,12 @@ impl RuntimePort for WorkflowService {
         if row.snapshot.report.plan_hash != hash {
             return Err(RuntimeError::CheckpointConflict);
         }
+        if row.plan.session.is_some()
+            && (!self.consent.requester_active(&row.owner)
+                || !crate::workflow_network::workflow_session_live(&self.journal, &row.plan, run))
+        {
+            return Err(RuntimeError::Policy("session.consent_required"));
+        }
         let a = self
             .journal
             .read(|t| {
@@ -1657,7 +1797,16 @@ impl RuntimePort for WorkflowService {
         Ok(())
     }
     async fn validate_environment(&self, plan: &Plan) -> RuntimeResult<()> {
-        if plan.session.is_some() {
+        if let Some(session) = &plan.session
+            && (session.document_mode != Some(SessionDocumentMode::BrowserOrigin)
+                || self.browser.get().is_none()
+                || session.profile_id.as_ref().is_none_or(|profile| {
+                    profile.len() != 32
+                        || !profile
+                            .bytes()
+                            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+                }))
+        {
             return Err(RuntimeError::Policy("workflow.capability_missing"));
         }
         if plan.sinks.items.is_some() {
@@ -1686,6 +1835,9 @@ impl RuntimePort for WorkflowService {
             .run(request.run_id)
             .map_err(|_| runtime_fail())?
             .ok_or_else(runtime_fail)?;
+        if row.plan.session.is_some() {
+            return self.run_browser_document(&row, &request).await;
+        }
         self.network
             .document_with_accept(
                 &row.plan,
@@ -1864,6 +2016,7 @@ mod tests {
         let row = row();
         let key = format!("draft:{}", row.plan_id);
         let mut draft = Draft {
+            browser: None,
             owner: identity.credential_id.to_string(),
             plan: Some(row.plan),
             samples: vec![PageSample {
@@ -1876,6 +2029,7 @@ mod tests {
         };
         service.store.put(&key, &draft).unwrap();
         let params = WorkflowsPlanParams {
+            browser_document_mode: None,
             idempotency_key: Some("plan-retry".into()),
             goal: "Download linked files".into(),
             start_urls: vec!["https://example.org/list".into()],

@@ -1996,6 +1996,13 @@
                       "type": "null"
                     }
                   ]
+                },
+                "browser_origin": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "Exact HTTPS origin for explicitly reviewed browser networking."
                 }
               },
               "required": [

@@ -148,7 +148,10 @@ impl RuntimeBackend {
         draft: zeus_api::methods::workflows::WorkflowDraftRequest,
     ) -> ApiResult<WorkflowsPlanResult> {
         let sampled = self.workflows.plan(&ctx.identity, p.clone()).await?;
-        let (plan, info) = crate::workflow_draft::draft(
+        if sampled.browser_review.is_some() {
+            return Ok(sampled);
+        }
+        let (mut plan, info) = crate::workflow_draft::draft(
             &self.models,
             &p.goal,
             &p.start_urls,
@@ -156,6 +159,15 @@ impl RuntimeBackend {
             draft.max_cost_micro_usd,
         )
         .await?;
+        plan.session = p
+            .session_origin
+            .as_ref()
+            .map(|origin| zeus_workflow::SessionRequirement {
+                origin: origin.clone(),
+                scope: zeus_types::GrantScope::Workflow,
+                document_mode: p.browser_document_mode,
+                profile_id: None,
+            });
         let mut entry = zeus_verify::audit::AuditEntry::new(
             Timestamp::now(),
             actor,

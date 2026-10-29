@@ -199,6 +199,7 @@ impl RuntimeBackend {
             config.effective_write_roots(),
         )?;
         workflows.recover_audit_receipts(audit.as_ref())?;
+        workflows.attach_browser(browser.clone());
         let roots_of = credentials.clone();
         workflows.attach_service_roots(Arc::new(move |id| {
             zeus_api::auth::CredentialId::parse(id)

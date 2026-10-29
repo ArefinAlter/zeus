@@ -280,7 +280,9 @@ pub fn render_screen(view: &ApprovalView) -> String {
     let rule = "-".repeat(64);
     out.push_str(&format!(
         "{rule}\n Zeus: {}\n{rule}\n",
-        if view.facts.get("artifact_plan").is_some() {
+        if view.facts["rule"] == "browser_managed_network" {
+            "Read website documents using the reviewed browser profile"
+        } else if view.facts.get("artifact_plan").is_some() {
             match view.facts["artifact_plan"]["operation"]["kind"].as_str() {
                 Some("delete") => "Zeus wants to tombstone an artifact record",
                 _ => "Zeus wants to reduce stored-content protection",
@@ -301,6 +303,9 @@ pub fn render_screen(view: &ApprovalView) -> String {
     }
     if view.facts.get("artifact_plan").is_some() {
         out.push_str(" Artifact lifecycle: review the exact record, previous protection and requested effect.\n A tombstone keeps provenance, user files and materializations. Retention changes permit later collection; this request does not collect bytes.\n");
+    }
+    if view.facts["rule"] == "browser_managed_network" {
+        out.push_str(" Browser networking: public DNS is checked before dispatch, but the browser resolves and connects itself.\n Native peer pinning is unavailable. This review creates no session grant.\n Review the exact profile, origin, page scope and read limits below.\n");
     }
     if let Some(facts) = view.facts.as_object() {
         for (key, value) in facts {
@@ -734,6 +739,56 @@ mod tests {
         GrantScope::Workflow,
         GrantScope::Never,
     ];
+
+    #[test]
+    fn browser_network_review_is_integrity_checked_and_explains_its_boundary() {
+        use serde_json::json;
+        let mut request = test_request();
+        request.as_object_mut().unwrap().remove("origin");
+        request.as_object_mut().unwrap().remove("job_id");
+        request.as_object_mut().unwrap().remove("agent_says");
+        request["kind"] = json!("policy_exception");
+        request["allowed_scopes"] = json!([]);
+        request["reason_codes"] = json!(["workflow.browser_network"]);
+        let facts = request["facts"].as_object_mut().unwrap();
+        facts.retain(|key, _| {
+            [
+                "t",
+                "approval_id",
+                "revision",
+                "kind",
+                "requester",
+                "issued_at",
+                "expires_at",
+                "allowed_scopes",
+                "confirmation",
+                "reason_codes",
+                "agent_says_blake3",
+            ]
+            .contains(&key.as_str())
+        });
+        facts.insert("kind".into(), json!("policy_exception"));
+        facts.insert("allowed_scopes".into(), json!([]));
+        facts.insert("confirmation".into(), json!({"approve":"typed_code"}));
+        facts.insert("reason_codes".into(), json!(["workflow.browser_network"]));
+        facts.insert("agent_says_blake3".into(), json!(null));
+        facts.insert("rule".into(), json!("browser_managed_network"));
+        facts.insert("operation".into(), json!("read"));
+        facts.insert("plan_id".into(), json!("plan_01M45NHJ2AHWMXT8JVJ7BEEJX7"));
+        facts.insert("browser_scope".into(),json!({"request_blake3":"b".repeat(64),"origin":"https://portal.example.org","grant_id":IdGenerator::new().grant_id(),"profile_id":"a".repeat(32),"start_urls":["https://portal.example.org/list"],"scope":"This origin only","max_reads":32,"max_body_bytes":524288,"deadline_ms":25000,"native_peer_pinning":false,"redirects":"deny","network":"Browser resolves and connects under its own policy."}));
+        request["request_hash"] = json!(
+            zeus_verify::canonical::request_hash(&request["facts"])
+                .unwrap()
+                .to_hex()
+        );
+        validate_request(&request).unwrap();
+        let screen = render_screen(&serde_json::from_value(request.clone()).unwrap());
+        assert!(screen.contains("Native peer pinning is unavailable"));
+        assert!(screen.contains("creates no session grant"));
+        assert!(screen.contains(&"a".repeat(32)) && screen.contains("524288"));
+        request["facts"]["browser_scope"]["profile_id"] = json!("b".repeat(32));
+        assert!(validate_request(&request).is_err());
+    }
 
     #[test]
     fn current_request_is_verified_and_unknown_or_changed_facts_are_refused() {

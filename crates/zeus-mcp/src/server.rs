@@ -800,6 +800,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn browser_workflow_mode_is_explicit_and_pending_review_cannot_create_authority() {
+        let fake = Fake::new();
+        let approval = zeus_types::IdGenerator::new().approval_id().to_string();
+        fake.answer(
+            "workflows.plan",
+            Ok(json!({"plan_id":"plan_01M45NHJ2AHWMXT8JVJ7BEEJX7",
+            "browser_review":approval,"samples":[],"plan_schema":{},"diagnostics":[]})),
+        );
+        let tools = ZeusTools::new(Arc::clone(&fake));
+        for origin in [None, Some("https://example.org")] {
+            let result = tools.call("zeus_workflow", json!({"idempotency_key":KEY,
+                "request":{"action":"plan","goal":"read documents","start_urls":["https://example.org/list"],"browser_origin":origin}})).await.unwrap();
+            assert!(!result.is_error(), "{}", result.text());
+            assert_eq!(fake.last().1["session_origin"], json!(origin));
+            assert_eq!(
+                fake.last().1["browser_document_mode"],
+                json!(origin.map(|_| "browser_origin"))
+            );
+            assert_eq!(
+                result.structured()["untrusted_data"]["browser_review"],
+                approval
+            );
+        }
+        let result = tools.call("zeus_workflow", json!({"idempotency_key":KEY,
+            "request":{"action":"plan","goal":"read documents","start_urls":["https://example.org/list"],"browser_origin":"https://example.org","profile_id":"a".repeat(32),"approved":true}})).await.unwrap();
+        assert!(result.is_error());
+        assert_eq!(fake.calls.lock().unwrap().len(), 2);
+        assert!(
+            fake.calls
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|(method, _)| method == "workflows.plan")
+        );
+    }
+
+    #[tokio::test]
     async fn workflow_samples_are_bounded_and_schema_is_available_on_demand() {
         let fake = Fake::new();
         fake.answer(

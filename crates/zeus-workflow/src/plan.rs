@@ -140,6 +140,20 @@ pub struct SessionRequirement {
     /// Grant scope to request. Plans use `workflow` (7 days, renewable).
     #[serde(default = "default_scope")]
     pub scope: GrantScope,
+    /// Explicitly reviewed document transport; absent legacy plans never select a browser implicitly.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub document_mode: Option<SessionDocumentMode>,
+    /// Exact browser profile bound by document review and the final workflow plan hash.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile_id: Option<String>,
+}
+
+/// Browser networking is a separate reviewed boundary from the daemon's pinned HTTP transport.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionDocumentMode {
+    /// Exact HTTPS browser origin with public-DNS preflight; browser peer pinning is unavailable.
+    BrowserOrigin,
 }
 
 fn default_scope() -> GrantScope {
@@ -692,6 +706,8 @@ pub(crate) fn example_plan() -> Plan {
         session: Some(SessionRequirement {
             origin: Origin::parse("https://portal.example.org").unwrap(),
             scope: GrantScope::Workflow,
+            document_mode: None,
+            profile_id: None,
         }),
         sources: vec![Source::StartUrls {
             urls: vec!["https://portal.example.org/papers?year=2026".into()],

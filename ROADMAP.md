@@ -93,7 +93,7 @@ Advanced performance features may be explicitly deferred if measured alpha requi
 
 | ID | Remaining work | Dependencies and acceptance |
 | --- | --- | --- |
-| W01 | Authenticated document/page access and `session.page` / `page_render`. | Browser/grant contract first; installed-browser tests for origin, profile, content and expiry boundaries. |
+| W01 | Authenticated document/page access and `session.page` / `page_render`. Post-alpha plain-document path is implemented with explicit browser-network review and exact profile/run bindings; [evidence and installed-browser limits](docs/alpha-0.1/BROWSER-WORKFLOW-DOCUMENTS.md). Rendering remains separate. | Browser/grant contract first; installed-browser tests for origin, profile, content and expiry boundaries. |
 | W02 | Remaining pagination/extraction, sitemap/scroll, item sinks, drift and estimator calibration. **Done 2026-10-21:** versioned reports with durable discovery counters, actual engine job counts, active elapsed time, pause/error/incompleteness fields and explicit legacy unknowns. | Advertise capabilities only when validation, execution and restart behavior work. |
 | W03 | Revised-plan continuation, incremental deduplication, multi-origin sessions and explicit site-policy exceptions. | New effects require new review; no silent reuse of old authority; robots/site constraints remain enforceable. |
 | W04 | Sandboxed conversion and derived-artifact lineage. | Fixed tools/arguments, confined I/O, resource bounds, cancellation and platform sandbox tests. |

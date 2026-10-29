@@ -43,6 +43,9 @@ pub enum WorkflowCommand {
         /// Start URLs to sample (1 to 3).
         #[arg(long = "url", required = true)]
         urls: Vec<String>,
+        /// Explicit browser-managed HTTPS origin; requires a site grant and a separate network review.
+        #[arg(long)]
+        browser_origin: Option<String>,
         /// A plan JSON file to validate against the samples (spec 08).
         #[arg(long)]
         candidate: Option<std::path::PathBuf>,
@@ -204,6 +207,7 @@ pub async fn run<C: Client + ?Sized>(
         WorkflowCommand::Plan {
             goal,
             urls,
+            browser_origin,
             candidate,
             plan_id: draft_id,
             draft,
@@ -217,7 +221,14 @@ pub async fn run<C: Client + ?Sized>(
                     idempotency_key: None,
                     goal: goal.clone(),
                     start_urls: urls.clone(),
-                    session_origin: None,
+                    session_origin: browser_origin
+                        .as_deref()
+                        .map(zeus_types::Origin::parse)
+                        .transpose()
+                        .map_err(|_| ApiError::invalid_params("invalid browser origin"))?,
+                    browser_document_mode: browser_origin
+                        .as_ref()
+                        .map(|_| zeus_workflow::SessionDocumentMode::BrowserOrigin),
                     candidate,
                     plan_id: draft_id.as_deref().map(plan_id).transpose()?,
                     draft: draft.then_some(zeus_api::methods::workflows::WorkflowDraftRequest {
@@ -231,6 +242,9 @@ pub async fn run<C: Client + ?Sized>(
                 result.plan_id,
                 result.samples.len()
             );
+            if let Some(approval) = result.browser_review {
+                text.push_str(&format!("\nBrowser networking requires human review: {approval}. After deciding, repeat with --plan-id {} (use a new retry key).", result.plan_id));
+            }
             for sample in &result.samples {
                 text.push_str(&format!(
                     "\n  {}  {} bytes",

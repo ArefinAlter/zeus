@@ -208,6 +208,7 @@ impl WorkflowRuntime {
                 plan_id: None,
                 approval_id: None,
                 grant_id: None,
+                browser_document_mode: plan.session.as_ref().and_then(|s| s.document_mode),
                 created_at: Some(Timestamp::now()),
                 updated_at: Some(Timestamp::now()),
                 elapsed_ms: 0,
@@ -1144,7 +1145,14 @@ fn record_page_error(snapshot: &mut RunSnapshot, error: &RuntimeError) {
         ),
         RuntimeError::CheckpointConflict => ("api.conflict", zeus_types::ErrorClass::Conflict),
     };
-    snapshot.report.pause_reason = Some("page_error".into());
+    snapshot.report.pause_reason = Some(
+        if code.starts_with("session.") {
+            "session"
+        } else {
+            "page_error"
+        }
+        .into(),
+    );
     snapshot.report.last_error = Some(zeus_types::ErrorEnvelope::new(
         zeus_types::ErrorCode::from_static(code),
         class,
