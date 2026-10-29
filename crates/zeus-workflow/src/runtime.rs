@@ -88,6 +88,57 @@ pub struct JobTotals {
     /// Uncommitted declared-size reservations of existing jobs.
     pub bytes_reserved: u64,
 }
+/// Redacted item metadata retained only for the explicitly requested JSONL sink.
+/// No Debug implementation exposes extracted site text.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ItemDraft {
+    /// Redacted source document URL.
+    pub page_url: String,
+    /// Redacted download URL.
+    pub url: String,
+    /// Whether the download URL was changed by redaction.
+    pub url_redacted: bool,
+    /// Untrusted extracted values; declared or recognized URL values are redacted.
+    pub fields: BTreeMap<String, String>,
+}
+impl ItemDraft {
+    fn new(plan: &Plan, fields: &Fields, page_url: &str) -> Self {
+        let download = zeus_types::redact_url(
+            fields.get("url").map(String::as_str).unwrap_or(""),
+            RedactMode::Record,
+        );
+        let fields = fields
+            .iter()
+            .map(|(name, value)| {
+                let declared_url = name == "url"
+                    || plan.extract.fields.get(name).is_some_and(|f| f.resolve_url)
+                    || plan
+                        .extract
+                        .follow
+                        .as_ref()
+                        .and_then(|f| f.fields.get(name))
+                        .is_some_and(|f| f.resolve_url);
+                let recognized_url =
+                    Url::parse(value).is_ok_and(|u| matches!(u.scheme(), "http" | "https"));
+                (
+                    name.clone(),
+                    if declared_url || recognized_url {
+                        zeus_types::redact_url(value, RedactMode::Record).url
+                    } else {
+                        value.clone()
+                    },
+                )
+            })
+            .collect();
+        Self {
+            page_url: zeus_types::redact_url(page_url, RedactMode::Record).url,
+            url: download.url,
+            url_redacted: download.redacted,
+            fields,
+        }
+    }
+}
 /// One job to create in the same commit as its URL and dedupe keys.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct JobIntent {
@@ -102,6 +153,9 @@ pub struct JobIntent {
     /// Listing declaration is a reservation estimate, never an engine integrity assertion.
     #[serde(default)]
     pub declared_size: Option<u64>,
+    /// Redacted extracted metadata when the reviewed plan requests an item sink.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub item: Option<ItemDraft>,
 }
 /// Run control is forwarded to jobs in the same ownership scope.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -131,6 +185,9 @@ pub struct RunSnapshot {
     pub elapsed_ms: u64,
     /// Filenames assigned to earlier items of this run.
     pub assigned_paths: BTreeSet<String>,
+    /// Monotonic naming/item ordinal, including items skipped because their destination exists.
+    #[serde(default)]
+    pub item_index: u32,
     /// Durable active document errors; no body or URL values.
     pub last_error: Option<String>,
 }
@@ -209,6 +266,7 @@ impl WorkflowRuntime {
                 approval_id: None,
                 grant_id: None,
                 browser_document_mode: plan.session.as_ref().and_then(|s| s.document_mode),
+                item_sink: None,
                 created_at: Some(Timestamp::now()),
                 updated_at: Some(Timestamp::now()),
                 elapsed_ms: 0,
@@ -234,12 +292,13 @@ impl WorkflowRuntime {
             keys,
             elapsed_ms: 0,
             assigned_paths: BTreeSet::new(),
+            item_index: 0,
             last_error: None,
         };
         Ok(Self { plan, snapshot })
     }
     /// Restore an exact plan and complete key set; never reinterpret a checkpoint under a changed plan.
-    pub fn restore(plan: Plan, snapshot: RunSnapshot) -> RuntimeResult<Self> {
+    pub fn restore(plan: Plan, mut snapshot: RunSnapshot) -> RuntimeResult<Self> {
         let validated = Self::new(plan.clone(), snapshot.report.run_id)?;
         if validated.snapshot.report.plan_hash != snapshot.report.plan_hash
             || snapshot.report.report_version > 1
@@ -261,6 +320,14 @@ impl WorkflowRuntime {
         {
             return Err(RuntimeError::CheckpointConflict);
         }
+        // Older snapshots did not retain the ordinal after skip. Assigned paths are durable.
+        snapshot.item_index = snapshot.item_index.max(
+            snapshot
+                .assigned_paths
+                .len()
+                .try_into()
+                .map_err(|_| RuntimeError::CheckpointConflict)?,
+        );
         Ok(Self { plan, snapshot })
     }
     /// Public counters; contains no full URL or extracted field values.
@@ -563,6 +630,7 @@ impl WorkflowRuntime {
                 });
         }
         let mut intents = Vec::new();
+        let mut item_metadata_bytes = 0usize;
         let mut newly_seen = 0u32;
         let mut reserved = totals.bytes_reserved;
         let mut fingerprint = blake3::Hasher::new();
@@ -637,7 +705,11 @@ impl WorkflowRuntime {
             {
                 continue;
             }
-            let index = next.report.files_enqueued + 1;
+            let index = next
+                .item_index
+                .checked_add(1)
+                .ok_or(RuntimeError::CheckpointConflict)?;
+            next.item_index = index;
             let mut spec = self.job_spec(
                 &fields,
                 &document.final_url,
@@ -671,12 +743,43 @@ impl WorkflowRuntime {
             ));
             reserved = reserved.saturating_add(size.unwrap_or(0));
             next.report.files_enqueued += 1;
+            let item = self
+                .plan
+                .sinks
+                .items
+                .as_ref()
+                .map(|_| ItemDraft::new(&self.plan, &fields, &document.final_url));
+            if let Some(draft) = &item {
+                item_metadata_bytes = item_metadata_bytes.saturating_add(
+                    draft.page_url.len()
+                        + draft.url.len()
+                        + draft
+                            .fields
+                            .iter()
+                            .map(|(k, v)| k.len() + v.len())
+                            .sum::<usize>()
+                        + 256,
+                );
+                if item_metadata_bytes > crate::ITEM_METADATA_MAX_BYTES {
+                    let error = RuntimeError::Policy("workflow.items_limit");
+                    let mut held = self.snapshot.clone();
+                    held.report.status = RunStatus::Paused;
+                    held.last_error = Some("workflow.items_limit".into());
+                    record_page_error(&mut held, &error);
+                    held.elapsed_ms = held
+                        .elapsed_ms
+                        .saturating_add(started.elapsed().as_millis() as u64);
+                    self.save(port, held, &[]).await?;
+                    return Err(error);
+                }
+            }
             intents.push(JobIntent {
                 spec,
                 index,
                 on_existing: self.plan.sinks.on_existing,
                 byte_budget_remaining: remaining,
                 declared_size: size,
+                item,
             });
             if next.keys.len() > 2_000_000 {
                 return Err(RuntimeError::Policy("workflow.key_limit"));

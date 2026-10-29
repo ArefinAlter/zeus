@@ -630,7 +630,8 @@ impl ConsentManager {
             "untrusted_title":clean(&plan.name),"allowed_domains":plan.allowed_domains.iter().take(20).collect::<Vec<_>>(),"allowed_domains_omitted":plan.allowed_domains.len().saturating_sub(20),
             "session_origin":origin,"browser_document_mode":plan.session.as_ref().and_then(|s| s.document_mode),"browser_profile_id":plan.session.as_ref().and_then(|s| s.profile_id.as_deref()),
             "browser_network":plan.session.as_ref().and_then(|s| s.document_mode).map(|_| "Browser resolves and connects under its own network policy after public DNS preflight. Native peer pinning is unavailable; redirects are denied."),"budgets":plan.budgets,"pace":{"min_interval_ms":plan.fetch.min_interval_ms,"max_concurrency_per_host":plan.fetch.max_concurrency_per_host},
-            "robots_txt":"obey","dest_dir":plan.sinks.dest_dir,"estimate":estimate});
+            "robots_txt":"obey","dest_dir":plan.sinks.dest_dir,"estimate":estimate,
+            "item_sink":plan.sinks.items.as_ref().map(|_| serde_json::json!({"format":"jsonl","file_name":format!("zeus-run-{run_id}.items.jsonl"),"max_bytes":zeus_workflow::ITEM_SINK_MAX_BYTES,"max_page_metadata_bytes":zeus_workflow::ITEM_METADATA_MAX_BYTES,"contents":"extracted_site_fields","url_redaction":"record"}))});
         let a: Approval = serde_json::from_value(serde_json::json!({"id":id,"kind":"workflow_plan","state":"pending","run_id":run_id,"origin":origin,
             "allowed_scopes":scopes,"reason_codes":["workflow.plan_ready"],"summary":{"title":"Run approved download plan"},"created_at":now,"expires_at":expires,
             "request_hash":crate::approvals::facts_hash(&facts)?,"requested_by":requester.credential_id.as_str(),"revision":1,"facts":facts}))

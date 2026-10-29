@@ -503,3 +503,85 @@ async fn sitemap_scope_failure_pauses_and_page_budget_counts_bootstrap_requests(
     assert_eq!(runtime.snapshot().chains.len(), 1);
     assert!(port.jobs.lock().unwrap().is_empty());
 }
+
+#[tokio::test]
+async fn item_sink_metadata_is_atomic_redacted_and_ordinal_survives_skip_restore() {
+    let mut p = plan();
+    p.sinks.items = Some(ItemsSink {
+        format: ItemsFormat::Jsonl,
+    });
+    p.filters.clear();
+    let port = Memory::new();
+    port.pages.lock().unwrap().insert(
+        "https://portal.example.org/papers?year=2026&page=1".into(),
+        page("First", "/one.pdf?token=ZEUS-CANARY-ITEM"),
+    );
+    port.pages.lock().unwrap().insert(
+        "https://portal.example.org/papers?year=2026&page=2".into(),
+        page("Second", "/two.pdf?token=ZEUS-CANARY-ITEM"),
+    );
+    let mut runtime =
+        WorkflowRuntime::new(p.clone(), zeus_types::IdGenerator::new().run_id()).unwrap();
+    port.fail_commit.store(true, Ordering::SeqCst);
+    assert!(runtime.step(&port).await.is_err());
+    assert!(port.jobs.lock().unwrap().is_empty());
+    assert_eq!(runtime.snapshot().item_index, 0);
+    runtime.step(&port).await.unwrap();
+    let jobs = port.jobs.lock().unwrap();
+    assert_eq!(jobs.len(), 1);
+    let item = jobs[0].item.as_ref().unwrap();
+    let value = serde_json::to_string(item).unwrap();
+    assert!(!value.contains("ZEUS-CANARY-ITEM"));
+    assert!(item.url_redacted);
+    assert_eq!(jobs[0].index, 1);
+    drop(jobs);
+    let mut snapshot = runtime.snapshot().clone();
+    snapshot.report.files_enqueued = 0;
+    snapshot
+        .report
+        .counts
+        .as_mut()
+        .unwrap()
+        .items_skipped_existing = 1;
+    *port.state.lock().unwrap() = Some(snapshot.clone());
+    let mut restored = WorkflowRuntime::restore(p, snapshot).unwrap();
+    restored.step(&port).await.unwrap();
+    let jobs = port.jobs.lock().unwrap();
+    assert_eq!(jobs.len(), 2);
+    assert_eq!(jobs[1].index, 2);
+    assert_eq!(restored.snapshot().item_index, 2);
+}
+
+#[tokio::test]
+async fn item_sink_metadata_bound_pauses_without_partially_committing_the_document() {
+    let mut p = plan();
+    p.pagination = None;
+    p.filters.clear();
+    p.sinks.items = Some(ItemsSink {
+        format: ItemsFormat::Jsonl,
+    });
+    p.budgets.max_files = 100;
+    let field = p.extract.fields.get("title").unwrap().clone();
+    for n in 0..30 {
+        p.extract.fields.insert(format!("extra_{n}"), field.clone());
+    }
+    let port = Memory::new();
+    let title = "x".repeat(4096);
+    let body = (0..80)
+        .map(|n| page(&title, &format!("/file-{n}.pdf")))
+        .collect::<String>();
+    port.pages
+        .lock()
+        .unwrap()
+        .insert("https://portal.example.org/papers?year=2026".into(), body);
+    let mut runtime = WorkflowRuntime::new(p, zeus_types::IdGenerator::new().run_id()).unwrap();
+    assert!(matches!(
+        runtime.step(&port).await,
+        Err(RuntimeError::Policy("workflow.items_limit"))
+    ));
+    assert_eq!(runtime.report().status, RunStatus::Paused);
+    assert!(port.jobs.lock().unwrap().is_empty());
+    assert_eq!(runtime.snapshot().item_index, 0);
+    runtime.step(&port).await.unwrap();
+    assert_eq!(port.requests.lock().unwrap().len(), 1);
+}

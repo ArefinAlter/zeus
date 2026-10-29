@@ -163,6 +163,25 @@ pub struct RunCounts {
     pub bytes_done: u64,
 }
 
+/// Hard bound for one requested item export, separate from downloaded file bytes.
+pub const ITEM_SINK_MAX_BYTES: u64 = 64 * 1024 * 1024;
+/// Bound for redacted item metadata reserved by one atomic discovery document.
+pub const ITEM_METADATA_MAX_BYTES: usize = 8 * 1024 * 1024;
+/// Progress of an explicitly requested item export. Extracted field values are never returned here.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ItemSinkReport {
+    /// File inside the run's reviewed destination directory.
+    pub file_name: String,
+    /// Durably appended JSONL records.
+    pub records: u64,
+    /// Durably appended bytes.
+    pub bytes: u64,
+    /// Resolved outcomes waiting for an append receipt.
+    pub pending_records: u32,
+    /// Maximum export bytes for this version.
+    pub max_bytes: u64,
+}
+
 /// Progress and outcome of a run, including compatibility fields for pre-alpha clients.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct RunReport {
@@ -181,6 +200,9 @@ pub struct RunReport {
     /// The reviewed browser document mode; its workflow approval must be decided in that browser.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub browser_document_mode: Option<crate::SessionDocumentMode>,
+    /// Item sink progress; absent when the reviewed plan requests no item export.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub item_sink: Option<ItemSinkReport>,
     /// Reservation time; legacy checkpoints may not retain it separately.
     #[serde(default)]
     pub created_at: Option<Timestamp>,

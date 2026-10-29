@@ -945,6 +945,13 @@ One `ItemRecord` per line of the `items` sink. Field values are untrusted text c
 
 `path` is relative to the write root, with `/` separators, as in the manifest (04 section 3.3).
 
+The desktop implementation writes `zeus-run-<run_id>.items.jsonl` inside the reviewed destination. The approval facts explicitly include that extra output, its extracted-field contents, record-mode URL redaction and a 64 MiB total cap (separate from file-download bytes). Each record is bounded to 1 MiB, and each atomic discovery document can reserve at most 8 MiB of redacted item metadata; exceeding that bound pauses before any of the document’s items commit. `RunReport.item_sink` reports the filename, durable record/byte counts, pending records and cap; extracted values are never exposed in run reports or agent tools. Values remain untrusted site data, not instructions.
+
+Discovery reserves a monotonic item ordinal and redacted field values in the same durable transaction as frontier and job intents. A skipped existing file still consumes its ordinal. Admission or skip moves its item outcome into a durable export outbox atomically; an admission recovered after a crash does not create a second outcome. Batches flush after 128 outcomes, roughly 1 MiB of field data, or when the discovery outbox is drained.
+
+The sink is created exclusively; an existing file with no receipt is never adopted. A receipt binds root, destination-directory and file identities, committed offset, record count and BLAKE3. Each append verifies the complete bounded prefix and any unreceipted tail. A tail must exactly equal a prefix of the still-pending batch; recovery appends only missing bytes, then syncs before committing the new cursor and clearing outcomes. It never truncates, replaces or rewrites existing bytes. Changed identity/content, exhausted capacity, uncertain initial creation or unavailable storage pauses the run with pending outcomes retained. A crash after exclusive creation but before the first identity receipt requires a person to preserve/move the uncertain empty file before retry. Windows keeps a no-write/no-delete-sharing handle during append; Unix retained capabilities do not isolate against a malicious concurrent same-user writer. Prefix verification has a cooperative five-second bound checked between reads, not hard cancellation of a blocked filesystem read.
+
+
 ## 11. Example plans
 
 All three plans are in normal form; their hashes are listed in section 4.2.
@@ -1247,6 +1254,12 @@ Error envelopes (00 section 9) of the `workflows.*` methods and of runs. Diagnos
 | `workflow.dry_run_required` | `conflict` | no | No complete dry run for this hash within 24 h. |
 | `workflow.plan_version_unsupported` | `unsupported` | no | A plan or stored run uses a `plan_version` this daemon does not read. |
 | `workflow.capability_missing` | `unsupported` | no | The plan needs a capability the daemon or extension lacks (infinite scroll, session page fetches, a converter removed after validation). `details.capability` names it. |
+| `workflow.items_authority` | `policy_denied` | no | Item output is held because the run, requester, exact approval, session or kill switch no longer permits writes. |
+| `workflow.items_changed` | `integrity` | no | A sink identity, committed prefix, pending tail or uncertain initial filename changed; preserve existing bytes. |
+| `workflow.items_limit` | `policy_denied` | no | The requested export reached its 64 MiB total or 1 MiB record bound. |
+| `workflow.items_unavailable` | `disk` | no | The item sink could not be opened or durably written. |
+| `workflow.items_verify_timeout` | `unavailable` | no | Bounded verification exceeded its cooperative deadline. |
+| `workflow.items_pending` | `unavailable` | no | Public run report: pending outcomes remain durable and need attention before the run can resume. |
 | `workflow.too_many_runs` | `unavailable` | yes | The active-run limit is reached. |
 | `workflow.invalid_transition` | `conflict` | no | A control action is not allowed in the run's status. |
 | `workflow.host_not_allowed` | `policy_denied` | no | A request or redirect hop targets a host outside `allowed_domains`. |

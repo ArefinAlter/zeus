@@ -22,6 +22,8 @@ mod receipts;
 use receipts::{Binding, ControlPort};
 #[path = "workflow_browser.rs"]
 mod browser_documents;
+#[path = "workflow_items.rs"]
+mod item_sink;
 const RECORDS: TableDefinition<&str, &[u8]> = TableDefinition::new("workflow_records_v1");
 fn fail() -> ApiError {
     ApiError::internal("durable workflow state unavailable")
@@ -76,6 +78,8 @@ pub(crate) struct StoredRun {
     jobs: BTreeMap<String, JobId>,
     exports: BTreeMap<String, ExportReceipt>,
     #[serde(default)]
+    items: item_sink::ItemSinkState,
+    #[serde(default)]
     active_since: Option<Timestamp>,
     #[serde(default)]
     start_audited: bool,
@@ -86,6 +90,9 @@ pub(crate) struct StoredRun {
 }
 impl StoredRun {
     fn retire_pending(&mut self) {
+        for intent in &self.pending {
+            self.items.retire(intent);
+        }
         self.retired_admission_keys.extend(
             self.pending
                 .iter()
@@ -100,7 +107,8 @@ impl StoredRun {
         }) else {
             return false;
         };
-        self.pending.remove(index);
+        let resolved = self.pending.remove(index);
+        self.items.record(&resolved, None);
         self.snapshot.report.files_enqueued = self.snapshot.report.files_enqueued.saturating_sub(1);
         if let Some(counts) = &mut self.snapshot.report.counts {
             counts.items_skipped_existing = counts.items_skipped_existing.saturating_add(1);
@@ -109,7 +117,14 @@ impl StoredRun {
     }
     fn record_admission(&mut self, key: &str, job_id: JobId) {
         self.jobs.insert(key.into(), job_id);
-        self.retired_admission_keys.remove(key);
+        if self.retired_admission_keys.remove(key) {
+            self.items.admit_retired(key, job_id);
+        }
+        for intent in &self.pending {
+            if intent.spec.idempotency_key.as_deref() == Some(key) {
+                self.items.record(intent, Some(job_id));
+            }
+        }
         self.pending
             .retain(|intent| intent.spec.idempotency_key.as_deref() != Some(key));
     }
@@ -188,6 +203,12 @@ impl WorkflowStore {
         self.put(&format!("run:{}", row.snapshot.report.run_id), &row)
     }
     fn stamp_report(&self, row: &mut StoredRun) {
+        row.snapshot.report.item_sink = row
+            .plan
+            .sinks
+            .items
+            .as_ref()
+            .map(|_| row.items.report(row.snapshot.report.run_id));
         if row.snapshot.report.status != RunStatus::Running {
             row.snapshot.elapsed_ms = self.elapsed(row);
             row.active_since = None;
@@ -1039,6 +1060,7 @@ impl WorkflowService {
                 retired_admission_keys: Default::default(),
                 jobs: BTreeMap::new(),
                 exports: BTreeMap::new(),
+                items: Default::default(),
                 active_since: None,
                 start_audited: false,
                 run_receipt: None,
@@ -1647,7 +1669,13 @@ impl WorkflowService {
             if !active {
                 continue;
             }
-            if self.drain(id).await.is_err() {
+            if let Err(error) = self.drain(id).await {
+                if let RuntimeError::Port(code) = error
+                    && code.starts_with("workflow.items_")
+                    && self.hold_item_export(id, code)?
+                {
+                    let _ = self.control_jobs(id, RunAction::Pause).await;
+                }
                 continue;
             }
             let row = self.store.run(id)?.ok_or_else(missing)?;
@@ -1676,6 +1704,9 @@ impl WorkflowService {
                 .run(run)
                 .map_err(|_| runtime_fail())?
                 .ok_or_else(runtime_fail)?;
+            if row.items.ready() || row.pending.is_empty() {
+                self.flush_items(run).map_err(item_sink::runtime_error)?;
+            }
             let Some(mut intent) = row.pending.first().cloned() else {
                 return Ok(());
             };
@@ -1809,9 +1840,6 @@ impl RuntimePort for WorkflowService {
         {
             return Err(RuntimeError::Policy("workflow.capability_missing"));
         }
-        if plan.sinks.items.is_some() {
-            return Err(RuntimeError::Policy("workflow.capability_missing"));
-        }
         if !plan.post.convert.is_empty() {
             return Err(RuntimeError::Policy("plan.convert_unavailable"));
         }
@@ -1910,6 +1938,8 @@ impl RuntimePort for WorkflowService {
         Ok(())
     }
     async fn finish(&self, plan: &Plan, snapshot: &RunSnapshot) -> RuntimeResult<()> {
+        self.flush_items(snapshot.report.run_id)
+            .map_err(item_sink::runtime_error)?;
         if let Some(manifest) = &plan.sinks.manifest {
             self.export(snapshot.report.run_id, manifest.format)
                 .map_err(|_| RuntimeError::Port("workflow.manifest_pending"))?;
@@ -1971,7 +2001,7 @@ mod tests {
         assert_eq!(error.envelope().class, zeus_types::ErrorClass::Integrity);
         assert!(!error.envelope().retryable);
     }
-    fn receipt_service(path: &Path) -> Arc<WorkflowService> {
+    pub(super) fn receipt_service(path: &Path) -> Arc<WorkflowService> {
         let journal = zeus_journal::Journal::open(
             &path.join("journal.redb"),
             &Default::default(),
@@ -2439,7 +2469,7 @@ mod tests {
             .count();
         assert_eq!(exports, 1);
     }
-    fn row() -> StoredRun {
+    pub(super) fn row() -> StoredRun {
         let plan = sampling_plan(&["https://example.org/list".into()]).unwrap();
         let run = zeus_types::IdGenerator::new().run_id();
         StoredRun {
@@ -2455,6 +2485,7 @@ mod tests {
             retired_admission_keys: Default::default(),
             jobs: BTreeMap::new(),
             exports: BTreeMap::new(),
+            items: Default::default(),
             active_since: None,
             start_audited: false,
             run_receipt: None,
@@ -2462,7 +2493,7 @@ mod tests {
         }
     }
 
-    fn report_intent(run_id: RunId, key: &str, index: u32) -> JobIntent {
+    pub(super) fn report_intent(run_id: RunId, key: &str, index: u32) -> JobIntent {
         let mut source = zeus_types::Source::new(zeus_types::SourceKind::Workflow);
         source.run_id = Some(run_id);
         let mut spec = zeus_types::JobSpec::new(
@@ -2476,10 +2507,15 @@ mod tests {
             on_existing: OnExisting::Skip,
             byte_budget_remaining: 1024,
             declared_size: None,
+            item: None,
         }
     }
 
-    fn report_job(run_id: RunId, state: JobState, bytes_done: u64) -> zeus_journal::JobRecord {
+    pub(super) fn report_job(
+        run_id: RunId,
+        state: JobState,
+        bytes_done: u64,
+    ) -> zeus_journal::JobRecord {
         let spec = report_intent(run_id, "fixture-only", 1).spec;
         let mut job = zeus_types::Job::new(
             zeus_types::IdGenerator::new().job_id(),
@@ -3023,6 +3059,7 @@ mod tests {
             on_existing: OnExisting::Skip,
             byte_budget_remaining: 1,
             declared_size: None,
+            item: None,
         };
         store.commit(0, &next, &[intent]).unwrap();
         store

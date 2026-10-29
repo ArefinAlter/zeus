@@ -14,6 +14,7 @@ export function Runs() {
   const [goal, setGoal] = useState('Download linked files')
   const [urls, setUrls] = useState('')
   const [browserMode, setBrowserMode] = useState(false)
+  const [itemRecords, setItemRecords] = useState(false)
   const [dest, setDest] = useState('workflow-downloads')
   const [text, setText] = useState('')
   const [saved, setSaved] = useState<SavedPlan[]>([])
@@ -83,6 +84,7 @@ export function Runs() {
   const changed = () => { setReview(null); setDry(null); mutation.current = null; setNote('') }
   const generate = () => void action(async () => {
     const candidate = workflowTemplate(lines(urls), goal, dest)
+    if (itemRecords) candidate.sinks = { ...(candidate.sinks as Record<string, unknown>), items: { format: 'jsonl' } }
     if (browserMode) {
       const origins = [...new Set(lines(urls).map(raw => new URL(raw).origin))]
       const origin = origins[0]
@@ -157,6 +159,7 @@ export function Runs() {
       </div>
       <label class="field">Page URLs · one per line<textarea aria-label="Workflow page URLs" value={urls} spellcheck={false} maxLength={24000} disabled={busy} onInput={e => { setUrls(e.currentTarget.value); changed() }} /></label>
       <label class="field"><span><input type="checkbox" checked={browserMode} disabled={busy} onChange={e => { setBrowserMode(e.currentTarget.checked); draft.current = null; changed() }} /> Use this browser's signed-in website session</span><small>Requires a site grant displayed by the Zeus extension and browser host permission. Connect one browser profile for the initial review. The browser handles connections after a public DNS check without native peer pinning. Redirects are refused. Every run needs a separate review bound to that profile.</small></label>
+      <label class="field"><span><input type="checkbox" checked={itemRecords} disabled={busy} onChange={e => setItemRecords(e.currentTarget.checked)} /> Include extracted item records in the starting plan</span><small>Writes a JSONL file beside the downloads, up to 64 MiB per run. It contains the site's extracted fields and redacted URLs. The plan JSON controls execution.</small></label>
       <div class="row-actions"><button class="btn" disabled={busy} onClick={generate}>Create starting plan</button><span class="muted">Matches links with a download attribute; review and edit the selector for your pages.</span></div>
       <label class="field">Plan JSON<textarea class="runs-plan" aria-label="Plan JSON" value={text} spellcheck={false} maxLength={262144} disabled={busy} onInput={e => { setText(e.currentTarget.value); changed() }} /></label>
       <div class="row-actions">
@@ -189,6 +192,7 @@ export function Runs() {
           <button class="btn" disabled={busy || !['running', 'paused', 'awaiting_approval'].includes(report.status)} onClick={() => control('cancel')}>Cancel run</button>
           <button class="btn" disabled={busy} onClick={() => exportManifest('csv')}>Export CSV manifest</button><button class="btn" disabled={busy} onClick={() => exportManifest('jsonl')}>Export JSONL manifest</button>
         </div>
+        {report.item_sink && <p aria-label="Workflow item export">{report.item_sink.records} item records · {fmtBytes(report.item_sink.bytes)} of {fmtBytes(report.item_sink.max_bytes)} · <code>{report.item_sink.file_name}</code> in the workflow destination{report.item_sink.pending_records > 0 ? ` · ${report.item_sink.pending_records} records waiting to be saved` : ''}</p>}
         {report.counts && <details><summary>Detailed counters</summary><pre>{JSON.stringify(report.counts, null, 2)}</pre></details>}
       </>}
       {manifest && <div aria-label="Exported workflow manifest"><p>{manifest.records} records saved to <code>{manifest.path}</code></p>{manifest.sha256 && <p>SHA-256: <code>{manifest.sha256}</code></p>}{manifest.content && <details><summary>Manifest contents</summary><pre>{manifest.content}</pre></details>}</div>}

@@ -30,7 +30,8 @@ pub use plan::{
 };
 pub use planner::{DryRunPlanner, Estimate, NotImplementedPlanner, PageFetcher, PageSample};
 pub use report::{
-    Checkpoint, Diagnostic, DryRunReport, PlannedItem, RunCounts, RunReport, RunStatus, Severity,
+    Checkpoint, Diagnostic, DryRunReport, ITEM_METADATA_MAX_BYTES, ITEM_SINK_MAX_BYTES,
+    ItemSinkReport, PlannedItem, RunCounts, RunReport, RunStatus, Severity,
 };
 pub use validate::{has_errors, validate_plan, validate_samples};
 
@@ -48,7 +49,7 @@ pub mod pagination;
 pub mod runtime;
 #[cfg(feature = "runtime")]
 pub use runtime::{
-    Document, FetchRequest, JobIntent, JobTotals, RunAction, RunSnapshot, RuntimeError,
+    Document, FetchRequest, ItemDraft, JobIntent, JobTotals, RunAction, RunSnapshot, RuntimeError,
     RuntimePort, RuntimeResult, WorkflowRuntime,
 };
 
