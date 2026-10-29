@@ -25,6 +25,9 @@ pub struct WorkflowsPlanParams {
     /// Origin whose session the sampling may use (an effective grant must exist).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_origin: Option<Origin>,
+    /// Explicit browser document mode; requires a separate human review and existing session grant.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub browser_document_mode: Option<zeus_workflow::SessionDocumentMode>,
     /// A candidate plan to validate against the samples. Absent on the first call.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub candidate: Option<Plan>,
@@ -68,6 +71,9 @@ pub struct WorkflowsPlanResult {
     pub replayed: bool,
     /// The stored draft.
     pub plan_id: PlanId,
+    /// Human browser-network review required before sampling; retry with this plan_id after deciding.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub browser_review: Option<ApprovalId>,
     /// Page samples for the agent to write selectors against (bounded, untrusted content).
     pub samples: Vec<PageSample>,
     /// The JSON Schema of a plan.

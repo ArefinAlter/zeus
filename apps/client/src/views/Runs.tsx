@@ -13,6 +13,7 @@ const findings = (rows: Finding[]) => rows.length ? <ul>{rows.map((row, i) => <l
 export function Runs() {
   const [goal, setGoal] = useState('Download linked files')
   const [urls, setUrls] = useState('')
+  const [browserMode, setBrowserMode] = useState(false)
   const [dest, setDest] = useState('workflow-downloads')
   const [text, setText] = useState('')
   const [saved, setSaved] = useState<SavedPlan[]>([])
@@ -82,6 +83,12 @@ export function Runs() {
   const changed = () => { setReview(null); setDry(null); mutation.current = null; setNote('') }
   const generate = () => void action(async () => {
     const candidate = workflowTemplate(lines(urls), goal, dest)
+    if (browserMode) {
+      const origins = [...new Set(lines(urls).map(raw => new URL(raw).origin))]
+      const origin = origins[0]
+      if (origins.length !== 1 || !origin?.startsWith('https://')) throw new Error('Browser pages require one exact HTTPS origin.')
+      candidate.session = { origin, scope: 'workflow', document_mode: 'browser_origin' }
+    }
     changed(); setText(JSON.stringify(candidate, null, 2))
   })
   const validate = () => void action(async () => {
@@ -90,7 +97,9 @@ export function Runs() {
     const start_urls = lines(urls)
     if (!start_urls.length || start_urls.length > 3) throw new Error('Enter one to three page URLs to sample.')
     // Reuse an existing plan only with the exact page set that supplied its samples.
-    const params = { goal, start_urls, candidate, ...(draft.current?.urls === urls ? { plan_id: draft.current.id } : {}) }
+    const session = (candidate as Record<string, unknown>).session as { origin?: string; document_mode?: string } | undefined
+    if (browserMode !== (session?.document_mode === 'browser_origin')) throw new Error('The plan session must match the selected browser mode. Create or edit the plan accordingly.')
+    const params = { goal, start_urls, candidate, ...(browserMode ? { session_origin: session?.origin, browser_document_mode: 'browser_origin' } : {}), ...(draft.current?.urls === urls ? { plan_id: draft.current.id } : {}) }
     setReview(null); setDry(null)
     const value = await api.plan({ ...params, idempotency_key: retry(`plan:${JSON.stringify(params)}`) })
     if (!mounted.current) return
@@ -135,18 +144,19 @@ export function Runs() {
     {error && <Notice kind="error">{error}</Notice>}{note && <Notice>{note}</Notice>}
     <section class="runs-card" aria-label="Workflow plan">
       <h2>Plan a workflow</h2>
-      <p class="muted">Start with public pages containing download links. Edit the JSON for selectors, pagination, naming and limits. Session pages, infinite scroll and workflow conversion are not available in this release.</p>
+      <p class="muted">Start with public pages containing download links. Edit the JSON for selectors, pagination, naming and limits. Browser pages require a site grant and a separate review. Infinite scroll and workflow conversion remain unavailable.</p>
       {savedError && <Notice kind="error">Saved plans could not be read: {savedError}. Saving is disabled to protect the existing list.</Notice>}
       {!!saved.length && <label class="field">Saved plans<select aria-label="Saved plans" value="" disabled={busy} onChange={e => {
         const p = saved.find(row => row.plan_id === e.currentTarget.value)
         if (!p) return
-        changed(); setGoal(p.goal); setUrls(p.urls); setText(p.text); draft.current = { id: p.plan_id, urls: p.urls }
+        changed(); setGoal(p.goal); setUrls(p.urls); setText(p.text); setBrowserMode(JSON.parse(p.text).session?.document_mode === 'browser_origin'); draft.current = { id: p.plan_id, urls: p.urls }
       }}><option value="">Open a saved plan…</option>{saved.map(p => <option key={p.plan_id} value={p.plan_id}>{p.goal} · {p.plan_id}</option>)}</select></label>}
       <div class="runs-grid">
         <label class="field">Goal<input aria-label="Workflow goal" value={goal} maxLength={2000} disabled={busy} onInput={e => { setGoal(e.currentTarget.value); changed() }} /></label>
         <label class="field">Destination folder<input aria-label="Workflow destination" value={dest} disabled={busy} onInput={e => setDest(e.currentTarget.value)} /><small class="muted">Used when creating the starting plan; the JSON below controls execution.</small></label>
       </div>
-      <label class="field">Public page URLs · one per line<textarea aria-label="Workflow page URLs" value={urls} spellcheck={false} maxLength={24000} disabled={busy} onInput={e => { setUrls(e.currentTarget.value); changed() }} /></label>
+      <label class="field">Page URLs · one per line<textarea aria-label="Workflow page URLs" value={urls} spellcheck={false} maxLength={24000} disabled={busy} onInput={e => { setUrls(e.currentTarget.value); changed() }} /></label>
+      <label class="field"><span><input type="checkbox" checked={browserMode} disabled={busy} onChange={e => { setBrowserMode(e.currentTarget.checked); draft.current = null; changed() }} /> Use this browser's signed-in website session</span><small>Requires a site grant displayed by the Zeus extension and browser host permission. Connect one browser profile for the initial review. The browser handles connections after a public DNS check without native peer pinning. Redirects are refused. Every run needs a separate review bound to that profile.</small></label>
       <div class="row-actions"><button class="btn" disabled={busy} onClick={generate}>Create starting plan</button><span class="muted">Matches links with a download attribute; review and edit the selector for your pages.</span></div>
       <label class="field">Plan JSON<textarea class="runs-plan" aria-label="Plan JSON" value={text} spellcheck={false} maxLength={262144} disabled={busy} onInput={e => { setText(e.currentTarget.value); changed() }} /></label>
       <div class="row-actions">
@@ -156,7 +166,7 @@ export function Runs() {
         <button class="btn primary" disabled={busy || !review?.plan_hash || !dry?.complete || dry.plan_hash !== review.plan_hash} onClick={requestRun}>Request run approval</button>
       </div>
       {busy && <p role="status">Waiting for the engine…</p>}
-      {review && <div aria-label="Plan validation"><p>{review.plan_hash ? 'Validated plan' : 'Plan needs changes'} · <code>{review.plan_id}</code></p>{review.plan_hash && <p>Plan hash: <code>{review.plan_hash}</code></p>}{findings(review.diagnostics)}<p>{review.samples.length} page samples inspected.</p></div>}
+      {review && <div aria-label="Plan validation"><p>{review.plan_hash ? 'Validated plan' : review.browser_review ? 'Browser network review required' : 'Plan needs changes'} · <code>{review.plan_id}</code></p>{review.browser_review && <><p>Approve <code>{review.browser_review}</code> in the opened Zeus terminal, then validate again. Sampling has not started.</p><button class="btn" disabled={busy} onClick={() => void action(async () => { await api.review(review.browser_review!); if (mounted.current) setNote('Review the browser networking scope in the opened terminal, then validate again.') })}>Open network review</button></>}{review.plan_hash && <p>Plan hash: <code>{review.plan_hash}</code></p>}{findings(review.diagnostics)}<p>{review.samples.length} page samples inspected.</p></div>}
       {dry && <div aria-label="Dry run report"><h3>Dry run</h3><p>{dry.complete ? 'Sampling complete' : 'Sampling incomplete; run approval is disabled'} · {dry.sampled_pages} pages · {dry.name_collisions} naming collisions</p>{findings(dry.warnings)}<div class="runs-scroll"><table><thead><tr><th>Source</th><th>File name</th><th>Collision</th></tr></thead><tbody>{dry.sample.map((item, i) => <tr key={i}><td>{item.url_redacted}</td><td>{item.file_name}</td><td>{item.collides_with === undefined || item.collides_with === null ? '—' : `Item ${item.collides_with + 1}`}</td></tr>)}</tbody></table></div></div>}
     </section>
     <section class="runs-card" aria-label="Saved workflow runs">
@@ -171,6 +181,7 @@ export function Runs() {
       {report && <><p><StateLabel state={report.status} /> · {fmtBytes(report.bytes_done)} · {Math.round(report.elapsed_ms / 1000)} seconds active</p><p>{report.pages_fetched} pages · {report.files_completed}/{report.files_enqueued} files complete · {report.files_failed} failed</p><p>Plan hash: <code>{report.plan_hash}</code></p>
         {report.possibly_incomplete && <Notice kind="warn">This run may not have explored all sources. {report.pause_reason ?? report.stop_reason ?? ''}</Notice>}
         {report.last_error && <Notice kind="error">{report.last_error.code}: {report.last_error.message}</Notice>}{findings(report.drift)}
+        {report.status === 'awaiting_approval' && report.browser_document_mode && <Notice>Review the exact browser profile and plan in the Zeus terminal. The extension must have displayed this approval and have host access before any page is read.</Notice>}
         <div class="row-actions">
           {report.status === 'awaiting_approval' && report.approval_id && <button class="btn primary" disabled={busy} onClick={() => void action(async () => { await api.review(report.approval_id!); if (mounted.current) setNote('Review the plan and make your decision in the opened terminal.') })}>Open approval review</button>}
           <button class="btn" disabled={busy || report.status !== 'running'} onClick={() => control('pause')}>Pause run</button>

@@ -31,8 +31,11 @@ pub enum WorkflowRequest {
     Plan {
         /// Goal text, recorded as data.
         goal: String,
-        /// One to three public HTTP(S) pages.
+        /// One to three HTTP(S) pages. Browser mode additionally requires independent human review.
         start_urls: Vec<String>,
+        /// Explicit browser-managed HTTPS origin; an existing browser site grant is required.
+        #[serde(default)]
+        browser_origin: Option<String>,
         /// Existing draft ID.
         #[serde(default)]
         plan_id: Option<String>,
@@ -354,6 +357,7 @@ pub async fn workflow<C: Client>(
         WorkflowRequest::Plan {
             goal,
             start_urls,
+            browser_origin,
             plan_id,
             candidate,
         } => {
@@ -363,7 +367,8 @@ pub async fn workflow<C: Client>(
                 )));
             }
             ("workflows.plan", rpc::<WorkflowsPlan, _>(client, json!({
-                "goal": goal, "start_urls": start_urls, "plan_id": plan_id, "candidate": candidate
+                "goal": goal, "start_urls": start_urls, "plan_id": plan_id, "candidate": candidate,
+                "session_origin": browser_origin, "browser_document_mode": browser_origin.as_ref().map(|_| "browser_origin")
             }), k).await?, "review_plan")
         }
         WorkflowRequest::DryRun {

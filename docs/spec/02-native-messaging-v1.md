@@ -193,6 +193,7 @@ Rules:
 |---|---|---|
 | `handoff` | E, D | `handoff.offer`, `.accept`, `.reject`, `.withdraw`. |
 | `session` | E | E can release session material (`session.request`). |
+| `session.page` | E | Bounded document reads under an explicit browser-network review (section 18). |
 | `url_refresh.refetch` | E | E can derive a fresh URL by refetching the origin URL (section 8). |
 | `url_refresh.download_api` | E | E can derive a fresh URL by starting and cancelling a browser download. |
 | `fetch_proxy` | E, D | In-browser fetch proxy (`fetch.*`). |
@@ -293,6 +294,9 @@ Direction: E to D, D to E. Kind: **Q** request (a response is mandatory), **R** 
 | `handoff.withdraw` | E to D | N | | | `handoff` |
 | `session.request` | D to E | Q | `session.response` | 15 s | `session` |
 | `session.response` | E to D | R | | | |
+| `session.page.request` | D to E | Q | `session.page.response` | 25 s maximum | `session.page` |
+| `session.page.response` | E to D | R | | | |
+| `session.page.cancel` | D to E | N | | | `session.page` |
 | `url.refresh.request` | D to E | Q | `url.refresh.response` | `deadline_ms` + 5 s | `url_refresh.*` |
 | `url.refresh.response` | E to D | R | | | |
 | `fetch.range` | D to E | Q | `fetch.head` then stream | `deadline_ms` for `fetch.head` | `fetch_proxy` |
@@ -1346,3 +1350,17 @@ Loss is bounded by the slice size and the unacknowledged window: bytes whose `pw
 | O6 | Several browser profiles may hold different sessions for one origin; D routes by `profile_id` for handoffs but must guess for agent jobs. | Ask the human once which profile to use for an agent job (spec 07). |
 | O7 | A signed one-shot URL consumed by the `refetch` probe may no longer be usable by D. | Prefer `download_api` for URLs known to be single use; learn per origin. |
 | O8 | Safari (App Extension native messaging) is not covered. | Out of scope for v1. |
+
+
+## 18. Reviewed browser document reads (`session.page`)
+
+This additive v1 capability is separate from session-material export and byte-range proxying. The daemon never falls back to it automatically. Both peers must negotiate it. The daemon authenticates the extension's profile and rechecks the exact human grant, requesting credential, review and running subject throughout the request.
+
+- `session.page.request` identifies `subject` (`plan` with `plan_id`, or `run` with `run_id`), `grant_id`, `profile_id`, exact HTTPS `origin` and `url`, fixed `representation` (`html`, `json`, `xml`, `text`), `max_body_bytes` (1–524288), `deadline_ms` (1000–25000) and `incognito`.
+- The extension preserves its independent displayed-approval and host-permission gates for verified terminal decisions (section 10.2(b)); a daemon grant alone is insufficient. Reviewed workflow facts bind the exact profile; another connected profile cannot substitute.
+- Plan reads require a site grant plus the separate bounded browser-network review described in 08 section 4.4. Run reads require a workflow grant for that exact run plus browser mode in the approved plan. A job/once grant cannot cover either.
+- The extension uses documented browser fetch with credentials, no caller headers, no referrer, no cache and redirects refused. It never reads a cookie API or browser credential store for this route. Private-context requests fail closed in this implementation. At most two reads are active.
+- Only bounded UTF-8 HTML, JSON, XML or plain text is returned. `session.page.response` echoes subject, grant and profile, exact final URL, status, content type, optional bounded Link header, base64 data and observation timestamp. All other headers stay in the browser. Document content and URL queries are not logged.
+- `session.page.cancel` contains the original `request_id` and cancels only that request on this connection. The daemon sends it when the caller is canceled or a response completes. Pause, kill switch, requester/approval/grant revocation, disconnect and deadline stop outstanding reads; a late reply cannot authorize another request.
+
+Before dispatch the daemon checks robots, host pacing, allowed domains, exact origin, HTTPS, absence of IP literals/local hostnames and current public DNS answers. The browser subsequently performs its own resolution and connection under browser policy. This is **not native peer pinning**. The approval explicitly presents the residual DNS-rebinding boundary; no native connection guarantee is implied. See [ADR 0019](../adr/0019-browser-workflow-documents.md).

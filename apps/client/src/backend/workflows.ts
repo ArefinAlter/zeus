@@ -2,7 +2,7 @@ import { call } from './remote'
 
 export type Finding = { code: string; message: string; severity: string; path?: string }
 export type PlanReview = {
-  plan_id: string; plan_hash?: string; plan?: Record<string, unknown>
+  plan_id: string; plan_hash?: string; browser_review?: string; plan?: Record<string, unknown>
   diagnostics: Finding[]; samples: { url_redacted: string; body: string }[]
 }
 export type DryRun = {
@@ -11,7 +11,7 @@ export type DryRun = {
   warnings: Finding[]
 }
 export type WorkflowRun = {
-  run_id: string; plan_id: string | null; plan_hash: string; status: string; approval_id: string | null
+  run_id: string; plan_id: string | null; plan_hash: string; status: string; approval_id: string | null; browser_document_mode?: 'browser_origin'
   pages_fetched: number; files_enqueued: number; files_completed: number; files_failed: number; bytes_done: number
   elapsed_ms: number; possibly_incomplete: boolean; pause_reason: string | null; stop_reason: string | null
   last_error: { code: string; message: string } | null; drift: Finding[]; counts?: Record<string, number> | null

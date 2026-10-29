@@ -26,7 +26,7 @@ pub use plan::{
     Budgets, ConvertStep, DateFormat, DateOrder, Extract, Extraction, FetchPolicy, Field,
     FieldPattern, Filter, Follow, ItemsFormat, ItemsSink, ManifestFormat, ManifestSink, OnDrift,
     OnExisting, PLAN_VERSION, Pagination, Plan, PlanId, Post, RouteCondition, RouteRule, Selector,
-    SessionRequirement, Sinks, Source, StopRules, UnknownMime,
+    SessionDocumentMode, SessionRequirement, Sinks, Source, StopRules, UnknownMime,
 };
 pub use planner::{DryRunPlanner, Estimate, NotImplementedPlanner, PageFetcher, PageSample};
 pub use report::{

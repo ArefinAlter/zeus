@@ -14,6 +14,8 @@ use zeus_session::{
     provider::*,
 };
 use zeus_types::{ConnectionId, Timestamp};
+#[path = "browser_pages.rs"]
+mod pages;
 
 /// One negotiated browser profile. Pending responses cannot cross connections.
 pub struct BrowserConnection {
@@ -43,6 +45,14 @@ impl BrowserConnection {
         timeout: Duration,
     ) -> SessionResult<ExtensionBody> {
         let id = self.pending.next_id();
+        self.request_with_id(id, body, timeout).await
+    }
+    async fn request_with_id(
+        &self,
+        id: MessageId,
+        body: impl Into<DaemonBody>,
+        timeout: Duration,
+    ) -> SessionResult<ExtensionBody> {
         let waiting = self.pending.register(id.clone(), timeout)?;
         let message = DaemonMessage::new(id, body);
         self.ctx.notifier.notify("nm.frame",serde_json::json!({"frame":message.to_json().map_err(|_|SessionError::Protocol("cannot encode request"))?})).map_err(|_|SessionError::ConnectionLost)?;
@@ -185,11 +195,28 @@ impl BrowserBroker {
                 let grant = tx
                     .grant(grant_id)?
                     .ok_or(zeus_journal::JournalError::Invariant("grant missing"))?;
-                Ok(tx.approval_decision(grant.approval_id)?.and_then(|r| {
+                let decided_profile = tx.approval_decision(grant.approval_id)?.and_then(|r| {
                     r["evidence"]["extension"]["profile_id"]
                         .as_str()
                         .map(str::to_owned)
-                }))
+                });
+                let reviewed_profile = tx.approval(grant.approval_id)?.and_then(|a| {
+                    a.facts.and_then(|f| {
+                        (f["browser_document_mode"] == "browser_origin")
+                            .then(|| f["browser_profile_id"].as_str().map(str::to_owned))
+                            .flatten()
+                    })
+                });
+                if decided_profile
+                    .as_ref()
+                    .zip(reviewed_profile.as_ref())
+                    .is_some_and(|(a, b)| a != b)
+                {
+                    return Err(zeus_journal::JournalError::Invariant(
+                        "reviewed browser profile mismatch",
+                    ));
+                }
+                Ok(reviewed_profile.or(decided_profile))
             })
             .map_err(|_| SessionError::Protocol("grant decision unavailable"))?;
         if recorded

@@ -3322,7 +3322,7 @@
             "$ref": "https://zeus.invalid/schema/common#/$defs/Url"
           },
           "minItems": 1,
-          "maxItems": 20
+          "maxItems": 3
         },
         "session_origin": {
           "$ref": "https://zeus.invalid/schema/common#/$defs/Origin"
@@ -3339,6 +3339,9 @@
         },
         "draft": {
           "$ref": "#/$defs/WorkflowDraftRequest"
+        },
+        "browser_document_mode": {
+          "const": "browser_origin"
         }
       }
     },
@@ -3384,6 +3387,9 @@
         },
         "draft": {
           "$ref": "#/$defs/WorkflowDraftInfo"
+        },
+        "browser_review": {
+          "$ref": "https://zeus.invalid/schema/common#/$defs/ApprovalId"
         }
       }
     },

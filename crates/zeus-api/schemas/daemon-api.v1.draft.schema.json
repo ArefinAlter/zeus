@@ -11047,6 +11047,17 @@
             "null"
           ]
         },
+        "browser_document_mode": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SessionDocumentMode"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The reviewed browser document mode; its workflow approval must be decided in that browser."
+        },
         "bytes_done": {
           "description": "Bytes committed.",
           "format": "uint64",
@@ -11430,6 +11441,16 @@
       ],
       "type": "object"
     },
+    "SessionDocumentMode": {
+      "description": "Browser networking is a separate reviewed boundary from the daemon's pinned HTTP transport.",
+      "oneOf": [
+        {
+          "const": "browser_origin",
+          "description": "Exact HTTPS browser origin with public-DNS preflight; browser peer pinning is unavailable.",
+          "type": "string"
+        }
+      ]
+    },
     "SessionGrant": {
       "description": "A recorded consent. Holds no cookies: cookies are fetched per use and wiped.",
       "properties": {
@@ -11677,11 +11698,29 @@
       "additionalProperties": false,
       "description": "Session requirement of a plan.",
       "properties": {
+        "document_mode": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SessionDocumentMode"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Explicitly reviewed document transport; absent legacy plans never select a browser implicitly."
+        },
         "origin": {
           "description": "The origin whose session the run uses. Must be covered by `allowed_domains`.",
           "maxLength": 300,
           "pattern": "^https?://(\\[[0-9a-f:.]+\\]|[a-z0-9]([a-z0-9.-]*[a-z0-9])?)(:[0-9]{1,5})?$",
           "type": "string"
+        },
+        "profile_id": {
+          "description": "Exact browser profile bound by document review and the final workflow plan hash.",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "scope": {
           "$ref": "#/$defs/GrantScope",
@@ -13985,6 +14024,17 @@
     "WorkflowsPlanParams": {
       "description": "`workflows.plan` parameters.",
       "properties": {
+        "browser_document_mode": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SessionDocumentMode"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Explicit browser document mode; requires a separate human review and existing session grant."
+        },
         "candidate": {
           "anyOf": [
             {
@@ -14055,6 +14105,14 @@
     "WorkflowsPlanResult": {
       "description": "`workflows.plan` result.",
       "properties": {
+        "browser_review": {
+          "description": "Human browser-network review required before sampling; retry with this plan_id after deciding.",
+          "pattern": "^ap_[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "diagnostics": {
           "description": "Findings about the candidate; a plan with errors cannot be approved.",
           "items": {

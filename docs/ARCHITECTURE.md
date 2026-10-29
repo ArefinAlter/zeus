@@ -340,6 +340,8 @@ Crate `zeus-workflow`. Plans are JSON documents (`plan_version: 0`), identified 
 
 - **Reports.** Version 1 carries plan/approval/grant links, created/started/updated/finished times, active elapsed time, pause reason, safe error and incompleteness fields. Discovery counters commit with checkpoints; API job counts derive from actual admitted jobs rather than pending intents. Legacy checkpoints remain version 0 with unknown detailed counters, retaining the older flat compatibility fields. This does not enable session-backed workflow execution or conversion.
 
+Authenticated document workflows use explicit `workflows.plan.browser_document_mode = browser_origin` with `session_origin`; a pending `browser_review` returns before sampling. The normalized plan stores its selected browser profile. The separate preview-network review and exact run-plan approval are human-only, including through the established verified terminal path; the extension retains independent displayed-approval and host-permission checks. `session.page` returns bounded document data without exporting cookie material. Browser networking has an explicit residual DNS-rebinding boundary and does not claim native peer pinning. See [ADR 0019](adr/0019-browser-workflow-documents.md) and [implementation evidence](alpha-0.1/BROWSER-WORKFLOW-DOCUMENTS.md).
+
 ## 9. Design for spec 09: LLM provider ladder
 
 See ADR 0008. Crate `zeus-llm`:
