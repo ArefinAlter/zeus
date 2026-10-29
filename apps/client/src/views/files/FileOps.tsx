@@ -85,14 +85,14 @@ export function MoveDialog({ path, dir, roots, folders, onClose, copy = false, i
   const [busy, setBusy] = useState(false)
   const [job, setJob] = useState<CopyJob | null>(null)
   useEffect(() => {
-    if (!job || !['scanning', 'copying'].includes(job.state)) return
+    if (!job || !['scanning', 'copying', 'verifying', 'publishing'].includes(job.state)) return
     let alive = true
     const timer = setInterval(() => {
       void filesApi.copyStatus(job.id).then(next => {
         if (!alive) return
         setJob(next)
         if (next.state === 'complete') { done('Copied', next.path); onClose() }
-        else if (next.state === 'failed' || next.state === 'cancelled') { setBusy(false); setError(next.error || 'The copy stopped. Completed destination files are kept.') }
+        else if (next.state === 'failed' || next.state === 'cancelled' || next.state === 'interrupted') { setBusy(false); setError(next.error || 'The copy stopped. Its private staging and checkpoints are preserved for Resume.') }
       }, () => { if (alive) setError('Progress is unavailable. The copy may still be running.') })
     }, 350)
     return () => { alive = false; clearInterval(timer) }
@@ -215,15 +215,19 @@ export function CopyJobs() {
   const [error, setError] = useState('')
   useEffect(() => {
     let alive = true
-    const refresh = () => void filesApi.copies().then(r => {if(alive) setJobs(r.jobs)}, () => undefined)
+    const refresh = () => void filesApi.copies().then(r => {if(alive) { setJobs(r.jobs); if(r.load_error) setError(r.load_error) }}, () => undefined)
     refresh()
     const timer = setInterval(refresh, 1000)
     return () => {alive=false;clearInterval(timer)}
   }, [])
   const shown = jobs.filter(job=>!hidden.includes(job.id))
-  if (!shown.length) return null
+  if (!shown.length && !error) return null
   return <div class="copy-jobs" aria-label="File copies">{error ? <Notice kind="error">{error}</Notice> : null}{shown.map(job=><div class="fscope" key={job.id}>
     <span role="status">{job.state} · {fmtBytes(job.bytes)} / {fmtBytes(job.total_bytes)} · {job.files} files<br /><span class="mono">{job.path || 'Scanning source…'}</span>{job.error ? <><br />{job.error}</> : null}</span>
-    {job.state==='scanning' || job.state==='copying' ? <button class="btn small" onClick={()=>void filesApi.copyCancel(job.id).catch(e=>setError(e instanceof Error ? e.message : 'Cancellation could not be requested.'))}>Cancel copy</button> : <button class="btn small ghost" onClick={()=>setHidden(ids=>[...ids,job.id])}>Dismiss</button>}
+    {['scanning','copying','verifying','publishing'].includes(job.state) ? <button class="btn small" onClick={()=>void filesApi.copyCancel(job.id).catch(e=>setError(e instanceof Error ? e.message : 'Cancellation could not be requested.'))}>Pause copy</button> : <>
+      {job.can_resume ? <button class="btn small" onClick={()=>void filesApi.copyResume(job.id).then(next=>setJobs(jobs=>jobs.map(j=>j.id===next.id?next:j)),e=>setError(e instanceof Error ? e.message : 'The copy could not resume.'))}>Verify and resume</button> : null}
+      <button class="btn small ghost" onClick={()=>setHidden(ids=>[...ids,job.id])}>Hide for this session</button>
+    </>}
+
   </div>)}</div>
 }

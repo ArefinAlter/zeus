@@ -1,383 +1,495 @@
-//! Bounded background file and folder copies. Existing destinations are never replaced.
+//! Durable bounded copies with identity-bound staging and explicit, verified restart resume.
 use crate::{
     facts::{FileFacts, quarantined_under},
     ops::quarantine_refusal,
     paths::{RootCaps, cap_failure, shown},
 };
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
+    time::{Duration, Instant, SystemTime},
 };
 use zeus_app::failure::{Failure, Result};
-
-#[derive(Default)]
-struct Job {
-    cancelled: AtomicBool,
-    bytes: AtomicU64,
-    total: AtomicU64,
-    files: AtomicU64,
-    state: Mutex<String>,
-    target: Mutex<String>,
-    error: Mutex<String>,
+use zeus_fs::DirectoryCap;
+mod receipt;
+mod worker;
+use receipt::{Event, Log, Store};
+const CHUNK: usize = 4 * 1024 * 1024;
+const MAX_ENTRIES: usize = 100_000;
+const MAX_JOB_BYTES: u64 = 256 * 1024 * 1024 * 1024;
+const MAX_STAGING: u64 = 1024 * 1024 * 1024 * 1024;
+const VERIFY_TIME: Duration = Duration::from_secs(120);
+fn failed(message: &str) -> Failure {
+    Failure::new("app.copy_incomplete", message)
 }
-impl Job {
-    fn check(&self) -> Result<()> {
-        if self.cancelled.load(Ordering::Relaxed) {
-            Err(Failure::new(
-                "app.cancelled",
-                "Copy cancelled. Completed files in the destination are kept; the source is unchanged.",
-            ))
-        } else {
-            Ok(())
+fn file_id(file: &std::fs::File) -> Result<zeus_types::FileId> {
+    zeus_fs::opened_file_metadata(file)
+        .map_err(cap_failure)?
+        .file_id
+        .ok_or_else(|| failed("A stable file identity is required."))
+}
+fn reserve(counter: &AtomicU64, amount: u64, maximum: u64) -> std::result::Result<(), ()> {
+    let mut current = counter.load(Ordering::SeqCst);
+    loop {
+        let next = current
+            .checked_add(amount)
+            .filter(|n| *n <= maximum)
+            .ok_or(())?;
+        match counter.compare_exchange_weak(current, next, Ordering::SeqCst, Ordering::SeqCst) {
+            Ok(_) => return Ok(()),
+            Err(actual) => current = actual,
         }
     }
-    fn snapshot(&self, id: &str) -> Value {
-        json!({"id":id,"state":self.state.lock().unwrap().clone(),"path":self.target.lock().unwrap().clone(),"bytes":self.bytes.load(Ordering::Relaxed),"total_bytes":self.total.load(Ordering::Relaxed),"files":self.files.load(Ordering::Relaxed),"error":self.error.lock().unwrap().clone()})
-    }
+}
+fn valid_id(id: &str) -> bool {
+    id.len() >= 8
+        && id.len() <= 64
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+fn utf8(path: &Path) -> Result<String> {
+    path.to_str().map(str::to_owned).ok_or_else(|| {
+        failed("This copy contains a filename that cannot be represented without loss.")
+    })
 }
 
-/// Copy jobs owned by this desktop session; at most four run concurrently.
-#[derive(Default)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+struct Stamp {
+    id: zeus_types::FileId,
+    size: u64,
+    directory: bool,
+    modified: SystemTime,
+}
+fn stamp(meta: zeus_fs::FileMeta, os: std::fs::Metadata) -> Result<Stamp> {
+    if meta.is_symlink || (!meta.is_regular_file && !meta.is_dir) {
+        return Err(failed("Copies refuse links, junctions and special files."));
+    }
+    Ok(Stamp {
+        id: meta
+            .file_id
+            .ok_or_else(|| failed("A stable source identity is required."))?,
+        size: if meta.is_dir { 0 } else { meta.len },
+        directory: meta.is_dir,
+        modified: os.modified()?,
+    })
+}
+fn entry_stamp(parent: &DirectoryCap, name: &std::ffi::OsStr) -> Result<Stamp> {
+    // Metadata observations are rechecked against the opened file before content is consumed.
+    stamp(
+        parent.entry_metadata(name).map_err(cap_failure)?,
+        parent.entry_os_metadata(name).map_err(cap_failure)?,
+    )
+}
+fn open_stamp(file: &std::fs::File) -> Result<Stamp> {
+    stamp(
+        zeus_fs::opened_file_metadata(file).map_err(cap_failure)?,
+        file.metadata()?,
+    )
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct Entry {
+    relative: String,
+    stamp: Stamp,
+    parent_id: zeus_types::FileId,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct Plan {
+    id: String,
+    source: String,
+    destination: String,
+    name: String,
+    reads: Vec<(String, zeus_types::FileId)>,
+    writes: Vec<(String, zeus_types::FileId)>,
+    destination_id: zeus_types::FileId,
+    entries: Vec<Entry>,
+    bytes: u64,
+}
+impl Plan {
+    fn validate(&self) -> Result<()> {
+        if !valid_id(&self.id)
+            || self.entries.is_empty()
+            || self.entries.len() > MAX_ENTRIES
+            || self.bytes > MAX_JOB_BYTES
+        {
+            return Err(failed("The copy manifest is outside its bounds."));
+        }
+        zeus_fs::directory::validate_filename(self.name.as_ref()).map_err(cap_failure)?;
+        if !Path::new(&self.source).is_absolute() || !Path::new(&self.destination).is_absolute() {
+            return Err(failed("Copy roots must be absolute."));
+        }
+        let mut names = std::collections::HashSet::new();
+        let mut total = 0u64;
+        for (i, entry) in self.entries.iter().enumerate() {
+            let p = Path::new(&entry.relative);
+            if (i == 0 && !entry.relative.is_empty())
+                || (i > 0 && entry.relative.is_empty())
+                || p.components().count() > 128
+                || p.components()
+                    .any(|c| !matches!(c, std::path::Component::Normal(_)))
+                || !names.insert(entry.relative.clone())
+            {
+                return Err(failed("Copy manifest paths are invalid or duplicated."));
+            }
+            total = total
+                .checked_add(entry.stamp.size)
+                .ok_or_else(|| failed("Copy size overflow."))?;
+        }
+        if total != self.bytes {
+            return Err(failed("Copy manifest size is invalid."));
+        }
+        Ok(())
+    }
+    fn target(&self) -> PathBuf {
+        Path::new(&self.destination).join(&self.name)
+    }
+    fn stage(&self) -> String {
+        format!("copy-{}", self.id)
+    }
+}
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+struct Progress {
+    id: Option<zeus_types::FileId>,
+    chunks: Vec<String>,
+    modified: Option<SystemTime>,
+}
+struct Receipt {
+    plan: Plan,
+    stage_id: Option<zeus_types::FileId>,
+    progress: Vec<Progress>,
+    publishing: bool,
+    state: String,
+    error: String,
+    log_id: Option<zeus_types::FileId>,
+    valid: u64,
+}
+impl Receipt {
+    fn new(plan: Plan) -> Self {
+        let count = plan.entries.len();
+        Self {
+            plan,
+            stage_id: None,
+            progress: vec![Progress::default(); count],
+            publishing: false,
+            state: "copying".into(),
+            error: String::new(),
+            log_id: None,
+            valid: 0,
+        }
+    }
+    fn apply(&mut self, event: Event) -> Result<()> {
+        let invalid = || failed("Copy receipt transition is invalid. Preserve its staging data.");
+        match event {
+            Event::Plan { .. } => return Err(invalid()),
+            Event::Stage { identity } if self.stage_id.is_none() => self.stage_id = Some(identity),
+            Event::Created { index, identity } if self.stage_id.is_some() && !self.publishing => {
+                let p = self.progress.get_mut(index).ok_or_else(invalid)?;
+                if p.id.is_some() {
+                    return Err(invalid());
+                }
+                p.id = Some(identity);
+            }
+            Event::Chunk { index, digest } if !self.publishing => {
+                let entry = self.plan.entries.get(index).ok_or_else(invalid)?;
+                let p = self.progress.get_mut(index).ok_or_else(invalid)?;
+                if entry.stamp.directory
+                    || p.id.is_none()
+                    || p.modified.is_some()
+                    || p.chunks.len() as u64 >= entry.stamp.size.div_ceil(CHUNK as u64)
+                    || digest.len() != 64
+                    || !digest.bytes().all(|b| b.is_ascii_hexdigit())
+                {
+                    return Err(invalid());
+                }
+                p.chunks.push(digest);
+            }
+            Event::Done { index, modified } if !self.publishing => {
+                let entry = self.plan.entries.get(index).ok_or_else(invalid)?;
+                let p = self.progress.get_mut(index).ok_or_else(invalid)?;
+                if p.id.is_none()
+                    || p.modified.is_some()
+                    || (!entry.stamp.directory
+                        && p.chunks.len() as u64 != entry.stamp.size.div_ceil(CHUNK as u64))
+                {
+                    return Err(invalid());
+                }
+                p.modified = Some(modified);
+            }
+            Event::Publishing if self.progress.iter().all(|p| p.modified.is_some()) => {
+                self.publishing = true;
+                self.state = "publishing".into();
+            }
+            Event::Complete if self.publishing => self.state = "complete".into(),
+            Event::Stopped { state, message }
+                if matches!(state.as_str(), "failed" | "cancelled" | "interrupted") =>
+            {
+                self.state = state;
+                self.error = message;
+            }
+            _ => return Err(invalid()),
+        }
+        Ok(())
+    }
+    fn bytes(&self) -> u64 {
+        self.progress
+            .iter()
+            .zip(&self.plan.entries)
+            .map(|(p, e)| (p.chunks.len() as u64 * CHUNK as u64).min(e.stamp.size))
+            .sum()
+    }
+    fn snapshot(&self) -> Value {
+        json!({"id":self.plan.id,"state":self.state,"source":self.plan.source,"path":shown(&self.plan.target()),"bytes":self.bytes(),"total_bytes":self.plan.bytes,"files":self.progress.iter().zip(&self.plan.entries).filter(|(p,e)| !e.stamp.directory && p.modified.is_some()).count(),"error":self.error,"staging":shown(&Path::new(&self.plan.destination).join(".zeus-partial").join(self.plan.stage())),"can_resume":matches!(self.state.as_str(),"interrupted"|"cancelled"|"failed"),"persistent":true})
+    }
+}
+struct Job {
+    receipt: Mutex<Receipt>,
+    cancelled: AtomicBool,
+    active: AtomicBool,
+}
+impl Job {
+    fn check(&self, authority: &Authority) -> Result<()> {
+        if self.cancelled.load(Ordering::SeqCst) {
+            return Err(Failure::new(
+                "app.cancelled",
+                "Copy stopped. Its private staging and last synced checkpoint are kept for explicit Resume.",
+            ));
+        }
+        (authority.check)()
+    }
+    fn event(&self, log: &mut Log, event: Event) -> Result<()> {
+        let mut receipt = self
+            .receipt
+            .lock()
+            .map_err(|_| failed("Copy receipt is busy."))?;
+        log.append(&event)?;
+        receipt.apply(event)?;
+        log.bind(&mut receipt);
+        Ok(())
+    }
+}
+/// Fresh scopes and quarantine facts, plus the desktop's live revocation/stop check.
+pub struct Authority {
+    /// Retained read roots captured against their enablement identities.
+    pub reads: RootCaps,
+    /// Retained writable roots captured against their enablement identities.
+    pub writes: RootCaps,
+    /// Current quarantine facts from the daemon.
+    pub facts: Arc<HashMap<String, FileFacts>>,
+    /// Called between chunks and before effects; any failure holds the copy.
+    pub check: Arc<dyn Fn() -> Result<()> + Send + Sync>,
+}
+/// Durable copy receipts; at most four workers and 64 retained jobs, with no automatic deletion.
 pub struct Transfers {
-    jobs: Mutex<HashMap<String, Arc<Job>>>,
+    workers: Arc<AtomicU64>,
+    store: Option<Arc<Store>>,
+    jobs: Mutex<BTreeMap<String, Arc<Job>>>,
+    load_error: Option<String>,
+}
+impl Transfers {
+    /// Load bounded receipts without opening source paths, resuming workers or publishing data.
+    pub fn new(path: PathBuf) -> Self {
+        match Store::open(&path) {
+            Ok((store, rows)) => Self {
+                workers: Arc::new(AtomicU64::new(0)),
+                store: Some(store),
+                jobs: Mutex::new(
+                    rows.into_iter()
+                        .map(|r| {
+                            (
+                                r.plan.id.clone(),
+                                Arc::new(Job {
+                                    receipt: Mutex::new(r),
+                                    cancelled: AtomicBool::new(false),
+                                    active: AtomicBool::new(false),
+                                }),
+                            )
+                        })
+                        .collect(),
+                ),
+                load_error: None,
+            },
+            Err(e) => Self {
+                workers: Arc::new(AtomicU64::new(0)),
+                store: None,
+                jobs: Mutex::new(BTreeMap::new()),
+                load_error: Some(e.message),
+            },
+        }
+    }
+    fn store(&self) -> Result<Arc<Store>> {
+        self.store.clone().ok_or_else(|| {
+            failed(
+                self.load_error
+                    .as_deref()
+                    .unwrap_or("Copy history is unavailable."),
+            )
+        })
+    }
+    /// Preflight and persist a new job. Caller runs this bounded scan on a blocking worker.
+    pub fn start(&self, from: String, to: String, authority: Authority) -> Result<Value> {
+        let lease = self.acquire()?;
+        let store = self.store()?;
+        let plan = worker::plan(&from, &to, &authority)?;
+        let mut jobs = self.jobs.lock().unwrap();
+        if jobs.len() >= receipt::MAX_JOBS {
+            return Err(failed(
+                "The 64 retained copy receipts are full. No recovery history was discarded.",
+            ));
+        }
+        self.admit(&jobs, plan.bytes)?;
+        let log = store.create(&plan)?;
+        let id = plan.id.clone();
+        let mut receipt = Receipt::new(plan);
+        log.bind(&mut receipt);
+        let job = Arc::new(Job {
+            receipt: Mutex::new(receipt),
+            cancelled: AtomicBool::new(false),
+            active: AtomicBool::new(true),
+        });
+        let out = job.receipt.lock().unwrap().snapshot();
+        jobs.insert(id, job.clone());
+        Self::launch(job, log, authority, lease);
+        Ok(out)
+    }
+    fn admit(&self, jobs: &BTreeMap<String, Arc<Job>>, added: u64) -> Result<()> {
+        if jobs
+            .values()
+            .filter(|j| j.active.load(Ordering::SeqCst))
+            .count()
+            >= 4
+        {
+            return Err(Failure::new(
+                "app.busy",
+                "Wait for a copy worker to finish or pause it.",
+            ));
+        }
+        let reserved: u64 = jobs
+            .values()
+            .map(|j| {
+                let r = j.receipt.lock().unwrap();
+                if r.state == "complete" {
+                    0
+                } else {
+                    r.plan.bytes
+                }
+            })
+            .sum();
+        if reserved.checked_add(added).is_none_or(|n| n > MAX_STAGING) {
+            return Err(failed(
+                "Unfinished copy staging reached its 1 TiB reservation limit. Existing checkpoints are kept.",
+            ));
+        }
+        Ok(())
+    }
+    /// Resume only after a fresh user action; reopening does not adopt replaced roots or files.
+    pub fn resume(&self, id: &str, authority: Authority) -> Result<Value> {
+        let lease = self.acquire()?;
+        let store = self.store()?;
+        let jobs = self.jobs.lock().unwrap();
+        self.admit(&jobs, 0)?;
+        let job = jobs
+            .get(id)
+            .ok_or_else(|| Failure::invalid("That copy receipt is unavailable."))?
+            .clone();
+        if job.active.load(Ordering::SeqCst) {
+            return Err(Failure::new("app.busy", "This copy is already running."));
+        }
+        let mut r = job.receipt.lock().unwrap();
+        if r.state == "complete" {
+            return Err(Failure::invalid("This copy is already complete."));
+        }
+        let log = store.resume(&r)?;
+        r.state = "verifying".into();
+        r.error.clear();
+        let out = r.snapshot();
+        drop(r);
+        job.cancelled.store(false, Ordering::SeqCst);
+        job.active.store(true, Ordering::SeqCst);
+        Self::launch(job, log, authority, lease);
+        Ok(out)
+    }
+    fn acquire(&self) -> Result<WorkerLease> {
+        reserve(&self.workers, 1, 4).map_err(|_| {
+            Failure::new(
+                "app.busy",
+                "Four copy workers are already scanning, verifying or copying.",
+            )
+        })?;
+        Ok(WorkerLease(self.workers.clone()))
+    }
+    fn launch(job: Arc<Job>, mut log: Log, authority: Authority, lease: WorkerLease) {
+        tokio::task::spawn_blocking(move || {
+            let _lease = lease;
+            if let Err(e) = worker::run(&job, &mut log, &authority) {
+                let state = if job.cancelled.load(Ordering::SeqCst) {
+                    "cancelled"
+                } else {
+                    "failed"
+                };
+                let message = format!(
+                    "{} Source and existing destination data were preserved; inspect or resume the private staging copy.",
+                    e.message
+                );
+                // A full disk may prevent this state event; the last valid checkpoint remains usable.
+                if job
+                    .event(
+                        &mut log,
+                        Event::Stopped {
+                            state: state.into(),
+                            message: message.clone(),
+                        },
+                    )
+                    .is_err()
+                    && let Ok(mut r) = job.receipt.lock()
+                {
+                    r.state = state.into();
+                    r.error = message;
+                }
+            }
+            job.active.store(false, Ordering::SeqCst);
+        });
+    }
+    /// List durable receipts, including cancelled and interrupted jobs after restart.
+    pub fn list(&self) -> Value {
+        json!({"jobs":self.jobs.lock().unwrap().values().map(|j|j.receipt.lock().unwrap().snapshot()).collect::<Vec<_>>(),"load_error":self.load_error})
+    }
+    /// Stop active workers at their next checkpoint, preserving all receipts and staging bytes.
+    pub fn cancel_all(&self) {
+        for j in self.jobs.lock().unwrap().values() {
+            j.cancelled.store(true, Ordering::SeqCst);
+        }
+    }
+    /// Observe or cancel an existing receipt; neither action deletes data.
+    pub fn get(&self, id: &str, cancel: bool) -> Result<Value> {
+        let jobs = self.jobs.lock().unwrap();
+        let j = jobs
+            .get(id)
+            .ok_or_else(|| Failure::invalid("That copy job is unavailable."))?;
+        if cancel {
+            j.cancelled.store(true, Ordering::SeqCst);
+        }
+        Ok(j.receipt.lock().unwrap().snapshot())
+    }
 }
 impl Drop for Transfers {
     fn drop(&mut self) {
-        for job in self.jobs.get_mut().unwrap().values() {
-            job.cancelled.store(true, Ordering::Relaxed);
-        }
-    }
-}
-impl Transfers {
-    /// Start a copy after the app has obtained a fresh quarantine table.
-    pub fn start(
-        &self,
-        from: String,
-        to: String,
-        reads: RootCaps,
-        writes: RootCaps,
-        facts: Arc<HashMap<String, FileFacts>>,
-    ) -> Result<Value> {
-        let mut jobs = self.jobs.lock().unwrap();
-        let running =
-            |j: &&Arc<Job>| matches!(j.state.lock().unwrap().as_str(), "scanning" | "copying");
-        if jobs.values().filter(running).count() >= 4 {
-            return Err(Failure::new(
-                "app.busy",
-                "Wait for a copy to finish, or cancel one.",
-            ));
-        }
-        if jobs.len() >= 32 {
-            jobs.retain(|_, j| matches!(j.state.lock().unwrap().as_str(), "scanning" | "copying"));
-        }
-        let id = zeus_app::review::random_id();
-        let job = Arc::new(Job::default());
-        *job.state.lock().unwrap() = "scanning".into();
-        jobs.insert(id.clone(), job.clone());
-        let out = job.snapshot(&id);
-        tokio::task::spawn_blocking(move || {
-            match copy_tree_pinned(&from, &to, &reads, &writes, &facts, &job) {
-                Ok(()) => *job.state.lock().unwrap() = "complete".into(),
-                Err(e) => {
-                    *job.error.lock().unwrap() = if job.target.lock().unwrap().is_empty() {
-                        e.message
-                    } else {
-                        format!(
-                            "{} Completed destination files are kept. The source is unchanged.",
-                            e.message
-                        )
-                    };
-                    *job.state.lock().unwrap() = if job.cancelled.load(Ordering::Relaxed) {
-                        "cancelled"
-                    } else {
-                        "failed"
-                    }
-                    .into();
-                }
-            }
-        });
-        Ok(out)
-    }
-    /// List this desktop session's bounded copy history.
-    pub fn list(&self) -> Value {
-        json!({"jobs": self.jobs.lock().unwrap().iter().map(|(id,job)|job.snapshot(id)).collect::<Vec<_>>()})
-    }
-    /// Cancel all active copies when the desktop shuts down.
-    pub fn cancel_all(&self) {
-        for job in self.jobs.lock().unwrap().values() {
-            job.cancelled.store(true, Ordering::Relaxed);
-        }
-    }
-    /// Return a job's progress, or request cancellation of that same local job.
-    pub fn get(&self, id: &str, cancel: bool) -> Result<Value> {
-        let jobs = self.jobs.lock().unwrap();
-        let job = jobs
-            .get(id)
-            .ok_or_else(|| Failure::invalid("That copy job is no longer available."))?;
-        if cancel {
-            job.cancelled.store(true, Ordering::Relaxed);
-        }
-        Ok(job.snapshot(id))
+        self.cancel_all();
     }
 }
 
-struct Node {
-    path: PathBuf,
-    meta: zeus_fs::FileMeta,
-}
-fn checked(path: &Path, roots: &RootCaps) -> Result<zeus_fs::FileMeta> {
-    let (parent, name) = roots.parent(path)?;
-    parent.entry_metadata(&name).map_err(cap_failure)
-}
-#[cfg(test)]
-fn copy_tree(
-    from: &str,
-    dest: &str,
-    reads: &[String],
-    writes: &[String],
-    facts: &HashMap<String, FileFacts>,
-    job: &Job,
-) -> Result<()> {
-    copy_tree_pinned(
-        from,
-        dest,
-        &RootCaps::capture(reads)?,
-        &RootCaps::capture(writes)?,
-        facts,
-        job,
-    )
-}
-fn copy_tree_pinned(
-    from: &str,
-    dest: &str,
-    reads: &RootCaps,
-    writes: &RootCaps,
-    facts: &HashMap<String, FileFacts>,
-    job: &Job,
-) -> Result<()> {
-    let source = reads.path(from)?;
-    let dest = writes.path(dest)?;
-    let dest_cap = writes.directory(&dest)?;
-    if dest.starts_with(&source) {
-        return Err(Failure::invalid(
-            "Choose an existing destination outside the source folder.",
-        ));
+struct WorkerLease(Arc<AtomicU64>);
+impl Drop for WorkerLease {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
     }
-    if quarantined_under(facts, &shown(&source)) {
-        return Err(quarantine_refusal("This item"));
-    }
-    let name = source
-        .file_name()
-        .ok_or_else(|| Failure::invalid("Copy a file or folder, rather than a drive root."))?;
-    let target = dest.join(name);
-    // Preflight the whole bounded tree before creating output: no silently skipped links or hidden items.
-    let mut pending = vec![source.clone()];
-    let mut nodes = Vec::new();
-    let mut total = 0u64;
-    while let Some(path) = pending.pop() {
-        job.check()?;
-        let meta = checked(&path, reads)?;
-        if nodes.len() + pending.len() >= 100_000
-            || path.strip_prefix(&source).unwrap().components().count() > 128
-        {
-            return Err(Failure::invalid(
-                "Copy at most 100,000 entries and 128 folder levels at a time.",
-            ));
-        }
-        if meta.is_dir {
-            for name in reads
-                .directory(&path)?
-                .entry_names(100_000 - nodes.len() - pending.len())
-                .map_err(cap_failure)?
-            {
-                pending.push(path.join(name));
-                if nodes.len() + pending.len() >= 100_000 {
-                    return Err(Failure::invalid("Copy at most 100,000 entries at a time."));
-                }
-            }
-        } else {
-            total = total
-                .checked_add(meta.len)
-                .ok_or_else(|| Failure::invalid("The copy is too large."))?;
-        }
-        nodes.push(Node { path, meta });
-    }
-    job.total.store(total, Ordering::Relaxed);
-    *job.state.lock().unwrap() = "copying".into();
-    *job.target.lock().unwrap() = shown(&target);
-    for node in nodes {
-        job.check()?;
-        let (source_parent, source_name) = reads.parent(&node.path)?;
-        if source_parent
-            .entry_metadata(&source_name)
-            .map_err(cap_failure)?
-            != node.meta
-        {
-            return Err(Failure::invalid(
-                "The source changed while copying. Choose it again.",
-            ));
-        }
-        let relative = if node.path == source {
-            PathBuf::from(name)
-        } else {
-            Path::new(name).join(node.path.strip_prefix(&source).unwrap())
-        };
-        let parent = dest_cap
-            .open_dir(relative.parent().unwrap())
-            .map_err(cap_failure)?;
-        let output_name = relative.file_name().unwrap();
-        if node.meta.is_dir {
-            parent.create_dir(output_name).map_err(cap_failure)?;
-            continue;
-        }
-        let mut input = source_parent.open_read(&source_name).map_err(cap_failure)?;
-        // The open source, not a later path lookup, is what the byte-copy loop consumes.
-        let id = zeus_fs::opened_file_metadata(&input).map_err(cap_failure)?;
-        if id != node.meta {
-            return Err(Failure::invalid("A source file changed while copying."));
-        }
-        let mut file = parent.create_new(output_name).map_err(cap_failure)?;
-        let result = (|| -> Result<()> {
-            use std::io::{Read, Write};
-            let mut buffer = [0u8; 65536];
-            let mut copied = 0u64;
-            loop {
-                job.check()?;
-                let n = input.read(&mut buffer)?;
-                if n == 0 {
-                    break;
-                }
-                copied += n as u64;
-                if copied > node.meta.len {
-                    return Err(Failure::invalid("A source file changed while copying."));
-                }
-                file.write_all(&buffer[..n])?;
-                job.bytes.fetch_add(n as u64, Ordering::Relaxed);
-            }
-            if copied != node.meta.len {
-                return Err(Failure::invalid("A source file changed while copying."));
-            }
-            if zeus_fs::opened_file_metadata(&input).map_err(cap_failure)? != node.meta {
-                return Err(Failure::invalid("A source file changed while copying."));
-            }
-            file.sync_all()?;
-            Ok(())
-        })();
-        if let Err(e) = result {
-            if parent.discard_created(output_name, file).is_err() {
-                return Err(Failure::new(
-                    "app.copy_incomplete",
-                    format!(
-                        "{} Its incomplete destination could not be removed; inspect it before retrying.",
-                        e.message
-                    ),
-                ));
-            }
-            return Err(e);
-        }
-        job.files.fetch_add(1, Ordering::Relaxed);
-    }
-    Ok(())
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn copies_whole_tree_including_hidden_files_and_never_overwrites() {
-        let d = tempfile::tempdir().unwrap();
-        let src = d.path().join("source");
-        let dest = d.path().join("dest");
-        std::fs::create_dir_all(src.join("inner")).unwrap();
-        std::fs::create_dir(&dest).unwrap();
-        std::fs::write(src.join("inner/.hidden"), b"contents").unwrap();
-        let root = vec![shown(d.path())];
-        let job = Job::default();
-        copy_tree(
-            src.to_str().unwrap(),
-            dest.to_str().unwrap(),
-            &root,
-            &root,
-            &HashMap::new(),
-            &job,
-        )
-        .unwrap();
-        assert_eq!(
-            std::fs::read(dest.join("source/inner/.hidden")).unwrap(),
-            b"contents"
-        );
-        assert_eq!(job.bytes.load(Ordering::Relaxed), 8);
-        assert!(
-            copy_tree(
-                src.to_str().unwrap(),
-                dest.to_str().unwrap(),
-                &root,
-                &root,
-                &HashMap::new(),
-                &job
-            )
-            .is_err()
-        );
-        assert!(src.join("inner/.hidden").exists());
-        assert!(
-            copy_tree(
-                src.to_str().unwrap(),
-                src.join("inner").to_str().unwrap(),
-                &root,
-                &root,
-                &HashMap::new(),
-                &job
-            )
-            .is_err()
-        );
-    }
-    #[test]
-    fn cancellation_and_quarantine_prevent_output() {
-        let d = tempfile::tempdir().unwrap();
-        let src = d.path().join("file");
-        let dest = d.path().join("dest");
-        std::fs::write(&src, b"keep").unwrap();
-        std::fs::create_dir(&dest).unwrap();
-        let root = vec![shown(d.path())];
-        let job = Job::default();
-        job.cancelled.store(true, Ordering::Relaxed);
-        assert!(
-            copy_tree(
-                src.to_str().unwrap(),
-                dest.to_str().unwrap(),
-                &root,
-                &root,
-                &HashMap::new(),
-                &job
-            )
-            .is_err()
-        );
-        assert!(!dest.join("file").exists());
-        job.cancelled.store(false, Ordering::Relaxed);
-        let mut facts = HashMap::new();
-        facts.insert(
-            crate::config::norm(&shown(&src.canonicalize().unwrap())),
-            FileFacts {
-                quarantined: true,
-                ..Default::default()
-            },
-        );
-        assert!(
-            copy_tree(
-                src.to_str().unwrap(),
-                dest.to_str().unwrap(),
-                &root,
-                &root,
-                &facts,
-                &job
-            )
-            .is_err()
-        );
-        assert!(!dest.join("file").exists());
-    }
-}
+mod tests;

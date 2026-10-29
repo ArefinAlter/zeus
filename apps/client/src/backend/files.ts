@@ -91,12 +91,35 @@ export interface DeleteResult {
 
 export interface CopyJob {
   id: string
-  state: 'scanning' | 'copying' | 'complete' | 'failed' | 'cancelled'
+  state: 'scanning' | 'copying' | 'verifying' | 'publishing' | 'interrupted' | 'complete' | 'failed' | 'cancelled'
   path: string
   bytes: number
   total_bytes: number
   files: number
   error: string
+  source: string
+  staging: string
+  can_resume: boolean
+  persistent: boolean
+}
+
+export interface FolderComparison {
+  id: string
+  left: string
+  right: string
+  content: boolean
+  state: 'running' | 'complete' | 'incomplete' | 'cancelled'
+  complete: boolean
+  entries: number
+  hashed_bytes: number
+  rows: number
+  error: string
+}
+export interface ComparisonRow {
+  relative: string
+  status: 'left_only' | 'right_only' | 'type_conflict' | 'directory' | 'content_match' | 'content_different' | 'metadata_match' | 'metadata_different'
+  left: { path: string; size: number; is_dir: boolean; sha256: string | null } | null
+  right: { path: string; size: number; is_dir: boolean; sha256: string | null } | null
 }
 
 export interface SearchPage {
@@ -206,9 +229,14 @@ export const filesApi = {
   undo: (id: string) => call<{ ok: boolean }>('POST', '/native/v1/files/history/undo', { id }),
   reconcile: (id: string) => call<{ ok: boolean }>('POST', '/native/v1/files/history/reconcile', { id }),
   verifyDuplicates: (paths: string[]) => call<{ algorithm: string; bytes_read: number; groups: { sha256: string; paths: string[]; verified: true }[] }>('POST', '/native/v1/files/duplicates/verify', { paths }),
-  copies: () => call<{ jobs: CopyJob[] }>('GET', '/native/v1/files/copies'),
+  compareStart: (left: string, right: string, content: boolean) => call<FolderComparison>('POST', '/native/v1/files/compare/start', { left, right, content }),
+  compareStatus: (id: string) => call<FolderComparison>('POST', '/native/v1/files/compare/status', { id }),
+  compareCancel: (id: string) => call<FolderComparison>('POST', '/native/v1/files/compare/cancel', { id }),
+  comparePage: (id: string, offset = 0) => call<{ id: string; complete: boolean; items: ComparisonRow[]; next: number | null; total: number }>('POST', '/native/v1/files/compare/page', { id, offset, limit: 200 }),
+  copies: () => call<{ jobs: CopyJob[]; load_error: string | null }>('GET', '/native/v1/files/copies'),
   list: (path: string, after = '') => call<{ path: string; files: IndexRow[]; next: string | null; skipped: number }>('POST', '/native/v1/files/list', { path, after, limit: 500 }),
   copyStart: (path: string, dir: string) => call<CopyJob>('POST', '/native/v1/files/copy/start', { path, dir }),
+  copyResume: (id: string) => call<CopyJob>('POST', '/native/v1/files/copy/resume', { id }),
   copyStatus: (id: string) => call<CopyJob>('POST', '/native/v1/files/copy/status', { id }),
   copyCancel: (id: string) => call<CopyJob>('POST', '/native/v1/files/copy/cancel', { id }),
   changes: (since: number) => call<IndexDelta>('POST', '/native/v1/index/changes', { since, summary_only: true }),

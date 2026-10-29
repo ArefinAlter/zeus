@@ -11,6 +11,7 @@
 pub mod analytics;
 pub mod archive;
 pub mod browse;
+pub mod compare;
 pub mod config;
 pub mod everything;
 pub mod facts;
@@ -42,7 +43,8 @@ use crate::service::{Cmd, Service};
 /// The module registered by `zeus-app-ext`.
 pub struct Module {
     svc: Arc<Service>,
-    transfers: transfers::Transfers,
+    transfers: Arc<transfers::Transfers>,
+    comparisons: compare::Comparisons,
     history: Arc<history::Journal>,
     archives: Arc<archive::Archives>,
     everything: Arc<everything::Everything>,
@@ -53,7 +55,10 @@ impl Module {
     pub fn new(app: &Arc<App>) -> Arc<Self> {
         Arc::new(Self {
             svc: Service::start(app),
-            transfers: transfers::Transfers::default(),
+            comparisons: compare::Comparisons::default(),
+            transfers: Arc::new(transfers::Transfers::new(
+                config::index_dir(&app.home).join("copies"),
+            )),
             everything: Arc::new(everything::Everything::new(
                 config::index_dir(&app.home).join("everything"),
             )),
@@ -65,6 +70,63 @@ impl Module {
             )),
         })
     }
+}
+
+async fn copy_authority(
+    svc: &Arc<Service>,
+    app: &Arc<App>,
+    sources: Vec<String>,
+    writable: bool,
+) -> zeus_app::failure::Result<transfers::Authority> {
+    let revision = svc.scope_generation();
+    let facts = guarded_facts(svc, app).await?;
+    let reads = svc.file_capabilities(false)?;
+    let writes = if writable {
+        svc.file_capabilities(true)?
+    } else {
+        paths::RootCaps::capture(&[])?
+    };
+    if svc.scope_generation() != revision {
+        return Err(Failure::new(
+            "app.path_changed",
+            "Folder settings changed while acquiring file authority. Try again.",
+        ));
+    }
+    let service = svc.clone();
+    let app = app.clone();
+    let runtime = tokio::runtime::Handle::current();
+    let last = std::sync::Mutex::new(std::time::Instant::now() - std::time::Duration::from_secs(4));
+    Ok(transfers::Authority {
+        reads,
+        writes,
+        facts,
+        check: Arc::new(move || {
+            if service.scope_generation() != revision {
+                return Err(Failure::new(
+                    "app.path_changed",
+                    "Folder settings changed. This copy is paused until an explicit Resume with current scopes.",
+                ));
+            }
+            let mut last = last
+                .lock()
+                .map_err(|_| Failure::new("app.io", "Copy authorization is unavailable."))?;
+            if last.elapsed() >= std::time::Duration::from_secs(3) {
+                service.file_capabilities(false)?;
+                if writable {
+                    service.file_capabilities(true)?;
+                }
+                let facts = runtime.block_on(service.facts.table(&app)).ok_or_else(||Failure::new("app.offline","The engine's quarantine status is unavailable. Copy checkpoints are preserved."))?;
+                if sources
+                    .iter()
+                    .any(|source| facts::quarantined_under(&facts, source))
+                {
+                    return Err(ops::quarantine_refusal("This source"));
+                }
+                *last = std::time::Instant::now();
+            }
+            Ok(())
+        }),
+    })
 }
 
 fn str_of<'a>(body: &'a Value, key: &str) -> &'a str {
@@ -632,27 +694,73 @@ impl Extension for Module {
                         }),
                     )
                 }
+                "POST /native/v1/files/compare/start" => {
+                    let request = match serde_json::from_value::<compare::Request>(body.clone()) {
+                        Ok(r) => r,
+                        Err(e) => return Some(Err(e.into())),
+                    };
+                    let authority = match copy_authority(
+                        svc,
+                        app,
+                        vec![request.left.clone(), request.right.clone()],
+                        false,
+                    )
+                    .await
+                    {
+                        Ok(a) => a,
+                        Err(e) => return Some(Err(e)),
+                    };
+                    Some(self.comparisons.start(request, authority))
+                }
+                "POST /native/v1/files/compare/status" | "POST /native/v1/files/compare/cancel" => {
+                    Some(
+                        self.comparisons
+                            .status(str_of(body, "id"), route.ends_with("/cancel")),
+                    )
+                }
+                "POST /native/v1/files/compare/page" => Some(self.comparisons.page(
+                    str_of(body, "id"),
+                    body["offset"].as_u64().unwrap_or(0).min(usize::MAX as u64) as usize,
+                    body["limit"].as_u64().unwrap_or(200).min(500) as usize,
+                )),
                 "GET /native/v1/files/copies" => Some(Ok(self.transfers.list())),
-                "POST /native/v1/files/copy/start" => {
-                    let facts = match guarded_facts(svc, app).await {
-                        Ok(f) => f,
+                "POST /native/v1/files/copy/start" | "POST /native/v1/files/copy/resume" => {
+                    let id = str_of(body, "id").to_owned();
+                    let existing = if route.ends_with("/resume") {
+                        match self.transfers.get(&id, false) {
+                            Ok(v) => Some(v),
+                            Err(e) => return Some(Err(e)),
+                        }
+                    } else {
+                        None
+                    };
+                    let from = existing
+                        .as_ref()
+                        .and_then(|v| v["source"].as_str())
+                        .unwrap_or_else(|| str_of(body, "path"))
+                        .to_owned();
+                    let to = str_of(body, "dir").to_owned();
+                    let authority = match copy_authority(svc, app, vec![from.clone()], true).await {
+                        Ok(a) => a,
                         Err(e) => return Some(Err(e)),
                     };
-                    let reads = match svc.file_capabilities(false) {
-                        Ok(r) => r,
-                        Err(e) => return Some(Err(e)),
-                    };
-                    let writes = match svc.file_capabilities(true) {
-                        Ok(r) => r,
-                        Err(e) => return Some(Err(e)),
-                    };
-                    Some(self.transfers.start(
-                        str_of(body, "path").to_owned(),
-                        str_of(body, "dir").to_owned(),
-                        reads,
-                        writes,
-                        facts,
-                    ))
+                    let transfers = self.transfers.clone();
+                    Some(
+                        tokio::task::spawn_blocking(move || {
+                            if existing.is_some() {
+                                transfers.resume(&id, authority)
+                            } else {
+                                transfers.start(from, to, authority)
+                            }
+                        })
+                        .await
+                        .unwrap_or_else(|_| {
+                            Err(Failure::new(
+                                "app.io",
+                                "The copy worker stopped before admission.",
+                            ))
+                        }),
+                    )
                 }
                 "POST /native/v1/files/copy/status" | "POST /native/v1/files/copy/cancel" => Some(
                     self.transfers
@@ -713,6 +821,7 @@ impl Extension for Module {
     fn shutdown<'a>(&'a self) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
         Box::pin(async move {
             self.transfers.cancel_all();
+            self.comparisons.cancel_all();
             self.archives.cancel_all();
             let (tx, rx) = oneshot::channel();
             self.svc.send(Cmd::Stop(tx));

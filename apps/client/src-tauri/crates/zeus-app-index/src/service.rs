@@ -58,6 +58,7 @@ pub struct Service {
     watcher_gaps: AtomicU64,
     cancel: AtomicBool,
     scan_seq: AtomicU32,
+    scope_generation: AtomicU64,
     dirty: AtomicBool,
     /// What zeusd knows about files.
     pub facts: FactsCache,
@@ -121,6 +122,7 @@ impl Service {
             watcher_gaps: AtomicU64::new(0),
             cancel: AtomicBool::new(false),
             scan_seq: AtomicU32::new(1),
+            scope_generation: AtomicU64::new(1),
             dirty: AtomicBool::new(false),
             facts: FactsCache::default(),
             root_identities: Mutex::new(root_identities),
@@ -226,9 +228,15 @@ impl Service {
         crate::paths::RootCaps::from_pins(&selected)
     }
 
+    /// Monotonic live scope revision for operations that must stop on settings changes.
+    pub fn scope_generation(&self) -> u64 {
+        self.scope_generation.load(Ordering::SeqCst)
+    }
+
     /// Replace the configuration (from the page), save it, and apply it.
     pub fn set_config(&self, new: IndexConfig) -> zeus_app::failure::Result<IndexConfig> {
         new.validate()?;
+        self.scope_generation.fetch_add(1, Ordering::SeqCst);
         let merged = new.with_download_roots(&download_roots(&self.home));
         merged.save(&index_dir(&self.home).join("index.json"))?;
         // Only this native human settings surface writes the upload read scopes.

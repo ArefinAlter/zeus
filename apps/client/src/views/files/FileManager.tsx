@@ -6,6 +6,7 @@ import { baseOf, isInside, parentOf, SEP } from '../../lib/paths'
 import { href, navigate } from '../../lib/router'
 import { fmtBytes, fmtStamp } from '../../model/units'
 import { Notice } from '../../ui/components'
+import { RecursiveComparison } from './RecursiveComparison'
 import { CopyJobs, DeleteDialog, MoveDialog, NewFolderDialog, RenameDialog } from './FileOps'
 
 const MAX_ROWS = 10_000
@@ -140,6 +141,7 @@ export function FileManager({ roots, writeRoots, initialPath, onClose }: {
       <FolderPane name="Left" active={active === 'Left'} pane={left} other={right} roots={roots} writeRoots={writeRoots} comparison={compare && comparable ? row => comparison(row, rightNames) : undefined} request={kind => request(kind, left, right)} mkdir={() => setMkdir(left.path)} />
       <FolderPane name="Right" active={active === 'Right'} pane={right} other={left} roots={roots} writeRoots={writeRoots} comparison={compare && comparable ? row => comparison(row, leftNames) : undefined} request={kind => request(kind, right, left)} mkdir={() => setMkdir(right.path)} />
     </div>
+    {compare ? <RecursiveComparison left={left.path} right={right.path} readable={left.readable && right.readable} /> : null}
     <CopyJobs />
     {op && (op.kind === 'copy' || op.kind === 'move') ? <MoveDialog copy={op.kind === 'copy'} path={op.source.path} dir={parentOf(op.source.path)} initialDestination={op.destination} roots={writeRoots} folders={[left.path, right.path]} onClose={closeOperation} /> : null}
     {op?.kind === 'rename' ? <RenameDialog path={op.source.path} name={baseOf(op.source.path)} onClose={closeOperation} /> : null}
