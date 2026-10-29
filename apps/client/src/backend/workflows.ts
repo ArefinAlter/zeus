@@ -14,6 +14,7 @@ export type WorkflowRun = {
   run_id: string; plan_id: string | null; plan_hash: string; status: string; approval_id: string | null; browser_document_mode?: 'browser_origin'
   pages_fetched: number; files_enqueued: number; files_completed: number; files_failed: number; bytes_done: number
   elapsed_ms: number; possibly_incomplete: boolean; pause_reason: string | null; stop_reason: string | null
+  item_sink?: { file_name: string; records: number; bytes: number; pending_records: number; max_bytes: number }
   last_error: { code: string; message: string } | null; drift: Finding[]; counts?: Record<string, number> | null
 }
 export type RunPage = { items: WorkflowRun[]; next_cursor: string | null }

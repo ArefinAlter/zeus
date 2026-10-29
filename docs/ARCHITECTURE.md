@@ -432,3 +432,6 @@ These documents are owned by other work streams. They need small follow-ups, lis
 - TLS is rustls only (`openssl` and `native-tls` are denied in `deny.toml`). `reqwest` uses its default `rustls` provider in this workspace; if `aws-lc-sys` cannot be built on a target (for example `windows-gnu` without a C toolchain), switch the `reqwest` feature to `rustls-no-provider` and install the `ring` provider at startup. This is recorded here so the choice is deliberate rather than accidental.
 - Sibling checkout: `zeus`, `zeus-core` and `zeus-extension` live side by side; `Cargo.toml` refers to `../zeus-core/crates/...`.
 - Local builds on a small machine: `CARGO_BUILD_JOBS=3`, a shared `CARGO_TARGET_DIR`, one cargo process at a time.
+
+
+Workflow item exports retain redacted discovery metadata with job intents and resolve it atomically with admission/skip. The `workflow_items` append worker binds retained directory/file identities and a durable BLAKE3/offset receipt, repairing only an exact prefix of its pending JSONL bytes. Each requested sink is a new no-overwrite file in the reviewed destination, bounded to 64 MiB; reports expose progress rather than extracted fields. A separate monotonic ordinal survives skipped destinations and checkpoint recovery.
