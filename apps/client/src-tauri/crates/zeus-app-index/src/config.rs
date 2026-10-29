@@ -219,7 +219,10 @@ impl Excluder {
 
     /// True when an entry named `name` at `path` is skipped by a pattern.
     pub fn skips(&self, name: &str, path: &Path) -> bool {
-        if self.names.iter().any(|p| wild(p, name)) {
+        if name.eq_ignore_ascii_case(".zeus")
+            || name.eq_ignore_ascii_case(".zeus-partial")
+            || self.names.iter().any(|p| wild(p, name))
+        {
             return true;
         }
         if self.paths.is_empty() {

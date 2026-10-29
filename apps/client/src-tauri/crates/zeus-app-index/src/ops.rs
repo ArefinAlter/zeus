@@ -103,55 +103,179 @@ pub fn move_to(
     Ok(json!({"ok": true, "from": shown(&from), "path": shown(&to)}))
 }
 
-/// Delete the given paths: to the recycle bin or trash, or for good when `permanent`.
+/// Delete using fresh explicitly supplied roots for direct local library callers. Desktop routes
+/// use `delete_pinned` with the service's previously recorded enablement identities.
 pub fn delete(
     paths: &[String],
     permanent: bool,
     write_roots: &[String],
     facts: &HashMap<String, FileFacts>,
 ) -> Result<Value> {
+    delete_pinned(
+        paths,
+        permanent,
+        &RootCaps::capture(write_roots)?,
+        facts,
+        None,
+    )
+}
+
+/// Delete through retained roots. Reversible trash is a same-volume move with the existing durable
+/// operation receipt; it can be restored with guarded Undo. Platform recycle APIs accept only
+/// ambient paths, so this route never hands an approved item back to such a path-based deleter.
+pub fn delete_pinned(
+    paths: &[String],
+    permanent: bool,
+    roots: &RootCaps,
+    facts: &HashMap<String, FileFacts>,
+    history: Option<&crate::history::Journal>,
+) -> Result<Value> {
     if paths.is_empty() || paths.len() > 500 {
         return Err(Failure::invalid("Delete 1 to 500 items at a time."));
     }
-    let mut targets: Vec<PathBuf> = Vec::new();
-    for p in paths {
-        let resolved = resolve_inside(p, write_roots)?;
-        if write_roots
+    let mut targets = Vec::new();
+    for path in paths {
+        let target = roots.path(path)?;
+        let scopes = roots.paths();
+        if scopes
             .iter()
-            .any(|r| crate::config::norm(r) == crate::config::norm(&shown(&resolved)))
+            .any(|r| crate::config::norm(r) == crate::config::norm(&shown(&target)))
         {
             return Err(Failure::invalid(
-                "A download folder itself is not deleted from here.",
+                "An enabled folder itself cannot be deleted here.",
             ));
         }
-        if quarantined_under(facts, &shown(&resolved)) {
+        if quarantined_under(facts, &shown(&target)) {
             return Err(quarantine_refusal("This item holds a quarantined file and"));
         }
-        targets.push(resolved);
+        let (parent, name) = roots.parent(&target)?;
+        let meta = parent.entry_metadata(&name).map_err(cap_failure)?;
+        targets.push((target, parent, name, meta));
     }
     let mut trashed = Vec::new();
     let mut deleted = Vec::new();
     let mut failed = Vec::new();
-    for t in targets {
-        let label = shown(&t);
-        if permanent {
-            let r = if t.is_dir() {
-                std::fs::remove_dir_all(&t)
-            } else {
-                std::fs::remove_file(&t)
-            };
-            match r {
-                Ok(()) => deleted.push(label),
-                Err(e) => failed.push(json!({"path": label, "code": "app.io", "message": format!("Could not delete it ({:?}).", e.kind())})),
-            }
+    for (path, parent, name, meta) in targets {
+        let label = shown(&path);
+        let result = if permanent {
+            remove_tree(&parent, &name, &meta)
+        } else if let Some(journal) = history {
+            (|| {
+                let scope = roots
+                    .scopes()
+                    .into_iter()
+                    .map(PathBuf::from)
+                    .filter(|p| path.starts_with(p))
+                    .max_by_key(|p| p.components().count())
+                    .ok_or_else(|| Failure::invalid("The managed root is unavailable."))?;
+                // The source may never be the private trash ancestor itself.
+                let trash = scope.join(".zeus/trash");
+                if trash.starts_with(&path) || path.starts_with(&trash) {
+                    return Err(Failure::invalid(
+                        "Restore items through Storage and history before deleting them again.",
+                    ));
+                }
+                let id = zeus_types::IdGenerator::new().next_ulid().to_string();
+                let relative = Path::new(".zeus").join("trash").join(&id);
+                let directory = roots
+                    .directory(&scope)?
+                    .create_dir_all(&relative)
+                    .map_err(cap_failure)?;
+                // Retain the destination chain until the journal completes publication.
+                let target = scope.join(relative).join(&name);
+                if parent.entry_metadata(&name).map_err(cap_failure)?.file_id != meta.file_id {
+                    return Err(Failure::new(
+                        "app.path_changed",
+                        "The item changed before trashing.",
+                    ));
+                }
+                let result = journal.relocate_pinned(&label, &shown(&target), roots, facts);
+                drop(directory);
+                result.map(|_| ())
+            })()
         } else {
-            match trash::delete(&t) {
-                Ok(()) => trashed.push(label),
-                Err(_) => failed.push(json!({"path": label, "code": "app.trash_unavailable", "message": "The recycle bin is not available here. You can delete it permanently instead."})),
+            Err(Failure::new(
+                "app.trash_unavailable",
+                "A durable operation journal is required for reversible trash.",
+            ))
+        };
+        match result {
+            Ok(()) if permanent => deleted.push(label),
+            Ok(()) => trashed.push(label),
+            Err(e) => failed.push(json!({"path":label,"code":e.code,"message":e.message})),
+        }
+    }
+    Ok(json!({"ok":failed.is_empty(),"trashed":trashed,"deleted":deleted,"failed":failed}))
+}
+
+// Full bounded preflight precedes deletion. Every child retains its parent until its own removal;
+// deepest-first removal drops descendant handles before attempting the now-empty directory.
+fn remove_tree(
+    parent: &zeus_fs::DirectoryCap,
+    name: &std::ffi::OsStr,
+    expected: &zeus_fs::FileMeta,
+) -> Result<()> {
+    let expected_id = expected
+        .file_id
+        .as_ref()
+        .ok_or_else(|| Failure::invalid("The item has no stable identity."))?;
+    let mut entries = Vec::new();
+    let started = std::time::Instant::now();
+    let bound = || {
+        if started.elapsed() > std::time::Duration::from_secs(120) {
+            Err(Failure::new(
+                "app.io",
+                "Deletion exceeded its time bound; review the remaining items.",
+            ))
+        } else {
+            Ok(())
+        }
+    };
+    if expected.is_dir {
+        let root = parent.open_dir(Path::new(name)).map_err(cap_failure)?;
+        if root.file_id().map_err(cap_failure)? != *expected_id {
+            return Err(Failure::invalid("The folder identity changed."));
+        }
+        let mut pending = vec![(root, 0usize)];
+        while let Some((dir, depth)) = pending.pop() {
+            bound()?;
+            if depth > 128 {
+                return Err(Failure::invalid(
+                    "The folder exceeds the deletion depth bound.",
+                ));
+            }
+            for name in dir
+                .entry_names(20_000usize.saturating_sub(entries.len()))
+                .map_err(cap_failure)?
+            {
+                let meta = dir.entry_metadata(&name).map_err(cap_failure)?;
+                let id = meta
+                    .file_id
+                    .ok_or_else(|| Failure::invalid("A child has no stable identity."))?;
+                if meta.is_dir {
+                    pending.push((
+                        dir.open_dir(Path::new(&name)).map_err(cap_failure)?,
+                        depth + 1,
+                    ));
+                }
+                entries.push((depth + 1, dir.clone(), name, id));
             }
         }
     }
-    Ok(json!({"ok": failed.is_empty(), "trashed": trashed, "deleted": deleted, "failed": failed}))
+    entries.sort_by_key(|(depth, _, _, _)| *depth);
+    while let Some((_, dir, name, id)) = entries.pop() {
+        bound()?;
+        dir.prepare_rename(&name)
+            .map_err(cap_failure)?
+            .remove(&id)
+            .map_err(cap_failure)?;
+    }
+    parent
+        .prepare_rename(name)
+        .map_err(cap_failure)?
+        .remove(expected_id)
+        .map_err(cap_failure)?;
+    parent.sync().map_err(cap_failure)
 }
 
 #[cfg(test)]
@@ -397,5 +521,124 @@ mod management_tests {
         create_folder(dir.path().to_str().unwrap(), "new", &roots).unwrap();
         assert!(create_folder(dir.path().to_str().unwrap(), "new", &roots).is_err());
         assert!(create_folder(dir.path().to_str().unwrap(), "../outside", &roots).is_err());
+    }
+}
+
+#[cfg(test)]
+mod retained_delete_tests {
+    use super::*;
+    #[test]
+    fn trash_receipt_survives_restart_and_restore_preserves_foreign_files() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("root");
+        std::fs::create_dir_all(root.join("folder")).unwrap();
+        let file = root.join("folder/report.txt");
+        std::fs::write(&file, b"keep me").unwrap();
+        let pins = RootCaps::capture(&[shown(&root)]).unwrap();
+        let path = temp.path().join("history.json");
+        let journal = crate::history::Journal::new(path.clone());
+        let facts = HashMap::new();
+        let result = delete_pinned(&[shown(&file)], false, &pins, &facts, Some(&journal)).unwrap();
+        assert_eq!(result["ok"], true);
+        assert!(!file.exists());
+        let history = journal.list();
+        let record = &history["records"][0];
+        let id = record["id"].as_str().unwrap().to_owned();
+        assert_eq!(record["trash"], true);
+        assert_eq!(record["bytes"], 7);
+        let trashed = PathBuf::from(record["path"].as_str().unwrap());
+        assert_eq!(std::fs::read(&trashed).unwrap(), b"keep me");
+        drop(journal);
+        let reloaded = crate::history::Journal::new(path);
+        std::fs::write(&file, b"foreign").unwrap();
+        assert!(reloaded.undo_pinned(&id, &pins, &facts).is_err());
+        assert_eq!(std::fs::read(&file).unwrap(), b"foreign");
+        std::fs::remove_file(&file).unwrap();
+        reloaded.undo_pinned(&id, &pins, &facts).unwrap();
+        assert_eq!(std::fs::read(&file).unwrap(), b"keep me");
+        assert!(!trashed.exists());
+    }
+    #[test]
+    fn trash_preserves_folders_and_refuses_replaced_payload_on_restore() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("root");
+        std::fs::create_dir_all(root.join("folder/deep")).unwrap();
+        std::fs::write(root.join("folder/deep/a"), b"data").unwrap();
+        let pins = RootCaps::capture(&[shown(&root)]).unwrap();
+        let journal = crate::history::Journal::new(temp.path().join("history.json"));
+        let result = delete_pinned(
+            &[shown(&root.join("folder"))],
+            false,
+            &pins,
+            &HashMap::new(),
+            Some(&journal),
+        )
+        .unwrap();
+        assert_eq!(result["ok"], true);
+        let list = journal.list();
+        let record = &list["records"][0];
+        let payload = PathBuf::from(record["path"].as_str().unwrap());
+        assert_eq!(std::fs::read(payload.join("deep/a")).unwrap(), b"data");
+        let changed = payload.with_file_name("keep-original");
+        std::fs::rename(&payload, &changed).unwrap();
+        std::fs::create_dir(&payload).unwrap();
+        assert!(
+            journal
+                .undo_pinned(record["id"].as_str().unwrap(), &pins, &HashMap::new())
+                .is_err()
+        );
+        assert!(!root.join("folder").exists());
+        assert!(changed.join("deep/a").exists());
+    }
+    #[test]
+    fn trash_is_hidden_even_when_optional_exclusions_are_removed() {
+        let cfg = crate::config::IndexConfig {
+            exclusions: vec![],
+            exclude_hidden: false,
+            exclude_system: false,
+            ..Default::default()
+        };
+        let exclusions = crate::config::Excluder::new(&cfg);
+        assert!(exclusions.skips_below(Path::new("/root/.zeus/trash/item"), Path::new("/root")));
+    }
+    #[cfg(windows)]
+    #[test]
+    fn permanent_tree_preflight_refuses_a_junction_without_removing_siblings() {
+        use std::os::windows::process::CommandExt;
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("root");
+        let outside = temp.path().join("outside");
+        std::fs::create_dir_all(root.join("folder")).unwrap();
+        std::fs::create_dir(&outside).unwrap();
+        std::fs::write(root.join("folder/keep"), b"keep").unwrap();
+        std::fs::write(outside.join("secret"), b"outside").unwrap();
+        let junction = root.join("folder").join("link");
+        let created = std::process::Command::new("cmd.exe")
+            .current_dir(temp.path())
+            .args(["/D", "/C", "mklink", "/J"])
+            .arg(&junction)
+            .arg(&outside)
+            .creation_flags(0x08000000)
+            .output()
+            .unwrap();
+        assert!(
+            created.status.success(),
+            "junction fixture failed: {} {}",
+            String::from_utf8_lossy(&created.stdout),
+            String::from_utf8_lossy(&created.stderr)
+        );
+        let roots = RootCaps::capture(&[shown(&root)]).unwrap();
+        let result = delete_pinned(
+            &[shown(&root.join("folder"))],
+            true,
+            &roots,
+            &HashMap::new(),
+            None,
+        )
+        .unwrap();
+        assert_eq!(result["ok"], false);
+        assert_eq!(std::fs::read(root.join("folder/keep")).unwrap(), b"keep");
+        assert_eq!(std::fs::read(outside.join("secret")).unwrap(), b"outside");
+        std::fs::remove_dir(junction).unwrap();
     }
 }

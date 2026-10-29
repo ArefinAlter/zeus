@@ -38,7 +38,7 @@ export function FileInsights({ onClose, onChanged, roots, onBrowse }: { onClose:
   }
   return <Dialog title="Storage and operation history" onClose={onClose}>
     <div class="file-insight-tabs" role="group" aria-label="File workspace tools">
-      {(['sizes','duplicates','history','everything'] as const).map(t=><button class={`btn small ${tab===t?'primary':''}`} aria-pressed={tab===t} onClick={()=>setTab(t)}>{t==='sizes'?'Storage':t==='duplicates'?'Duplicates':t==='history'?'Move history':'Everything'}</button>)}
+      {(['sizes','duplicates','history','everything'] as const).map(t=><button class={`btn small ${tab===t?'primary':''}`} aria-pressed={tab===t} onClick={()=>setTab(t)}>{t==='sizes'?'Storage':t==='duplicates'?'Duplicates':t==='history'?'Move and trash history':'Everything'}</button>)}
     </div>
     {error ? <Notice kind="error">{error}</Notice> : null}
     {message ? <p role="status">{message}</p> : null}
@@ -56,9 +56,9 @@ export function FileInsights({ onClose, onChanged, roots, onBrowse }: { onClose:
         {analytics?.duplicate_candidates.map(c=><div class="file-duplicate-candidate"><strong>{c.files} files · {fmtBytes(c.bytes)} each</strong>{c.truncated?<span class="muted"> · first 32 paths</span>:null}<ul>{c.paths.map(path=><li class="mono">{path}</li>)}</ul><button class="btn small" disabled={busy || c.bytes*c.paths.length>1024**3} onClick={()=>void verify(c.paths)}>Verify content{c.bytes*c.paths.length>1024**3?' · exceeds 1 GiB limit':''}</button></div>)}
         {verified.map(g=><div class="file-duplicate-candidate"><strong>Verified identical SHA-256</strong><p class="mono">{g.sha256}</p><ul>{g.paths.map(path=><li class="mono">{path}</li>)}</ul></div>)}
       </> : <>
-        <p class="muted small">Rename and move receipts survive restart. Undo refuses changed or replaced items, occupied paths, revoked folders and quarantine. Copy jobs, trash and permanent deletions have separate lifecycles.</p>
-        {history.length===0 ? <p>No tracked moves on this device.</p> : null}
-        {history.map(r=><div class="file-duplicate-candidate"><span>{fmtStamp(r.created_ms)} · {r.state}</span><p class="mono">{r.from}<br />→ {r.path}</p>{r.can_undo || r.state==='pending' || r.state==='undoing' ? <button class="btn small" disabled={busy} onClick={()=>void act(r)}>{r.can_undo?'Undo move':'Reconcile receipt'}</button>:null}</div>)}
+        <p class="muted small">Rename, move and Zeus trash receipts survive restart. Trash stays in the managed folder’s .zeus/trash directory and still uses disk space; Undo restores its original path. Listed file sizes are logical bytes captured at the move, and folder totals are not counted here. No automatic expiry or purge runs. Undo refuses changed or replaced items, occupied paths, revoked folders and quarantine. Copy jobs and permanent deletions have separate lifecycles.</p>
+        {history.length===0 ? <p>No tracked moves or trashed items on this device.</p> : null}
+        {history.map(r=><div class="file-duplicate-candidate"><span>{fmtStamp(r.created_ms)} · {r.trash?'Zeus trash · ':''}{r.state} · {r.directory?'folder (contents not included in this receipt size)':fmtBytes(r.bytes)}</span><p class="mono">{r.from}<br />→ {r.path}</p>{r.can_undo || r.state==='pending' || r.state==='undoing' ? <button class="btn small" disabled={busy} onClick={()=>void act(r)}>{r.can_undo?'Undo / restore':'Reconcile receipt'}</button>:null}</div>)}
       </>}
     </div>
     <div class="decide-row"><button class="btn" disabled={busy} onClick={()=>void reload().catch(e=>setError(e instanceof Error?e.message:'Refresh failed.'))}>Refresh</button><button class="btn primary" onClick={onClose}>Close</button></div>

@@ -8,12 +8,11 @@ use std::sync::Mutex;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use zeus_app::failure::{Failure, Result};
-use zeus_fs::{Filesystem, RealFs};
 
 use crate::{
     facts::{FileFacts, quarantined_under},
     ops,
-    paths::{RootCaps, cap_failure, resolve_new_inside, shown},
+    paths::{RootCaps, cap_failure, shown},
 };
 
 const MAX_RECORDS: usize = 1000;
@@ -24,18 +23,6 @@ struct Identity {
     bytes: u64,
     mtime_ms: i64,
     directory: bool,
-}
-fn identity(path: &Path) -> Result<Identity> {
-    let meta = RealFs
-        .metadata(path)
-        .map_err(|_| Failure::new("app.io", "The file identity could not be read."))?
-        .ok_or_else(|| Failure::new("app.not_found", "That item no longer exists."))?;
-    if meta.is_symlink || (!meta.is_regular_file && !meta.is_dir) {
-        return Err(Failure::invalid(
-            "Choose a file or folder itself, rather than a link or special file.",
-        ));
-    }
-    Ok(identity_from_meta(meta))
 }
 fn identity_from_meta(meta: zeus_fs::FileMeta) -> Identity {
     Identity {
@@ -99,7 +86,7 @@ impl Journal {
     pub fn list(&self) -> Value {
         match self.records.lock() {
             Ok(records) => {
-                json!({"records":records.iter().rev().map(|r| json!({"id":r.id,"from":r.from,"path":r.path,"state":r.state,"created_ms":r.created_ms,"can_undo":r.state=="complete","directory":r.identity.directory})).collect::<Vec<_>>(),"load_failed":self.load_failed})
+                json!({"records":records.iter().rev().map(|r| json!({"id":r.id,"from":r.from,"path":r.path,"state":r.state,"created_ms":r.created_ms,"can_undo":r.state=="complete","directory":r.identity.directory,"bytes":r.identity.bytes,"trash":r.path.replace('\\',"/").contains("/.zeus/trash/")})).collect::<Vec<_>>(),"load_failed":self.load_failed})
             }
             Err(_) => json!({"records":[],"load_failed":true}),
         }
@@ -273,6 +260,10 @@ impl Journal {
     }
     /// Reconcile an interrupted intent after a person requests it; inspect identities without replay.
     pub fn reconcile(&self, id: &str, roots: &[String]) -> Result<Value> {
+        self.reconcile_pinned(id, &RootCaps::capture(roots)?)
+    }
+    /// Inspect an interrupted receipt through retained current root identities without replaying it.
+    pub fn reconcile_pinned(&self, id: &str, roots: &RootCaps) -> Result<Value> {
         let mut records = self
             .records
             .lock()
@@ -286,24 +277,31 @@ impl Journal {
                 "This receipt does not need reconciliation.",
             ));
         }
-        let from = resolve_new_inside(&row.from, roots)?;
-        let to = resolve_new_inside(&row.path, roots)?;
-        let original_matches = identity(&from).ok().as_ref() == Some(&row.identity);
-        let target_matches = identity(&to).ok().as_ref() == Some(&row.identity);
-        if original_matches
-            && std::fs::symlink_metadata(&to)
-                .is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound)
-        {
+        let from = roots.path(&row.from)?;
+        let to = roots.path(&row.path)?;
+        let observed = |path: &Path| -> Result<Option<Identity>> {
+            let (parent, name) = roots.parent(path)?;
+            if !parent.entry_exists(&name).map_err(cap_failure)? {
+                return Ok(None);
+            }
+            parent
+                .entry_metadata(&name)
+                .map(identity_from_meta)
+                .map(Some)
+                .map_err(cap_failure)
+        };
+        let original = observed(&from)?;
+        let target = observed(&to)?;
+        let original_matches = original.as_ref() == Some(&row.identity);
+        let target_matches = target.as_ref() == Some(&row.identity);
+        if original_matches && target.is_none() {
             row.state = if row.state == "undoing" {
                 "undone"
             } else {
                 "failed"
             }
             .into();
-        } else if target_matches
-            && std::fs::symlink_metadata(&from)
-                .is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound)
-        {
+        } else if target_matches && original.is_none() {
             row.state = "complete".into();
         } else {
             return Err(Failure::new(

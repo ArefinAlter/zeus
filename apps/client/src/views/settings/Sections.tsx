@@ -681,7 +681,7 @@ export function StorageSettings() {
         <SettingRow title="Partial data of failed downloads" desc={NATIVE ? 'zeusd keeps partial data so a retry can continue, until the download is removed.' : 'Kept so a retry can continue.'} planned={NATIVE}>
           <NumberInput label="Partial data" value={st.clearPartialAfterDays} min={1} max={365} onChange={(v) => set({ clearPartialAfterDays: v })} unit="days" />
         </SettingRow>
-        <SettingRow title="Zeus trash" desc={NATIVE ? 'Files you delete in Zeus go to the operating system recycle bin, which keeps its own schedule.' : 'Replaced and removed files wait here before they are gone.'} planned={NATIVE}>
+        <SettingRow title="Zeus trash" desc={NATIVE ? 'Files deleted in the file manager stay in each managed folder’s .zeus/trash directory. Restore them from Storage and history; automatic purge is not enabled.' : 'Replaced and removed files wait here before they are gone.'} planned={NATIVE}>
           <NumberInput label="Trash" value={st.trashRetentionDays} min={1} max={365} onChange={(v) => set({ trashRetentionDays: v })} unit="days" />
         </SettingRow>
       </SettingsGroup>

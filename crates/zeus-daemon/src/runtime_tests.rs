@@ -1191,6 +1191,49 @@ async fn organizing_files_waits_for_a_person_runs_exactly_once_and_can_be_undone
         .unwrap();
     contract("FilesListResult", &listed);
 
+    // Older JSON remains visible but cannot acquire destructive authority during an upgrade.
+    let trash = zeus_fs::trash::Trash::new(paths(dir.path()).state_dir.join("trash"));
+    let old_entry = trash.entries().unwrap().into_iter().next().unwrap();
+    let receipt_path = old_entry.trash_path.with_extension("json");
+    let identity_bound_receipt = std::fs::read(&receipt_path).unwrap();
+    let legacy_receipt = serde_json::to_vec(&old_entry).unwrap();
+    std::fs::write(&receipt_path, &legacy_receipt).unwrap();
+    let legacy_status = backend
+        .files_operation_get(
+            &agent,
+            zeus_api::methods::files::FilesOperationGetParams {
+                operation_id: operation.clone(),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        legacy_status.reason.as_deref(),
+        Some("legacy_trash_manual_recovery")
+    );
+    assert_eq!(
+        backend
+            .files_undo(
+                &agent,
+                FilesUndoParams {
+                    operation_id: operation.clone(),
+                    idempotency_key: None,
+                }
+            )
+            .await
+            .unwrap_err()
+            .envelope()
+            .code
+            .as_str(),
+        "files.legacy_trash_manual_recovery"
+    );
+    assert_eq!(std::fs::read(&old_entry.trash_path).unwrap(), b"scratch");
+    assert_eq!(std::fs::read(&receipt_path).unwrap(), legacy_receipt);
+    assert!(!inbox.join("notes.tmp").exists());
+    // Restore the original fixture bytes to exercise the separate identity-bound path below.
+    // Production code never manufactures/adopts missing legacy identities.
+    std::fs::write(&receipt_path, identity_bound_receipt).unwrap();
+
     // Undo plans the inverse, again behind a person's approval, and restores the trashed file.
     let undo = backend
         .files_undo(
