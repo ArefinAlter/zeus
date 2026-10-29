@@ -160,7 +160,8 @@ export function toWrite(c: AgentConfigView): AgentConfigWrite {
 export function providerBlocker(c: AgentConfigView, p: ProviderView): { code: string; text: string } | null {
   if (c.offline) return { code: 'offline', text: 'Offline is on' }
   if (!p.enabled) return { code: 'disabled', text: 'switched off' }
-  if (!p.model.trim()) return { code: 'needs_model', text: 'no model yet' }
+  const subscription = ['codex', 'claude', 'cursor', 'antigravity', 'grok'].includes(p.kind)
+  if (!subscription && !p.model.trim()) return { code: 'needs_model', text: 'no model yet' }
   if (!p.consent) return { code: 'needs_consent', text: 'not allowed yet' }
   if (p.needs_key && !p.key.stored) return { code: 'needs_key', text: 'needs a key' }
   return null
@@ -293,10 +294,14 @@ export async function sendNative(id: string, text: string | null, regenerate = f
     const live = threadOf(id) ?? t
     const body = bodyFor(live, provider.id, regenerate ? undefined : (text ?? ''), regenerate)
     const preview = await agentApi.preview(body)
-    if (preview.blocker?.code === 'needs_consent') {
-      const allowed = await askConsent(id, preview)
-      if (!allowed) return fail(`Nothing was sent: you did not allow Zeus to send this thread to ${provider.name}.`)
-      await allowProvider(provider.id, true)
+    if (preview.blocker) {
+      if (preview.blocker.code === 'needs_consent') {
+        const allowed = await askConsent(id, preview)
+        if (!allowed) return fail(`Nothing was sent: you did not allow Zeus to send this thread to ${provider.name}.`)
+        await allowProvider(provider.id, true)
+      } else {
+        return fail(`${provider.name}: ${preview.blocker.message}`)
+      }
     }
     const { run_id } = await agentApi.send(body)
     active.set(id, run_id)
