@@ -144,6 +144,7 @@ export interface FileHistoryRecord {
 }
 
 export interface FileAnalytics {
+  storage?: { measurement:'last_indexed_filesystem_allocation'; known_objects:number; observed_aliases:number; unobserved_aliases:number; unknown_identity_paths:number; inconsistent_objects:number; unique_logical_bytes_known:number; allocated_bytes_known:number; unknown_allocation_objects:number; complete:boolean }
   generation: number
   files: number
   logical_bytes: number

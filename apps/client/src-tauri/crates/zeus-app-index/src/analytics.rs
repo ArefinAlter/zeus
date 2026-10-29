@@ -1,7 +1,7 @@
 //! Scoped disk-size summaries and bounded duplicate verification. Equal sizes are candidates;
 //! only independently read, unchanged SHA-256 content is reported as a verified duplicate group.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::Read;
 
 use serde_json::{Value, json};
@@ -23,6 +23,7 @@ pub fn summarize(index: &Index, roots: &[String]) -> Value {
     let mut directories: BTreeMap<String, (usize, u64)> = BTreeMap::new();
     let mut extensions: BTreeMap<String, (usize, u64)> = BTreeMap::new();
     let mut sizes: BTreeMap<u64, (usize, Vec<String>)> = BTreeMap::new();
+    let mut candidate_objects = HashSet::new();
     let mut count = 0usize;
     let mut bytes = 0u64;
     for (path, entry) in &index.entries {
@@ -52,7 +53,11 @@ pub fn summarize(index: &Index, roots: &[String]) -> Value {
             parent = p.parent();
         }
         // Tiny and empty files are not a useful space-recovery candidate.
-        if entry.size >= 1024 {
+        let distinct = entry
+            .storage
+            .as_ref()
+            .is_none_or(|facts| candidate_objects.insert(facts.file_id.clone()));
+        if entry.size >= 1024 && distinct {
             let group = sizes.entry(entry.size).or_default();
             group.0 += 1;
             if group.1.len() < 32 {
@@ -72,8 +77,78 @@ pub fn summarize(index: &Index, roots: &[String]) -> Value {
     duplicate_sizes.sort_by_key(|(size, (count, _))| {
         std::cmp::Reverse(size.saturating_mul((*count - 1) as u64))
     });
-    json!({"generation":index.generation,"files":count,"logical_bytes":bytes,"measurement":"logical_file_size","directories":top(directories),"extensions":top(extensions),
+    json!({"generation":index.generation,"files":count,"logical_bytes":bytes,"measurement":"logical_file_size","storage":storage_summary(index,&scopes),"directories":top(directories),"extensions":top(extensions),
         "duplicate_candidates":duplicate_sizes.into_iter().take(100).map(|(size,(count,paths))|json!({"bytes":size,"files":count,"paths":paths,"truncated":count>32,"verified":false})).collect::<Vec<_>>()})
+}
+
+/// Last-indexed allocation, counting each known file identity once across the selected roots.
+/// This does not claim live free-space savings or disjoint allocation for reflink/shared extents.
+fn storage_summary(index: &Index, scopes: &[String]) -> Value {
+    #[derive(Clone)]
+    struct Object {
+        logical: u64,
+        allocation: Option<u64>,
+        links: Option<u64>,
+        aliases: u64,
+        consistent: bool,
+    }
+    let mut objects: HashMap<zeus_types::FileId, Object> = HashMap::new();
+    let mut unknown_paths = 0u64;
+    for (path, entry) in &index.entries {
+        if entry.dir || !in_scope(path, scopes) {
+            continue;
+        }
+        let Some(facts) = &entry.storage else {
+            unknown_paths += 1;
+            continue;
+        };
+        objects
+            .entry(facts.file_id.clone())
+            .and_modify(|o| {
+                o.aliases += 1;
+                o.consistent &= o.logical == entry.size
+                    && o.allocation == facts.allocated_bytes
+                    && o.links == facts.hard_links;
+            })
+            .or_insert(Object {
+                logical: entry.size,
+                allocation: facts.allocated_bytes,
+                links: facts.hard_links,
+                aliases: 1,
+                consistent: true,
+            });
+    }
+    let mut logical = 0u64;
+    let mut allocated = 0u64;
+    let mut unknown_allocation = 0u64;
+    let mut aliases = 0u64;
+    let mut unseen_aliases = 0u64;
+    let mut inconsistent = 0u64;
+    for object in objects.values() {
+        aliases += object.aliases.saturating_sub(1);
+        if !object.consistent {
+            inconsistent += 1;
+            unknown_allocation += 1;
+            continue;
+        }
+        logical = logical.saturating_add(object.logical);
+        if let Some(bytes) = object.allocation {
+            allocated = allocated.saturating_add(bytes)
+        } else {
+            unknown_allocation += 1
+        }
+        unseen_aliases = unseen_aliases.saturating_add(
+            object
+                .links
+                .unwrap_or(object.aliases)
+                .saturating_sub(object.aliases),
+        );
+    }
+    json!({"measurement":"last_indexed_filesystem_allocation","known_objects":objects.len(),
+        "observed_aliases":aliases,"unobserved_aliases":unseen_aliases,"unknown_identity_paths":unknown_paths,
+        "inconsistent_objects":inconsistent,"unique_logical_bytes_known":logical,"allocated_bytes_known":allocated,
+        "unknown_allocation_objects":unknown_allocation,"complete":unknown_paths==0&&unknown_allocation==0&&inconsistent==0,
+        "reclaimable_bytes":null,"shared_extents_deduplicated":false})
 }
 
 /// Hash 2–32 explicitly selected regular files, up to 1 GiB of reads, and recheck source metadata.
@@ -177,6 +252,86 @@ fn verify_steps(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn hard_links_count_once_and_unknown_or_conflicting_measurements_stay_explicit() {
+        let mut ix = Index::default();
+        let g = ix.begin();
+        let path = |s: &str| s.replace('/', std::path::MAIN_SEPARATOR_STR);
+        let root = path("/allowed");
+        let storage = zeus_fs::storage::FileStorage {
+            file_id: zeus_types::FileId::unix(1, 10),
+            allocated_bytes: Some(4096),
+            hard_links: Some(3),
+        };
+        for p in ["/allowed/a.bin", "/allowed/alias.bin", "/revoked/alias.bin"] {
+            ix.upsert_observed(g, &path(p), (8192, 1, false), 1, Some(storage.clone()));
+        }
+        let summary = summarize(&ix, std::slice::from_ref(&root));
+        assert_eq!(summary["logical_bytes"], 16384);
+        assert_eq!(summary["storage"]["allocated_bytes_known"], 4096);
+        assert_eq!(summary["storage"]["unique_logical_bytes_known"], 8192);
+        assert_eq!(summary["storage"]["observed_aliases"], 1);
+        assert_eq!(summary["storage"]["unobserved_aliases"], 1);
+        assert_eq!(summary["storage"]["complete"], true);
+        assert!(
+            summary["duplicate_candidates"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+        ix.upsert(g, &path("/allowed/unknown.bin"), 8192, 1, false, 1);
+        assert_eq!(
+            summarize(&ix, std::slice::from_ref(&root))["storage"]["unknown_identity_paths"],
+            1
+        );
+        let mut conflicting = storage;
+        conflicting.allocated_bytes = Some(8192);
+        ix.upsert_observed(
+            g,
+            &path("/allowed/alias.bin"),
+            (8192, 1, false),
+            1,
+            Some(conflicting),
+        );
+        let summary = summarize(&ix, &[root]);
+        assert_eq!(summary["storage"]["allocated_bytes_known"], 0);
+        assert_eq!(summary["storage"]["inconsistent_objects"], 1);
+        assert_eq!(summary["storage"]["complete"], false);
+        assert!(summary["storage"]["reclaimable_bytes"].is_null());
+    }
+    #[test]
+    fn native_scan_refresh_and_restart_retain_alias_accounting() {
+        let tmp = tempfile::tempdir().unwrap();
+        let a = tmp.path().join("a.bin");
+        let alias = tmp.path().join("alias.bin");
+        std::fs::write(&a, vec![42u8; 8192]).unwrap();
+        std::fs::hard_link(&a, &alias).unwrap();
+        let index = std::sync::Mutex::new(Index::default());
+        let cfg = crate::config::IndexConfig::default();
+        let ex = crate::config::Excluder::new(&cfg);
+        let progress = crate::scan::Progress::default();
+        crate::scan::scan_root(
+            &index,
+            tmp.path(),
+            &ex,
+            1,
+            &progress,
+            &std::sync::atomic::AtomicBool::new(false),
+        );
+        let roots = vec![shown(tmp.path())];
+        let summary = summarize(&index.lock().unwrap(), &roots);
+        assert_eq!(summary["storage"]["known_objects"], 1);
+        assert_eq!(summary["storage"]["observed_aliases"], 1);
+        let snapshot = index.lock().unwrap().snapshot();
+        let loaded = Index::from_snapshot(&snapshot).unwrap();
+        assert_eq!(summarize(&loaded, &roots)["storage"], summary["storage"]);
+        std::fs::remove_file(&alias).unwrap();
+        crate::scan::refresh_dir(&index, tmp.path(), &ex, 2);
+        let after = summarize(&index.lock().unwrap(), &roots);
+        assert_eq!(after["storage"]["observed_aliases"], 0);
+        assert_eq!(after["storage"]["unobserved_aliases"], 0);
+    }
+
     #[test]
     fn same_size_different_content_is_not_reported_as_duplicate() {
         let dir = tempfile::tempdir().unwrap();

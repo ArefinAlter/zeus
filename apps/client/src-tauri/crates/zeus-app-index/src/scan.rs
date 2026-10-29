@@ -95,7 +95,13 @@ fn display_keeps_network_share_addresses_absolute() {
 
 /// What one folder holds, as the scan reads it.
 struct Listing {
-    files: Vec<(String, u64, i64, bool)>,
+    files: Vec<(
+        String,
+        u64,
+        i64,
+        bool,
+        Option<zeus_fs::storage::FileStorage>,
+    )>,
     subdirs: Vec<PathBuf>,
     complete: bool,
 }
@@ -128,7 +134,7 @@ fn list_dir(dir: &Path, ex: &Excluder, roots: &RootCaps) -> Listing {
             continue;
         };
         let path = dir.join(&entry);
-        let meta = match directory.entry_os_metadata(&entry) {
+        let observed = match directory.entry_observation(&entry) {
             Ok(meta) => meta,
             Err(zeus_fs::FsError::SymlinkRefused | zeus_fs::FsError::InvalidName(_)) => continue,
             Err(_) => {
@@ -136,6 +142,7 @@ fn list_dir(dir: &Path, ex: &Excluder, roots: &RootCaps) -> Listing {
                 continue;
             }
         };
+        let meta = observed.metadata;
         if ex.skips(name, &path) || ex.skips_attributes(name, &meta) {
             continue;
         }
@@ -143,11 +150,17 @@ fn list_dir(dir: &Path, ex: &Excluder, roots: &RootCaps) -> Listing {
             if is_link(&meta) {
                 continue;
             }
-            out.files.push((display(&path), 0, mtime_ms(&meta), true));
+            out.files
+                .push((display(&path), 0, mtime_ms(&meta), true, None));
             out.subdirs.push(path);
         } else if meta.is_file() || meta.file_type().is_symlink() {
-            out.files
-                .push((display(&path), meta.len(), mtime_ms(&meta), false));
+            out.files.push((
+                display(&path),
+                meta.len(),
+                mtime_ms(&meta),
+                false,
+                observed.storage,
+            ));
         }
     }
     out
@@ -176,8 +189,8 @@ fn publish_dir_pinned(
     let count = l.files.len();
     if let Ok(mut ix) = index.lock() {
         let g = ix.begin();
-        for (path, size, mtime, is_dir) in &l.files {
-            if !ix.upsert(g, path, *size, *mtime, *is_dir, scan) {
+        for (path, size, mtime, is_dir, storage) in &l.files {
+            if !ix.upsert_observed(g, path, (*size, *mtime, *is_dir), scan, storage.clone()) {
                 break;
             }
         }
@@ -288,8 +301,8 @@ fn refresh_dir_pinned(
                 ix.remove_tree(g, gone);
             }
         }
-        for (path, size, mtime, is_dir) in &l.files {
-            if !ix.upsert(g, path, *size, *mtime, *is_dir, scan) {
+        for (path, size, mtime, is_dir, storage) in &l.files {
+            if !ix.upsert_observed(g, path, (*size, *mtime, *is_dir), scan, storage.clone()) {
                 complete = false;
                 break;
             }
@@ -359,26 +372,30 @@ pub fn refresh_path_pinned(
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
-    match roots.os_metadata(path) {
+    match roots.storage_observation(path) {
         Ok(None) => {
             remove_cached_tree(index, &key);
             true
         }
         Err(_) => false,
-        Ok(Some(meta)) => {
+        Ok(Some(observed)) => {
+            let meta = observed.metadata;
             if ex.skips(&name, path) || ex.skips_attributes(&name, &meta) {
                 remove_cached_tree(index, &key);
                 return true;
             }
             if let Ok(mut ix) = index.lock() {
                 let g = ix.begin();
-                ix.upsert(
+                ix.upsert_observed(
                     g,
                     &key,
-                    if meta.is_dir() { 0 } else { meta.len() },
-                    mtime_ms(&meta),
-                    meta.is_dir(),
+                    (
+                        if meta.is_dir() { 0 } else { meta.len() },
+                        mtime_ms(&meta),
+                        meta.is_dir(),
+                    ),
                     scan,
+                    observed.storage,
                 );
             }
             if meta.is_dir() {

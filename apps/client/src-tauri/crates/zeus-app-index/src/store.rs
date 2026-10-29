@@ -10,16 +10,18 @@ use std::ops::Bound;
 use std::path::Path;
 
 use serde::Serialize;
+use zeus_fs::storage::FileStorage;
 
 /// Most entries the index keeps; past it the scan stops adding and says so.
 pub const CAP: usize = 500_000;
 /// Changes remembered for deltas; a client further behind gets the whole list.
 const LOG_CAP: usize = 200_000;
 
-const MAGIC: &[u8; 4] = b"ZIX1";
+const MAGIC: &[u8; 4] = b"ZIX2";
+const LEGACY_MAGIC: &[u8; 4] = b"ZIX1";
 
 /// One file or folder.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Entry {
     /// Size in bytes (0 for folders).
     pub size: u64,
@@ -29,6 +31,8 @@ pub struct Entry {
     pub dir: bool,
     /// The scan that last saw it (not persisted).
     pub scan: u32,
+    /// Optional allocation/alias facts observed by the same native scan handle.
+    pub storage: Option<FileStorage>,
     /// Lossy trigram mask for fast negative filename checks, rebuilt from paths after loading.
     pub(crate) name_mask: u128,
     /// Lossy trigram mask for fast negative full-path checks.
@@ -123,8 +127,26 @@ impl Index {
         dir: bool,
         scan: u32,
     ) -> bool {
+        self.upsert_observed(gen_, path, (size, mtime, dir), scan, None)
+    }
+
+    /// Insert a metadata observation. A missing storage observation explicitly clears stale facts.
+    pub fn upsert_observed(
+        &mut self,
+        gen_: u64,
+        path: &str,
+        metadata: (u64, i64, bool),
+        scan: u32,
+        storage: Option<FileStorage>,
+    ) -> bool {
+        let (size, mtime, dir) = metadata;
+        let storage = storage.filter(|facts| {
+            !dir && facts.file_id.validate().is_ok() && facts.hard_links != Some(0)
+        });
         match self.entries.get_mut(path) {
-            Some(e) if e.size == size && e.mtime == mtime && e.dir == dir => {
+            Some(e)
+                if e.size == size && e.mtime == mtime && e.dir == dir && e.storage == storage =>
+            {
                 e.scan = scan;
                 true
             }
@@ -134,6 +156,7 @@ impl Index {
                     mtime,
                     dir,
                     scan,
+                    storage,
                     name_mask: trigram_mask(path.rsplit(['/', '\\']).next().unwrap_or(path)),
                     path_mask: trigram_mask(path),
                 };
@@ -152,6 +175,7 @@ impl Index {
                         mtime,
                         dir,
                         scan,
+                        storage,
                         name_mask: trigram_mask(path.rsplit(['/', '\\']).next().unwrap_or(path)),
                         path_mask: trigram_mask(path),
                     },
@@ -294,6 +318,13 @@ impl Index {
             out.extend_from_slice(&e.size.to_le_bytes());
             out.extend_from_slice(&e.mtime.to_le_bytes());
             out.push(u8::from(e.dir));
+            let storage = e
+                .storage
+                .as_ref()
+                .map(|v| serde_json::to_vec(v).expect("storage fields serialize"))
+                .unwrap_or_default();
+            out.extend_from_slice(&(storage.len() as u16).to_le_bytes());
+            out.extend_from_slice(&storage);
         }
         let sum = fnv(&out);
         out.extend_from_slice(&sum.to_le_bytes());
@@ -302,13 +333,15 @@ impl Index {
 
     /// Read a snapshot; `None` when it is damaged or from another format.
     pub fn from_snapshot(bytes: &[u8]) -> Option<Self> {
-        if bytes.len() < 4 + 8 + 8 + 8 + 8 || &bytes[..4] != MAGIC {
+        if bytes.len() < 4 + 8 + 8 + 8 + 8 || (&bytes[..4] != MAGIC && &bytes[..4] != LEGACY_MAGIC)
+        {
             return None;
         }
         let (body, tail) = bytes.split_at(bytes.len() - 8);
         if fnv(body).to_le_bytes() != tail {
             return None;
         }
+        let legacy = &bytes[..4] == LEGACY_MAGIC;
         let mut at = 4;
         let take = |n: usize, at: &mut usize| -> Option<&[u8]> {
             let s = body.get(*at..at.checked_add(n)?)?;
@@ -338,6 +371,24 @@ impl Index {
                 1 => true,
                 _ => return None,
             };
+            let storage = if legacy {
+                None
+            } else {
+                let len = u16::from_le_bytes(take(2, &mut at)?.try_into().ok()?) as usize;
+                if len > 512 {
+                    return None;
+                }
+                if len == 0 {
+                    None
+                } else {
+                    let facts: FileStorage = serde_json::from_slice(take(len, &mut at)?).ok()?;
+                    facts.file_id.validate().ok()?;
+                    if dir || facts.hard_links == Some(0) {
+                        return None;
+                    }
+                    Some(facts)
+                }
+            };
             entries.insert(
                 key.clone(),
                 Entry {
@@ -345,6 +396,7 @@ impl Index {
                     mtime,
                     dir,
                     scan: 0,
+                    storage,
                     name_mask: trigram_mask(key.rsplit(['/', '\\']).next().unwrap_or(&key)),
                     path_mask: trigram_mask(&key),
                 },
@@ -405,6 +457,66 @@ mod tests {
 
     fn p(s: &str) -> String {
         s.replace('/', &sep().to_string())
+    }
+
+    #[test]
+    fn allocation_snapshot_preserves_observations_and_reads_legacy_as_unknown() {
+        let mut legacy = b"ZIX1".to_vec();
+        legacy.extend_from_slice(&1u64.to_le_bytes());
+        legacy.extend_from_slice(&0i64.to_le_bytes());
+        legacy.extend_from_slice(&1u64.to_le_bytes());
+        let path = p("/root/file");
+        legacy.extend_from_slice(&(path.len() as u32).to_le_bytes());
+        legacy.extend_from_slice(path.as_bytes());
+        legacy.extend_from_slice(&4096u64.to_le_bytes());
+        legacy.extend_from_slice(&7i64.to_le_bytes());
+        legacy.push(0);
+        legacy.extend_from_slice(&fnv(&legacy).to_le_bytes());
+        let mut old = Index::from_snapshot(&legacy).unwrap();
+        assert!(old.entries[&path].storage.is_none());
+        let storage = FileStorage {
+            file_id: zeus_types::FileId::unix(1, 2),
+            allocated_bytes: Some(512),
+            hard_links: Some(2),
+        };
+        let generation = old.begin();
+        old.upsert_observed(
+            generation,
+            &path,
+            (4096, 7, false),
+            1,
+            Some(storage.clone()),
+        );
+        let next = Index::from_snapshot(&old.snapshot()).unwrap();
+        assert_eq!(next.entries[&path].storage, Some(storage));
+        assert_eq!(next.generation, generation);
+        let mut future = old.snapshot();
+        future[..4].copy_from_slice(b"ZIX9");
+        let end = future.len() - 8;
+        let checksum = fnv(&future[..end]);
+        future[end..].copy_from_slice(&checksum.to_le_bytes());
+        assert!(Index::from_snapshot(&future).is_none());
+    }
+    #[test]
+    fn changed_observations_do_not_retain_stale_allocation() {
+        let mut index = Index::default();
+        let path = p("/root/file");
+        let generation = index.begin();
+        index.upsert_observed(
+            generation,
+            &path,
+            (4096, 1, false),
+            1,
+            Some(FileStorage {
+                file_id: zeus_types::FileId::unix(1, 2),
+                allocated_bytes: Some(512),
+                hard_links: Some(1),
+            }),
+        );
+        let next = index.begin();
+        index.upsert(next, &path, 4096, 1, false, 2);
+        assert!(index.entries[&path].storage.is_none());
+        assert_eq!(index.delta(generation).upserts.len(), 1);
     }
 
     #[test]

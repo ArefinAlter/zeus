@@ -266,6 +266,35 @@ impl RootCaps {
             .map_err(cap_failure)
     }
 
+    /// Allocation and ordinary metadata from one no-follow observation; root directories have no
+    /// file allocation row. Unknown errors never authorize removing a cached entry.
+    pub fn storage_observation(
+        &self,
+        path: &Path,
+    ) -> Result<Option<zeus_fs::storage::EntryObservation>> {
+        let path = self.path(&shown(path))?;
+        if self.roots.iter().any(|(root, _)| root == &path) {
+            return self
+                .directory(&path)?
+                .os_metadata()
+                .map(|metadata| {
+                    Some(zeus_fs::storage::EntryObservation {
+                        metadata,
+                        storage: None,
+                    })
+                })
+                .map_err(cap_failure);
+        }
+        let (parent, name) = self.parent(&path)?;
+        if !parent.entry_exists(&name).map_err(cap_failure)? {
+            return Ok(None);
+        }
+        parent
+            .entry_observation(&name)
+            .map(Some)
+            .map_err(cap_failure)
+    }
+
     /// Retain an item's parent; the leaf is never resolved through a symlink.
     pub fn parent(&self, path: &Path) -> Result<(zeus_fs::DirectoryCap, std::ffi::OsString)> {
         let path = self.path(&shown(path))?;
