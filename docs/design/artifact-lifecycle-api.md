@@ -1,6 +1,6 @@
 # Artifact lifecycle API
 
-Implemented on 2026-10-21. This is an executable subset of spec 13: record tombstones, retention changes and verified copy materialization. Store collection, hardlinks, reflinks and quarantine release have no lifecycle API in this subset.
+Implemented on 2026-10-21. This is an executable subset of spec 13: record tombstones, retention changes and verified copy materialization. The separate [maintenance profile](artifact-maintenance-api.md) adds reviewed bounded import/export, exact collection, repair and integrity checks plus retained audit replay. Hardlinks, reflinks and quarantine release remain outside this lifecycle API.
 
 `artifacts.lifecycle.preview` takes an active visible `artifact_id` and one operation. It returns `{plan, plan_hash}` without changing the store, filesystem or approval queue. The plan names the exact artifact, BLAKE3, SHA-256, size, current quarantine and retention, the hash of the canonical API record export, the full requested effect, whether approval is needed, and an expiration 15 minutes in the future. `plan_hash` is the BLAKE3 of canonical JSON `{t:"zeus.artifact.lifecycle.v1",plan}`.
 

@@ -4,8 +4,9 @@ use clap::{Subcommand, ValueEnum};
 use std::path::PathBuf;
 use zeus_api::methods::artifacts::*;
 use zeus_api::methods::{
-    ArtifactsGet, ArtifactsIngest, ArtifactsLifecycleApply, ArtifactsLifecyclePreview,
-    ArtifactsLineage, ArtifactsList,
+    ArtifactsEvents, ArtifactsGet, ArtifactsIngest, ArtifactsLifecycleApply,
+    ArtifactsLifecyclePreview, ArtifactsLineage, ArtifactsList, ArtifactsMaintenanceApply,
+    ArtifactsMaintenancePreview, ArtifactsMaintenanceStatus,
 };
 use zeus_api::{ApiError, ApiResult, Client, PageRequest, call};
 use zeus_types::{ArtifactId, Hex256, JobId, RunId, Timestamp};
@@ -43,6 +44,74 @@ pub enum RetentionOpt {
 /// `zeus artifacts`: records, provenance and ingestion.
 #[derive(Debug, Clone, Subcommand)]
 pub enum ArtifactsCommand {
+    /// Inspect a pending, partial or completed saved request without retrying any effect.
+    MaintenanceStatus {
+        /// Original --json preview.
+        preview: PathBuf,
+        /// Original owner-scoped retry key.
+        #[arg(long)]
+        idempotency_key: String,
+    },
+
+    /// Preview exact stored-content verification; mismatches move into private damaged storage after human approval.
+    Scrub {
+        /// Exact active records,1–64.
+        #[arg(required=true,num_args=1..=64)]
+        artifact_ids: Vec<ArtifactId>,
+    },
+    /// Preview restoring a stored object from exact verified bytes, behind human approval.
+    Repair {
+        /// Active record with absent/damaged bytes.
+        artifact_id: ArtifactId,
+        /// Existing source in an authorized root, at most16MiB.
+        path: String,
+    },
+    /// Preview export of active records to a bounded, uncompressed .zeusab bundle.
+    Export {
+        /// New absolute output file in a permitted existing directory.
+        path: String,
+        /// Exact visible artifact IDs,1–64.
+        #[arg(required=true,num_args=1..=64)]
+        artifact_ids: Vec<ArtifactId>,
+        /// Include available verified bytes; quarantined bytes cannot be exported.
+        #[arg(long)]
+        include_objects: bool,
+    },
+    /// Preview import from a fully validated .zeusab bundle. Local-owner access is required.
+    Import {
+        /// Existing absolute input file in a permitted root.
+        path: String,
+    },
+    /// Preview exact CAS garbage collection; a person must approve permanent byte removal.
+    Collect {
+        /// Include evictable active content; protected content is always retained.
+        #[arg(long)]
+        quota_pressure: bool,
+        /// At most128 reviewed objects.
+        #[arg(long,default_value_t=32,value_parser=clap::value_parser!(u32).range(1..=128))]
+        limit: u32,
+    },
+    /// Execute a saved maintenance preview or request its human approval.
+    MaintenanceApply {
+        /// Full --json preview, at most256KiB.
+        preview: PathBuf,
+        /// Exact retry key.
+        #[arg(long)]
+        idempotency_key: String,
+    },
+    /// Replay retained artifact audit facts in sequence order; intent events do not prove completion.
+    Events {
+        /// Last consumed audit sequence.
+        #[arg(long, default_value_t = 0)]
+        after_seq: u64,
+        /// Maximum event count.
+        #[arg(long,default_value_t=20,value_parser=clap::value_parser!(u32).range(1..=100))]
+        limit: u32,
+        /// Expected chain; mismatches require resync.
+        #[arg(long)]
+        chain_id: Option<zeus_types::ChainId>,
+    },
+
     /// List visible artifacts with optional digest or producer filters.
     Ls {
         /// Maximum records, 1–100.
@@ -207,6 +276,142 @@ pub async fn run<C: Client + ?Sized>(
     dry_run: bool,
 ) -> ApiResult<CmdOutput> {
     match command {
+        ArtifactsCommand::Scrub { artifact_ids } => {
+            maintenance_preview(
+                client,
+                ArtifactMaintenanceOperation::Scrub {
+                    artifact_ids: artifact_ids.clone(),
+                },
+            )
+            .await
+        }
+        ArtifactsCommand::Repair { artifact_id, path } => {
+            maintenance_preview(
+                client,
+                ArtifactMaintenanceOperation::Repair {
+                    artifact_id: *artifact_id,
+                    path: path.clone(),
+                },
+            )
+            .await
+        }
+        ArtifactsCommand::Export {
+            path,
+            artifact_ids,
+            include_objects,
+        } => {
+            maintenance_preview(
+                client,
+                ArtifactMaintenanceOperation::Export {
+                    path: path.clone(),
+                    artifact_ids: artifact_ids.clone(),
+                    include_objects: *include_objects,
+                },
+            )
+            .await
+        }
+        ArtifactsCommand::Import { path } => {
+            maintenance_preview(
+                client,
+                ArtifactMaintenanceOperation::Import { path: path.clone() },
+            )
+            .await
+        }
+        ArtifactsCommand::Collect {
+            quota_pressure,
+            limit,
+        } => {
+            maintenance_preview(
+                client,
+                ArtifactMaintenanceOperation::Collect {
+                    quota_pressure: *quota_pressure,
+                    limit: *limit,
+                },
+            )
+            .await
+        }
+        ArtifactsCommand::Events {
+            after_seq,
+            limit,
+            chain_id,
+        } => {
+            let result = call::<ArtifactsEvents, _>(
+                client,
+                ArtifactsEventsParams {
+                    after_seq: *after_seq,
+                    limit: Some(*limit),
+                    chain_id: *chain_id,
+                },
+            )
+            .await?;
+            Ok(CmdOutput::new(
+                display(
+                    &serde_json::to_value(&result)
+                        .map_err(|_| ApiError::internal("cannot encode events"))?,
+                ),
+                &result,
+            ))
+        }
+        ArtifactsCommand::MaintenanceApply {
+            preview,
+            idempotency_key,
+        }
+        | ArtifactsCommand::MaintenanceStatus {
+            preview,
+            idempotency_key,
+        } => {
+            use std::io::Read;
+            key_valid(idempotency_key)?;
+            let file = std::fs::File::open(preview)
+                .map_err(|_| ApiError::invalid_params("cannot read maintenance preview"))?;
+            if !file
+                .metadata()
+                .is_ok_and(|m| m.is_file() && m.len() <= 256 * 1024)
+            {
+                return Err(ApiError::invalid_params(
+                    "preview must be a regular JSON file within256KiB",
+                ));
+            }
+            let mut bytes = vec![];
+            file.take(256 * 1024 + 1)
+                .read_to_end(&mut bytes)
+                .map_err(|_| ApiError::invalid_params("cannot read preview"))?;
+            if bytes.len() > 256 * 1024 {
+                return Err(ApiError::invalid_params("preview exceeds256KiB"));
+            }
+            let saved: ArtifactsMaintenancePreviewResult =
+                serde_json::from_slice(&bytes).map_err(|_| {
+                    ApiError::invalid_params("save the complete --json maintenance preview")
+                })?;
+            if dry_run {
+                return Ok(CmdOutput::new(
+                    "Dry run: no effect or approval request.",
+                    &saved,
+                ));
+            }
+            let params = ArtifactsMaintenanceApplyParams {
+                plan: saved.plan,
+                plan_hash: saved.plan_hash,
+                idempotency_key: idempotency_key.clone(),
+            };
+            let result = if matches!(command, ArtifactsCommand::MaintenanceStatus { .. }) {
+                call::<ArtifactsMaintenanceStatus, _>(client, params).await?
+            } else {
+                call::<ArtifactsMaintenanceApply, _>(client, params).await?
+            };
+            let text = if let Some(id) = result.approval_id.filter(|_| !result.applied) {
+                format!(
+                    "Approval {id} is pending. Review with zeus approvals approve {id}; repeat this exact command after approval."
+                )
+            } else {
+                display(
+                    &serde_json::to_value(&result)
+                        .map_err(|_| ApiError::internal("cannot encode receipt"))?,
+                )
+            };
+            Ok(CmdOutput::new(text, &result))
+        }
+
         ArtifactsCommand::Ls {
             limit,
             cursor,
@@ -376,4 +581,23 @@ pub async fn run<C: Client + ?Sized>(
             Ok(CmdOutput::new(text, &result))
         }
     }
+}
+
+async fn maintenance_preview<C: Client + ?Sized>(
+    client: &C,
+    operation: ArtifactMaintenanceOperation,
+) -> ApiResult<CmdOutput> {
+    let result = call::<ArtifactsMaintenancePreview, _>(
+        client,
+        ArtifactsMaintenancePreviewParams { operation },
+    )
+    .await?;
+    let text = format!(
+        "{}\nPreview only. Save the full --json receipt and use artifacts maintenance-apply with an exact retry key.",
+        display(
+            &serde_json::to_value(&result)
+                .map_err(|_| ApiError::internal("cannot encode preview"))?
+        )
+    );
+    Ok(CmdOutput::new(text, &result))
 }

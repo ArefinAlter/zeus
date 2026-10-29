@@ -186,6 +186,10 @@ pub async fn dispatch(app: &Arc<App>, route: &str, body: Value) -> Result<Value>
                 "ingest" => "artifacts.ingest",
                 "preview" => "artifacts.lifecycle.preview",
                 "apply" => "artifacts.lifecycle.apply",
+                "maintenance-preview" => "artifacts.maintenance.preview",
+                "maintenance-apply" => "artifacts.maintenance.apply",
+                "maintenance-status" => "artifacts.maintenance.status",
+                "events" => "artifacts.events",
                 _ => return Err(Failure::invalid("Unknown artifact operation.")),
             };
             app.daemon.raw(method, body).await

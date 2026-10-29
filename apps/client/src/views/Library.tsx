@@ -4,6 +4,7 @@ import { libraryApi as api, type Artifact, type ArtifactPage, type Lifecycle, ty
 import { fmtBytes } from '../model/units'
 import { Notice, PageHead } from '../ui/components'
 import '../styles/runs.css'
+import { ArtifactMaintenance } from './ArtifactMaintenance'
 
 const errorText = (e: unknown) => e instanceof Error ? e.message : 'The library request failed.'
 const json = (value: unknown) => JSON.stringify(value, null, 2)
@@ -136,6 +137,7 @@ export function Library() {
       {receipt?.approval_id && <div><p>Waiting for human approval: <code>{receipt.approval_id}</code></p><button class="btn" disabled={busy} onClick={() => run(async () => { await api.review(receipt.approval_id!) })}>Review artifact approval</button></div>}
       {receipt?.path && <p>Verified copy: <code>{receipt.path}</code></p>}
     </section>}
+    <ArtifactMaintenance selected={selected} onChanged={() => setRefresh(n => n + 1)} />
     <section class="runs-card" aria-label="Deterministic organizer"><h2>Organize files</h2><p>Preview up to 16 ordered rules. The first matching rule chooses a file’s move, rename or trash operation. Applying or undoing a plan requires review in the human terminal.</p>
       <label class="field">Folder to organize<input aria-label="Organization folder" value={dir} disabled={busy} maxLength={4096} onInput={e => { ruleChanged(); setDir(e.currentTarget.value) }} /></label>
       <label class="field">Rules JSON<textarea class="runs-plan" aria-label="Organization rules JSON" value={rules} disabled={busy} maxLength={65536} spellcheck={false} onInput={e => { ruleChanged(); setRules(e.currentTarget.value) }} /></label>

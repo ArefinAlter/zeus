@@ -266,6 +266,14 @@ rpc_methods! {
     ArtifactsLifecyclePreview = "artifacts.lifecycle.preview" (ArtifactsLifecyclePreviewParams) -> ArtifactsLifecyclePreviewResult;
     /// Apply a preview or request its independently decided human approval.
     ArtifactsLifecycleApply = "artifacts.lifecycle.apply" (ArtifactsLifecycleApplyParams) -> ArtifactsLifecycleApplyResult;
+    /// `artifacts.maintenance.preview`.
+    ArtifactsMaintenancePreview = "artifacts.maintenance.preview" (ArtifactsMaintenancePreviewParams) -> ArtifactsMaintenancePreviewResult;
+    /// `artifacts.maintenance.apply`.
+    ArtifactsMaintenanceApply = "artifacts.maintenance.apply" (ArtifactsMaintenanceApplyParams) -> ArtifactsMaintenanceApplyResult;
+    /// `artifacts.events`.
+    /// `artifacts.maintenance.status`: no effects or approval decisions.
+    ArtifactsMaintenanceStatus = "artifacts.maintenance.status" (ArtifactsMaintenanceStatusParams) -> ArtifactsMaintenanceStatusResult;
+    ArtifactsEvents = "artifacts.events" (ArtifactsEventsParams) -> ArtifactsEventsResult;
 }
 
 /// Names of notifications sent by the daemon to clients (they have no response).

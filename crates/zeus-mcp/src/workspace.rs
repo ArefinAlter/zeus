@@ -150,6 +150,14 @@ pub struct ArtifactsArgs {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ArtifactsRequest {
+    /// Preview export/import/collection, apply its exact receipt, or replay audit facts. No approval decisions.
+    Maintenance {
+        /// Only preview, apply and events are accepted.
+        phase: ArtifactMaintenancePhase,
+        /// Closed typed API parameters for the phase; daemon validates every nested field.
+        request: serde_json::Map<String, Value>,
+    },
+
     /// Read a visible record.
     Get {
         /// Artifact ID.
@@ -212,6 +220,20 @@ pub enum ArtifactsRequest {
         /// The complete previous preview receipt, copied without amendments.
         preview: serde_json::Map<String, Value>,
     },
+}
+
+/// Closed artifact maintenance dispatch; arbitrary methods are never forwarded.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ArtifactMaintenancePhase {
+    /// Read an exact saved request without retrying it.
+    Status,
+    /// Read-only exact preview.
+    Preview,
+    /// Apply an exact preview; may request a human decision.
+    Apply,
+    /// Read-only retained audit replay.
+    Events,
 }
 
 fn default_limit() -> u32 {
@@ -494,6 +516,28 @@ pub async fn artifacts<C: Client>(
     key(&args.idempotency_key)?;
     let k = &args.idempotency_key;
     let (method, data) = match args.request {
+        ArtifactsRequest::Maintenance { phase, request } => match phase {
+            ArtifactMaintenancePhase::Preview => (
+                "artifacts.maintenance.preview",
+                rpc::<ArtifactsMaintenancePreview, _>(client, Value::Object(request), k).await?,
+            ),
+            ArtifactMaintenancePhase::Apply => (
+                "artifacts.maintenance.apply",
+                rpc::<ArtifactsMaintenanceApply, _>(client, Value::Object(request), k).await?,
+            ),
+            ArtifactMaintenancePhase::Status => {
+                let mut request = request;
+                request.insert("idempotency_key".into(), json!(k));
+                (
+                    "artifacts.maintenance.status",
+                    rpc::<ArtifactsMaintenanceStatus, _>(client, Value::Object(request), k).await?,
+                )
+            }
+            ArtifactMaintenancePhase::Events => (
+                "artifacts.events",
+                rpc::<ArtifactsEvents, _>(client, Value::Object(request), k).await?,
+            ),
+        },
         ArtifactsRequest::Get { artifact_id } => (
             "artifacts.get",
             rpc::<ArtifactsGet, _>(client, json!({"artifact_id": artifact_id}), k).await?,
@@ -590,9 +634,16 @@ pub async fn artifacts<C: Client>(
             )
         }
     };
-    let next = if method == "artifacts.lifecycle.preview" {
+    let next = if matches!(
+        method,
+        "artifacts.lifecycle.preview" | "artifacts.maintenance.preview"
+    ) {
         "review_plan"
-    } else if method == "artifacts.lifecycle.apply" && data["applied"] == false {
+    } else if matches!(
+        method,
+        "artifacts.lifecycle.apply" | "artifacts.maintenance.apply"
+    ) && data["applied"] == false
+    {
         "ask_user"
     } else {
         "none"

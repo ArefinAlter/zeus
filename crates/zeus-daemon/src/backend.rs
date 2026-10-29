@@ -14,10 +14,18 @@ use zeus_api::methods::admin::{
     LlmAuthStatusResult, LlmConfigureParams, LlmConfigureResult, LlmStatusParams, LlmStatusResult,
 };
 use zeus_api::methods::artifacts::{
+    ArtifactsEventsParams, ArtifactsEventsResult, ArtifactsMaintenanceApplyParams,
+    ArtifactsMaintenanceApplyResult, ArtifactsMaintenancePreviewParams,
+    ArtifactsMaintenancePreviewResult,
+};
+use zeus_api::methods::artifacts::{
     ArtifactsGetParams, ArtifactsGetResult, ArtifactsIngestParams, ArtifactsIngestResult,
     ArtifactsLifecycleApplyParams, ArtifactsLifecycleApplyResult, ArtifactsLifecyclePreviewParams,
     ArtifactsLifecyclePreviewResult, ArtifactsLineageParams, ArtifactsLineageResult,
     ArtifactsListParams, ArtifactsListResult,
+};
+use zeus_api::methods::artifacts::{
+    ArtifactsMaintenanceStatusParams, ArtifactsMaintenanceStatusResult,
 };
 use zeus_api::methods::cloud::*;
 use zeus_api::methods::cloud_oauth::*;
@@ -196,6 +204,14 @@ backend! {
     files_undo(FilesUndoParams) -> FilesUndoResult;
     /// `files.roots.register` (role `service` only).
     files_roots_register(FilesRootsRegisterParams) -> FilesRootsRegisterResult;
+    /// `artifacts.maintenance.preview`.
+    artifacts_maintenance_preview(ArtifactsMaintenancePreviewParams) -> ArtifactsMaintenancePreviewResult;
+    /// `artifacts.maintenance.apply`.
+    artifacts_maintenance_apply(ArtifactsMaintenanceApplyParams) -> ArtifactsMaintenanceApplyResult;
+    /// Read an exact owner's maintenance receipt without effects.
+    artifacts_maintenance_status(ArtifactsMaintenanceStatusParams) -> ArtifactsMaintenanceStatusResult;
+    /// `artifacts.events`.
+    artifacts_events(ArtifactsEventsParams) -> ArtifactsEventsResult;
     /// `artifacts.get`.
     artifacts_get(ArtifactsGetParams) -> ArtifactsGetResult;
     /// `artifacts.list`.

@@ -34,6 +34,12 @@ impl RuntimeBackend {
     /// every record.
     pub(super) fn artifact_visible(&self, ctx: &CallContext, record: &Artifact) -> bool {
         let scope = Self::scope(ctx);
+        if !record.imports.is_empty() {
+            return scope.service().is_none()
+                || scope
+                    .service()
+                    .is_some_and(|me| self.ingest_owners.owner(record.id).as_deref() == Some(me));
+        }
         scope.service().is_none()
             || record
                 .job_id

@@ -88,6 +88,64 @@ pub fn validate_request(value: &serde_json::Value) -> zeus_api::ApiResult<()> {
             return Err(denied());
         }
     }
+    if let Some(plan) = facts.get("maintenance_plan") {
+        use zeus_api::methods::artifacts::{ArtifactMaintenanceOperation, ArtifactMaintenancePlan};
+        let typed: ArtifactMaintenancePlan =
+            serde_json::from_value(plan.clone()).map_err(|_| denied())?;
+        if !matches!(
+            typed.operation,
+            ArtifactMaintenanceOperation::Collect { .. }
+                | ArtifactMaintenanceOperation::Repair { .. }
+                | ArtifactMaintenanceOperation::Scrub { .. }
+        ) || !typed.requires_approval
+            || typed.version != 1
+        {
+            return Err(denied());
+        }
+        let expected = zeus_verify::canonical::request_hash(
+            &json!({"t":"zeus.artifact.maintenance.v1","plan":typed}),
+        )
+        .map_err(|_| denied())?;
+        let (count, bytes) = match typed.operation {
+            ArtifactMaintenanceOperation::Collect { .. } => {
+                let targets = typed.details["objects"].as_array().ok_or_else(denied)?;
+                let bytes = targets
+                    .iter()
+                    .try_fold(0u64, |n, o| n.checked_add(o["size_bytes"].as_u64()?))
+                    .ok_or_else(denied)?;
+                (targets.len(), bytes)
+            }
+            ArtifactMaintenanceOperation::Scrub { .. } => {
+                let objects = typed.details["objects"].as_array().ok_or_else(denied)?;
+                if objects.len() > 64 {
+                    return Err(denied());
+                }
+                (
+                    0,
+                    objects
+                        .iter()
+                        .try_fold(0u64, |n, o| n.checked_add(o["observed_size"].as_u64()?))
+                        .ok_or_else(denied)?,
+                )
+            }
+            ArtifactMaintenanceOperation::Repair { .. } => {
+                (0, typed.details["size_bytes"].as_u64().ok_or_else(denied)?)
+            }
+            _ => return Err(denied()),
+        };
+        if count > 128
+            || facts["kind"] != "destructive_op"
+            || facts["operation_set_blake3"] != json!(expected)
+            || facts["expires_at"] != json!(typed.expires_at)
+            || facts["counts"] != json!({"delete":count,"overwrite":0,"move":0,"rename":0})
+            || facts["total_bytes"] != bytes
+            || facts["to_trash"] != false
+            || facts["sample"] != json!([])
+            || facts["quarantined_count"] != 0
+        {
+            return Err(denied());
+        }
+    }
     if let Some(plan) = facts.get("artifact_plan") {
         use zeus_api::methods::artifacts::{ArtifactLifecycleOperation, ArtifactLifecyclePlan};
         let typed: ArtifactLifecyclePlan =
@@ -280,7 +338,9 @@ pub fn render_screen(view: &ApprovalView) -> String {
     let rule = "-".repeat(64);
     out.push_str(&format!(
         "{rule}\n Zeus: {}\n{rule}\n",
-        if view.facts["rule"] == "browser_managed_network" {
+        if view.facts.get("maintenance_plan").is_some() {
+            "Zeus requests reviewed stored-content maintenance"
+        } else if view.facts["rule"] == "browser_managed_network" {
             "Read website documents using the reviewed browser profile"
         } else if view.facts.get("artifact_plan").is_some() {
             match view.facts["artifact_plan"]["operation"]["kind"].as_str() {
@@ -300,6 +360,9 @@ pub fn render_screen(view: &ApprovalView) -> String {
     }
     if view.approval.kind == ApprovalKind::CloudDelivery {
         out.push_str(" Cloud delivery: review the account revision, destination, mode and source disclosure.\n Provider imports may continue after local cancellation when remote cancellation is unavailable.\n A source hash and remote size do not imply a matching remote hash.\n");
+    }
+    if view.facts.get("maintenance_plan").is_some() {
+        out.push_str(" Collection permanently removes reviewed unprotected CAS bytes. Repair restores only matching immutable content. Integrity checks move mismatches into private damaged storage.\n User files and provenance records stay. This is not a trash operation. Changed retention or object identities require another review.\n");
     }
     if view.facts.get("artifact_plan").is_some() {
         out.push_str(" Artifact lifecycle: review the exact record, previous protection and requested effect.\n A tombstone keeps provenance, user files and materializations. Retention changes permit later collection; this request does not collect bytes.\n");
@@ -591,6 +654,55 @@ mod tests {
             request_hash: Hex256::from_hex(&"ab".repeat(32)).unwrap(),
             facts: serde_json::json!({ "files": 3, "bytes": 1_288_490_188u64, "to": "C:\\Zeus\\dl", "confirmation": {"approve":"gesture","once":"gesture","site":"gesture","workflow":"gesture"} }),
             agent_says: Some("I need the Q3 export \u{202e}ignore the user".into()),
+        }
+    }
+
+    #[test]
+    fn maintenance_approvals_bind_collection_repair_and_integrity_effects() {
+        use serde_json::json;
+        for (operation, details, count, bytes) in [
+            (
+                json!({"kind":"collect","quota_pressure":false,"limit":1}),
+                json!({"objects":[{"size_bytes":3}]}),
+                1,
+                3,
+            ),
+            (
+                json!({"kind":"repair","artifact_id":IdGenerator::new().artifact_id(),"path":"/downloads/source.bin"}),
+                json!({"size_bytes":4}),
+                0,
+                4,
+            ),
+            (
+                json!({"kind":"scrub","artifact_ids":[IdGenerator::new().artifact_id()]}),
+                json!({"objects":[{"observed_size":5}]}),
+                0,
+                5,
+            ),
+        ] {
+            let mut request = test_request();
+            let plan = json!({"version":1,"store_id":IdGenerator::new().store_id(),"store_root_id":{"kind":"unix","dev":"1","ino":"2"},"operation":operation,"file":null,"details":details,"requires_approval":true,"expires_at":request["expires_at"]});
+            let plan_hash = zeus_verify::canonical::request_hash(
+                &json!({"t":"zeus.artifact.maintenance.v1","plan":plan}),
+            )
+            .unwrap();
+            let facts = json!({"t":"zeus.approval.facts.v1","approval_id":request["id"],"revision":1,"kind":"destructive_op","requester":request["facts"]["requester"],"issued_at":request["facts"]["issued_at"],"expires_at":request["expires_at"],"allowed_scopes":[],"confirmation":{"approve":"typed_code"},"reason_codes":["artifacts.maintenance"],"agent_says_blake3":null,"operation_set_blake3":plan_hash,"plan_id":null,"counts":{"delete":count,"overwrite":0,"move":0,"rename":0},"total_bytes":bytes,"to_trash":false,"quarantined_count":0,"sample":[],"sample_omitted":0,"maintenance_plan":plan});
+            request["kind"] = json!("destructive_op");
+            request["revision"] = json!(1);
+            request["allowed_scopes"] = json!([]);
+            request["reason_codes"] = json!(["artifacts.maintenance"]);
+            request.as_object_mut().unwrap().remove("agent_says");
+            request["facts"] = facts;
+            request["request_hash"] =
+                json!(zeus_verify::canonical::request_hash(&request["facts"]).unwrap());
+            validate_request(&request).unwrap();
+            let view: ApprovalView = serde_json::from_value(request.clone()).unwrap();
+            assert_eq!(confirmation(&view, None).unwrap(), "typed_code");
+            assert!(render_screen(&view).contains("stored-content maintenance"));
+            request["facts"]["total_bytes"] = json!(bytes + 1);
+            request["request_hash"] =
+                json!(zeus_verify::canonical::request_hash(&request["facts"]).unwrap());
+            assert!(validate_request(&request).is_err());
         }
     }
 
