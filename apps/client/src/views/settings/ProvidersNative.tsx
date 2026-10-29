@@ -80,8 +80,42 @@ export function NativeProviders() {
   return (
     <>
       <PageHead title="Providers" sub="Use an existing agent sign-in or an API key. Installed agents use their own account and plan limits. Files and transfers work without a model." />
-      <SettingsGroup title="Installed agent connections" note="Discovery checks for the official CLI executable. It does not read account credentials, start a model call or confirm subscription access. Add a provider below and test it after signing in.">
-        {cfg.kinds.filter(k => typeof k.installed === 'boolean').map(k => <SettingRow key={k.kind} title={k.label} desc={k.kind === 'grok' ? 'Uses a separate official login in a dedicated Verne profile.' : 'Uses the account already signed in through the official CLI.'}><Chip tone={k.installed ? 'ok' : 'info'}>{k.installed ? 'CLI found' : 'CLI not found'}</Chip></SettingRow>)}
+      <SettingsGroup title="Installed agent connections" note="Discovery checks for the official CLI executable. It does not read account credentials, start a model call or confirm subscription access. Click 'Enable in Agent' to activate an installed subscription immediately.">
+        {cfg.kinds.filter(k => typeof k.installed === 'boolean').map(k => {
+          const prov = draft.providers.find(p => p.kind === k.kind)
+          const isEnabled = prov?.enabled
+          return (
+            <SettingRow key={k.kind} title={k.label} desc={k.kind === 'grok' ? 'Uses a separate official login in a dedicated Verne profile.' : 'Uses the active subscription already signed in through the official CLI.'}>
+              <div class="inline gap">
+                <Chip tone={k.installed ? 'ok' : 'info'}>{k.installed ? 'CLI found' : 'CLI not found'}</Chip>
+                {k.installed ? (
+                  <button
+                    type="button"
+                    class={`btn small ${isEnabled ? 'on' : 'primary'}`}
+                    onClick={() => {
+                      if (prov) {
+                        save({
+                          ...draft,
+                          providers: draft.providers.map(p => p.id === prov.id ? { ...p, enabled: !isEnabled, consent: true, model: p.model || 'default' } : p)
+                        })
+                      } else {
+                        save({
+                          ...draft,
+                          providers: [
+                            { id: `p-${k.kind}`, name: k.label, kind: k.kind, enabled: true, base_url: '', model: 'default', consent: true, monthly_cap_usd: 10, tools_mode: 'native', price_in_per_mtok: null, price_out_per_mtok: null },
+                            ...draft.providers
+                          ]
+                        })
+                      }
+                    }}
+                  >
+                    {isEnabled ? 'Enabled in Agent ✓' : 'Enable in Agent'}
+                  </button>
+                ) : null}
+              </div>
+            </SettingRow>
+          )
+        })}
         <div class="row"><button class="btn" disabled={busy !== null} onClick={() => void run('discovery', async () => { await refreshConfig() })}>Refresh installed agents</button></div>
       </SettingsGroup>
       <SettingsGroup title="Safety switches" note="Consent and Offline apply to every connection. API spending caps apply to API-key providers. Installed agents use their provider’s plan limits and extra-usage settings. A cap of zero disables calls.">

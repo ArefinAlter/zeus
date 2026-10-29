@@ -69,8 +69,29 @@ impl Core {
     /// The configuration as the page sees it: no keys, only whether one is stored.
     pub fn config_view(&self) -> Value {
         let config = self.config.load();
-        let providers: Vec<Value> = config
-            .providers
+        let mut providers_list = config.providers.clone();
+        for kind in [Kind::Claude, Kind::Codex, Kind::Antigravity, Kind::Cursor, Kind::Grok] {
+            let id = format!("p-{}", format!("{kind:?}").to_lowercase());
+            if !providers_list.iter().any(|p| p.id == id || p.kind == kind) {
+                let is_installed = provider::local_agent::agent_for_url(kind.default_base_url())
+                    .map(provider::local_agent::installed)
+                    .unwrap_or(false);
+                providers_list.push(config::ProviderCfg {
+                    id,
+                    name: kind.label().into(),
+                    kind,
+                    enabled: is_installed,
+                    base_url: String::new(),
+                    model: "default".into(),
+                    consent: true,
+                    monthly_cap_usd: 10.0,
+                    tools_mode: config::ToolsMode::Native,
+                    price_in_per_mtok: Some(0.0),
+                    price_out_per_mtok: Some(0.0),
+                });
+            }
+        }
+        let providers: Vec<Value> = providers_list
             .iter()
             .map(|p| {
                 let (stored, last4) = self.keys.peek(&p.id);
@@ -104,7 +125,30 @@ impl Core {
 
     fn provider_or_fail(&self, id: &str) -> Result<(AgentConfig, config::ProviderCfg)> {
         let config = self.config.load();
-        let p = config.provider(id).cloned().ok_or_else(|| {
+        let p = config.provider(id).cloned().or_else(|| {
+            for kind in [Kind::Claude, Kind::Codex, Kind::Antigravity, Kind::Cursor, Kind::Grok] {
+                let kind_id = format!("p-{}", format!("{kind:?}").to_lowercase());
+                if id == kind_id || id == format!("{kind:?}").to_lowercase() {
+                    let is_installed = provider::local_agent::agent_for_url(kind.default_base_url())
+                        .map(provider::local_agent::installed)
+                        .unwrap_or(false);
+                    return Some(config::ProviderCfg {
+                        id: kind_id,
+                        name: kind.label().into(),
+                        kind,
+                        enabled: is_installed,
+                        base_url: String::new(),
+                        model: "default".into(),
+                        consent: true,
+                        monthly_cap_usd: 10.0,
+                        tools_mode: config::ToolsMode::Native,
+                        price_in_per_mtok: Some(0.0),
+                        price_out_per_mtok: Some(0.0),
+                    });
+                }
+            }
+            None
+        }).ok_or_else(|| {
             Failure::new("agent.no_provider", "That provider is not in the ladder.")
         })?;
         Ok((config, p))

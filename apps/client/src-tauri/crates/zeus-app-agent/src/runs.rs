@@ -361,11 +361,14 @@ impl Core {
             messages.push(Msg::User(t.to_owned()));
         }
         trim_transcript(&mut messages);
-        let model = body
+        let mut model = body
             .model
             .clone()
             .filter(|m| !m.trim().is_empty())
             .unwrap_or_else(|| provider.model.clone());
+        if model.trim().is_empty() && provider.kind.is_subscription() {
+            model = "default".into();
+        }
         let req = ChatRequest {
             model,
             system: system_prompt(access, &body.settings, body.skill.as_ref(), &offered),
@@ -396,7 +399,7 @@ impl Core {
                 format!("{} is switched off in Settings, Providers.", provider.name),
             ));
         }
-        if model.trim().is_empty() {
+        if model.trim().is_empty() && !provider.kind.is_subscription() {
             return Some((
                 "needs_model",
                 format!(
