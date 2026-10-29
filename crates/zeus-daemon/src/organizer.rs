@@ -15,7 +15,6 @@ use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
 use serde::{Deserialize, Serialize};
 use zeus_api::methods::files::FileStep;
 use zeus_api::{ApiError, ApiResult, ClientIdentity};
-use zeus_fs::Filesystem;
 use zeus_types::{ApprovalId, ApprovalState, Hex256, Timestamp, ToEnvelope};
 use zeus_verify::audit::{AuditEntry, AuditOutcome, AuditSink};
 
@@ -335,12 +334,6 @@ fn modified_ms(metadata: &std::fs::Metadata) -> i64 {
         .unwrap_or(0)
 }
 
-/// The planned file is still the same regular file: same size and modification time, not a link.
-fn unchanged(path: &Path, size: u64, modified: i64) -> bool {
-    std::fs::symlink_metadata(path)
-        .is_ok_and(|m| m.file_type().is_file() && m.len() == size && modified_ms(&m) == modified)
-}
-
 /// Durable file-operation records and their executor.
 pub struct Organizer {
     db: Database,
@@ -416,13 +409,19 @@ impl Organizer {
         {
             return Err(missing());
         }
-        let (state, reason) = match &record.state {
+        let (state, mut reason) = match &record.state {
             OperationState::AwaitingApproval => ("awaiting_approval", None),
             OperationState::Applying => ("applying", None),
             OperationState::Applied => ("applied", None),
             OperationState::Dropped { reason } => ("dropped", Some(reason.clone())),
             OperationState::Stopped { reason } => ("stopped", Some(reason.clone())),
         };
+        if reason.is_none() && record.undone_by.is_none() && record.outcomes.iter().any(|outcome| {
+            matches!(outcome, StepState::Done { trash: Some(entry) }
+                if self.trash.receipt_state(entry).ok() == Some(zeus_fs::trash::TrashReceiptState::LegacyManualRecovery))
+        }) {
+            reason = Some("legacy_trash_manual_recovery".into());
+        }
         let count = |test: fn(&StepState) -> bool| {
             record.outcomes.iter().filter(|s| test(s)).count() as u32
         };
@@ -701,6 +700,14 @@ impl Organizer {
                     });
                 }
                 (StepOp::Trash, StepState::Done { trash: Some(entry) }) => {
+                    if self.trash.receipt_state(entry).map_err(|_| fail())?
+                        == zeus_fs::trash::TrashReceiptState::LegacyManualRecovery
+                    {
+                        return Err(ApiError::new(
+                            "api.invalid_transition",
+                            "This older trash receipt has no recorded identity. Its files are preserved for manual recovery; automated restore and purge are unavailable.",
+                        ));
+                    }
                     steps.push(PlannedStep {
                         op: StepOp::Restore,
                         from: entry.trash_path.clone(),
@@ -919,34 +926,67 @@ impl Organizer {
         let Ok(root) = zeus_fs::SafeRoot::open(&record.root) else {
             return skipped("root_unavailable");
         };
+        let Ok(root_cap) = zeus_fs::DirectoryCap::open_root(root.path()) else {
+            return skipped("root_unavailable");
+        };
+        if root_cap.file_id().ok().as_ref() != root.identity() {
+            return skipped("root_changed");
+        }
+        let source_parent = if step.op != StepOp::Restore {
+            let Some(parent) = step.from.parent() else {
+                return skipped("source_changed");
+            };
+            let Ok(relative) = parent.strip_prefix(root.path()) else {
+                return skipped("source_changed");
+            };
+            match root_cap.open_dir(relative) {
+                Ok(cap) => Some(cap),
+                Err(_) => return skipped("source_changed"),
+            }
+        } else {
+            None
+        };
         let source_checked = if step.op == StepOp::Restore {
-            step.restore.as_ref().is_some_and(|e| {
-                std::fs::symlink_metadata(&e.trash_path).is_ok_and(|m| m.file_type().is_file())
+            step.restore.as_ref().is_some_and(|entry| {
+                self.trash.receipt_state(entry).ok()
+                    == Some(zeus_fs::trash::TrashReceiptState::IdentityBound)
             })
         } else {
-            root.check_existing(&step.from)
-                .is_ok_and(|p| p == step.from)
-                && unchanged(&step.from, step.size_bytes, step.modified_ms)
+            source_parent
+                .as_ref()
+                .and_then(|parent| {
+                    step.from
+                        .file_name()
+                        .and_then(|name| parent.entry_metadata(name).ok())
+                })
+                .is_some_and(|m| {
+                    m.is_regular_file && m.len == step.size_bytes && m.mtime_ms == step.modified_ms
+                })
         };
         if !source_checked {
             return skipped("source_changed");
         }
-        if let Some(to) = &step.to {
+        let destination_parent = if let Some(to) = &step.to {
             let Some(parent) = to.parent() else {
                 return skipped("destination_invalid");
             };
-            if root.check_existing(parent).is_err() {
+            let Ok(relative) = parent.strip_prefix(root.path()) else {
                 return skipped("destination_outside_root");
-            }
-            if zeus_fs::RealFs.create_dir_all(parent).is_err()
-                || root.check_existing(parent).ok().as_deref() != Some(parent)
-            {
+            };
+            let Ok(cap) = root_cap.create_dir_all(relative) else {
                 return skipped("destination_outside_root");
+            };
+            let Some(name) = to.file_name() else {
+                return skipped("destination_invalid");
+            };
+            match cap.entry_exists(name) {
+                Ok(false) => Some(cap),
+                Ok(true) => return skipped("destination_exists"),
+                Err(_) => return skipped("destination_unavailable"),
             }
-            if to.exists() {
-                return skipped("destination_exists");
-            }
-        }
+        } else {
+            None
+        };
         let (action, outcome) = match step.op {
             StepOp::Move | StepOp::Restore => {
                 (zeus_verify::audit::actions::FILE_MOVED, AuditOutcome::Ok)
@@ -984,9 +1024,28 @@ impl Organizer {
             .map_err(|e| ApiError::from(e.to_envelope()))?;
         Ok(match step.op {
             StepOp::Move | StepOp::Rename => {
-                match zeus_fs::RealFs
-                    .rename_noreplace(&step.from, step.to.as_ref().ok_or_else(fail)?)
-                {
+                let parent = source_parent.as_ref().ok_or_else(fail)?;
+                let name = step.from.file_name().ok_or_else(fail)?;
+                let destination = destination_parent.as_ref().ok_or_else(fail)?;
+                let target = step
+                    .to
+                    .as_ref()
+                    .and_then(|p| p.file_name())
+                    .ok_or_else(fail)?;
+                let operation = (|| {
+                    let source = parent.prepare_rename(name)?;
+                    let meta = source.metadata()?;
+                    if !meta.is_regular_file
+                        || meta.len != step.size_bytes
+                        || meta.mtime_ms != step.modified_ms
+                    {
+                        return Err(zeus_fs::FsError::OutsideRoots);
+                    }
+                    source.rename_noreplace(destination, target)?;
+                    parent.sync()?;
+                    destination.sync()
+                })();
+                match operation {
                     Ok(()) => StepState::Done { trash: None },
                     Err(zeus_fs::FsError::AlreadyExists) => StepState::Skipped {
                         reason: "destination_exists".into(),
@@ -996,13 +1055,23 @@ impl Organizer {
                     },
                 }
             }
-            StepOp::Trash => match self.trash.trash(&step.from, Timestamp::now()) {
+            StepOp::Trash => match self.trash.trash_pinned(
+                source_parent.as_ref().ok_or_else(fail)?,
+                step.from.file_name().ok_or_else(fail)?,
+                &step.from,
+                Timestamp::now(),
+            ) {
                 Ok(entry) => StepState::Done { trash: Some(entry) },
                 Err(_) => StepState::Skipped {
                     reason: "trash_failed".into(),
                 },
             },
-            StepOp::Restore => match step.restore.as_ref().map(|e| self.trash.restore(e)) {
+            StepOp::Restore => match step
+                .restore
+                .as_ref()
+                .zip(destination_parent.as_ref())
+                .map(|(e, parent)| self.trash.restore_pinned(e, parent))
+            {
                 Some(Ok(_)) => StepState::Done { trash: None },
                 Some(Err(zeus_fs::FsError::AlreadyExists)) => StepState::Skipped {
                     reason: "destination_exists".into(),

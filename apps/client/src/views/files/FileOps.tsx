@@ -152,7 +152,7 @@ export function DeleteDialog({ paths, names, onClose }: { paths: string[]; names
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [offerPermanent, setOfferPermanent] = useState(false)
-  const bin = SEP() === '\\' ? 'Recycle Bin' : 'Trash'
+  const bin = 'Zeus trash'
   const run = (permanent: boolean) => {
     setBusy(true)
     filesApi.remove(paths, permanent).then(
@@ -181,7 +181,7 @@ export function DeleteDialog({ paths, names, onClose }: { paths: string[]; names
     <Dialog title={names.length === 1 ? 'Delete this file?' : `Delete ${names.length} items?`} onClose={onClose}>
       <p class="mono small break">{names.slice(0, 5).join('\n')}{names.length > 5 ? `\n… and ${names.length - 5} more` : ''}</p>
       <p class="muted small">
-        {offerPermanent ? `Deleting for good cannot be undone. The ${bin} is not available here.` : `They go to the ${bin}, so you can get them back. Zeus keeps its record of the download.`}
+        {offerPermanent ? `Deleting for good cannot be undone. The ${bin} is not available here.` : `They go to the ${bin}, with a durable receipt. Restore them using Undo in Storage and history. Zeus keeps its record of the download.`}
       </p>
       {error ? <Notice kind="error">{error}</Notice> : null}
       <div class="decide-row">

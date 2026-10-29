@@ -241,7 +241,12 @@ async fn relocate_route(
     Ok(result)
 }
 
-async fn delete_route(svc: &Arc<Service>, app: &Arc<App>, body: &Value) -> Result<Value> {
+async fn delete_route(
+    module: &Module,
+    svc: &Arc<Service>,
+    app: &Arc<App>,
+    body: &Value,
+) -> Result<Value> {
     let facts = guarded_facts(svc, app).await?;
     let list: Vec<String> = body
         .get("paths")
@@ -256,7 +261,18 @@ async fn delete_route(svc: &Arc<Service>, app: &Arc<App>, body: &Value) -> Resul
         .get("permanent")
         .and_then(Value::as_bool)
         .unwrap_or(false);
-    let r = ops::delete(&list, permanent, &svc.write_roots(), &facts)?;
+    let roots = svc.file_capabilities(true)?;
+    let journal = module.history.clone();
+    let r = tokio::task::spawn_blocking(move || {
+        ops::delete_pinned(&list, permanent, &roots, &facts, Some(&journal))
+    })
+    .await
+    .map_err(|_| {
+        Failure::new(
+            "app.io",
+            "The deletion task stopped; inspect operation history.",
+        )
+    })??;
     let gone: Vec<&str> = r["trashed"]
         .as_array()
         .into_iter()
@@ -493,7 +509,7 @@ impl Extension for Module {
                         if undo {
                             journal.undo_pinned(&id, &roots, &facts)
                         } else {
-                            journal.reconcile(&id, &roots.paths())
+                            journal.reconcile_pinned(&id, &roots)
                         }
                     })
                     .await
@@ -688,7 +704,7 @@ impl Extension for Module {
                 "POST /native/v1/files/open" => Some(open_route(svc, app, body).await),
                 "POST /native/v1/files/rename" => Some(relocate_route(self, app, body, true).await),
                 "POST /native/v1/files/move" => Some(relocate_route(self, app, body, false).await),
-                "POST /native/v1/files/delete" => Some(delete_route(svc, app, body).await),
+                "POST /native/v1/files/delete" => Some(delete_route(self, svc, app, body).await),
                 _ => None,
             }
         })

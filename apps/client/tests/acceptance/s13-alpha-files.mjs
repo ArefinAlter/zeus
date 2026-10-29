@@ -92,7 +92,7 @@ try {
   ui = await openUi(h)
   await ui.page.goto(`${ui.origin}/index.html?harness=${encodeURIComponent(h.url)}&token=${h.token}#/files`)
   await ui.page.getByRole('button', { name: 'Storage and history', exact: true }).click()
-  await ui.page.getByRole('button', { name: 'Move history', exact: true }).click()
+  await ui.page.getByRole('button', { name: 'Move and trash history', exact: true }).click()
   check('native file-operation history is visible in the real UI', await ui.page.getByText('undone', { exact: false }).count() > 0)
   if (instanceProcess) {
     await ui.page.getByRole('button', { name: 'Everything', exact: true }).click()

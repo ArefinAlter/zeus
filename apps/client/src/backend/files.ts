@@ -116,6 +116,8 @@ export interface FileHistoryRecord {
   created_ms: number
   can_undo: boolean
   directory: boolean
+  bytes: number
+  trash: boolean
 }
 
 export interface FileAnalytics {

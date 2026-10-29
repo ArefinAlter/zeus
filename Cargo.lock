@@ -6924,6 +6924,7 @@ dependencies = [
  "zeus-control",
  "zeus-fs",
  "zeus-types",
+ "zeus-verify",
 ]
 
 [[package]]
