@@ -45,7 +45,13 @@ export function FileInsights({ onClose, onChanged, roots, onBrowse }: { onClose:
     <div class="file-insights">
       {tab==='everything' ? <EverythingIntegration roots={roots} onBrowse={onBrowse} /> : tab==='sizes' ? <>
         <p>{analytics ? `${analytics.files.toLocaleString()} indexed files · ${fmtBytes(analytics.logical_bytes)} logical size` : 'Reading scoped index…'}</p>
-        <p class="muted small">Sizes cover indexed files in included folders. Sparse files, hard links and compression can make allocated disk usage differ. Parent folder totals overlap.</p>
+        <p class="muted small">Logical sizes cover names in indexed folders. Parent folder totals overlap. Allocation observations come from the last scan and can change while files are in use.</p>
+        {analytics?.storage?<div aria-label="Observed storage allocation">
+          <p><strong>{fmtBytes(analytics.storage.allocated_bytes_known)} observed allocated space</strong>{!analytics.storage.complete?' · partial measurement':''}</p>
+          <p>{analytics.storage.known_objects.toLocaleString()} known file objects · {analytics.storage.observed_aliases.toLocaleString()} additional hard-link names counted once · {fmtBytes(analytics.storage.unique_logical_bytes_known)} logical size of consistent known objects</p>
+          {analytics.storage.unknown_identity_paths || analytics.storage.unknown_allocation_objects || analytics.storage.inconsistent_objects ? <p class="muted small">{analytics.storage.unknown_identity_paths} paths have no identity measurement; {analytics.storage.unknown_allocation_objects} objects have unknown allocation, including {analytics.storage.inconsistent_objects} inconsistent observations. Rescan to refresh measurements.</p>:null}
+          <p class="muted small">{analytics.storage.unobserved_aliases ? `${analytics.storage.unobserved_aliases} additional hard-link names are outside this indexed selection. `:''}Shared filesystem extents may still overlap. These numbers do not predict space reclaimed by deleting files.</p>
+        </div>:null}
         <h3>Largest folders</h3>
         {analytics?.directories.map(d=><div class="file-insight-row"><span class="mono">{d.path}</span><strong>{fmtBytes(d.bytes)}</strong><span>{d.files.toLocaleString()} files</span></div>)}
         <h3>File types</h3>
