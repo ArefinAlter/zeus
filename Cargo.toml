@@ -13,6 +13,7 @@ members = [
     "crates/zeus-a2a-bridge",
     "crates/zeus-cloud",
     "crates/zeus-sources",
+    "crates/zeus-file-workspace",
 ]
 
 [workspace.package]
@@ -60,6 +61,7 @@ zeus-a2a = { path = "crates/zeus-a2a", version = "0.1.0-alpha.1" }
 zeus-a2a-bridge = { path = "crates/zeus-a2a-bridge", version = "0.1.0-alpha.1" }
 zeus-cloud = { path = "crates/zeus-cloud", version = "0.1.0-alpha.1" }
 zeus-sources = { path = "crates/zeus-sources", version = "0.1.0-alpha.1", default-features = false }
+zeus-file-workspace = { path = "crates/zeus-file-workspace", version = "0.1.0-alpha.1" }
 zeus-artifact = { path = "../zeus-core/crates/zeus-artifact", version = "0.1.0" }
 
 # ---- async runtime and utilities ----

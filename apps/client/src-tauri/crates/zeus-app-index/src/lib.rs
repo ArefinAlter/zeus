@@ -96,36 +96,43 @@ async fn copy_authority(
     let app = app.clone();
     let runtime = tokio::runtime::Handle::current();
     let last = std::sync::Mutex::new(std::time::Instant::now() - std::time::Duration::from_secs(4));
+    let check = move || -> zeus_app::failure::Result<()> {
+        if service.scope_generation() != revision {
+            return Err(Failure::new(
+                "app.path_changed",
+                "Folder settings changed. This copy is paused until an explicit Resume with current scopes.",
+            ));
+        }
+        let mut last = last
+            .lock()
+            .map_err(|_| Failure::new("app.io", "Copy authorization is unavailable."))?;
+        if last.elapsed() >= std::time::Duration::from_secs(3) {
+            service.file_capabilities(false)?;
+            if writable {
+                service.file_capabilities(true)?;
+            }
+            let facts = runtime.block_on(service.facts.table(&app)).ok_or_else(||Failure::new("app.offline","The engine's quarantine status is unavailable. Copy checkpoints are preserved."))?;
+            if sources
+                .iter()
+                .any(|source| facts::quarantined_under(&facts, source))
+            {
+                return Err(ops::quarantine_refusal("This source"));
+            }
+            *last = std::time::Instant::now();
+        }
+        Ok(())
+    };
     Ok(transfers::Authority {
-        reads,
-        writes,
-        facts,
-        check: Arc::new(move || {
-            if service.scope_generation() != revision {
-                return Err(Failure::new(
-                    "app.path_changed",
-                    "Folder settings changed. This copy is paused until an explicit Resume with current scopes.",
-                ));
+        reads: reads.workspace_caps()?,
+        writes: writes.workspace_caps()?,
+        path_check: Arc::new(move |path| {
+            if facts::quarantined_under(&facts, path) {
+                Err(transfers::to_shared(ops::quarantine_refusal("This item")))
+            } else {
+                Ok(())
             }
-            let mut last = last
-                .lock()
-                .map_err(|_| Failure::new("app.io", "Copy authorization is unavailable."))?;
-            if last.elapsed() >= std::time::Duration::from_secs(3) {
-                service.file_capabilities(false)?;
-                if writable {
-                    service.file_capabilities(true)?;
-                }
-                let facts = runtime.block_on(service.facts.table(&app)).ok_or_else(||Failure::new("app.offline","The engine's quarantine status is unavailable. Copy checkpoints are preserved."))?;
-                if sources
-                    .iter()
-                    .any(|source| facts::quarantined_under(&facts, source))
-                {
-                    return Err(ops::quarantine_refusal("This source"));
-                }
-                *last = std::time::Instant::now();
-            }
-            Ok(())
         }),
+        check: Arc::new(move || check().map_err(transfers::to_shared)),
     })
 }
 

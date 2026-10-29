@@ -14,6 +14,7 @@ zeus-app = { path = "../zeus-app" }
 zeus-api.workspace = true
 zeus-types.workspace = true
 zeus-fs.workspace = true
+zeus-file-workspace.workspace = true
 regex.workspace = true
 zip.workspace = true
 serde.workspace = true

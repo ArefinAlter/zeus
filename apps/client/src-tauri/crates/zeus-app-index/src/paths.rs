@@ -224,26 +224,10 @@ impl RootCaps {
         self.roots.iter().map(|(path, _)| shown(path)).collect()
     }
 
-    /// Stable root identities for a durable operation. Paths are authority locators, not grants.
-    pub fn bindings(&self) -> Result<Vec<(String, zeus_types::FileId)>> {
-        self.roots
-            .iter()
-            .map(|(path, cap)| Ok((shown(path), cap.file_id().map_err(cap_failure)?)))
-            .collect()
-    }
-
-    /// Bind only the longest enabled root that grants this path, excluding unrelated scopes.
-    pub fn binding_for(&self, path: &Path) -> Result<(String, zeus_types::FileId)> {
-        let path = self.path(&shown(path))?;
-        let (root, cap) = self
-            .roots
-            .iter()
-            .filter(|(root, _)| path.starts_with(root))
-            .max_by_key(|(root, _)| root.components().count())
-            .ok_or_else(|| {
-                Failure::new("app.path_outside", "The file is outside enabled roots.")
-            })?;
-        Ok((shown(root), cap.file_id().map_err(cap_failure)?))
+    /// Share only the roots already retained under this service's current enablement policy.
+    pub fn workspace_caps(&self) -> Result<zeus_file_workspace::paths::RootCaps> {
+        zeus_file_workspace::paths::RootCaps::from_retained(self.roots.clone())
+            .map_err(crate::transfers::from_shared)
     }
 
     /// Open a descendant directory through a retained root; every intermediate link is refused.
