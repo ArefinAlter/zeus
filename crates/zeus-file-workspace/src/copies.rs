@@ -347,6 +347,11 @@ impl Job {
         Ok(())
     }
 }
+/// Policy check callback for an individual path.
+pub type PathCheckFn = Arc<dyn Fn(&str) -> Result<()> + Send + Sync>;
+/// Stop or cancellation check callback called between chunk operations.
+pub type StopCheckFn = Arc<dyn Fn() -> Result<()> + Send + Sync>;
+
 /// Fresh scopes and quarantine facts, plus the desktop's live revocation/stop check.
 pub struct Authority {
     /// Retained read roots captured against their enablement identities.
@@ -354,9 +359,9 @@ pub struct Authority {
     /// Retained writable roots captured against their enablement identities.
     pub writes: RootCaps,
     /// Per-path policy check, supplied by the host (for example quarantine).
-    pub path_check: Arc<dyn Fn(&str) -> Result<()> + Send + Sync>,
+    pub path_check: PathCheckFn,
     /// Called between chunks and before effects; any failure holds the copy.
-    pub check: Arc<dyn Fn() -> Result<()> + Send + Sync>,
+    pub check: StopCheckFn,
 }
 /// Durable copy receipts; at most four workers and 64 retained jobs, with no automatic deletion.
 pub struct Transfers {
