@@ -19,7 +19,7 @@ import { openUi } from '../ui.mjs'
 const arg = (n, d) => (process.argv.includes(n) ? process.argv[process.argv.indexOf(n) + 1] : d)
 const out = arg('--out', 'D:/verne-build/zeus/evidence/s10-agent')
 const fileKeystore = arg('--keystore', '') === 'file'
-const home = fileKeystore ? 'D:/verne-build/zeus/scratch/c/s10-file' : 'D:/verne-build/zeus/scratch/c/s10'
+const home = join(out, fileKeystore ? 'profile-file-keystore' : 'profile')
 mkdirSync(out, { recursive: true })
 
 const CANARY = 'ZEUS-CANARY-sk-agent-0123456789abcdef'
@@ -66,7 +66,7 @@ try {
   check('the configuration never contains the key', !JSON.stringify(cfgK).includes('ZEUS-CANARY') && cfgK.providers.find((p) => p.id === 'p-mock').key.last4 === CANARY.slice(-4))
   check('keys are kept where the engine says', ['os', 'file'].includes(cfgK.keystore.backend), `${cfgK.keystore.backend}${fileKeystore ? ' (forced)' : ''}`)
 
-  const settings = { tools_enabled: ['zeus_probe', 'zeus_status', 'zeus_wait', 'zeus_verify', 'zeus_session_list', 'zeus_files_list', 'zeus_artifacts', 'zeus_enqueue', 'zeus_control', 'zeus_session_request', 'zeus_files', 'zeus_workflow', 'zeus_cloud', 'zeus_inbox'], max_turn_tools: 12, max_batch: 50, metadata_only: true, instructions: '' }
+  const settings = { tools_enabled: ['zeus_probe', 'zeus_status', 'zeus_wait', 'zeus_verify', 'zeus_session_list', 'zeus_files_list', 'zeus_artifacts', 'zeus_enqueue', 'zeus_control', 'zeus_session_request', 'zeus_files', 'zeus_workflow', 'zeus_cloud', 'zeus_inbox', 'zeus_sources'], max_turn_tools: 12, max_batch: 50, metadata_only: true, instructions: '' }
   const body = (thread, text, access, over = {}) => ({ thread_id: thread, provider_id: 'p-mock', access, text, regenerate: false, settings, skill: null, ...over })
   const run = async (b, { until: stopWhen, timeoutMs = 60000 } = {}) => {
     const { run_id } = await call('POST', `${B}/send`, b)
