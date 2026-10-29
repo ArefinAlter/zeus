@@ -5591,12 +5591,32 @@
           "description": "Binds this entire mutation to one owner-scoped retry key.",
           "type": "string"
         },
+        "initial_entries": {
+          "description": "Create only: atomically retain1–200 private requests with the package (512KiB total call).\nOmission creates an empty package. Updates must omit this field.",
+          "items": {
+            "$ref": "#/$defs/InboxIntakeItem"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
         "package_id": {
           "default": null,
           "description": "Absent creates a daemon-minted package; present edits an existing owned package.",
           "pattern": "^pkg_[0-7][0-9A-HJKMNP-TV-Z]{25}$",
           "type": [
             "string",
+            "null"
+          ]
+        },
+        "rules": {
+          "description": "Replace ordered rules (at most32). Omission preserves existing rules; [] explicitly clears.",
+          "items": {
+            "$ref": "#/$defs/InboxRule"
+          },
+          "type": [
+            "array",
             "null"
           ]
         },
@@ -5660,6 +5680,13 @@
           "format": "uint64",
           "minimum": 0,
           "type": "integer"
+        },
+        "rules": {
+          "description": "Ordered first-match rules, at most32. Empty in older saved packages.",
+          "items": {
+            "$ref": "#/$defs/InboxRule"
+          },
+          "type": "array"
         },
         "untrusted_name": {
           "description": "Person/agent-provided display text; never executable instructions.",
@@ -5749,6 +5776,13 @@
         },
         "filename": {
           "description": "Reviewed filename after safe naming/collision planning, if valid.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "matched_rule": {
+          "description": "First matching rule, if any; bound to the exact reviewed package revision.",
           "type": [
             "string",
             "null"
@@ -5871,6 +5905,50 @@
         "ready_entries",
         "remaining_pending",
         "replayed"
+      ],
+      "type": "object"
+    },
+    "InboxRule": {
+      "additionalProperties": false,
+      "description": "One bounded first-match package rule. It changes reviewed defaults, never execution authority.",
+      "properties": {
+        "dest_dir": {
+          "description": "Default destination for matching entries without an explicit destination.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "filename_prefix": {
+          "description": "ASCII filename prefix (letters, digits, `_` or `-`), applied before safe-name planning.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "filename_suffix": {
+          "description": "Case-insensitive suffix of the requested filename, such as `.pdf` or `.tar.gz`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "description": "Stable local identifier,1–64 ASCII letters, digits, underscores or hyphens.",
+          "type": "string"
+        },
+        "origin": {
+          "description": "Exact normalized HTTP(S) origin; no credentials, path, query or wildcard.",
+          "maxLength": 300,
+          "pattern": "^https?://(\\[[0-9a-f:.]+\\]|[a-z0-9]([a-z0-9.-]*[a-z0-9])?)(:[0-9]{1,5})?$",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id"
       ],
       "type": "object"
     },

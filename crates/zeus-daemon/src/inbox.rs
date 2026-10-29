@@ -55,6 +55,108 @@ fn receipt_binding(owner: &str, method: &str, key: &str) -> ApiResult<String> {
         digest(&(method, key))?
     ))
 }
+fn safe_rule_token(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 64
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+}
+fn validate_rules(rules: &[InboxRule]) -> ApiResult<()> {
+    if rules.len() > 32 {
+        return Err(invalid("at most 32 package rules are supported"));
+    }
+    let mut ids = HashSet::new();
+    for rule in rules {
+        if !safe_rule_token(&rule.id) || !ids.insert(&rule.id) {
+            return Err(invalid(
+                "rule identifiers must be unique ASCII tokens of 1 to 64 bytes",
+            ));
+        }
+        if rule
+            .origin
+            .as_ref()
+            .is_some_and(|origin| origin.host().contains('*'))
+        {
+            return Err(invalid("rule origin must name one exact host"));
+        }
+        if rule.origin.is_none() && rule.filename_suffix.is_none() {
+            return Err(invalid(
+                "a package rule needs an exact origin or filename suffix",
+            ));
+        }
+        if rule.filename_suffix.as_ref().is_some_and(|s| {
+            s.len() < 2
+                || s.len() > 32
+                || !s.starts_with('.')
+                || !s
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
+        }) {
+            return Err(invalid(
+                "rule suffix must be 2 to 32 ASCII filename bytes starting with a dot",
+            ));
+        }
+        if rule
+            .dest_dir
+            .as_ref()
+            .is_some_and(|s| s.is_empty() || s.len() > 4096 || s.chars().any(char::is_control))
+        {
+            return Err(invalid(
+                "rule destination must contain 1 to 4096 printable bytes",
+            ));
+        }
+        if rule
+            .filename_prefix
+            .as_ref()
+            .is_some_and(|s| !safe_rule_token(s))
+        {
+            return Err(invalid(
+                "rule filename prefix must be an ASCII token of 1 to 64 bytes",
+            ));
+        }
+        if rule.dest_dir.is_none() && rule.filename_prefix.is_none() {
+            return Err(invalid(
+                "a package rule needs a destination or filename prefix",
+            ));
+        }
+    }
+    Ok(())
+}
+/// Apply only reviewed metadata. Original private intake and grants remain unchanged.
+pub(crate) fn apply_rules(package: &InboxPackageView, job: &mut NewJob) -> Option<String> {
+    let name = job.filename.clone().unwrap_or_else(|| {
+        job.url
+            .url()
+            .path_segments()
+            .and_then(|mut v| v.next_back())
+            .filter(|s| !s.is_empty())
+            .unwrap_or("download.bin")
+            .to_owned()
+    });
+    let matched = package.rules.iter().find(|rule| {
+        rule.origin
+            .as_ref()
+            .is_none_or(|origin| *origin == job.url.origin())
+            && rule.filename_suffix.as_ref().is_none_or(|suffix| {
+                name.to_ascii_lowercase()
+                    .ends_with(&suffix.to_ascii_lowercase())
+            })
+    });
+    if job.dest_dir.is_none() {
+        job.dest_dir = matched
+            .and_then(|rule| rule.dest_dir.clone())
+            .or_else(|| package.default_dest_dir.clone());
+    }
+    job.filename = Some(
+        match matched.and_then(|rule| rule.filename_prefix.as_deref()) {
+            Some(prefix) => format!("{prefix}{name}"),
+            None => name,
+        },
+    );
+    matched.map(|rule| rule.id.clone())
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 pub(crate) struct Entry {
     pub id: InboxEntryId,
@@ -336,6 +438,16 @@ impl InboxStore {
         if let Some(r) = self.replay(owner, "put", &p.idempotency_key, p)? {
             return Ok(r);
         }
+        if encoded(p)?.len() > 512 * 1024 {
+            return Err(invalid("package mutation exceeds 512 KiB"));
+        }
+        if let Some(entries) = &p.initial_entries
+            && (p.package_id.is_some() || entries.is_empty() || entries.len() > 200)
+        {
+            return Err(invalid(
+                "initial_entries is create-only and requires 1 to 200 requests",
+            ));
+        }
         if p.untrusted_name.trim().is_empty()
             || p.untrusted_name.len() > 160
             || p.untrusted_name.chars().any(char::is_control)
@@ -349,6 +461,9 @@ impl InboxStore {
             .is_some_and(|s| s.len() > 4096 || s.contains('\0'))
         {
             return Err(invalid("invalid destination default"));
+        }
+        if let Some(rules) = &p.rules {
+            validate_rules(rules)?;
         }
         let mut package = if let Some(id) = &p.package_id {
             let pkg = self.load(owner, id)?;
@@ -371,6 +486,7 @@ impl InboxStore {
                     revision: 0,
                     untrusted_name: String::new(),
                     default_dest_dir: None,
+                    rules: Vec::new(),
                     archived: false,
                     pending_entries: 0,
                     enqueued_entries: 0,
@@ -385,6 +501,12 @@ impl InboxStore {
         };
         package.view.untrusted_name = p.untrusted_name.clone();
         package.view.default_dest_dir = p.default_dest_dir.clone();
+        if let Some(rules) = &p.rules {
+            package.view.rules = rules.clone();
+        }
+        if let Some(entries) = &p.initial_entries {
+            self.append_entries(&mut package, entries)?;
+        }
         package.changed()?;
         let result = InboxMutationResult {
             package: package.view.clone(),
@@ -479,18 +601,14 @@ impl InboxStore {
             submissions,
         })
     }
-    pub fn add(&self, owner: &str, p: &InboxEntriesAddParams) -> ApiResult<InboxEntriesAddResult> {
-        if let Some(r) = self.replay(owner, "add", &p.idempotency_key, p)? {
-            return Ok(r);
-        }
-        if p.entries.is_empty() || p.entries.len() > 200 || encoded(p)?.len() > 512 * 1024 {
-            return Err(invalid("intake requires 1 to 200 entries within 512 KiB"));
-        }
-        let mut pkg = self.load(owner, &p.package_id)?;
-        pkg.editable(p.expected_revision)?;
+    fn append_entries(
+        &self,
+        pkg: &mut Package,
+        items: &[InboxIntakeItem],
+    ) -> ApiResult<(Vec<InboxEntryId>, Vec<InboxEntryId>)> {
         let mut added = vec![];
         let mut duplicates = vec![];
-        for item in &p.entries {
+        for item in items {
             if item.job.run_id.is_some()
                 || item
                     .untrusted_label
@@ -526,6 +644,18 @@ impl InboxStore {
                 error: None,
             });
         }
+        Ok((added, duplicates))
+    }
+    pub fn add(&self, owner: &str, p: &InboxEntriesAddParams) -> ApiResult<InboxEntriesAddResult> {
+        if let Some(r) = self.replay(owner, "add", &p.idempotency_key, p)? {
+            return Ok(r);
+        }
+        if p.entries.is_empty() || p.entries.len() > 200 || encoded(p)?.len() > 512 * 1024 {
+            return Err(invalid("intake requires 1 to 200 entries within 512 KiB"));
+        }
+        let mut pkg = self.load(owner, &p.package_id)?;
+        pkg.editable(p.expected_revision)?;
+        let (added, duplicates) = self.append_entries(&mut pkg, &p.entries)?;
         pkg.changed()?;
         let result = InboxEntriesAddResult {
             package: pkg.view.clone(),

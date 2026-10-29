@@ -43,21 +43,7 @@ impl RuntimeBackend {
         let mut paths = HashSet::new();
         for entry in candidates {
             let mut job = entry.item.job.clone();
-            if job.dest_dir.is_none() {
-                job.dest_dir = package.view.default_dest_dir.clone();
-            }
-            // Resolve a deterministic filename now, rather than letting a future response choose it.
-            if job.filename.is_none() {
-                job.filename = Some(
-                    job.url
-                        .url()
-                        .path_segments()
-                        .and_then(|mut v| v.next_back())
-                        .filter(|v| !v.is_empty())
-                        .unwrap_or("download.bin")
-                        .to_owned(),
-                );
-            }
+            let matched_rule = inbox::apply_rules(&package.view, &mut job);
             job.overwrite = Some(zeus_types::Overwrite::Fail);
             job.labels
                 .insert("zeus.package".into(), package.view.id.to_string());
@@ -76,6 +62,7 @@ impl RuntimeBackend {
                 entry_id: entry.id.clone(),
                 redacted_url: job.url.redact(zeus_types::RedactMode::Log),
                 filename: None,
+                matched_rule,
                 dest_path: None,
                 approval_needed: job.session_origin.is_some(),
                 warnings: vec![],

@@ -1580,7 +1580,7 @@ Intake retains private `NewJob` requests before a reviewed enqueue. Ownership is
 
 | Method | Permission | Result and boundary |
 |---|---|---|
-| `inbox.packages.put` | `jobs.write` | Create a daemon-minted package or edit its current name/default destination. |
+| `inbox.packages.put` | `jobs.write` | Create a daemon-minted package (optionally with atomic private initial entries) or edit its current name/default destination/rules. |
 | `inbox.packages.list` | `jobs.read` | Owner-filtered metadata page, at most100 records. |
 | `inbox.packages.get` | `jobs.read` | Metadata plus a redacted entry page, at most100 entries/256KiB with a continuation cursor. `include_history` defaults false. |
 | `inbox.packages.archive` | `jobs.write` | Archive/unarchive metadata, preserving downloads and receipts. |
@@ -1593,10 +1593,18 @@ Intake retains private `NewJob` requests before a reviewed enqueue. Ownership is
 
 The three read methods accept an explicit `owner_credential_id` inspection selector only for human-capable credentials. Agent/service credentials, including the desktop GUI credential, are refused that selector by policy and backend checks. The selector never permits cross-owner mutation or execution. `packages.get(include_history=true)` returns at most16 saved redacted previews and the newest20 dispatch views, bounded to768KiB/256KiB respectively. An oversized explicit history returns `api.payload_too_large` with guidance to read metadata/entries without history and inspect a specific dispatch. Session material and original requests stay private during human inspection too.
 
+`packages.put` accepts optional `rules` (at most32): omission preserves existing rules and an explicit empty array clears them. Each rule has a unique1–64-byte ASCII token `id`, an exact normalized HTTP(S) `origin` and/or a2–32-byte filename suffix, and a destination and/or a1–64-byte ASCII filename prefix. There are no wildcards, regexes or script expressions. Both conditions must match when present; the first matching rule wins. Suffix matching is ASCII case-insensitive on the requested filename or final URL path segment, without reading query values or probing a server. An explicit per-entry destination takes precedence over the rule destination, then the package default. The prefix is applied to a fresh request copy during each review, followed by ordinary safe-name, scope and collision validation. The reviewed row exposes `matched_rule`; a rule never changes session grants or file-root authority. Metadata/rule edits increment the package revision and invalidate earlier reviews. Original intake records and completed jobs are unchanged.
+
+For durable handoff, a create call may include `initial_entries` (1–200 private typed intake items). The entire call is capped at512KiB, the same entry validation and exact deduplication apply as `entries.add`, and the package plus entries plus mutation receipt commit in one transaction. Invalid entries leave no partial package. Updates must omit this field. Retrying the same key/payload after a lost response returns the original package identity, including after restart; no download or approval is started by intake.
+
 An unresolved dispatch fences package edits. Its durable intent precedes `jobs.enqueue`; the existing per-item enqueue receipts recover accepted job IDs after interruption. A restart does not automatically dispatch pending packages. See [the executable alpha intake contract](../alpha-0.1/INBOX.md) for retained-state bounds and [the normative schema](schema/inbox.v1.schema.json). These methods add no network listener, root registration or approval authority.
 
 ```json validate=daemon-api.v1#/$defs/InboxPackagesPutRequest
 {"jsonrpc":"2.0","id":600,"method":"inbox.packages.put","params":{"untrusted_name":"Research package","default_dest_dir":null,"idempotency_key":"research-package-1"}}
+```
+
+```json validate=daemon-api.v1#/$defs/InboxPackagesPutRequest
+{"jsonrpc":"2.0","id":601,"method":"inbox.packages.put","params":{"untrusted_name":"Collected papers","rules":[{"id":"papers","origin":"https://example.org","filename_suffix":".pdf","filename_prefix":"paper_"}],"initial_entries":[{"job":{"url":"https://example.org/report.pdf"}}],"idempotency_key":"papers-intake-1"}}
 ```
 
 
