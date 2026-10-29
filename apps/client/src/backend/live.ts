@@ -27,6 +27,7 @@ import { ulid } from './rand.ts'
 import type { IndexDelta, IndexRow } from './files.ts'
 import { filesApi, indexFromWire, nudgeIndexSync, startIndexSync } from './files.ts'
 import { historyLabel } from '../model/eventHistory.ts'
+import { computeDynamicSegments } from '../model/segments.ts'
 
 export const LIVE = backend().kind !== 'scripted'
 export const HOSTED = backend().kind === 'hosted'
@@ -226,9 +227,9 @@ function toJob(r: RemoteJob, prev: Job | undefined): Job {
     ...(state === 'completed' ? { finished: Date.parse(r.updated_at) } : {}),
     dir: where?.dir ?? S.defaultDir(categoryOf(name, s.settings.categories)),
     source: meta.source ?? { kind: 'app', label: 'You, in Zeus' },
-    segments: size ? [{ start: 0, end: size, done: Math.min(size, r.bytes_done), state: r.bytes_done >= size ? 'done' : active ? 'active' : 'pending' }] : [],
+    segments: computeDynamicSegments(size, r.bytes_done, s.settings.downloads.connectionsPerJob, active),
     connections: s.settings.downloads.connectionsPerJob,
-    resumable: 'unknown',
+    resumable: size ? 'verified' : 'unknown',
     priority: meta.priority ?? 'normal',
     ...(gone ? { missing: true } : {}),
     ...(r.sha256 ? { sha256: r.sha256 } : {}),

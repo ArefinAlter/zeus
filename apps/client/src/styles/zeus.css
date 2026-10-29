@@ -1497,3 +1497,123 @@ a.ccard {
 .conn-banner {
   margin: 0 0 12px;
 }
+
+/* IDM-Style Download Progress Popup */
+.idm-popup {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 520px;
+  max-width: 680px;
+}
+.idm-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+.idm-header-info {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1;
+}
+.idm-title {
+  font-weight: 600;
+  font-size: 15px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.idm-meta {
+  font-size: 12px;
+  color: var(--muted-foreground);
+}
+.idm-header-pct {
+  font-size: 24px;
+  font-weight: 700;
+  color: var(--primary);
+  font-variant-numeric: tabular-nums;
+}
+.idm-grid {
+  display: grid;
+  grid-template-columns: 120px 1fr;
+  row-gap: 6px;
+  column-gap: 12px;
+  font-size: 13px;
+  align-items: center;
+}
+.idm-label {
+  color: var(--muted-foreground);
+  font-weight: 500;
+}
+.idm-val {
+  min-width: 0;
+  word-break: break-all;
+}
+.idm-url-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.idm-url {
+  max-width: 360px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.idm-rate {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--primary);
+}
+.idm-chunk-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px;
+  background: var(--surface-2, rgba(255, 255, 255, 0.04));
+  border-radius: 6px;
+  border: 1px solid var(--border);
+}
+.idm-chunk-header {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+}
+.idm-connections-wrap {
+  max-height: 140px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.idm-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.idm-table th, .idm-table td {
+  padding: 6px 10px;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+}
+.idm-table th {
+  background: var(--surface-2, rgba(255, 255, 255, 0.04));
+  font-weight: 600;
+  color: var(--muted-foreground);
+}
+.idm-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+.idm-autoclose {
+  font-size: 12px;
+  color: var(--muted-foreground);
+  cursor: pointer;
+}
+

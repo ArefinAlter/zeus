@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'preact/hooks'
 
-export type DialogId = null | { kind: 'addUrl'; url?: string } | { kind: 'site' } | { kind: 'stop' }
+export type DialogId = null | { kind: 'addUrl'; url?: string } | { kind: 'site' } | { kind: 'stop' } | { kind: 'downloadProgress'; jobId: string }
 
 let dialog: DialogId = null
 let palette: null | 'all' | 'themes' = null

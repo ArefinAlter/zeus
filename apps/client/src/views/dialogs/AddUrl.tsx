@@ -15,6 +15,7 @@ import { intake, nameProblem } from '../../model/links.ts'
 import type { CategoryId } from '../../model/types.ts'
 import { fmtBytes } from '../../model/units.ts'
 import { href, navigate } from '../../lib/router'
+import { openDialog } from '../../lib/ui'
 import { Chip, Dialog, Notice } from '../../ui/components'
 import { Icon } from '../../ui/icons'
 
@@ -49,6 +50,22 @@ export function AddUrl({ initial, onClose }: { initial?: string; onClose: () => 
 
   const parsed = useMemo(() => intake(url.trim()), [url])
   const link = parsed.links[0]
+
+  useEffect(() => {
+    if (link && !name) {
+      setName(link.name)
+      const c = categoryOf(link.name, settings.categories)
+      setCategory(c)
+      setDir(defaultDir(c))
+    }
+  }, [link, name])
+
+  useEffect(() => {
+    if (link && !probed && !probing) {
+      probe()
+    }
+  }, [link?.url])
+
   const dupe = LIVE && link ? duplicateOf(link.url) : undefined
   const roots = settings.saveTo.writeRoots
   const ci = SEP() === '\\' || !NATIVE
@@ -93,15 +110,19 @@ export function AddUrl({ initial, onClose }: { initial?: string; onClose: () => 
   const size = LIVE ? (answer?.size ?? null) : link ? sizeFor(link.url) : null
   const sha = expected.trim().toLowerCase()
   const shaBad = sha !== '' && !/^[0-9a-f]{64}$/.test(sha)
-  const problem = probed ? nameProblem(name) : null
-  const blocked = !!problem || shaBad || !!dirProblem || mustConfirm || (!!dupe && dupeChoice === 'skip')
+  const problem = link ? nameProblem(name) : null
+  const blocked = !link || !!problem || shaBad || !!dirProblem || mustConfirm || (!!dupe && dupeChoice === 'skip')
 
   const add = (start: boolean) => {
     if (!link) return
     const res = addDownloads([{ url: link.url, name, dir, queue: start ? null : queue, start, ...(desc.trim() ? { description: desc.trim() } : {}), ...(sha && !shaBad ? { expectedSha256: sha } : {}), ...(login ? { sessionOrigin: new URL(link.url).origin } : {}), ...(NATIVE ? { overwrite: overwriteFor(dupe ? dupeChoice : undefined, settings.downloads.duplicates) } : {}) }])
     if (res.refused.length) return setError(res.refused[0] ?? 'Refused.')
     if (NATIVE) rememberFolder(category, dir)
-    onClose()
+    if (start && res.ids[0]) {
+      openDialog({ kind: 'downloadProgress', jobId: res.ids[0] })
+    } else {
+      onClose()
+    }
   }
 
   return (
@@ -160,24 +181,34 @@ export function AddUrl({ initial, onClose }: { initial?: string; onClose: () => 
         </Notice>
       ) : null}
       {link && link.queryWithheld ? <p class="muted small">The address has a query string. Zeus keeps it for the request and never shows or logs it.</p> : null}
-      {probed && link ? (
+      {link ? (
         <>
           <div class="probe">
-            <Icon name="check" />
+            <Icon name={probing ? 'refresh' : 'check'} />
             <span>
-              {LIVE
+              {probing && !answer
+                ? 'Connecting to server… Zeus will begin download immediately.'
+                : LIVE
                 ? answer
                   ? answer.check === 'online'
                     ? `${answer.status} · ${size === null ? 'size unknown' : fmtBytes(size)}${answer.redirects ? ` · ${answer.redirects} redirect${answer.redirects === 1 ? '' : 's'}` : ''}${answer.content_type ? ` · ${answer.content_type.split(';')[0]}` : ''}`
                     : answer.check === 'needs_login'
                       ? 'The server wants a sign-in. Zeus lends a browser login only through the extension, after you approve.'
                       : checkNote(answer)
-                  : 'zeusd probes the address when the download starts.'
+                  : 'Direct high-performance Range download ready.'
                 : login
                   ? 'The site answered with a sign-in page: this file needs your login.'
                   : `206 Partial Content · ${fmtBytes(size)} · resumable`}
             </span>
-            {LIVE ? (answer ? <Chip tone={answer.check === 'online' ? 'ok' : 'bad'}>{answer.check}</Chip> : null) : login ? <Chip tone="warn">needs a site login</Chip> : <Chip tone="ok">ranges verified</Chip>}
+            {probing && !answer ? (
+              <Chip tone="info">checking</Chip>
+            ) : LIVE ? (
+              answer ? <Chip tone={answer.check === 'online' ? 'ok' : 'bad'}>{answer.check}</Chip> : <Chip tone="ok">ready</Chip>
+            ) : login ? (
+              <Chip tone="warn">needs a site login</Chip>
+            ) : (
+              <Chip tone="ok">ranges verified</Chip>
+            )}
           </div>
           {NATIVE && answer?.check === 'online' ? (
             <p class="muted small">
