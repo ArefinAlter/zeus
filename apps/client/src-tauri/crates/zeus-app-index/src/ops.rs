@@ -591,6 +591,23 @@ mod retained_delete_tests {
         assert!(changed.join("deep/a").exists());
     }
     #[test]
+    fn legacy_delete_without_a_journal_preserves_data_and_reports_unavailable_trash() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("keep");
+        std::fs::write(&path, b"preserved").unwrap();
+        let result = delete(
+            &[shown(&path)],
+            false,
+            &[shown(temp.path())],
+            &HashMap::new(),
+        )
+        .unwrap();
+        assert_eq!(result["ok"], false);
+        assert_eq!(result["failed"][0]["code"], "app.trash_unavailable");
+        assert_eq!(std::fs::read(path).unwrap(), b"preserved");
+    }
+
+    #[test]
     fn trash_is_hidden_even_when_optional_exclusions_are_removed() {
         let cfg = crate::config::IndexConfig {
             exclusions: vec![],

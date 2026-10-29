@@ -704,7 +704,7 @@ impl Organizer {
                         == zeus_fs::trash::TrashReceiptState::LegacyManualRecovery
                     {
                         return Err(ApiError::new(
-                            "files.legacy_trash_manual_recovery",
+                            "api.invalid_transition",
                             "This older trash receipt has no recorded identity. Its files are preserved for manual recovery; automated restore and purge are unavailable.",
                         ));
                     }

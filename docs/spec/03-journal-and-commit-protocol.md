@@ -405,12 +405,12 @@ Preconditions: S70 committed `verify_result` (size, SHA-256, BLAKE3, detected MI
 | F2 | `sync_all` on the data file (data and metadata, including length and attributes set in F1). | |
 | F3 | Choose the final path again (the reserved path is normally free; if a foreign file appeared, apply the overwrite policy). Commit `finalize = {phase: "intent", tmp_path, dest_path, file_id, intent_at}` (`Immediate`). | After this commit, recovery can tell which side of the rename a crash fell on. |
 | F4 | Atomic rename of `tmp_path` to `dest_path` **without replacing**: Linux `renameat2(RENAME_NOREPLACE)`; macOS `renamex_np(RENAME_EXCL)`; Windows `MoveFileExW` with `MOVEFILE_WRITE_THROUGH` and without `MOVEFILE_REPLACE_EXISTING`. For `overwrite = replace`: Unix `link(dest, trash/...)` then atomic `rename`; Windows `ReplaceFile` with a backup name in the trash directory. | Same directory, same volume, so the rename is a single metadata operation. |
-| F5 | Unix: `fsync` the parent directory. Windows: `MOVEFILE_WRITE_THROUGH` already covers it. | |
+| F5 | Unix: reopen the retained parent directory with read access and `fsync` it (an `O_PATH` descriptor cannot be flushed). The retained Windows NT rename implementation has no portable directory-flush guarantee; power-loss durability still requires the filesystem fault matrix. | |
 | F6 | Commit S80 (`Immediate`): `state = completed`, `result`, `finalize = null`, remove the job's range, `unit_crc` and reservation rows, append `job.completed` and `job.state_changed`. | **The point of no return.** Before it the job is "finalizing"; after it, "completed". |
 | F7 | Post-commit, idempotent side effects driven by the durable event stream (outbox pattern): append the audit record `file.finalized` (04) and the provenance manifest record (04), and register the artifact in the artifact store (13 section 7.5); advance `meta.audit_cursor`, `meta.manifest_cursor` and `meta.artifact_cursor` in later transactions. | If the daemon crashes between F6 and F7, startup recovery replays durable events above the cursors (section 10 step 6). |
-| F8 | Delete the trash entries older than their retention, notify subscribers (the events already exist). | |
+| F8 | Notify subscribers (the events already exist). Application-trash expiry/purge requires explicit review; it is not scheduled automatically. | |
 
-Fingerprint rule (skip re-hash): when recovery re-enters `verifying` or `finalizing` for a job with a durable `verify_result`, it MAY skip F0 if the data file's `file_id`, length and `mtime_ms` equal the recorded values. Otherwise F0 is repeated.
+Fingerprint rule: a stored `file_id`, length and `mtime_ms` are advisory metadata. They MUST NOT replace a byte recheck when recovering a pending `finalize` intent: the same object can be edited while the daemon is stopped, even while preserving that fingerprint. Pending-finalization recovery reads the retained candidate (temporary file before rename, destination after rename), verifies SHA-256 and BLAKE3 against the durable `verify_result`, and checks identity, size and native modification time before and after the pass. Only then may it publish without replacement or commit completion. Ordinary resume and its later `verifying` pass are unchanged.
 
 The deviation from "write marks after completion" is deliberate: the Mark-of-the-Web and quarantine attributes follow a file through a rename, and applying them to the data file first removes the window in which a user, a scanner or an indexer could see an unmarked, final-named file.
 
@@ -420,7 +420,7 @@ The deviation from "write marks after completion" is deliberate: the Mark-of-the
 |---|---|---|---|
 | S20 commit and F0 end | `verifying`, no `verify_result` | `.zpart` complete | S95 to `queued`, S04, repeat F0. |
 | F0 and S70 commit | as above | as above | Same. |
-| S70 and F1 | `finalizing`, `verify_result` | `.zpart` | S95, S04; fingerprint rule may skip F0; continue at F1. |
+| S70 and F1 | `finalizing`, `verify_result` | `.zpart` | S95, S04; repeat verification before continuing at F1. |
 | F1 and F2 | `finalizing` | `.zpart` with marks | Repeat F1 (idempotent), F2. |
 | F2 and F3 | `finalizing` | `.zpart` | Continue at F3. |
 | F3 commit and F4 | `finalize.phase = intent` | `.zpart` exists, final absent | Repeat F4. |
@@ -431,6 +431,8 @@ The deviation from "write marks after completion" is deliberate: the Mark-of-the
 | After F7 | `completed` | final present | Nothing. |
 
 Decision procedure when `finalize.phase` is `intent` at recovery, with `T = tmp_path`, `D = dest_path`, `id = finalize.file_id`:
+
+The observations below locate a candidate; matching identity alone never authorizes completion. Before cases 1, 2 or 4 publish/complete, apply the bounded retained-handle byte recheck above. Preserve paths and the intent on verification failure.
 
 1. `T` exists and `D` does not: the rename did not happen: repeat F4.
 2. `D` exists, `T` does not, and `file_id(D) == id`: the rename happened: continue at F5.
@@ -469,7 +471,7 @@ Decision procedure when `finalize.phase` is `intent` at recovery, with `T = tmp_
 | 8 | Expire grants and approvals whose deadlines passed (`grant.expired`, `approval.decided` with outcome `expire`). Prune events beyond retention and idempotency rows beyond `expires_at`. |
 | 9 | Emit `daemon.started` with the recovery summary, start the scheduler and the IPC listeners. |
 
-Time budget: steps 1 to 9 are O(jobs + range rows + `.zpart` files); with 10,000 jobs they take well under a few seconds. Hashing is never performed during recovery (it happens later, in `verifying`).
+Time budget: ordinary startup is O(jobs + range rows + `.zpart` files). Pending finalization is the narrow startup-hashing exception: all such jobs share one cooperative 120-second deadline, measured once for the entire recovery invocation, with 1 MiB bounded reads and no reads beyond the candidate's verified size. The deadline is never renewed per job; once exhausted, remaining finalization candidates are not opened. A mismatch, identity/read failure or exhausted budget applies S82, preserves both paths and the durable `finalize`/`verify_result` receipt, and reports a clear review error; no affected job is marked completed or automatically retried. Later startup leaves these failed receipts held and their partial files owned, so orphan cleanup cannot remove them. A person's explicit Retry starts a new attempt and clears the previous pending-finalize intent; startup never performs that action itself. An already-renamed destination receives the same recheck. Native I/O can block inside one read, so this cooperative bound is not a hard operating-system I/O deadline. Ordinary download resume still hashes later in `verifying`.
 
 ## 11. Invariants
 

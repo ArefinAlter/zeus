@@ -1225,7 +1225,7 @@ async fn organizing_files_waits_for_a_person_runs_exactly_once_and_can_be_undone
             .envelope()
             .code
             .as_str(),
-        "files.legacy_trash_manual_recovery"
+        "api.invalid_transition"
     );
     assert_eq!(std::fs::read(&old_entry.trash_path).unwrap(), b"scratch");
     assert_eq!(std::fs::read(&receipt_path).unwrap(), legacy_receipt);
