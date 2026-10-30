@@ -4,7 +4,7 @@
 import { useEffect, useState } from 'preact/hooks'
 import { isActive, pause, resume, useStore } from '../../backend/store'
 import { HOSTED, LIVE, NATIVE } from '../../backend/live'
-import { native } from '../../backend/remote'
+import { api, native, type JobDetail } from '../../backend/remote'
 import { joinPath } from '../../lib/paths.ts'
 import { href, navigate } from '../../lib/router'
 import type { Job } from '../../model/types.ts'
@@ -23,6 +23,22 @@ export function DownloadProgressDialog({
   const job = useStore((s) => s.jobs.find((j) => j.id === jobId))
   const now = useStore((s) => s.now)
   const [autoClose, setAutoClose] = useState(false)
+  const [detail, setDetail] = useState<JobDetail | null>(null)
+  useEffect(() => {
+    if (!LIVE) return
+    let alive = true
+    let timer: ReturnType<typeof setTimeout> | undefined
+    setDetail(null)
+    const poll = async () => {
+      try {
+        const result = await api.job(jobId)
+        if (alive) setDetail(result.job)
+      } catch { if (alive) setDetail(null) }
+      if (alive && !['completed', 'failed', 'canceled'].includes(job?.state ?? '')) timer = setTimeout(poll, 1500)
+    }
+    void poll()
+    return () => { alive = false; clearTimeout(timer) }
+  }, [jobId, job?.state])
 
   useEffect(() => {
     if (job?.state === 'completed' && autoClose) {
@@ -41,6 +57,8 @@ export function DownloadProgressDialog({
   const canResume = ['paused', 'failed', 'queued', 'retry_scheduled'].includes(job.state)
   const fullPath = joinPath(job.dir, job.name)
 
+  const rangeSupport = LIVE ? detail?.probe?.range_support ?? 'unknown' : job.resumable
+  const activeConnections = LIVE ? detail?.progress?.segments_active : job.segments.filter(s => s.state === 'active').length
   const numConn = job.segments.length || job.connections || 8
   const connSpeed = job.rate > 0 && numConn > 0 ? job.rate / numConn : 0
 
@@ -63,6 +81,10 @@ export function DownloadProgressDialog({
           </div>
           <div class="idm-header-pct">{fmtPercent(p)}</div>
         </div>
+
+        {job.error ? <div role="alert" class="callout bad"><strong>{job.error.message}</strong><p>{job.error.next}</p><code>{job.error.code}</code></div> : null}
+        {job.state === 'awaiting_session' ? <div role="status" class="callout">Open the site in your browser and use the Zeus extension to approve the session handoff. Zeus is waiting for that browser connection.</div> : null}
+        {job.state === 'probing' ? <p role="status">Connecting to the server and checking the file…</p> : null}
 
         {/* Detailed Metrics Table */}
         <div class="idm-grid">
@@ -104,8 +126,8 @@ export function DownloadProgressDialog({
 
           <div class="idm-label">Range Support:</div>
           <div class="idm-val">
-            <Chip tone={job.resumable === 'unsupported' ? 'bad' : 'ok'}>
-              {job.resumable === 'unsupported' ? 'No (Single stream)' : 'Yes (Byte Ranges Supported)'}
+            <Chip tone={rangeSupport === 'verified' ? 'ok' : 'info'}>
+              {rangeSupport === 'verified' ? 'Yes (Byte ranges verified)' : rangeSupport === 'unsupported' ? 'No (Single stream)' : 'Checking / unknown'}
             </Chip>
           </div>
         </div>
@@ -114,18 +136,17 @@ export function DownloadProgressDialog({
         <div class="idm-chunk-section">
           <div class="idm-chunk-header">
             <span>
-              <strong>Dynamic Segment Allocation:</strong> {job.segments.length} parallel range streams
+              <strong>Transfer progress:</strong> {activeConnections === undefined ? 'Connection details pending' : `${activeConnections} active connections`}
             </span>
             <span class="muted small">
-              {job.segments.filter((s) => s.state === 'done').length} completed ·{' '}
-              {job.segments.filter((s) => s.state === 'active').length} downloading
+              {fmtBytes(job.done)} committed
             </span>
           </div>
           <SegmentBar segments={job.segments} size={job.size} />
         </div>
 
         {/* Multi-connection Stream Table */}
-        {job.segments.length > 0 ? (
+        {!LIVE && job.segments.length > 0 ? (
           <div class="idm-connections-wrap">
             <table class="idm-table">
               <thead>

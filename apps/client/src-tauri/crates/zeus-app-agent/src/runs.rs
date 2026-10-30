@@ -158,6 +158,7 @@ pub struct RunHandle {
     pub cancel: CancellationToken,
     /// Its events.
     pub log: Arc<EventLog>,
+    review: crate::review::Gate,
 }
 
 /// Everything a run needs, shared.
@@ -207,6 +208,7 @@ Rules you always follow:\n\
 - You cannot approve anything. Only the person decides approvals, in a terminal or the browser extension. If something needs approval, say so and tell them where it is waiting.\n\
 - Never ask for a password, cookie or session token. If a site needs the person's login, use zeus_session_request and explain why.\n\
 - Do not open, run or convert downloaded files. Quarantined files stay closed.\n\
+- Every tool action that changes state waits for a separate review in the desktop. Never ask for or invent a review ID or decision.\n\
 - Check a link with zeus_probe before proposing a large batch. Start no more than the batch limit at once.\n\
 - Say what you checked and what you did not. Be brief.\n\n",
     );
@@ -448,18 +450,27 @@ impl Core {
         None
     }
 
+    pub(crate) fn review(&self, id: &str, decision: crate::review::Decision) -> Result<()> {
+        let run = self
+            .run(id)
+            .ok_or_else(|| Failure::new("agent.no_review", "That run is no longer available."))?;
+        if run.cancel.is_cancelled() || run.log.done.load(Ordering::SeqCst) {
+            return Err(Failure::new(
+                "agent.no_review",
+                "That run is no longer waiting.",
+            ));
+        }
+        run.review
+            .decide(decision)
+            .map_err(|message| Failure::new("agent.no_review", message))
+    }
+
     /// Start a run. Returns its id at once; the work happens in a task.
     pub fn start(self: &Arc<Self>, body: SendBody) -> Result<String> {
         if !thread_ok(&body.thread_id) {
             return Err(Failure::invalid("Unknown thread id."));
         }
-        let config = self.config.load();
-        let Some(provider) = config.provider(&body.provider_id).cloned() else {
-            return Err(Failure::new(
-                "agent.no_provider",
-                "Choose a provider in Settings, Providers.",
-            ));
-        };
+        let (config, provider) = self.provider_or_fail(&body.provider_id)?;
         let text = body.text.clone().unwrap_or_default();
         if !body.regenerate && text.trim().is_empty() {
             return Err(Failure::invalid("Write a message first."));
@@ -488,6 +499,7 @@ impl Core {
             thread_id: body.thread_id.clone(),
             cancel: CancellationToken::new(),
             log: Arc::new(EventLog::new()),
+            review: crate::review::Gate::default(),
         });
         if let Ok(mut runs) = self.runs.lock() {
             runs.insert(id.clone(), handle.clone());
@@ -768,16 +780,13 @@ impl Core {
         over_limit: bool,
         metadata_only: bool,
     ) -> Msg {
-        let item = format!(
-            "{}-{}",
-            h.id,
-            call.id
-                .chars()
-                .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
-                .collect::<String>()
-        );
-        let action = crate::tools::action_of(&call.args);
-        h.log.push(json!({"type": "tool_start", "id": item, "tool": call.name, "action": action, "input": crate::tools::input_preview(&call.args)}));
+        let mut args = call.args.clone();
+        crate::tools::normalize_arguments(&call.name, &mut args);
+        let mut item_random = [0u8; 8];
+        rand::fill(&mut item_random);
+        let item = format!("{}-{}", h.id, hex::encode(item_random));
+        let action = crate::tools::action_of(&args);
+        h.log.push(json!({"type": "tool_start", "id": item, "tool": call.name, "action": action, "input": crate::tools::input_preview(&args)}));
         let refuse = |reason: String| {
             h.log.push(json!({"type": "tool_end", "id": item, "state": "denied", "summary": format!("refused: {reason}"), "ms": 0}));
             Msg::ToolResult {
@@ -795,19 +804,36 @@ impl Core {
                 "the tool call limit for one reply in Settings, Agent was reached".into(),
             );
         }
-        if let Err(reason) = policy.check(&call.name, &call.args) {
+        if let Err(reason) = policy.check(&call.name, &args) {
             return refuse(reason);
         }
-        let idem: String = format!("agent-{}-{}", &h.id[4..], call.id)
-            .chars()
-            .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
-            .take(120)
-            .collect();
+        if crate::tools::requires_review(&call.name, &args) {
+            // The original arguments stay in this suspended stack frame. The UI
+            // can return only a one-use decision; it cannot replace the request.
+            if args.to_string().len() > 65_536 {
+                return refuse(
+                    "this action is too large to review; split it into smaller requests".into(),
+                );
+            }
+            let ticket = match h.review.begin() {
+                Ok(ticket) => ticket,
+                Err(reason) => return refuse(reason.into()),
+            };
+            h.log.push(
+                json!({"type": "tool_review", "id": item, "run_id": h.id, "review_id": ticket.id,
+                "input": crate::tools::review_preview(&args)}),
+            );
+            if let Err(reason) = h.review.wait(ticket, &h.cancel).await {
+                return refuse(reason.into());
+            }
+        }
+        // The intent key belongs to this reviewed call, never to model-supplied IDs.
+        let idem = format!("agent-{item}");
         let t0 = Instant::now();
         let res = tokio::select! {
             biased;
             () = h.cancel.cancelled() => Err("stopped".to_owned()),
-            r = tokio::time::timeout(TOOL_TIMEOUT, self.exec.call(&call.name, call.args.clone(), &idem)) => match r {
+            r = tokio::time::timeout(TOOL_TIMEOUT, self.exec.call(&call.name, args.clone(), &idem)) => match r {
                 Ok(inner) => inner,
                 Err(_) => Err("the tool did not answer in time".to_owned()),
             },
@@ -819,7 +845,7 @@ impl Core {
                 let state = if is_error { "error" } else { "ok" };
                 h.log.push(json!({"type": "tool_end", "id": item, "state": state, "summary": crate::tools::summary(&call.name, &structured, is_error), "output": shown, "ms": ms}));
                 if !is_error {
-                    for (k, card) in crate::tools::cards(&call.name, &call.args, &structured)
+                    for (k, card) in crate::tools::cards(&call.name, &args, &structured)
                         .into_iter()
                         .enumerate()
                     {
@@ -851,6 +877,47 @@ impl Core {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn discovered_cli_can_start_a_run_but_cannot_skip_consent() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = AppHome::at(temp.path().to_path_buf());
+        let paths = zeus_api::endpoint::ZeusPaths {
+            state_dir: home.state_dir(),
+            config_dir: home.config_dir(),
+            runtime_dir: temp.path().join("run"),
+            user_identity: "fixture".into(),
+            profile: Some("review-fixture".into()),
+        };
+        let core = Core::new(home, paths);
+        let body: SendBody = serde_json::from_value(json!({"thread_id":"th_discovery", "provider_id":"p-claude", "text":"Do not run tools", "settings":{"tools_enabled":[]}})).unwrap();
+        let id = core
+            .start(body)
+            .expect("a discovered CLI must resolve in the send path too");
+        let run = core.run(&id).unwrap();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !run.log.done.load(Ordering::SeqCst) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        let events = run.log.since(0);
+        assert!(
+            events["events"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|e| matches!(e["code"].as_str(), Some("disabled" | "needs_consent")))
+        );
+        assert!(
+            !events["events"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|e| e["type"] == "tool_start")
+        );
+    }
 
     #[test]
     fn the_prompt_states_the_level_the_limits_and_the_rules() {

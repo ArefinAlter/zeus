@@ -235,7 +235,7 @@ export const filesApi = {
   compareCancel: (id: string) => call<FolderComparison>('POST', '/native/v1/files/compare/cancel', { id }),
   comparePage: (id: string, offset = 0) => call<{ id: string; complete: boolean; items: ComparisonRow[]; next: number | null; total: number }>('POST', '/native/v1/files/compare/page', { id, offset, limit: 200 }),
   copies: () => call<{ jobs: CopyJob[]; load_error: string | null }>('GET', '/native/v1/files/copies'),
-  list: (path: string, after = '') => call<{ path: string; files: IndexRow[]; next: string | null; skipped: number }>('POST', '/native/v1/files/list', { path, after, limit: 500 }),
+  list: (path: string, after = '', directoriesOnly = false) => call<{ path: string; files: IndexRow[]; next: string | null; skipped: number }>('POST', '/native/v1/files/list', { path, after, limit: 500, directories_only: directoriesOnly }),
   copyStart: (path: string, dir: string) => call<CopyJob>('POST', '/native/v1/files/copy/start', { path, dir }),
   copyResume: (id: string) => call<CopyJob>('POST', '/native/v1/files/copy/resume', { id }),
   copyStatus: (id: string) => call<CopyJob>('POST', '/native/v1/files/copy/status', { id }),

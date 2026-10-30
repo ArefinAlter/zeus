@@ -18,7 +18,7 @@ import { openUi } from '../ui.mjs'
 const arg = (n, d) => (process.argv.includes(n) ? process.argv[process.argv.indexOf(n) + 1] : d)
 const out = arg('--out', 'D:/verne-build/zeus/evidence/s05-files')
 const BIG = Number(arg('--big', 50000))
-const home = 'D:/verne-build/zeus/scratch/a/s05'
+const home = arg('--home', 'D:/verne-build/zeus/scratch/a/s05')
 mkdirSync(out, { recursive: true })
 
 let failed = 0
@@ -49,7 +49,8 @@ function png(w, h, rgb) {
 
 const fx = await startFixtures(0)
 let h = await startHarness({ home, fresh: true })
-guard(() => ({ h, fx })) // a failed run must not leave its engine behind
+let ui
+guard(() => ({ h, fx, ui })) // a failed run must not leave its engine behind
 await h.ready()
 const session = await h.post('/api/v1/session')
 const root = process.platform === 'win32' ? session.root_label.replaceAll('/', '\\') : session.root_label
@@ -126,7 +127,7 @@ check('the watcher is on', seen.watcher === true)
 check('paths are absolute without a verbatim prefix', seen.files.every((f) => !f.path.startsWith('\\\\?\\')) && seen.files.some((f) => f.path.startsWith(root)))
 
 // ---------------------------------------------------------------- the interface
-const ui = await openUi(h)
+ui = await openUi(h)
 const { page } = ui
 const search = async (text, opts = {}) => {
   const box = page.locator('input[aria-label="Search files"]')
@@ -141,6 +142,18 @@ await page.waitForSelector('.files-page')
 await until(async () => (await search('')).n === wantEntries, { timeoutMs: 30000, everyMs: 500, what: 'the page to hold every entry' })
 await page.screenshot({ path: `${out}/01-files.png` })
 check('the page shows every entry', (await search('')).n === wantEntries)
+await h.post('/svc/v1/index/rescan', {})
+const refreshCounts = await page.evaluate(async () => {
+  const counts = []
+  for (let i = 0; i < 50; i++) {
+    await new Promise(resolve => setTimeout(resolve, 50))
+    const text = document.querySelector('.fstatus > span')?.textContent ?? ''
+    counts.push(Number(/^([\d,]+) object/.exec(text.trim())?.[1]?.replace(/,/g, '') ?? NaN))
+  }
+  return counts
+})
+check('background index refresh preserves the visible result count', refreshCounts.every(n => n === wantEntries), `sampled ${refreshCounts.length} frames`)
+
 
 const operators = [
   ['ext:pdf', expected.pdf],
@@ -279,8 +292,15 @@ await page.click('.ctx button:has-text("Move"), [role=menu] button:has-text("Mov
 const dirBox = page.locator('.dialog input[list]')
 await dirBox.fill(join(root, 'Sorted', 'Text'))
 await page.click('.dialog button:has-text("Move")')
+await page.waitForSelector('.dialog .notice.error')
+check('move requires an existing destination and leaves the source intact', existsSync(join(root, 'Documents', 'ops', 'move-me.txt')) && !existsSync(join(root, 'Sorted', 'Text')))
+// The current UI explicitly requires an existing destination. Create it through the same
+// retained-root mkdir route used by New folder, then retry the reviewed move.
+await h.post('/native/v1/files/mkdir', { parent: root, name: 'Sorted' })
+await h.post('/native/v1/files/mkdir', { parent: join(root, 'Sorted'), name: 'Text' })
+await page.click('.dialog button:has-text("Move")')
 await until(async () => existsSync(join(root, 'Sorted', 'Text', 'move-me.txt')), { timeoutMs: 10000, what: 'the move on disk' })
-check('move through the page creates the folder and moves the file', !existsSync(join(root, 'Documents', 'ops', 'move-me.txt')))
+check('move through the page moves the file into the chosen folder', !existsSync(join(root, 'Documents', 'ops', 'move-me.txt')))
 await row('delete-me.txt')
 await page.locator('.flist').focus()
 await page.keyboard.press('Delete')
@@ -334,6 +354,7 @@ await h.stop()
 h = await startHarness({ home })
 await h.ready()
 const ui2 = await openUi(h)
+ui = ui2
 await ui2.page.goto(`${ui2.origin}/index.html?harness=${encodeURIComponent(h.url)}&token=${h.token}#/files`)
 await ui2.page.waitForSelector('.files-page')
 await ui2.page.waitForTimeout(2500)
@@ -388,6 +409,7 @@ const mem = (() => {
 console.log(`# engine app process memory with ${wantEntries + BIG} entries: ${mem} K`)
 // Search latency over the big index, in the page.
 const ui3 = await openUi(h)
+ui = ui3
 await ui3.page.goto(`${ui3.origin}/index.html?harness=${encodeURIComponent(h.url)}&token=${h.token}#/files`)
 await ui3.page.waitForSelector('.files-page')
 await until(async () => Number(/^([\d,]+) object/.exec((((await ui3.page.locator('.fstatus > span').first().textContent()) ?? '')).trim())?.[1]?.replace(/,/g, '')) >= wantEntries + BIG, { timeoutMs: 120000, everyMs: 800, what: 'the big index in the page' })

@@ -18,26 +18,26 @@
 //      same, which is the documented residual risk); the acceptance claim is that the daemon refuses every other path.
 //   5. after the approval the job runs in the engine and the file completes with the SHA-256 of the server's bytes.
 //
-// The extension in the browser is the packaged build with one change, made only here: its optional cookie and loopback
-// host permissions are granted up front, because a script cannot press the browser's own permission prompt.
+// The test grants only loopback host access to the packaged extension. No cookie permission is added.
 //
 // Cleans up after itself: the HKCU key for Edge is restored to what it was before the run.
 // Run: node tests/acceptance/s08-browser.mjs   (ZEUS_BIN_DIR: zeus, zeusd and zeus-native-host built together)
 
 import { execFileSync } from 'node:child_process'
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
-import { createRequire } from 'node:module'
+import { chromium } from '@playwright/test'
+import { join } from 'node:path'
+import { tmpdir } from 'node:os'
 
 import { startFixtures, sha256 } from '../fixture-server.mjs'
 import { sleep, startHarness, until } from '../harness.mjs'
 
-const require = createRequire('B:/dynodoc/frontend/researcher/package.json')
-const { chromium } = require('@playwright/test')
 
 const BIN = process.env.ZEUS_BIN_DIR ?? 'A:\\zeus-build-cache\\zeus-d\\debug'
-const scratch = 'D:/verne-build/zeus/scratch/d'
+const scratch = process.env.ZEUS_BROWSER_EVIDENCE ?? join(tmpdir(), `zeus-browser-${Date.now()}`)
+if (existsSync(scratch)) throw new Error('Use a fresh ZEUS_BROWSER_EVIDENCE directory; existing evidence is preserved.')
 const home = `${scratch}/s08-home`
-const evidence = 'D:/verne-build/zeus/evidence/integration'
+const evidence = `${scratch}/evidence`
 mkdirSync(evidence, { recursive: true })
 const KEY = 'HKCU\\Software\\Microsoft\\Edge\\NativeMessagingHosts\\dev.zeus.native_host'
 
@@ -110,7 +110,7 @@ try {
   rmSync(ext, { recursive: true, force: true })
   cpSync(status1.extension.chromium_folder, ext, { recursive: true })
   const manifest = JSON.parse(readFileSync(`${ext}/manifest.json`, 'utf8'))
-  manifest.permissions = [...new Set([...manifest.permissions, 'cookies'])]
+  check('the extension does not request cookie access', !(manifest.permissions ?? []).includes('cookies'))
   manifest.host_permissions = ['http://127.0.0.1/*']
   delete manifest.optional_permissions
   delete manifest.optional_host_permissions
@@ -206,7 +206,7 @@ try {
   if (installed) await h.post('/native/v1/integration/uninstall', { browsers: ['edge'] }).catch((e) => console.log('uninstall failed:', e.message))
   const left = reg(['query', KEY, '/ve'])
   check('cleanup: the Edge registration is gone again', !left)
-  if (left) reg(['delete', KEY, '/f'])
+  // Never delete a registration that might now belong to another profile.
   await h.stop()
   await fx.close()
 }

@@ -1,5 +1,40 @@
 # Zeus project handoff
 
+## Current release checkpoint — October 31, 2026 (supersedes earlier counts)
+
+Zeus is being prepared as **v0.1.0-alpha.2**; it is not published or installed-release validated yet. GitHub Actions remain prohibited. All source changes are in the D: repair worktrees, with original A:/B: worktrees preserved. No new merge or source push has occurred.
+
+- Core: Windows **335 tests** and complete Rust **1.90** compatibility check pass. Isolated Linux **340 tests / 28 suites** pass (two ignored). Linux source is clean commit `b4b66da`; archive SHA-256 `ccc88057c9da21509025107ebdb4696e58656adbca9d92fb389c69ec719402fd`. Evidence is copied locally to `D:\verne-build\security-2026-10-30\zeus-core-linux-evidence`.
+- Agent: installed-CLI discovery, preview and execution now share a registry, with first-use consent. **74 agent + 14 provider tests** pass (two live opt-ins ignored); full GUI scenario s10 passes **45 checks**. Exact-action review/reload/replay scenario s30 passes. Claude subscription sign-in is valid but its weekly quota remains exhausted; successful live Claude inference is unverified.
+- File features: directory, archive, retained-read/index, workflow, connected-source discovery, organizer, team-policy, inbox-rule and storage-accounting scenarios pass. These are bounded local fixtures, not claims that every external provider/account works. Maintenance s29 now passes between separate stores: Windows path rewriting had invalidated hashed plans; the protocol preserves exact plan bytes. Self-import remains correctly refused; metadata import preserves digests without transferring content. Pending repair still requires human approval.
+- TUI: real Windows desktop Settings > Backend launch attaches to the same engine/profile; a console probe reads `LOCAL ENGINE CONNECTED` and the downloaded PDF, with independent hash verification. Evidence: `zeus-s31-terminal-e.log`. This is separate from the human approval terminal.
+- Extension: **318 tests**, lint/typecheck and Chrome/Firefox builds pass; dependency audit reports zero known advisories. Browser downloads are preserved until explicit handoff. Real Edge reaches pending approval without cookie access; development extension IDs cannot approve. Completion after terminal approval remains a gate.
+- Portable acceptance tests now declare their own Playwright dependency and archive fixtures. Harness shutdown waits for verified clean termination instead of silently killing the daemon. A final regression run and full app/workspace/MSRV checks remain before packaging.
+- Linux builds use dedicated unprivileged, resource-limited containers on the VPS; tests have no external network, sources/rootfs are read-only, and no production secrets or Docker socket are mounted. Core build completed; an Ubuntu 22.04 desktop builder is being prepared. No Jenkins/host account/sudo grant was added. Remote scratch: `/opt/verne-builds`; local scripts: `A:\ogun\audit\2026-10-30\remediation`.
+- Zeus demo is retired (HTTPS 410). Other demo retirement is queued app by app; Dynodoc's signed-in workspace is preserved. Earlier SSH/HSTS changes remain staged. Remaining release gates include Linux app validation, packaged install checks, checksums/provenance, protected-branch manual verification, source synchronization and publication. FTP/BITS and universal interception are not implemented support claims.
+
+Logs: `D:\verne-build\security-2026-10-30\zeus-s10-final-review.log`, `zeus-agent-discovery-tests.log`, `zeus-s29-artifact-maintenance-20261031-e.log`, `zeus-s31-terminal-e.log`. GUI evidence: `D:\verne-build\audit-zeus-desktop\evidence`. Previous checkpoints below are historical, including older test counts and release-complete claims.
+
+## October 31 — additional repair evidence
+
+Core local commit `b4b66da` passes 335 tests and full Rust 1.90 checking. Extension local commits `275e2b0`/`dd5ccff` fix vulnerable dependencies and premature cancellation/erasure of browser downloads; 318 tests/lint and real Edge rescue pass. Browser decisions remain refused for the development extension ID; terminal approval is required.
+
+Desktop agent writes now wait for a single-use, expiring review of fixed normalized arguments. Artifact-maintenance and encoded-batch policy gaps are closed. The GUI/daemon test covers denial, cancellation, wrong IDs, argument replacement, replay, immediate reload and exactly one hash-verified download. Save ordering and hydration races are fixed. Native review tests: 72+14; frontend: 68. The subsequent installed-CLI registry/first-use-consent fix is still being verified.
+
+No replacement release or source push has occurred. Logs and screenshots: `D:\verne-build\security-2026-10-30` and `D:\verne-build\audit-zeus-desktop\evidence`; authoritative status: `A:\ogun\audit\2026-10-30\remediation\STATUS.md`. Earlier checkpoints below are historical.
+
+
+## Release repair checkpoint — 2026-10-31
+
+The material below is a historical October 21 snapshot. The owner reports broken `v0.1.0-alpha.1` desktop downloads and agent usage; the current repair work is on `security/audit-2026-10-30`, not yet a published replacement release. Central live handoff: `A:\verne-handoff\2026-10-26\STATE-zeus.md`; cross-product status: `A:\ogun\audit\2026-10-30\remediation\STATUS.md`.
+
+Implemented locally: response-MIME/redirect filename preservation, initial 400/416 range-probe fallback, actual destination names in job summaries, actionable daemon failures, measured progress, safe subscription-limit reporting, native folder-tree pagination independent of search snapshots, and stable counts on background refresh. Native desktop-to-daemon-to-disk, full-size transfer, crash/resume and file-manager GUI acceptance pass. The file-index suite passes 71 tests; desktop/agent/provider suites previously passed 111. Exact user Libgen/PDF URLs are still pending; successful live Claude inference is blocked by the account's weekly limit until November 1 at 05:00 Asia/Dhaka.
+
+Zeus's public sslip demo was retired with an atomic Nginx update; it returns 410. Its data volumes/images are retained. The separate team service and signed-in Dynodoc workspace are preserved. Source removes public-demo selection/links; site source builds but has not been republished. No unrelated VPS hardening was applied.
+
+Do not use GitHub Actions. No new release/merge/mirror push has occurred. Remaining gates include full core/app/MSRV/Linux validation, browser-extension acceptance, real Go TUI integration, runtime/agent feature reconciliation, manual protected-branch checks, release packaging and asset/site reconciliation. Do not claim FTP/BITS, full TUI parity, or complete security closure before implementation and acceptance evidence exists.
+
+
 Updated **2026-10-21** after coordinated integration into `main`. Historical snapshot reviewed **2026-10-18**. Runtime/test baseline recorded **2026-10-16** and rerun **2026-10-18** after the continuation work. Audience: the maintainer and developers taking over implementation, integration and release work across the four Zeus repositories.
 
 Zeus has an executable pre-alpha download engine, persistent daemon, CLI/TUI, MCP stdio, browser relay, public-page workflow runtime, model adapters and cloud delivery. It is **not a released product**. Installed browser/provider acceptance, remaining contract/security gaps, sandboxed conversion, model file classification, scheduler integration and production desktop acceptance remain unfinished. Organization/undo, artifact lifecycle RPC/CLI and a restricted real-state desktop shell execute. Start with the [end-to-end roadmap](../ROADMAP.md), then use the commands and discrepancy register below.

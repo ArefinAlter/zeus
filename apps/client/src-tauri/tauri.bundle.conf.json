@@ -4,7 +4,8 @@
     "externalBin": [
       "binaries/zeusd",
       "binaries/zeus",
-      "binaries/zeus-native-host"
+      "binaries/zeus-native-host",
+      "binaries/zeus-tui"
     ]
   }
 }

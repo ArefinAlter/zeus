@@ -679,9 +679,19 @@ impl Extension for Module {
                         .unwrap_or(500)
                         .min(500) as usize;
                     let facts = svc.facts.table(app).await;
+                    let directories_only = body
+                        .get("directories_only")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false);
                     Some(
                         tokio::task::spawn_blocking(move || {
-                            let mut page = browse::list_pinned(&path, &after, limit, &roots)?;
+                            let mut page = browse::list_filtered_pinned(
+                                &path,
+                                &after,
+                                limit,
+                                &roots,
+                                directories_only,
+                            )?;
                             if let Some(rows) = page["files"].as_array_mut() {
                                 for row in rows {
                                     let quarantined = facts.as_ref().is_some_and(|t| {

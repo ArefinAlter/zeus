@@ -17,6 +17,7 @@ pub mod config;
 pub mod keys;
 pub mod ledger;
 pub mod provider;
+mod review;
 pub mod runs;
 pub mod tools;
 
@@ -65,32 +66,44 @@ fn key_failure(e: KeyError) -> Failure {
     Failure::new(code, e.to_string())
 }
 
+// Discover installed subscription CLIs without inventing consent or overriding a saved choice.
+fn provider_ladder(config: &AgentConfig) -> Vec<config::ProviderCfg> {
+    let mut providers_list = config.providers.clone();
+    for kind in [
+        Kind::Claude,
+        Kind::Codex,
+        Kind::Antigravity,
+        Kind::Cursor,
+        Kind::Grok,
+    ] {
+        let id = format!("p-{}", format!("{kind:?}").to_lowercase());
+        if !providers_list.iter().any(|p| p.id == id || p.kind == kind) {
+            let is_installed = provider::local_agent::agent_for_url(kind.default_base_url())
+                .map(provider::local_agent::installed)
+                .unwrap_or(false);
+            providers_list.push(config::ProviderCfg {
+                id,
+                name: kind.label().into(),
+                kind,
+                enabled: is_installed,
+                base_url: String::new(),
+                model: "default".into(),
+                consent: false,
+                monthly_cap_usd: 10.0,
+                tools_mode: config::ToolsMode::Native,
+                price_in_per_mtok: Some(0.0),
+                price_out_per_mtok: Some(0.0),
+            });
+        }
+    }
+    providers_list
+}
+
 impl Core {
     /// The configuration as the page sees it: no keys, only whether one is stored.
     pub fn config_view(&self) -> Value {
         let config = self.config.load();
-        let mut providers_list = config.providers.clone();
-        for kind in [Kind::Claude, Kind::Codex, Kind::Antigravity, Kind::Cursor, Kind::Grok] {
-            let id = format!("p-{}", format!("{kind:?}").to_lowercase());
-            if !providers_list.iter().any(|p| p.id == id || p.kind == kind) {
-                let is_installed = provider::local_agent::agent_for_url(kind.default_base_url())
-                    .map(provider::local_agent::installed)
-                    .unwrap_or(false);
-                providers_list.push(config::ProviderCfg {
-                    id,
-                    name: kind.label().into(),
-                    kind,
-                    enabled: is_installed,
-                    base_url: String::new(),
-                    model: "default".into(),
-                    consent: true,
-                    monthly_cap_usd: 10.0,
-                    tools_mode: config::ToolsMode::Native,
-                    price_in_per_mtok: Some(0.0),
-                    price_out_per_mtok: Some(0.0),
-                });
-            }
-        }
+        let providers_list = provider_ladder(&config);
         let providers: Vec<Value> = providers_list
             .iter()
             .map(|p| {
@@ -125,32 +138,12 @@ impl Core {
 
     fn provider_or_fail(&self, id: &str) -> Result<(AgentConfig, config::ProviderCfg)> {
         let config = self.config.load();
-        let p = config.provider(id).cloned().or_else(|| {
-            for kind in [Kind::Claude, Kind::Codex, Kind::Antigravity, Kind::Cursor, Kind::Grok] {
-                let kind_id = format!("p-{}", format!("{kind:?}").to_lowercase());
-                if id == kind_id || id == format!("{kind:?}").to_lowercase() {
-                    let is_installed = provider::local_agent::agent_for_url(kind.default_base_url())
-                        .map(provider::local_agent::installed)
-                        .unwrap_or(false);
-                    return Some(config::ProviderCfg {
-                        id: kind_id,
-                        name: kind.label().into(),
-                        kind,
-                        enabled: is_installed,
-                        base_url: String::new(),
-                        model: "default".into(),
-                        consent: true,
-                        monthly_cap_usd: 10.0,
-                        tools_mode: config::ToolsMode::Native,
-                        price_in_per_mtok: Some(0.0),
-                        price_out_per_mtok: Some(0.0),
-                    });
-                }
-            }
-            None
-        }).ok_or_else(|| {
-            Failure::new("agent.no_provider", "That provider is not in the ladder.")
-        })?;
+        let p = provider_ladder(&config)
+            .into_iter()
+            .find(|p| p.id == id)
+            .ok_or_else(|| {
+                Failure::new("agent.no_provider", "That provider is not in the ladder.")
+            })?;
         Ok((config, p))
     }
 
@@ -390,6 +383,12 @@ impl Extension for Module {
                         "That run is no longer available.",
                     )),
                 },
+                ("POST", ["runs", id, "review"]) => {
+                    serde_json::from_value::<crate::review::Decision>(body.clone())
+                        .map_err(|_| Failure::invalid("The review decision is not valid."))
+                        .and_then(|decision| core.review(id, decision))
+                        .map(|()| json!({"accepted": true}))
+                }
                 ("POST", ["runs", id, "stop"]) => Ok(json!({"stopped": core.stop(id)})),
                 ("DELETE", ["threads", id]) => {
                     core.forget_thread(id);
@@ -417,6 +416,29 @@ impl Extension for Module {
                 _ => return None,
             })
         })
+    }
+}
+
+#[cfg(test)]
+mod discovery_tests {
+    use super::*;
+    #[test]
+    fn discovery_does_not_grant_consent_or_override_saved_choices() {
+        let mut config = AgentConfig::default();
+        let discovered = provider_ladder(&config);
+        assert!(discovered.iter().all(|p| !p.consent));
+        let mut claude = discovered
+            .into_iter()
+            .find(|p| p.kind == Kind::Claude)
+            .unwrap();
+        claude.id = "custom-claude".into();
+        claude.enabled = false;
+        config.providers.push(claude);
+        let actual = provider_ladder(&config);
+        let clis: Vec<_> = actual.iter().filter(|p| p.kind == Kind::Claude).collect();
+        assert_eq!(clis.len(), 1);
+        assert_eq!(clis[0].id, "custom-claude");
+        assert!(!clis[0].enabled && !clis[0].consent);
     }
 }
 

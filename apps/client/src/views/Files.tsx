@@ -28,6 +28,7 @@ import { Icon, categoryIcon } from '../ui/icons'
 import { DeleteDialog, MoveDialog, RenameDialog, NewFolderDialog, CopyJobs } from './files/FileOps'
 import { FileInsights } from './files/FileInsights'
 import { FileManager } from './files/FileManager'
+import { NativeFolderTree } from './files/FolderTree'
 import { ArchiveDialog, ArchiveJobs } from './files/Archives'
 import '../styles/files.css'
 
@@ -299,15 +300,17 @@ export function Files({ initialPath }: { initialPath?: string }) {
   }
   useEffect(() => {
     const epoch = ++searchEpoch.current
-    if (!nativeSearch || !parsed.ok) return
+    if (!nativeSearch || !parsed.ok) { setSearchBusy(false); return }
     const signature = JSON.stringify([query, opts, filter, sort])
     if (searchSignature.current !== signature) {
       setSearchFiles([])
+      setSearchPage(null)
       searchSignature.current = signature
       setScroll(0)
       if (list.current) list.current.scrollTop = 0
     }
-    setSearchPage(null)
+    // A watcher refresh keeps the last coherent page/count visible until its replacement arrives.
+    setSearchBusy(true)
     const timer = setTimeout(() => void loadSearch(0, epoch), 180)
     return () => { clearTimeout(timer); searchEpoch.current++ }
   }, [nativeSearch, parsed, filter, sort, index.generation, revision])
@@ -521,6 +524,7 @@ export function Files({ initialPath }: { initialPath?: string }) {
         {prefs.filesFolders ? (
           <aside class="fside" aria-label="Folders, bookmarks and history">
             <div class="fside-head">Folders</div>
+            {NATIVE ? <NativeFolderTree roots={includedRoots} selected={folder} revision={`${index.generation}:${revision}`} onSelect={path => setFolder(folder === path ? null : path)} /> : (
             <ul class="ftree">
               {tree.map((f) => (
                 <li>
@@ -546,6 +550,7 @@ export function Files({ initialPath }: { initialPath?: string }) {
                 </li>
               ))}
             </ul>
+            )}
             <div class="fside-head">Bookmarks</div>
             <ul class="ftree">
               {bookmarks.map((b) => (

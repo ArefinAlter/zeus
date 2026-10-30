@@ -9,14 +9,14 @@
 //   and answers the same routes through one closed Tauri command; the credential never reaches this page. In a plain
 //   browser the same routes are reachable through a loopback harness (test builds only).
 //
-// The website build is always `hosted`. The desktop build starts on `native` inside the app (and on `hosted` when the
-// page is opened in a browser) and can be switched in Settings, Backend. Nothing here ever sends a provider key.
+// The installed desktop starts on `native`; a desktop page opened outside Tauri uses the local bridge.
+// The retired public-demo choice is migrated to that default. Hosted builds remain for isolated development.
+// Nothing here ever sends a provider key.
 
 import { invoke } from '@tauri-apps/api/core'
 
 export type BackendKind = 'scripted' | 'hosted' | 'local' | 'native'
 
-export const HOSTED_URL = 'https://zeus.103.191.50.32.sslip.io'
 export const LOCAL_URL = 'http://127.0.0.1:18545'
 
 const BUILD = (import.meta.env.VITE_ZEUS_BACKEND as string | undefined) ?? 'scripted'
@@ -67,12 +67,13 @@ function resolve(): BackendChoice {
       if (c.kind === 'scripted') return { kind: 'scripted', base: '' }
       if (c.kind === 'native' && IN_APP) return { kind: 'native', base: '' }
       if (c.kind === 'local' && typeof c.base === 'string' && /^http:\/\/(127\.0\.0\.1|localhost|\[::1\]):\d{2,5}$/.test(c.base)) return { kind: 'local', base: c.base }
-      if (c.kind === 'hosted') return { kind: 'hosted', base: HOSTED_URL }
+      // Migrate the retired public-demo choice back to the installed engine.
+      if (c.kind === 'hosted') return IN_APP ? { kind: 'native', base: '' } : { kind: 'local', base: LOCAL_URL }
     }
   } catch {
     // Fall back to the default.
   }
-  return IN_APP ? { kind: 'native', base: '' } : { kind: 'hosted', base: HOSTED_URL }
+  return IN_APP ? { kind: 'native', base: '' } : { kind: 'local', base: LOCAL_URL }
 }
 
 const CURRENT = resolve()
@@ -261,6 +262,7 @@ export interface RemoteJob {
   updated_at: string
   path?: string
   error_code?: string
+  last_error?: { code: string } | null
 }
 
 export interface RemoteFile {
@@ -341,7 +343,7 @@ export const api = {
   preview: (urls: string[], subdir: string) => request<PreviewResult>('/api/v1/links/preview', 'POST', { urls, subdir }),
   /** Native: a batch with per-item folder, name, expected hash, queue and priority. */
   previewItems: (items: NativeItem[]) => request<PreviewResult>('/api/v1/links/preview', 'POST', { items }),
-  job: (id: string) => request<JobDetail>(`/api/v1/jobs/${encodeURIComponent(id)}`),
+  job: (id: string) => request<{ job: JobDetail }>(`/api/v1/jobs/${encodeURIComponent(id)}`),
   enqueue: (review_id: string, idempotency_key: string, queue?: string | null) => request<EnqueueResult>('/api/v1/links/enqueue', 'POST', { review_id, idempotency_key, ...(queue ? { queue } : {}) }),
   control: (id: string, action: 'pause' | 'resume' | 'cancel' | 'retry', idempotency_key: string) => request<{ replayed: boolean; job_id: string; state: string }>(`/api/v1/jobs/${encodeURIComponent(id)}/control`, 'POST', { action, idempotency_key }),
   files: () => request<{ items: RemoteFile[] }>('/api/v1/files'),

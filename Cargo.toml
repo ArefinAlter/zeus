@@ -17,7 +17,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.0-alpha.1"
+version = "0.1.0-alpha.2"
 edition = "2024"
 rust-version = "1.90"
 license = "Apache-2.0"
@@ -50,18 +50,18 @@ zeus-http = { path = "../zeus-core/crates/zeus-http", version = "0.1.0" }
 zeus-engine = { path = "../zeus-core/crates/zeus-engine", version = "0.1.0" }
 
 # ---- zeus-app crates ----
-zeus-api = { path = "crates/zeus-api", version = "0.1.0-alpha.1" }
-zeus-daemon = { path = "crates/zeus-daemon", version = "0.1.0-alpha.1" }
-zeus-mcp = { path = "crates/zeus-mcp", version = "0.1.0-alpha.1" }
-zeus-cli = { path = "crates/zeus-cli", version = "0.1.0-alpha.1" }
-zeus-native-host = { path = "crates/zeus-native-host", version = "0.1.0-alpha.1" }
-zeus-workflow = { path = "crates/zeus-workflow", version = "0.1.0-alpha.1", default-features = false }
-zeus-llm = { path = "crates/zeus-llm", version = "0.1.0-alpha.1", default-features = false }
-zeus-a2a = { path = "crates/zeus-a2a", version = "0.1.0-alpha.1" }
-zeus-a2a-bridge = { path = "crates/zeus-a2a-bridge", version = "0.1.0-alpha.1" }
-zeus-cloud = { path = "crates/zeus-cloud", version = "0.1.0-alpha.1" }
-zeus-sources = { path = "crates/zeus-sources", version = "0.1.0-alpha.1", default-features = false }
-zeus-file-workspace = { path = "crates/zeus-file-workspace", version = "0.1.0-alpha.1" }
+zeus-api = { path = "crates/zeus-api", version = "0.1.0-alpha.2" }
+zeus-daemon = { path = "crates/zeus-daemon", version = "0.1.0-alpha.2" }
+zeus-mcp = { path = "crates/zeus-mcp", version = "0.1.0-alpha.2" }
+zeus-cli = { path = "crates/zeus-cli", version = "0.1.0-alpha.2" }
+zeus-native-host = { path = "crates/zeus-native-host", version = "0.1.0-alpha.2" }
+zeus-workflow = { path = "crates/zeus-workflow", version = "0.1.0-alpha.2", default-features = false }
+zeus-llm = { path = "crates/zeus-llm", version = "0.1.0-alpha.2", default-features = false }
+zeus-a2a = { path = "crates/zeus-a2a", version = "0.1.0-alpha.2" }
+zeus-a2a-bridge = { path = "crates/zeus-a2a-bridge", version = "0.1.0-alpha.2" }
+zeus-cloud = { path = "crates/zeus-cloud", version = "0.1.0-alpha.2" }
+zeus-sources = { path = "crates/zeus-sources", version = "0.1.0-alpha.2", default-features = false }
+zeus-file-workspace = { path = "crates/zeus-file-workspace", version = "0.1.0-alpha.2" }
 zeus-artifact = { path = "../zeus-core/crates/zeus-artifact", version = "0.1.0" }
 
 # ---- async runtime and utilities ----

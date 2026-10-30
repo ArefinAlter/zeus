@@ -5,7 +5,8 @@
       "binaries/zeusd",
       "binaries/zeus",
       "binaries/zeus-native-host",
-      "binaries/zeus-everything-query"
+      "binaries/zeus-everything-query",
+      "binaries/zeus-tui"
     ],
     "resources": {
       "../../../tools/everything-broker/LICENSE-SDK.txt": "LICENSE-EVERYTHING-SDK.txt"

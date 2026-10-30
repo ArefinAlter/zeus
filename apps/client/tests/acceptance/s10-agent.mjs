@@ -44,7 +44,7 @@ let cleanup = async () => undefined
 try {
   await h.ready()
   const cfg0 = await call('GET', `${B}/config`)
-  check('a new installation has no model switched on, no consent and no key', cfg0.providers.every((p) => !p.enabled && !p.consent && !p.key.stored))
+  check('API providers start disabled; discovered CLIs still require consent and no key is stored', cfg0.providers.every((p) => (['claude', 'codex', 'antigravity', 'cursor', 'grok'].includes(p.kind) || !p.enabled) && !p.consent && !p.key.stored))
 
   if (fileKeystore) {
     await call('POST', `${B}/keystore/initialize`, { passphrase: 'correct horse battery staple' })
@@ -68,7 +68,7 @@ try {
 
   const settings = { tools_enabled: ['zeus_probe', 'zeus_status', 'zeus_wait', 'zeus_verify', 'zeus_session_list', 'zeus_files_list', 'zeus_artifacts', 'zeus_enqueue', 'zeus_control', 'zeus_session_request', 'zeus_files', 'zeus_workflow', 'zeus_cloud', 'zeus_inbox', 'zeus_sources'], max_turn_tools: 12, max_batch: 50, metadata_only: true, instructions: '' }
   const body = (thread, text, access, over = {}) => ({ thread_id: thread, provider_id: 'p-mock', access, text, regenerate: false, settings, skill: null, ...over })
-  const run = async (b, { until: stopWhen, timeoutMs = 60000 } = {}) => {
+  const run = async (b, { until: stopWhen, timeoutMs = 60000, approveTools = [] } = {}) => {
     const { run_id } = await call('POST', `${B}/send`, b)
     const events = []
     let after = 0
@@ -77,6 +77,15 @@ try {
     while (!done && Date.now() - t0 < timeoutMs) {
       const r = await call('POST', `${B}/runs/${run_id}/events`, { after })
       events.push(...r.events)
+      for (const review of r.events.filter(e => e.type === 'tool_review')) {
+        const tool = events.find(e => e.type === 'tool_start' && e.id === review.id)?.tool
+        if (!approveTools.includes(tool)) throw new Error(`Unexpected fixture review: ${tool}`)
+        const safeFixture = tool === 'zeus_enqueue'
+          ? review.input.urls.every(value => new URL(typeof value === 'string' ? value : value.url).origin === fx.url)
+          : tool === 'zeus_session_request' && new URL(review.input.origin).origin === 'http://127.0.0.1:18999'
+        if (!safeFixture) throw new Error('The test refuses to authorize a non-fixture action')
+        await call('POST', `${B}/runs/${run_id}/review`, { review_id: review.review_id, approve: true })
+      }
       after = r.next
       done = r.done
       if (stopWhen?.(events)) return { run_id, events, done }
@@ -101,7 +110,7 @@ try {
   // ------------------------------------------------------------ a download through a tool call, OpenAI wire
   const size = 3 * 1024 * 1024
   const url = `${fx.url}/files/agent-sample.bin?size=${size}&seed=31`
-  const r1 = await run(body('th_dl', `download ${url}`, 'download'))
+  const r1 = await run(body('th_dl', `download ${url}`, 'download'), { approveTools: ['zeus_enqueue'] })
   const names = r1.events.filter((e) => e.type === 'tool_start').map((e) => e.tool)
   const started = r1.events.find((e) => e.type === 'tool_end')
   check('the model calls zeus_enqueue and the call is shown with its result', names[0] === 'zeus_enqueue' && started?.state === 'ok' && /download/.test(started.summary ?? ''), started?.summary)
@@ -122,7 +131,7 @@ try {
 
   // ------------------------------------------------------------ the same on the Anthropic wire
   const urlA = `${fx.url}/files/agent-anthropic.bin?size=${size}&seed=32`
-  const rA = await run(body('th_an', `download ${urlA}`, 'download', { provider_id: 'p-mock-anthropic' }))
+  const rA = await run(body('th_an', `download ${urlA}`, 'download', { provider_id: 'p-mock-anthropic' }), { approveTools: ['zeus_enqueue'] })
   const jobA = rA.events.find((e) => e.type === 'card' && e.card.type === 'job')
   const doneA = await until(async () => { const j = (await jobsList()).find((x) => x.id === jobA?.card.id); return j && j.state === 'completed' ? j : false }, { timeoutMs: 60000, what: 'the Anthropic-wire download' })
   const wireA = prov.completions().filter((r) => r.path.endsWith('/messages'))[0]
@@ -139,11 +148,11 @@ try {
   check('a tool that does not exist and an approve action are both refused', ends.length === 2 && ends.every((e) => e.state === 'denied') && /no such tool/.test(ends[0].summary) && /only a person/.test(ends[1].summary), ends.map((e) => e.summary).join(' | '))
   const rOff = await run(body('th_off', `download ${fx.url}/files/off.bin?size=10&seed=1`, 'download', { settings: { ...settings, tools_enabled: settings.tools_enabled.filter((t) => t !== 'zeus_enqueue') } }))
   check('a tool switched off in Settings is refused with that reason', rOff.events.find((e) => e.type === 'tool_end')?.summary.includes('switched off in Settings'))
-  const rBatch = await run(body('th_batch', `download ${fx.url}/files/b.bin?size=10&seed=1`, 'download', { settings: { ...settings, max_batch: 1 } }))
+  const rBatch = await run(body('th_batch', `download ${fx.url}/files/b.bin?size=10&seed=1`, 'download', { settings: { ...settings, max_batch: 1 } }), { approveTools: ['zeus_enqueue'] })
   check('the batch limit does not refuse a single download', rBatch.events.find((e) => e.type === 'tool_end')?.state === 'ok')
 
   // ------------------------------------------------------------ approvals stay with a person
-  const rSess = await run(body('th_sess', 'session http://127.0.0.1:18999', 'download'))
+  const rSess = await run(body('th_sess', 'session http://127.0.0.1:18999', 'download'), { approveTools: ['zeus_session_request'] })
   const sessEnd = rSess.events.find((e) => e.type === 'tool_end')
   const approvalsCard = rSess.events.find((e) => e.type === 'card' && e.card.type === 'approvals')
   const ownIds = approvalsCard?.card.ids ?? []
@@ -212,7 +221,9 @@ try {
   await sleep(1500)
   check('nothing has reached the provider while the question is open', beforeUi === requests(), `${requests() - beforeUi} requests`)
   await page.click('button:has-text("Allow p-mock and send")')
-  await page.waitForSelector('.toolgroup', { timeout: 30000 })
+  await page.waitForSelector('[aria-label="Review proposed action"]', { timeout: 30000 })
+  check('the UI waits for per-action review before starting the download', !(await jobsList()).some(job => job.url_redacted?.includes('/from-ui.bin')))
+  await page.getByRole('button', { name: 'Run this action', exact: true }).click()
   await page.waitForSelector('text=Done. I used the tool once', { timeout: 30000 })
   await page.screenshot({ path: `${out}/ui-thread.png` })
   for (const g of await page.locator('.grouphead[aria-expanded=false]').all()) await g.click()
@@ -249,6 +260,10 @@ try {
   await page.click('[role=menuitemradio]:has-text("Download")')
   await page.fill('textarea[aria-label="Message to the agent"]', 'session http://127.0.0.1:18998')
   await page.keyboard.press('Enter')
+  await page.getByRole('button', { name: 'Run this action', exact: true }).waitFor()
+  check('requesting a browser session also waits for review of the exact origin', /127\.0\.0\.1:18998/.test(await page.locator('.timeline').innerText()))
+  await page.getByRole('button', { name: 'Run this action', exact: true }).click()
+  await page.locator('.timeline').getByText(/Nothing in this conversation can decide one/).waitFor({ timeout: 30000 })
   await page.waitForSelector('text=Waiting for you', { timeout: 30000 })
   await page.waitForSelector('text=Site login', { timeout: 15000 })
   await page.screenshot({ path: `${out}/ui-approval-card.png` })

@@ -33,6 +33,8 @@ pub enum Error {
     Missing,
     /// The provider refused or failed the request.
     Failed,
+    /// The subscription provider reports that its usage allowance is exhausted.
+    UsageLimit,
     /// The configured request deadline elapsed.
     Timeout,
     /// The input or output exceeded its byte limit.
@@ -61,6 +63,7 @@ impl std::fmt::Display for Error {
             Self::NotSubscription => "Sign in to the installed agent with your subscription account. Its current sign-in is not a verified subscription connection.",
             Self::Missing => "Install this provider's CLI and sign in to your subscription, then try again.",
             Self::Failed => "The installed agent did not complete the request. Check its sign-in, plan limits and selected model in its own app. This app did not fall back to another provider.",
+            Self::UsageLimit => "The installed agent has reached its subscription usage limit. Check the reset time in its own CLI, wait for that reset, or explicitly select another signed-in provider. Zeus did not switch to API billing.",
             Self::Timeout => "The installed agent did not finish in time. The request was stopped.",
             Self::TooLarge => "The installed agent request or response exceeded the size limit.",
             Self::Protocol => "The installed agent returned an incomplete or unsupported response.",
@@ -321,6 +324,26 @@ fn prompt(body: &Value) -> Result<String, Error> {
     ))
 }
 
+// Map provider errors to fixed messages; never echo subprocess output, account
+// identifiers or credentials into the product UI/logs.
+fn provider_failure(event: &Value) -> Error {
+    let result = event["result"]
+        .as_str()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let usage_limit = event["error"]["type"] == "rate_limit_error"
+        || event["error"]["code"] == "usage_limit_reached"
+        || result.contains("you've hit your weekly limit")
+        || result.contains("you've hit your limit")
+        || result.contains("you have reached your usage limit")
+        || result.contains("usage limit reached");
+    if usage_limit {
+        Error::UsageLimit
+    } else {
+        Error::Failed
+    }
+}
+
 fn completion(agent: &str, bytes: &[u8]) -> Result<(String, Value), Error> {
     let text = std::str::from_utf8(bytes).map_err(|_| Error::Protocol)?;
     let whole = serde_json::from_str::<Value>(text).ok();
@@ -340,7 +363,7 @@ fn completion(agent: &str, bytes: &[u8]) -> Result<(String, Value), Error> {
         if event["is_error"] == true
             || matches!(event["type"].as_str(), Some("error" | "turn.failed"))
         {
-            return Err(Error::Failed);
+            return Err(provider_failure(&event));
         }
         match agent {
             "codex" => match event["type"].as_str() {
@@ -571,7 +594,7 @@ async fn check_subscription(path: &Path, agent: &str) -> Result<(), Error> {
         let ok = if agent == "claude" {
             serde_json::from_slice::<Value>(&out)
                 .ok()
-                .is_some_and(|v| v["authMethod"] == "claude.ai" && v["loggedIn"] != false)
+                .is_some_and(|v| v["authMethod"] == "claude.ai" && v["loggedIn"] == true)
         } else {
             out.extend(err);
             String::from_utf8_lossy(&out).contains("Logged in using ChatGPT")
@@ -931,10 +954,17 @@ async fn run_with(
         if bytes.len() > MAX_RESPONSE {
             return Err(Error::TooLarge);
         }
-        if !child.wait().await.map_err(|_| Error::Failed)?.success() {
-            return Err(Error::Failed);
+        let status = child.wait().await.map_err(|_| Error::Failed)?;
+        // CLIs commonly emit a structured error and exit nonzero (including
+        // Claude's weekly limit). Parse it before falling back to a generic error.
+        let parsed = completion(agent, &bytes);
+        if !status.success() {
+            return Err(match parsed {
+                Err(Error::UsageLimit) => Error::UsageLimit,
+                _ => Error::Failed,
+            });
         }
-        let (text, usage) = completion(agent, &bytes)?;
+        let (text, usage) = parsed?;
         envelope(text, usage, body)
     };
     tokio::time::timeout(timeout, work)
@@ -1196,6 +1226,31 @@ mod tests {
             || key == "OPENAI_API_KEY"
             || key == "VERNE_PARENT_SECRET"));
     }
+    #[test]
+    fn subscription_limit_is_actionable_without_echoing_provider_output() {
+        let error = completion("claude", br#"{"type":"result","subtype":"success","is_error":true,"result":"You've hit your weekly limit - SECRET-CANARY"}"#).unwrap_err();
+        assert_eq!(error, Error::UsageLimit);
+        assert!(!error.to_string().contains("SECRET-CANARY"));
+        assert!(error.to_string().contains("subscription usage limit"));
+        assert_eq!(
+            completion(
+                "claude",
+                br#"{"is_error":true,"result":"unrecognized SECRET-CANARY"}"#
+            )
+            .unwrap_err(),
+            Error::Failed
+        );
+        assert_eq!(
+            completion(
+                "claude",
+                br#"{"is_error":false,"result":"A story about usage limit reached","usage":{}}"#
+            )
+            .unwrap()
+            .0,
+            "A story about usage limit reached"
+        );
+    }
+
     #[test]
     fn prompts_are_data_and_models_cannot_inject_arguments() {
         assert!(command_args("claude", "x; echo secret").is_err());

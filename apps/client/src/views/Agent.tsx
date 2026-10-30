@@ -205,7 +205,7 @@ function ThreadPage({ id }: { id: string }) {
   const prefs = usePrefs()
   useEffect(() => {
     if (NATIVE) settleOrphan(id)
-  }, [id])
+  }, [id, t?.id, t?.state])
   if (!t)
     return (
       <div class="empty">

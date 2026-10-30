@@ -4,17 +4,15 @@
 //   await ui.page.click('text=Add URL')
 //   await ui.close()
 //
-// Playwright comes from the Dynodoc checkout on this machine (no copy in this repository).
+// Playwright is a locked development dependency of this checkout.
 
 import { createReadStream, existsSync, statSync } from 'node:fs'
 import { createServer } from 'node:http'
-import { createRequire } from 'node:module'
+import { chromium } from '@playwright/test'
 import { extname, join, normalize, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const here = fileURLToPath(new URL('.', import.meta.url))
-const require = createRequire('B:/dynodoc/frontend/researcher/package.json')
-const { chromium } = require('@playwright/test')
 
 const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.png': 'image/png', '.json': 'application/json', '.woff2': 'font/woff2' }
 
