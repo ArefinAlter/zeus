@@ -49,3 +49,8 @@ missing_docs = "warn"
 todo = "deny"
 unimplemented = "deny"
 dbg_macro = "warn"
+
+# Verified upstream macro sources using existing syn diagnostics; see vendor/GTK-MACRO-PATCH.md.
+[patch.crates-io]
+glib-macros = { path = "../../vendor/glib-macros" }
+gtk3-macros = { path = "../../vendor/gtk3-macros" }

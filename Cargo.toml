@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-exclude = ["apps/desktop", "apps/client/src-tauri", "services/pre-alpha/gateway"]
+exclude = ["apps/desktop", "apps/client/src-tauri", "services/pre-alpha/gateway", "vendor/glib-macros", "vendor/gtk3-macros"]
 members = [
     "crates/zeus-api",
     "crates/zeus-daemon",
