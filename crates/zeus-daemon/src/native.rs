@@ -15,6 +15,12 @@ impl RuntimeBackend {
                 "unsupported native protocol",
             ));
         }
+        if matches!(&message.body, nm::ExtensionBody::SessionResponse(_)) {
+            return Err(ApiError::new(
+                "api.permission_denied",
+                "Cookie export is disabled",
+            ));
+        }
         if let nm::ExtensionBody::Hello(hello) = message.body {
             if message.re.is_some() {
                 return Err(ApiError::invalid_params("hello cannot be a response"));
@@ -24,7 +30,6 @@ impl RuntimeBackend {
             let offer = zeus_session::negotiate::DaemonOffer::v1(
                 &[
                     nm::capability::HANDOFF,
-                    nm::capability::SESSION,
                     nm::capability::SESSION_PAGE,
                     nm::capability::APPROVALS,
                     nm::capability::EVENTS,
