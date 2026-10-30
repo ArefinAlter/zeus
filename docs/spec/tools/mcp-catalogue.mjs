@@ -1,7 +1,7 @@
 // Reference derivation of the MCP tool catalogue (spec 06 sections 5.2, 5.3 and 12).
-// Builds the `tools` array a Zeus MCP server publishes in tools/list from 06-mcp-tools-v1.md (titles, normative
+// Builds the full reference `tools` array from 06-mcp-tools-v1.md (titles, normative
 // descriptions) and schema/mcp-tools.v1.schema.json (inputs, outputs, annotations), then reports its size and the
-// catalogue digest `dev.zeus/catalogue_blake3` (BLAKE3 over the JCS form of the array).
+// catalogue digest (BLAKE3 over the JCS form of the array). A restricted server publishes an allowed subset.
 //
 // Usage: node mcp-catalogue.mjs            size report and digest
 //        node mcp-catalogue.mjs --json     the catalogue as JSON on stdout (implementations may embed it)

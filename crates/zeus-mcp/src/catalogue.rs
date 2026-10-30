@@ -41,7 +41,7 @@ pub struct ToolDef {
 }
 
 /// Load the generated normative wire catalogue. Keeping one artifact eliminates schema and annotation drift
-/// between the spec reference and `tools/list`; CI regenerates and compares this file.
+/// between the spec reference and published definitions; the transport selects a permitted subset.
 pub fn catalogue() -> Vec<ToolDef> {
     static WIRE: OnceLock<Value> = OnceLock::new();
     let wire = WIRE.get_or_init(|| {

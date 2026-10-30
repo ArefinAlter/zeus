@@ -164,3 +164,7 @@ debug = "line-tables-only"
 lto = "thin"
 codegen-units = 1
 strip = true
+
+# Upstream uTP 0.7.0 with its reviewed ringbuf 0.5.2 security fix.
+[patch.crates-io]
+librqbit-utp = { git = "https://github.com/ikatson/librqbit-utp", rev = "f119a999657d66fe2c2322613428241ce8a69f23" }

@@ -73,57 +73,101 @@ impl Node {
     }
 }
 /// One no-follow entry bound by a completed tree snapshot. Paths are locators, not grants.
-#[derive(Clone,Debug,Serialize,Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SnapshotEntry {
     /// Exact path below the tree root, without traversal components.
-    pub relative:String,
+    pub relative: String,
     /// Stable entry identity observed during the complete scan.
-    pub identity:zeus_types::FileId,
+    pub identity: zeus_types::FileId,
     /// Stable identity of its immediate parent.
-    pub parent_identity:zeus_types::FileId,
+    pub parent_identity: zeus_types::FileId,
     /// Logical bytes; zero for a directory.
-    pub bytes:u64,
+    pub bytes: u64,
     /// Whether this entry is a directory.
-    pub directory:bool,
+    pub directory: bool,
     /// Full native modification time, preserved at its original precision.
-    pub modified:SystemTime,
+    pub modified: SystemTime,
     /// Verified regular-file bytes, present only for content scans.
-    pub sha256:Option<String>,
+    pub sha256: Option<String>,
 }
 /// Complete read-only directory observation used to build an exact reviewed operation.
-#[derive(Clone,Debug,Serialize,Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TreeSnapshot {
     /// Original root path under current retained read authority.
-    pub root:String,
+    pub root: String,
     /// Stable root object identity.
-    pub root_identity:zeus_types::FileId,
+    pub root_identity: zeus_types::FileId,
     /// Full native root modification time at the complete scan.
-    pub root_modified:SystemTime,
+    pub root_modified: SystemTime,
     /// Sorted entries; a directory row never implies verified content by itself.
-    pub entries:Vec<SnapshotEntry>,
+    pub entries: Vec<SnapshotEntry>,
     /// Every regular file was hashed when this is true.
-    pub content_verified:bool,
+    pub content_verified: bool,
 }
 /// Two complete trees captured under one aggregate comparison budget.
-#[derive(Clone,Debug,Serialize,Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TreePair {
     /// Left tree with stable entry bindings.
-    pub left:TreeSnapshot,
+    pub left: TreeSnapshot,
     /// Right tree with stable entry bindings.
-    pub right:TreeSnapshot,
+    pub right: TreeSnapshot,
 }
-fn freeze(root:&str,stamp:Stamp,entries:BTreeMap<String,Node>,content:bool)->TreeSnapshot {
-    TreeSnapshot {root:root.into(),root_identity:stamp.id,root_modified:stamp.modified,content_verified:content,entries:entries.into_values().map(|e|SnapshotEntry {relative:e.relative,identity:e.stamp.id,parent_identity:e.parent_id,bytes:e.stamp.bytes,directory:e.stamp.directory,modified:e.stamp.modified,sha256:e.sha256}).collect()}
+fn freeze(
+    root: &str,
+    stamp: Stamp,
+    entries: BTreeMap<String, Node>,
+    content: bool,
+) -> TreeSnapshot {
+    TreeSnapshot {
+        root: root.into(),
+        root_identity: stamp.id,
+        root_modified: stamp.modified,
+        content_verified: content,
+        entries: entries
+            .into_values()
+            .map(|e| SnapshotEntry {
+                relative: e.relative,
+                identity: e.stamp.id,
+                parent_identity: e.parent_id,
+                bytes: e.stamp.bytes,
+                directory: e.stamp.directory,
+                modified: e.stamp.modified,
+                sha256: e.sha256,
+            })
+            .collect(),
+    }
 }
 /// Capture complete trees for the daemon planner without creating a GUI job or executing effects.
 /// The caller bounds concurrent planners; this call shares the existing entry/byte/time limits.
-pub fn snapshot_pair(request:&Request,authority:&Authority)->Result<TreePair> {
-    let left=authority.reads.path(&request.left)?;let right=authority.reads.path(&request.right)?;
-    if left==right {return Err(Failure::invalid("Choose different source and destination folders."));}
-    let job=Job {id:crate::random_id(),left:shown(&left),right:shown(&right),content:request.content,cancel:AtomicBool::new(false),entries:AtomicU64::new(0),bytes:AtomicU64::new(0),state:Mutex::new("running".into()),error:Mutex::new(String::new()),rows:Mutex::new(Vec::new()),created:Instant::now()};
-    let (ls,l)=scan(&job,authority,&left)?;let (rs,r)=scan(&job,authority,&right)?;
-    recheck(&job,authority,&job.left,&ls,&l)?;recheck(&job,authority,&job.right,&rs,&r)?;
-    Ok(TreePair {left:freeze(&job.left,ls,l,request.content),right:freeze(&job.right,rs,r,request.content)})
+pub fn snapshot_pair(request: &Request, authority: &Authority) -> Result<TreePair> {
+    let left = authority.reads.path(&request.left)?;
+    let right = authority.reads.path(&request.right)?;
+    if left == right {
+        return Err(Failure::invalid(
+            "Choose different source and destination folders.",
+        ));
+    }
+    let job = Job {
+        id: crate::random_id(),
+        left: shown(&left),
+        right: shown(&right),
+        content: request.content,
+        cancel: AtomicBool::new(false),
+        entries: AtomicU64::new(0),
+        bytes: AtomicU64::new(0),
+        state: Mutex::new("running".into()),
+        error: Mutex::new(String::new()),
+        rows: Mutex::new(Vec::new()),
+        created: Instant::now(),
+    };
+    let (ls, l) = scan(&job, authority, &left)?;
+    let (rs, r) = scan(&job, authority, &right)?;
+    recheck(&job, authority, &job.left, &ls, &l)?;
+    recheck(&job, authority, &job.right, &rs, &r)?;
+    Ok(TreePair {
+        left: freeze(&job.left, ls, l, request.content),
+        right: freeze(&job.right, rs, r, request.content),
+    })
 }
 
 #[derive(Clone, Serialize, Deserialize)]
