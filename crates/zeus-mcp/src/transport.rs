@@ -9,6 +9,20 @@ use rmcp::{ErrorData, ServerHandler, ServiceExt};
 use std::sync::Arc;
 use zeus_api::{ApiError, ApiResult, Client};
 
+// Explicit authority boundary: annotations are descriptive, not authorization.
+const READ_ONLY_TOOLS: &[&str] = &[
+    "zeus_probe",
+    "zeus_status",
+    "zeus_wait",
+    "zeus_verify",
+    "zeus_session_list",
+    "zeus_files_list",
+];
+
+fn is_read_only_tool(name: &str) -> bool {
+    READ_ONLY_TOOLS.contains(&name)
+}
+
 pub(crate) struct McpServer<C: Client> {
     pub(crate) client: Arc<C>,
 }
@@ -19,7 +33,16 @@ fn tool_result(outcome: ToolOutcome) -> CallToolResult {
     } else {
         CallToolResult::success(vec![ContentBlock::text(outcome.text())])
     };
-    result.structured_content = Some(outcome.structured());
+    let mut structured = outcome.structured();
+    if structured
+        .get("next")
+        .and_then(|n| n.get("tool"))
+        .and_then(|v| v.as_str())
+        .is_some_and(|name| !is_read_only_tool(name))
+    {
+        structured["next"]["tool"] = serde_json::Value::Null;
+    }
+    result.structured_content = Some(structured);
     result
 }
 
@@ -56,7 +79,11 @@ impl<C: Client + 'static> ServerHandler for McpServer<C> {
     ) -> Result<ListToolsResult, ErrorData> {
         no_cursor(request)?;
         Ok(ListToolsResult::with_all_items(
-            catalogue().iter().map(|t| t.to_rmcp()).collect(),
+            catalogue()
+                .iter()
+                .filter(|t| is_read_only_tool(t.name))
+                .map(|t| t.to_rmcp())
+                .collect(),
         ))
     }
     async fn call_tool(
@@ -64,6 +91,12 @@ impl<C: Client + 'static> ServerHandler for McpServer<C> {
         request: CallToolRequestParams,
         _: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, ErrorData> {
+        if !is_read_only_tool(&request.name) {
+            return Err(ErrorData::invalid_params(
+                "Tool unavailable without a trusted human approval surface",
+                None,
+            ));
+        }
         let args = serde_json::Value::Object(request.arguments.unwrap_or_default());
         let outcome = ZeusTools::new(Arc::clone(&self.client))
             .call(&request.name, args)
@@ -303,8 +336,15 @@ mod tests {
         )
         .await;
         let tools = catalogue["result"]["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 15);
-        assert!(tools.iter().any(|tool| tool["name"] == "zeus_sources"));
+        assert_eq!(tools.len(), READ_ONLY_TOOLS.len());
+        assert!(
+            tools
+                .iter()
+                .all(|tool| is_read_only_tool(tool["name"].as_str().unwrap()))
+        );
+        assert!(!tools.iter().any(|tool| tool["name"] == "zeus_enqueue"));
+        let denied = exchange(&mut reader, &mut writer, json!({"jsonrpc":"2.0","id":20,"method":"tools/call","params":{"name":"zeus_enqueue","arguments":{}}})).await;
+        assert_eq!(denied["error"]["code"], -32602);
         assert!(
             !tools
                 .iter()
