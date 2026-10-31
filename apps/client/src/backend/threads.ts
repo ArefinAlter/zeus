@@ -24,7 +24,7 @@ export type Card =
 export type AgentItem =
   | { kind: 'user'; id: string; text: string }
   | { kind: 'assistant'; id: string; text: string; streaming?: boolean }
-  | { kind: 'tool'; id: string; tool: string; action?: string; input: unknown; output?: unknown; state: 'running' | 'ok' | 'denied' | 'error'; summary: string; ms?: number }
+  | { kind: 'tool'; id: string; tool: string; action?: string; input: unknown; output?: unknown; state: 'running' | 'waiting' | 'ok' | 'denied' | 'error'; summary: string; ms?: number; review?: { runId: string; id: string; after: number; ready?: boolean } }
   | { kind: 'card'; id: string; card: Card }
   | { kind: 'notice'; id: string; text: string; tone: 'info' | 'warn'; link?: { label: string; to: string } }
 

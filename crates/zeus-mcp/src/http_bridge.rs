@@ -381,6 +381,25 @@ mod tests {
                 .header("Content-Type", "application/json")
         }
     }
+    fn assert_external_read_tools(value: &Value) {
+        let tools = value["result"]["tools"].as_array().unwrap();
+        let names: std::collections::BTreeSet<_> = tools
+            .iter()
+            .map(|tool| tool["name"].as_str().unwrap())
+            .collect();
+        let expected = [
+            "zeus_probe",
+            "zeus_status",
+            "zeus_wait",
+            "zeus_verify",
+            "zeus_session_list",
+            "zeus_files_list",
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(names, expected);
+        assert_eq!(tools.len(), 6);
+    }
     fn init() -> Value {
         json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"fixture","version":"1"}}})
     }
@@ -400,10 +419,7 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         let result: Value = response.json().await.unwrap();
-        assert_eq!(
-            result["result"]["tools"].as_array().unwrap().len(),
-            crate::catalogue::catalogue().len()
-        );
+        assert_external_read_tools(&result);
         assert!(
             !result["result"]["tools"]
                 .as_array()
@@ -411,6 +427,18 @@ mod tests {
                 .iter()
                 .any(|tool| tool["name"] == "approvals.decide")
         );
+        // The authenticated HTTP transport must refuse writes before touching the daemon,
+        // even though the internal catalogue supports desktop-reviewed mutation tools.
+        let response = f
+            .post()
+            .json(&json!({"jsonrpc":"2.0","id":3,"method":"tools/call",
+            "params":{"name":"zeus_enqueue","arguments":{"urls":["https://example.invalid/a"]}}}))
+            .send()
+            .await
+            .unwrap();
+        let refused: Value = response.json().await.unwrap();
+        assert_eq!(refused["error"]["code"], -32602);
+        assert_eq!(f.fake.calls.load(std::sync::atomic::Ordering::SeqCst), 0);
         let response = f
             .post()
             .json(&json!({"jsonrpc":"2.0","method":"notifications/initialized"}))
@@ -453,10 +481,7 @@ mod tests {
         assert!(response.headers().get("mcp-session-id").is_none());
         let value: Value = response.json().await.unwrap();
         assert_eq!(value["result"]["resultType"], "complete", "{value}");
-        assert_eq!(
-            value["result"]["tools"].as_array().unwrap().len(),
-            crate::catalogue::catalogue().len()
-        );
+        assert_external_read_tools(&value);
         let response = f
             .client
             .post(&f.url)

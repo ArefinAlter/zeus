@@ -1,18 +1,25 @@
 // Backend: which Zeus this window talks to, and what each part of the screen comes from.
 //
-// The website copy always uses the hosted pre-alpha. The desktop app starts on the Zeus engine it runs on this computer
-// and can switch to the hosted pre-alpha, to your own zeusd (through zeus-web-bridge on 127.0.0.1) or to offline sample
-// data.
+// The desktop uses its local engine. Optional alternatives are a local authenticated bridge or offline sample data.
 
 import { useState } from 'preact/hooks'
 
 import { HOSTED, LIVE, NATIVE } from '../../backend/live'
-import { HOSTED_URL, IN_APP, LOCAL_URL, SWITCHABLE, backend, hasLocalToken, setLocalToken, switchBackend } from '../../backend/remote'
+import { IN_APP, LOCAL_URL, SWITCHABLE, backend, call, hasLocalToken, setLocalToken, switchBackend } from '../../backend/remote'
 import type { BackendKind } from '../../backend/remote'
 import { useStore } from '../../backend/store'
 import { fmtBytes } from '../../model/units.ts'
 import { Chip, CodeCopy, Kv, Notice, PageHead, SettingRow, SettingsGroup } from '../../ui/components'
 import { EngineSettings } from './Engine'
+
+const NATIVE_DETAILS: Record<string, string> = {
+  'Queues, scheduler, speed limiter': 'The local engine holds, schedules and limits downloads per queue.',
+  'Settings, categories, file types': 'Settings stay in this desktop profile; supported provider credentials use the OS credential store.',
+  'Link-grabber lists and online checks': 'URL checks and saved lists in this app.',
+  'Site grabber walks and plans': 'Site scans and download plans shown for review.',
+  'Search index': 'An index of folders you have granted Zeus permission to read.',
+  'Agent threads, skills, connectors': 'Configured model providers or installed CLI agents, subject to their sign-in, access and usage limits.',
+}
 
 const SOURCES: [string, string, string][] = [
   ['Downloads, states and controls', 'zeusd', 'jobs.list, jobs.enqueue (dry run, then the reviewed batch) and jobs.control through zeus-web-bridge'],
@@ -35,6 +42,7 @@ export function BackendSettings() {
   const [localUrl, setLocalUrl] = useState(cur.kind === 'local' ? cur.base : LOCAL_URL)
   const [token, setToken] = useState('')
   const [tokenSet, setTokenSet] = useState(hasLocalToken())
+  const [terminalError, setTerminalError] = useState('')
   const sess = live?.session
   const d = live?.daemon
   const urlOk = /^http:\/\/(127\.0\.0\.1|localhost|\[::1\]):\d{2,5}$/.test(localUrl)
@@ -101,9 +109,6 @@ export function BackendSettings() {
               </label>
             ) : null}
             <label class="radio">
-              <input type="radio" name="backend" checked={kind === 'hosted'} onChange={() => setKind('hosted')} /> Hosted pre-alpha ({HOSTED_URL}), a sandbox on a server, sample file hosts only
-            </label>
-            <label class="radio">
               <input type="radio" name="backend" checked={kind === 'local'} onChange={() => setKind('local')} /> My own zeusd, through zeus-web-bridge on this computer
             </label>
             {kind === 'local' ? <input class="mono" aria-label="Bridge address" value={localUrl} onInput={(e) => setLocalUrl((e.target as HTMLInputElement).value.trim())} /> : null}
@@ -111,13 +116,24 @@ export function BackendSettings() {
               <input type="radio" name="backend" checked={kind === 'scripted'} onChange={() => setKind('scripted')} /> Sample data, offline
             </label>
             <div class="toolbar">
-              <button type="button" class="btn small primary" disabled={(kind === cur.kind && (kind !== 'local' || localUrl === cur.base)) || (kind === 'local' && !urlOk)} onClick={() => switchBackend({ kind, base: kind === 'local' ? localUrl : kind === 'hosted' ? HOSTED_URL : '' })}>
+              <button type="button" class="btn small primary" disabled={(kind === cur.kind && (kind !== 'local' || localUrl === cur.base)) || (kind === 'local' && !urlOk)} onClick={() => switchBackend({ kind, base: kind === 'local' ? localUrl : '' })}>
                 Switch and reload
               </button>
             </div>
           </div>
         </SettingsGroup>
       ) : null}
+
+      {NATIVE ? <SettingsGroup title="Terminal companion">
+        <SettingRow title="Zeus TUI" desc="Open a terminal with this desktop's download queue, progress, pause/resume controls and downloaded files. Keep the desktop running.">
+          <button type="button" class="btn small" onClick={async () => {
+            setTerminalError('')
+            try { await call('POST', '/native/v1/cloud/review-terminal', { action: 'download-tui' }) }
+            catch (error) { setTerminalError(error instanceof Error ? error.message : 'The terminal could not be opened.') }
+          }}>Open TUI</button>
+        </SettingRow>
+        {terminalError ? <Notice kind="error">{terminalError}</Notice> : null}
+      </SettingsGroup> : null}
 
       {NATIVE ? null : <SettingsGroup title="Your own zeusd" note="zeusd has one listener, a local IPC socket. zeus-web-bridge is the separate HTTP bridge for this client: it uses zeusd's restricted gui credential (seven permissions, no approval decisions, no file writes), listens on 127.0.0.1 only and requires its token on every request.">
         <div class="row stack">
@@ -128,7 +144,7 @@ export function BackendSettings() {
       {LIVE ? (
         <SettingsGroup title="Where each part comes from">
           {SOURCES.filter(([, from]) => HOSTED || NATIVE || from === 'zeusd').map(([what, from, how]) => (
-            <SettingRow title={what} desc={NATIVE ? how.replace('through zeus-web-bridge', 'through the app').replace('zeusd does not schedule queues or limit speed yet; queued downloads go to zeusd when their queue starts', 'zeusd holds, schedules and limits downloads per queue') : how}>
+            <SettingRow title={what} desc={NATIVE ? (NATIVE_DETAILS[what] ?? how.replace('through zeus-web-bridge', 'through the app')) : how}>
               <Chip tone={from === 'zeusd' ? 'ok' : ''}>{NATIVE && from !== 'zeusd' ? 'this app' : from}</Chip>
             </SettingRow>
           ))}

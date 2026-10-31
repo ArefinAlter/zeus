@@ -225,11 +225,10 @@ impl Reviews {
                 .get("name")
                 .and_then(Value::as_str)
                 .filter(|n| !n.is_empty());
-            let from_server =
-                probe.get("name_source").and_then(Value::as_str) == Some("content_disposition");
+            // The prober also resolves redirects and safe document extensions from
+            // Content-Type. Preserve that name unless the person explicitly chose one.
             if !item.job.contains_key("filename")
                 && let Some(name) = given
-                && from_server
             {
                 item.job.insert("filename".into(), json!(name));
             }

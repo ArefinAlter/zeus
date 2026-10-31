@@ -284,7 +284,10 @@ pub fn open_terminal() -> Result<Terminal, TrustError> {
         .write(true)
         .open(input_path)
         .map_err(|_| TrustError::NoTerminal)?;
+    // Windows IsTerminal uses GetConsoleMode, which requires GENERIC_READ even on CONOUT$.
+    // Keep the controlling-console check; a detached process must still be refused.
     let output = std::fs::OpenOptions::new()
+        .read(cfg!(windows))
         .write(true)
         .open(output_path)
         .map_err(|_| TrustError::NoTerminal)?;
@@ -295,7 +298,7 @@ pub fn open_terminal() -> Result<Terminal, TrustError> {
     let physical_input = Some(input.try_clone()?);
     Ok(Terminal {
         input: Box::new(std::io::BufReader::new(input)),
-        output: Box::new(output),
+        output: Box::new(zeus_api::transport::TerminalOutput::new(output)?),
         physical_input,
     })
 }
@@ -635,6 +638,23 @@ mod tests {
     use super::*;
     use zeus_api::methods::sessions::ApprovalView;
     use zeus_types::{Approval, Hex256, IdGenerator, Timestamp};
+
+    #[cfg(windows)]
+    mod console_regression {
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tools/test-support/windows-console.rs"
+        ));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn controlling_console_is_recognized_with_redirected_standard_streams() {
+        console_regression::assert_console_gate(
+            "trust::tests::controlling_console_is_recognized_with_redirected_standard_streams",
+            || open_terminal().is_ok(),
+        );
+    }
 
     fn view(allowed: &[GrantScope]) -> ApprovalView {
         let now = Timestamp::now();

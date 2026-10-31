@@ -1,7 +1,7 @@
 // Actual native archive routes, scoped to a fresh fixture profile. Restart fixtures below rewrite
 // only this test's own stopped receipts to exercise the saved publication boundary deterministically.
 import assert from 'node:assert/strict'
-import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { startHarness, until } from '../harness.mjs'
 import { openUi } from '../ui.mjs'
@@ -14,7 +14,10 @@ for (const path of [reads, writes, outside]) mkdirSync(path, { recursive: true }
 mkdirSync(join(reads, '資料'), { recursive: true })
 writeFileSync(join(reads, '資料', '.hidden'), 'original bytes')
 writeFileSync(join(outside, 'canary'), 'outside unchanged')
-for (const name of ['bad-crc.zip', 'parent-case.zip']) copyFileSync(join(output, 'fixtures', name), join(reads, name))
+// Small stored ZIP fixtures: one corrupted payload with its original CRC, and two case-conflicting parent names.
+// Kept here so a fresh acceptance run needs no manually prepared external files.
+writeFileSync(join(reads, 'bad-crc.zip'), Buffer.from('UEsDBBQAAAAAAIcRX11ncVQjGQAAABkAAAALAAAAZml4dHVyZS50eHRgcmNoaXZlIENSQyBmaXh0dXJlIGJ5dGVzUEsBAhQDFAAAAAAAhxFfXWdxVCMZAAAAGQAAAAsAAAAAAAAAAAAAAIABAAAAAGZpeHR1cmUudHh0UEsFBgAAAAABAAEAOQAAAEIAAAAAAA==', 'base64'))
+writeFileSync(join(reads, 'parent-case.zip'), Buffer.from('UEsDBBQAAAAAAIcRX11DvrfoAQAAAAEAAAAMAAAAUGFyZW50L2EudHh0YVBLAwQUAAAAAACHEV9d+e++cQEAAAABAAAADAAAAHBhcmVudC9iLnR4dGJQSwECFAMUAAAAAACHEV9dQ7636AEAAAABAAAADAAAAAAAAAAAAAAAgAEAAAAAUGFyZW50L2EudHh0UEsBAhQDFAAAAAAAhxFfXfnvvnEBAAAAAQAAAAwAAAAAAAAAAAAAAIABKwAAAHBhcmVudC9iLnR4dFBLBQYAAAAAAgACAHQAAABWAAAAAAA=', 'base64'))
 const checks = [], check = (name, value) => { assert.ok(value, name); checks.push(name); console.log('PASS ' + name) }
 const receiptPath = id => join(home, 'app', 'index', 'archives', `${id}.json`)
 const receipt = id => JSON.parse(readFileSync(receiptPath(id), 'utf8'))

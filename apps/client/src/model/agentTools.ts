@@ -27,7 +27,7 @@ export const TOOLS: ToolInfo[] = [
     readOnly: false,
     openWorld: false,
     summary: 'Lists, inspects and traces artifacts; ingest hashes and registers a local file without moving it',
-    actions: [{ name: 'ingest', access: 'download' }, { name: 'lifecycle_preview', access: 'organize' }, { name: 'lifecycle_apply', access: 'organize' }],
+    actions: [{ name: 'get', access: 'read' }, { name: 'list', access: 'read' }, { name: 'lineage', access: 'read' }, { name: 'maintenance', access: 'organize' }, { name: 'ingest', access: 'download' }, { name: 'lifecycle_preview', access: 'organize' }, { name: 'lifecycle_apply', access: 'organize' }],
   },
   { name: 'zeus_inbox', title: 'Download packages', access: 'read', readOnly: false, openWorld: true, summary: 'Reads owned intake packages; Download access can collect links, review destinations and start only the saved batch', actions: [
     { name: 'packages_list', access: 'read' }, { name: 'package_get', access: 'read' }, { name: 'submission_get', access: 'read' },

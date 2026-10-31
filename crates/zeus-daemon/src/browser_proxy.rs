@@ -751,6 +751,40 @@ mod tests {
         assert!(f.connection.proxy.states.lock().unwrap().is_empty());
     }
     #[tokio::test]
+    async fn approved_handoff_without_workflow_fields_uses_bound_browser() {
+        let mut f = Fixture::new();
+        let now = Timestamp::now();
+        let approval: zeus_types::Approval = serde_json::from_value(json!({
+            "id": f.grant.approval_id, "kind": "handoff", "state": "approved",
+            "job_id": f.grant.job_id, "origin": f.grant.origin,
+            "facts": {"transfer": {"job_ids": [f.grant.job_id]}},
+            "allowed_scopes": ["once"], "reason_codes": [],
+            "summary": {"title": "Rescue browser download"},
+            "created_at": now, "expires_at": now.saturating_add_ms(60000)
+        }))
+        .unwrap();
+        f.broker
+            .journal
+            .transact(|tx| {
+                tx.put_approval(&approval)?;
+                tx.put_approval_decision(
+                    approval.id,
+                    &json!({
+                        "approval_id": approval.id, "outcome": "approve",
+                        "evidence": {"surface": "cli_interactive", "exe_verified": true}
+                    }),
+                )
+            })
+            .unwrap();
+        f.request.profile_id = Some(f.connection.hello.profile_id.clone());
+        let (response, _) = f.start().await;
+        drop(response);
+        assert!(matches!(
+            f.outgoing().await.body,
+            DaemonBody::FetchCancel(_)
+        ));
+    }
+    #[tokio::test]
     async fn an_unverified_host_cannot_replace_a_trusted_browser_profile() {
         let mut f = Fixture::new();
         let mut forged = f.connection.ctx.clone();

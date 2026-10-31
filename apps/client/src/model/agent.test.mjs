@@ -116,3 +116,19 @@ test('inbox reads, intake mutations and artifact lifecycle respect thread access
   }
   for (const action of ['raw_rpc', 'owner_inspect', 'grant', undefined]) assert.equal(mayCall('zeus_inbox', 'organize', all, action).ok, false)
 })
+
+
+test('a pending action review keeps all operations and is cleared on result or stop', () => {
+  let items = applyEvent([], { n: 1, type: 'tool_start', id: 't-review', tool: 'zeus_enqueue', input: {} })
+  const urls = Array.from({ length: 50 }, (_, i) => `https://example.org/${i}`)
+  items = applyEvent(items, { n: 2, type: 'tool_review', id: 't-review', run_id: 'run_aabbccddeeff', review_id: 'a'.repeat(32), input: { urls } })
+  assert.equal(items[0].state, 'waiting')
+  assert.equal(items[0].input.urls.length, 50)
+  assert.equal(items[0].review.after, 2)
+  const stopped = applyEvent(items, { n: 3, type: 'done', reason: 'stopped' })
+  assert.equal(stopped[0].state, 'error')
+  assert.equal(stopped[0].review, undefined)
+  const completed = applyEvent(items, { n: 3, type: 'tool_end', id: 't-review', state: 'ok', summary: 'started' })
+  assert.equal(completed[0].state, 'ok')
+  assert.equal(completed[0].review, undefined)
+})

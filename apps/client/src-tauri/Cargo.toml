@@ -42,7 +42,7 @@ reqwest = { version = "0.13", default-features = false, features = ["rustls", "h
 [package]
 name = "zeus-client"
 description = "The Zeus desktop app: a Tauri 2 shell around the shared frontend and the engine it owns (zeus-app)."
-version = "0.1.0-alpha.1"
+version = "0.1.0-alpha.2"
 edition = "2024"
 rust-version = "1.90"
 license = "Apache-2.0"
@@ -88,3 +88,8 @@ unimplemented = "deny"
 codegen-units = 4
 lto = "thin"
 strip = true
+
+# Verified upstream macro sources using existing syn diagnostics; see vendor/GTK-MACRO-PATCH.md.
+[patch.crates-io]
+glib-macros = { path = "../../../vendor/glib-macros" }
+gtk3-macros = { path = "../../../vendor/gtk3-macros" }

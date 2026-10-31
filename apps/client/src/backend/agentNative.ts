@@ -1,9 +1,11 @@
+import { persistAgentReview } from './live'
 // The desktop app's agent: a real model called by the engine's Rust process with the person's own key, using the same
 // fifteen tools any MCP client of Zeus gets. This module is the page's side of it: configuration of the provider
 // ladder, consent, and a run, which is a request that returns an id and an event log the page reads by polling.
 //
 // Nothing here sees a key after the person typed it: it goes to the engine in one request and comes back only as
-// "stored" and its last four characters. Nothing here can decide an approval: there is no such route.
+// "stored" and its last four characters. Desktop action reviews stay separate from daemon/browser permissions;
+// this module cannot decide daemon approvals.
 
 import { clampSkillTools } from '../model/agentTools.ts'
 import type { AgentEvent } from '../model/agentEvents.ts'
@@ -98,6 +100,7 @@ export interface SendBody {
 const B = '/native/v1/agent'
 
 export const agentApi = {
+  review: (runId: string, reviewId: string, approve: boolean) => call('POST', `${B}/runs/${encodeURIComponent(runId)}/review`, { review_id: reviewId, approve }),
   config: () => call<AgentConfigView>('GET', `${B}/config`),
   putConfig: (c: AgentConfigWrite) => call<AgentConfigView>('PUT', `${B}/config`, c),
   putKey: (id: string, key: string) => call<{ stored: boolean; last4: string }>('PUT', `${B}/keys/${encodeURIComponent(id)}`, { key }),
@@ -243,7 +246,15 @@ export function isRunning(id: string): boolean {
 /** A thread persisted as running but with no run in this window (the app was closed): make it idle. */
 export function settleOrphan(id: string): void {
   const t = threadOf(id)
-  if (t && t.state === 'running' && !active.has(id)) patch(id, (x) => ({ ...x, state: 'idle', items: applyEvent(x.items, { n: 0, type: 'done', reason: 'orphan' }) }))
+  if (!t || t.state !== 'running' || active.has(id)) return
+  const waiting = [...t.items].reverse().find((item) => item.kind === 'tool' && item.state === 'waiting' && item.review)
+  const review = waiting?.kind === 'tool' ? waiting.review : undefined
+  if (review && /^run_[0-9a-f]{12}$/.test(review.runId) && /^[0-9a-f]{32}$/.test(review.id) && Number.isSafeInteger(review.after) && review.after >= 0 && review.after <= 6000) {
+    active.set(id, review.runId)
+    void follow(id, review.runId, review.after).finally(() => active.delete(id))
+    return
+  }
+  patch(id, (x) => ({ ...x, state: 'idle', items: applyEvent(x.items, { n: 0, type: 'done', reason: 'orphan' }) }))
 }
 
 function findSkill(text: string) {
@@ -289,7 +300,7 @@ export async function sendNative(id: string, text: string | null, regenerate = f
     }))
     const cfg = await refreshConfig()
     const provider = (t.provider ? cfg.providers.find((p) => p.id === t.provider) : undefined) ?? defaultProvider(cfg)
-    if (!provider) return fail('No model provider is set up yet. Add one in Settings, Providers, with your own key.')
+    if (!provider) return fail('No model provider is set up yet. Connect an installed agent with its existing sign-in, or add an API provider in Settings, Providers.')
     patch(id, (x) => ({ ...x, provider: provider.id }))
     const live = threadOf(id) ?? t
     const body = bodyFor(live, provider.id, regenerate ? undefined : (text ?? ''), regenerate)
@@ -313,13 +324,11 @@ export async function sendNative(id: string, text: string | null, regenerate = f
   active.delete(id)
 }
 
-async function follow(id: string, runId: string): Promise<void> {
-  let after = 0
+async function follow(id: string, runId: string, after = 0): Promise<void> {
   let failures = 0
   for (;;) {
     try {
       const r = await agentApi.events(runId, after)
-      failures = 0
       if (r.events.length) {
         after = r.next
         patch(id, (t) => {
@@ -333,12 +342,20 @@ async function follow(id: string, runId: string): Promise<void> {
           return { ...t, updated: Date.now(), items: last?.type === 'done' ? trimItems(items) : items, ...(usage ? { usage } : {}), ...(last?.type === 'done' ? { state: 'idle' as const } : {}) }
         })
       }
+      if (threadOf(id)?.items.some(item => item.kind === 'tool' && item.state === 'waiting' && item.review?.runId === runId && !item.review.ready)) {
+        // The serialized slice already contains the pending request. Only expose
+        // decision controls after it is durable, so an immediate reload is safe.
+        await persistAgentReview()
+        patch(id, t => ({ ...t, items: t.items.map(item => item.kind === 'tool' && item.state === 'waiting' && item.review?.runId === runId ? { ...item, review: { ...item.review, ready: true } } : item) }))
+      }
+      failures = 0
       if (r.done) break
     } catch (e) {
       failures += 1
       if (failures >= 6) {
+        void agentApi.stop(runId).catch(() => undefined)
         note(id, e instanceof Error ? `Lost the agent's answer: ${e.message}` : 'Lost the agent.', 'warn')
-        patch(id, (t) => ({ ...t, state: 'idle' }))
+        patch(id, (t) => ({ ...t, state: 'idle', items: applyEvent(t.items, { n: 0, type: 'done', reason: 'disconnected' }) }))
         return
       }
     }

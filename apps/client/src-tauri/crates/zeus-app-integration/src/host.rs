@@ -275,6 +275,16 @@ fn registry_default(_key: &str) -> Option<String> {
     None
 }
 
+// Both the browser's registration and the manifest must belong to this profile.
+// A stale manifest in our own state directory does not grant authority over a
+// registry value subsequently replaced by another Zeus installation.
+fn owns_registration(manifest: Option<&Value>, launcher: &Path, registry_ok: Option<bool>) -> bool {
+    registry_ok.unwrap_or(true)
+        && manifest
+            .and_then(|m| m.get("path").and_then(Value::as_str))
+            .is_some_and(|p| Path::new(p) == launcher)
+}
+
 /// What one browser's registration looks like right now.
 fn registration(app: &App, browser: Browser, l: &Layout) -> Value {
     let (manifest_file, key) = match install::manifest_location(
@@ -292,10 +302,7 @@ fn registration(app: &App, browser: Browser, l: &Layout) -> Value {
     let manifest: Option<Value> = std::fs::read(&manifest_file)
         .ok()
         .and_then(|b| serde_json::from_slice(&b).ok());
-    let points_here = manifest
-        .as_ref()
-        .and_then(|m| m.get("path").and_then(Value::as_str))
-        .is_some_and(|p| Path::new(p) == l.launcher.as_path());
+    let points_here = owns_registration(manifest.as_ref(), &l.launcher, registry_ok);
     let pinned = manifest.as_ref().is_some_and(|m| {
         let ids = |k: &str| -> Vec<String> {
             m.get(k)
@@ -498,6 +505,12 @@ pub fn uninstall(app: &std::sync::Arc<App>, body: &Value) -> Result<Value> {
         named
     };
     let l = layout(app);
+    let (browsers, preserved): (Vec<_>, Vec<_>) = browsers.into_iter().partition(|browser| {
+        registration(app, *browser, &l)
+            .get("points_at_this_app")
+            .and_then(Value::as_bool)
+            == Some(true)
+    });
     let mut req = request(app, browsers.clone(), &l)?;
     req.dev_extension_ids.clear();
     let mut steps = install::plan_uninstall(&req);
@@ -512,13 +525,27 @@ pub fn uninstall(app: &std::sync::Arc<App>, body: &Value) -> Result<Value> {
     install::apply(&steps, &mut SystemRegistrar)
         .map_err(|e| Failure::new("integration.uninstall", e.to_string()))?;
     Ok(
-        json!({"removed": browsers.iter().map(|b| b.as_str()).collect::<Vec<_>>(), "steps": steps.iter().map(describe).collect::<Vec<_>>()}),
+        json!({"removed": browsers.iter().map(|b| b.as_str()).collect::<Vec<_>>(), "preserved": preserved.iter().map(|b| b.as_str()).collect::<Vec<_>>(), "steps": steps.iter().map(describe).collect::<Vec<_>>()}),
     )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn another_profiles_registration_is_never_owned_by_a_stale_manifest() {
+        let launcher = Path::new("/profiles/a/host.sh");
+        let own = json!({"path": "/profiles/a/host.sh"});
+        let other = json!({"path": "/profiles/b/host.sh"});
+        assert!(owns_registration(Some(&own), launcher, Some(true)));
+        assert!(!owns_registration(Some(&own), launcher, Some(false)));
+        assert!(!owns_registration(Some(&other), launcher, Some(true)));
+        assert!(!owns_registration(None, launcher, Some(true)));
+        // Unix browser manifests are shared files rather than registry values.
+        assert!(owns_registration(Some(&own), launcher, None));
+        assert!(!owns_registration(Some(&other), launcher, None));
+    }
 
     fn env() -> Vec<(String, String)> {
         vec![

@@ -7,7 +7,9 @@ import { statSync } from 'node:fs'
 import { startFixtures, sha256 } from '../fixture-server.mjs'
 import { download, sleep, startHarness, until } from '../harness.mjs'
 
-const home = 'D:/verne-build/zeus/scratch/s02'
+const homeArg = process.argv.indexOf('--home')
+const home = homeArg >= 0 ? process.argv[homeArg + 1] : 'D:/verne-build/zeus/scratch/s02'
+if (!home) throw new Error('--home needs a scratch directory')
 const results = []
 const check = (name, ok, detail = '') => {
   results.push({ name, ok })
@@ -28,7 +30,6 @@ const id = started.jobs[0].job_id
 const before = await until(async () => { const j = await jobOf(id); return j && j.bytes_done >= 40 * 1024 * 1024 ? j : false }, { timeoutMs: 90000, what: '40 MiB committed' })
 const status = await h.get('/api/v1/status')
 console.log(`killing the app and zeusd at ${(before.bytes_done / 1048576).toFixed(0)} MiB committed (zeusd pid ${status.engine.pid})`)
-const kills = fx.log.length
 try { process.kill(status.engine.pid, 'SIGKILL') } catch (e) { console.log('zeusd kill:', e.message) }
 await h.stop({ kill: true })
 await sleep(1500)
@@ -43,9 +44,12 @@ check('the resumed download completes', done.state === 'completed', done.state)
 check('its SHA-256 matches the server\'s bytes', done.sha256 === sha256(seed, size))
 check('the file on disk has the full size', statSync(done.path).size === size)
 const after = fx.log.slice(logBefore).filter((r) => r.path.startsWith('/files/resume.bin') && r.range)
-const starts = after.map((r) => Number(/bytes=(\d+)-/.exec(r.range)?.[1] ?? 0)).filter((s) => s > 0)
-const refetched = starts.filter((s) => s < before.bytes_done - 8 * 1024 * 1024).length
-check('the committed prefix was not fetched again', refetched === 0, `${starts.length} ranged requests after the restart, lowest start ${Math.min(...starts) / 1048576} MiB`)
+// Committed bytes are a set of out-of-order segments, not a contiguous file prefix. A request
+// below bytes_done can legitimately fill a hole. Measure the actual fixture body bytes instead:
+// a restart must fetch only the missing data, with 1 MiB headroom for probes/buffered tail data.
+const wireBytes = after.reduce((sum, r) => sum + (r.marks ?? []).reduce((n, [, bytes]) => n + bytes, 0), 0)
+const remaining = size - before.bytes_done
+check('resume avoids re-downloading the saved data', wireBytes > 0 && wireBytes <= remaining + 1024 * 1024, `${(wireBytes / 1048576).toFixed(2)} MiB served after restart; at most ${(remaining / 1048576).toFixed(2)} MiB missing at crash`)
 
 // ---------------------------------------------------------------- B: no ranges, redirects, a server-given name
 const nr = await download(h, [{ url: `${fx.url}/norange/plain.bin?size=${6 * 1024 * 1024}&seed=5` }])

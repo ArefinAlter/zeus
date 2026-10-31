@@ -17,6 +17,17 @@ pub fn list_pinned(
     limit: usize,
     roots: &paths::RootCaps,
 ) -> Result<Value> {
+    list_filtered_pinned(path, after, limit, roots, false)
+}
+
+/// List directories separately for a lazily expanded folder tree. File rows never consume its page.
+pub fn list_filtered_pinned(
+    path: &str,
+    after: &str,
+    limit: usize,
+    roots: &paths::RootCaps,
+    directories_only: bool,
+) -> Result<Value> {
     let folder = roots.path(path)?;
     let directory = roots.directory(&folder)?;
     let limit = limit.clamp(1, 500);
@@ -36,6 +47,9 @@ pub fn list_pinned(
                 continue;
             }
         };
+        if directories_only && !meta.is_dir() {
+            continue;
+        }
         rows.insert(
             key.clone(),
             Row {
@@ -82,6 +96,38 @@ mod tests {
         let outside = tempfile::tempdir().unwrap();
         assert!(list(outside.path().to_str().unwrap(), "", 2, &roots).is_err());
     }
+    #[test]
+    fn directory_pages_are_not_crowded_out_by_files() {
+        let d = tempfile::tempdir().unwrap();
+        for n in 0..510 {
+            std::fs::write(d.path().join(format!("a{n:04}.txt")), b"file").unwrap();
+        }
+        for name in ["x-empty", "y-empty", "z-empty"] {
+            std::fs::create_dir(d.path().join(name)).unwrap();
+        }
+        let root = d.path().to_string_lossy().into_owned();
+        let caps = paths::RootCaps::capture(std::slice::from_ref(&root)).unwrap();
+        let first = list_filtered_pinned(&root, "", 2, &caps, true).unwrap();
+        let rows = first["files"].as_array().unwrap();
+        assert_eq!(rows.len(), 2);
+        assert!(rows.iter().all(|r| r["is_dir"] == true));
+        assert!(rows[0]["path"].as_str().unwrap().ends_with("x-empty"));
+        let second =
+            list_filtered_pinned(&root, first["next"].as_str().unwrap(), 2, &caps, true).unwrap();
+        assert_eq!(second["files"].as_array().unwrap().len(), 1);
+        assert!(
+            second["files"][0]["path"]
+                .as_str()
+                .unwrap()
+                .ends_with("z-empty")
+        );
+        assert!(second["next"].is_null());
+        let outside = tempfile::tempdir().unwrap();
+        assert!(
+            list_filtered_pinned(outside.path().to_str().unwrap(), "", 2, &caps, true).is_err()
+        );
+    }
+
     #[cfg(unix)]
     #[test]
     fn links_do_not_reveal_an_outside_folder() {

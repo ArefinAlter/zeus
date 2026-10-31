@@ -1,0 +1,829 @@
+--- a/glib-macros/Cargo.toml
++++ b/glib-macros/Cargo.toml
+@@ -10,6 +10,7 @@
+ # See Cargo.toml.orig for the original contents.
+ 
+ [package]
++publish = false
+ edition = "2021"
+ rust-version = "1.70"
+ name = "glib-macros"
+@@ -36,9 +37,6 @@
+ [dependencies.proc-macro-crate]
+ version = "2.0"
+ 
+-[dependencies.proc-macro-error]
+-version = "1.0"
+-
+ [dependencies.proc-macro2]
+ version = "1.0"
+ 
+--- a/glib-macros/src/boxed_derive.rs
++++ b/glib-macros/src/boxed_derive.rs
+@@ -1,7 +1,6 @@
+ // Take a look at the license at the top of the repository in the LICENSE file.
+ 
+ use proc_macro2::{Ident, TokenStream};
+-use proc_macro_error::abort_call_site;
+ use quote::quote;
+ 
+ use crate::utils::{crate_ident_new, parse_nested_meta_items, NestedMetaItem};
+@@ -107,9 +106,11 @@
+ 
+     match found {
+         Ok(None) => {
+-            abort_call_site!(
+-                "#[derive(glib::Boxed)] requires #[boxed_type(name = \"BoxedTypeName\")]"
++            return syn::Error::new(
++                proc_macro2::Span::call_site(),
++                "#[derive(glib::Boxed)] requires #[boxed_type(name = \"BoxedTypeName\")]",
+             )
++            .to_compile_error()
+         }
+         Err(e) => return e.to_compile_error(),
+         Ok(_) => {}
+--- a/glib-macros/src/closure.rs
++++ b/glib-macros/src/closure.rs
+@@ -1,7 +1,6 @@
+ // Take a look at the license at the top of the repository in the LICENSE file.
+ 
+ use proc_macro2::{Ident, Span, TokenStream};
+-use proc_macro_error::abort;
+ use quote::{quote, ToTokens, TokenStreamExt};
+ use syn::{ext::IdentExt, spanned::Spanned, Token};
+ 
+@@ -96,11 +95,7 @@
+             "watch" => CaptureKind::Watch,
+             "weak-allow-none" => CaptureKind::WeakAllowNone,
+             "to-owned" => CaptureKind::ToOwned,
+-            k => abort!(
+-                idents,
+-                "Unknown keyword `{}`, only `watch`, `weak-allow-none`, `to-owned` and `strong` are allowed",
+-                k,
+-            ),
++            k => return Err(syn::Error::new_spanned(idents, format!("Unknown keyword `{}`, only `watch`, `weak-allow-none`, `to-owned` and `strong` are allowed", k))),
+         })
+     }
+ }
+@@ -124,18 +119,20 @@
+         };
+         if alias.is_none() {
+             if name.to_string() == "self" {
+-                abort!(
++                return Err(syn::Error::new_spanned(
+                     name,
+                     "Can't use `self` as variable name. Try storing it in a temporary variable or \
+-                    rename it using `as`."
+-                );
++                    rename it using `as`.",
++                ));
+             }
+             if name.to_string().contains('.') {
+-                abort!(
++                return Err(syn::Error::new(
+                     name.span(),
+-                    "`{}`: Field accesses are not allowed as is, you must rename it!",
+-                    name
+-                );
++                    format!(
++                        "`{}`: Field accesses are not allowed as is, you must rename it!",
++                        name
++                    ),
++                ));
+             }
+         }
+         Ok(Capture {
+@@ -162,11 +159,17 @@
+                 let capture = input.parse::<Capture>()?;
+                 if capture.kind == CaptureKind::Watch {
+                     if let Some(existing) = captures.iter().find(|c| c.kind == CaptureKind::Watch) {
+-                        abort!(
+-                            capture.start,
+-                            "Only one `@watch` capture is allowed per closure";
+-                            note = existing.start => "Previous `@watch` found here"
+-                        );
++                        return Err({
++                            let mut error = syn::Error::new(
++                                capture.start,
++                                "Only one `@watch` capture is allowed per closure",
++                            );
++                            error.combine(syn::Error::new(
++                                existing.start,
++                                "Previous `@watch` found here",
++                            ));
++                            error
++                        });
+                     }
+                 }
+                 captures.push(capture);
+@@ -185,13 +188,16 @@
+         }
+         let mut closure = input.parse::<syn::ExprClosure>()?;
+         if closure.asyncness.is_some() {
+-            abort!(closure, "Async closure not allowed");
++            return Err(syn::Error::new_spanned(
++                closure,
++                "Async closure not allowed",
++            ));
+         }
+         if !captures.is_empty() && closure.capture.is_none() {
+-            abort!(
++            return Err(syn::Error::new_spanned(
+                 closure,
+-                "Closure with captures needs to be \"moved\" so please add `move` before closure"
+-            )
++                "Closure with captures needs to be \"moved\" so please add `move` before closure",
++            ));
+         }
+         let args = closure
+             .inputs
+@@ -276,3 +282,37 @@
+     closure.constructor = constructor;
+     closure.into_token_stream().into()
+ }
++
++#[cfg(test)]
++mod diagnostic_tests {
++    use super::Closure;
++
++    #[test]
++    fn invalid_captures_and_async_closures_return_diagnostics() {
++        for (input, expected) in [
++            ("@unknown value => move || {}", "Unknown keyword"),
++            ("@strong self => move || {}", "Can't use `self`"),
++            ("@strong value.field => move || {}", "Field accesses"),
++            ("async move || {}", "Async closure not allowed"),
++            ("@strong value => || {}", "Closure with captures"),
++        ] {
++            let Err(error) = syn::parse_str::<Closure>(input) else {
++                panic!("invalid closure was accepted: {input}");
++            };
++            assert!(error.to_string().contains(expected), "{error}");
++        }
++        assert!(syn::parse_str::<Closure>("@strong value => move || {}").is_ok());
++    }
++
++    #[test]
++    fn duplicate_watch_reports_both_capture_locations() {
++        let Err(error) = syn::parse_str::<Closure>("@watch first, @watch second => move || {}")
++        else {
++            panic!("two watch captures were accepted");
++        };
++        let diagnostics: Vec<_> = error.into_iter().map(|error| error.to_string()).collect();
++        assert_eq!(diagnostics.len(), 2);
++        assert!(diagnostics[0].contains("Only one `@watch`"));
++        assert!(diagnostics[1].contains("Previous `@watch`"));
++    }
++}
+--- a/glib-macros/src/derived_properties_attribute.rs
++++ b/glib-macros/src/derived_properties_attribute.rs
+@@ -1,7 +1,6 @@
+ // Take a look at the license at the top of the repository in the LICENSE file.
+ 
+ use proc_macro2::TokenStream;
+-use proc_macro_error::abort_call_site;
+ use quote::quote;
+ 
+ pub const WRONG_PLACE_MSG: &str =
+@@ -19,7 +18,10 @@
+ 
+     let trait_path = match &trait_ {
+         Some(path) => &path.1,
+-        None => abort_call_site!(WRONG_PLACE_MSG),
++        None => {
++            return syn::Error::new(proc_macro2::Span::call_site(), WRONG_PLACE_MSG)
++                .to_compile_error()
++        }
+     };
+ 
+     let mut has_property = false;
+--- a/glib-macros/src/enum_derive.rs
++++ b/glib-macros/src/enum_derive.rs
+@@ -2,7 +2,6 @@
+ 
+ use heck::{ToKebabCase, ToUpperCamelCase};
+ use proc_macro2::TokenStream;
+-use proc_macro_error::abort_call_site;
+ use quote::{quote, quote_spanned};
+ use syn::{punctuated::Punctuated, spanned::Spanned, token::Comma, Data, Ident, Variant};
+ 
+@@ -64,7 +63,13 @@
+ 
+     let enum_variants = match input.data {
+         Data::Enum(ref e) => &e.variants,
+-        _ => abort_call_site!("#[derive(glib::Enum)] only supports enums"),
++        _ => {
++            return syn::Error::new(
++                proc_macro2::Span::call_site(),
++                "#[derive(glib::Enum)] only supports enums",
++            )
++            .to_compile_error()
++        }
+     };
+ 
+     let mut gtype_name = NestedMetaItem::<syn::LitStr>::new("name")
+@@ -74,7 +79,11 @@
+ 
+     match found {
+         Ok(None) => {
+-            abort_call_site!("#[derive(glib::Enum)] requires #[enum_type(name = \"EnumTypeName\")]")
++            return syn::Error::new(
++                proc_macro2::Span::call_site(),
++                "#[derive(glib::Enum)] requires #[enum_type(name = \"EnumTypeName\")]",
++            )
++            .to_compile_error()
+         }
+         Err(e) => return e.to_compile_error(),
+         Ok(attr) => attr,
+--- a/glib-macros/src/error_domain_derive.rs
++++ b/glib-macros/src/error_domain_derive.rs
+@@ -1,7 +1,6 @@
+ // Take a look at the license at the top of the repository in the LICENSE file.
+ 
+ use proc_macro2::TokenStream;
+-use proc_macro_error::abort_call_site;
+ use quote::quote;
+ use syn::Data;
+ 
+@@ -12,7 +11,13 @@
+ 
+     let enum_variants = match input.data {
+         Data::Enum(ref e) => &e.variants,
+-        _ => abort_call_site!("#[derive(glib::ErrorDomain)] only supports enums"),
++        _ => {
++            return syn::Error::new(
++                proc_macro2::Span::call_site(),
++                "#[derive(glib::ErrorDomain)] only supports enums",
++            )
++            .to_compile_error()
++        }
+     };
+ 
+     let mut domain_name = NestedMetaItem::<syn::LitStr>::new("name")
+@@ -22,9 +27,11 @@
+ 
+     match found {
+         Ok(None) => {
+-            abort_call_site!(
+-                "#[derive(glib::ErrorDomain)] requires #[error_domain(name = \"domain-name\")]"
++            return syn::Error::new(
++                proc_macro2::Span::call_site(),
++                "#[derive(glib::ErrorDomain)] requires #[error_domain(name = \"domain-name\")]",
+             )
++            .to_compile_error()
+         }
+         Err(e) => return e.to_compile_error(),
+         Ok(_) => (),
+--- a/glib-macros/src/flags_attribute.rs
++++ b/glib-macros/src/flags_attribute.rs
+@@ -2,7 +2,6 @@
+ 
+ use heck::{ToKebabCase, ToUpperCamelCase};
+ use proc_macro2::TokenStream;
+-use proc_macro_error::abort_call_site;
+ use quote::{quote, quote_spanned};
+ use syn::{
+     punctuated::Punctuated, spanned::Spanned, token::Comma, Attribute, Data, DeriveInput, Ident,
+@@ -121,7 +120,13 @@
+ 
+     let enum_variants = match input.data {
+         Data::Enum(ref e) => &e.variants,
+-        _ => abort_call_site!("#[glib::flags] only supports enums"),
++        _ => {
++            return syn::Error::new(
++                proc_macro2::Span::call_site(),
++                "#[glib::flags] only supports enums",
++            )
++            .to_compile_error()
++        }
+     };
+ 
+     let crate_ident = crate_ident_new();
+--- a/glib-macros/src/lib.rs
++++ b/glib-macros/src/lib.rs
+@@ -19,7 +19,6 @@
+ 
+ use flags_attribute::AttrInput;
+ use proc_macro::TokenStream;
+-use proc_macro_error::proc_macro_error;
+ use syn::{parse_macro_input, DeriveInput};
+ use utils::{parse_nested_meta_items_from_stream, NestedMetaItem};
+ 
+@@ -283,7 +282,6 @@
+ /// }
+ /// ```
+ #[proc_macro]
+-#[proc_macro_error]
+ pub fn clone(item: TokenStream) -> TokenStream {
+     clone::clone_inner(item)
+ }
+@@ -423,7 +421,6 @@
+ /// assert_eq!(closure.invoke::<String>(&[]), "Hello Moon!");
+ /// ```
+ #[proc_macro]
+-#[proc_macro_error]
+ pub fn closure(item: TokenStream) -> TokenStream {
+     closure::closure_inner(item, "new")
+ }
+@@ -434,7 +431,6 @@
+ ///
+ /// [`Closure::new_local`]: ../glib/closure/struct.Closure.html#method.new_local
+ #[proc_macro]
+-#[proc_macro_error]
+ pub fn closure_local(item: TokenStream) -> TokenStream {
+     closure::closure_inner(item, "new_local")
+ }
+@@ -461,7 +457,6 @@
+ ///
+ /// [`glib::Value`]: ../glib/value/struct.Value.html
+ #[proc_macro_derive(Enum, attributes(enum_type, enum_value))]
+-#[proc_macro_error]
+ pub fn enum_derive(input: TokenStream) -> TokenStream {
+     let input = parse_macro_input!(input as DeriveInput);
+     let gen = enum_derive::impl_enum(&input);
+@@ -499,7 +494,6 @@
+ ///
+ /// [`glib::Value`]: ../glib/value/struct.Value.html
+ #[proc_macro_attribute]
+-#[proc_macro_error]
+ pub fn flags(attr: TokenStream, item: TokenStream) -> TokenStream {
+     let mut name = NestedMetaItem::<syn::LitStr>::new("name")
+         .required()
+@@ -536,7 +530,6 @@
+ ///
+ /// [`ErrorDomain`]: ../glib/error/trait.ErrorDomain.html
+ #[proc_macro_derive(ErrorDomain, attributes(error_domain))]
+-#[proc_macro_error]
+ pub fn error_domain_derive(input: TokenStream) -> TokenStream {
+     let input = parse_macro_input!(input as DeriveInput);
+     let gen = error_domain_derive::impl_error_domain(&input);
+@@ -565,7 +558,6 @@
+ /// [`BoxedType`]: ../glib/subclass/boxed/trait.BoxedType.html
+ /// [`glib::Value`]: ../glib/value/struct.Value.html
+ #[proc_macro_derive(Boxed, attributes(boxed_type))]
+-#[proc_macro_error]
+ pub fn boxed_derive(input: TokenStream) -> TokenStream {
+     let input = parse_macro_input!(input as DeriveInput);
+     let gen = boxed_derive::impl_boxed(&input);
+@@ -599,7 +591,6 @@
+ /// [`SharedType`]: ../glib/subclass/shared/trait.SharedType.html
+ /// [`glib::Value`]: ../glib/value/struct.Value.html
+ #[proc_macro_derive(SharedBoxed, attributes(shared_boxed_type))]
+-#[proc_macro_error]
+ pub fn shared_boxed_derive(input: TokenStream) -> TokenStream {
+     let input = parse_macro_input!(input as DeriveInput);
+     let gen = shared_boxed_derive::impl_shared_boxed(&input);
+@@ -636,12 +627,17 @@
+ ///
+ /// [`ObjectSubclass`]: ../glib/subclass/types/trait.ObjectSubclass.html
+ #[proc_macro_attribute]
+-#[proc_macro_error]
+ pub fn object_subclass(_attr: TokenStream, item: TokenStream) -> TokenStream {
+-    use proc_macro_error::abort_call_site;
+     match syn::parse::<syn::ItemImpl>(item) {
+         Ok(input) => object_subclass_attribute::impl_object_subclass(&input).into(),
+-        Err(_) => abort_call_site!(object_subclass_attribute::WRONG_PLACE_MSG),
++        Err(_) => {
++            return syn::Error::new(
++                proc_macro2::Span::call_site(),
++                object_subclass_attribute::WRONG_PLACE_MSG,
++            )
++            .to_compile_error()
++            .into()
++        }
+     }
+ }
+ 
+@@ -661,12 +657,17 @@
+ ///
+ /// [`ObjectInterface`]: ../glib/subclass/interface/trait.ObjectInterface.html
+ #[proc_macro_attribute]
+-#[proc_macro_error]
+ pub fn object_interface(_attr: TokenStream, item: TokenStream) -> TokenStream {
+-    use proc_macro_error::abort_call_site;
+     match syn::parse::<syn::ItemImpl>(item) {
+         Ok(input) => object_interface_attribute::impl_object_interface(&input).into(),
+-        Err(_) => abort_call_site!(object_interface_attribute::WRONG_PLACE_MSG),
++        Err(_) => {
++            return syn::Error::new(
++                proc_macro2::Span::call_site(),
++                object_interface_attribute::WRONG_PLACE_MSG,
++            )
++            .to_compile_error()
++            .into()
++        }
+     }
+ }
+ 
+@@ -840,7 +841,6 @@
+ /// [`FlagsClass`]: ../glib/struct.FlagsClass.html
+ /// [kebab case]: https://docs.rs/heck/0.4.0/heck/trait.ToKebabCase.html
+ #[proc_macro_derive(Variant, attributes(variant_enum))]
+-#[proc_macro_error]
+ pub fn variant_derive(input: TokenStream) -> TokenStream {
+     let input = parse_macro_input!(input as DeriveInput);
+     variant_derive::impl_variant(input)
+@@ -969,7 +969,7 @@
+ ///         #[property(get, set)]
+ ///         smart_pointer: Rc<RefCell<String>>,
+ ///     }
+-///     
++///
+ ///     #[glib::derived_properties]
+ ///     impl ObjectImpl for Foo {}
+ ///
+@@ -1024,12 +1024,17 @@
+ /// }
+ /// ```
+ #[proc_macro_attribute]
+-#[proc_macro_error]
+ pub fn derived_properties(_attr: TokenStream, item: TokenStream) -> TokenStream {
+-    use proc_macro_error::abort_call_site;
+     match syn::parse::<syn::ItemImpl>(item) {
+         Ok(input) => derived_properties_attribute::impl_derived_properties(&input).into(),
+-        Err(_) => abort_call_site!(derived_properties_attribute::WRONG_PLACE_MSG),
++        Err(_) => {
++            return syn::Error::new(
++                proc_macro2::Span::call_site(),
++                derived_properties_attribute::WRONG_PLACE_MSG,
++            )
++            .to_compile_error()
++            .into()
++        }
+     }
+ }
+ 
+--- a/glib-macros/src/object_interface_attribute.rs
++++ b/glib-macros/src/object_interface_attribute.rs
+@@ -1,7 +1,6 @@
+ // Take a look at the license at the top of the repository in the LICENSE file.
+ 
+ use proc_macro2::TokenStream;
+-use proc_macro_error::abort_call_site;
+ use quote::quote;
+ 
+ pub const WRONG_PLACE_MSG: &str =
+@@ -40,7 +39,10 @@
+ 
+     let trait_path = match &trait_ {
+         Some(path) => &path.1,
+-        None => abort_call_site!(WRONG_PLACE_MSG),
++        None => {
++            return syn::Error::new(proc_macro2::Span::call_site(), WRONG_PLACE_MSG)
++                .to_compile_error()
++        }
+     };
+ 
+     quote! {
+--- a/glib-macros/src/object_subclass_attribute.rs
++++ b/glib-macros/src/object_subclass_attribute.rs
+@@ -1,7 +1,6 @@
+ // Take a look at the license at the top of the repository in the LICENSE file.
+ 
+ use proc_macro2::TokenStream;
+-use proc_macro_error::abort_call_site;
+ use quote::quote;
+ 
+ pub const WRONG_PLACE_MSG: &str =
+@@ -77,7 +76,10 @@
+ 
+     let trait_path = match &trait_ {
+         Some(path) => &path.1,
+-        None => abort_call_site!(WRONG_PLACE_MSG),
++        None => {
++            return syn::Error::new(proc_macro2::Span::call_site(), WRONG_PLACE_MSG)
++                .to_compile_error()
++        }
+     };
+ 
+     quote! {
+--- a/glib-macros/src/shared_boxed_derive.rs
++++ b/glib-macros/src/shared_boxed_derive.rs
+@@ -1,7 +1,6 @@
+ // Take a look at the license at the top of the repository in the LICENSE file.
+ 
+ use proc_macro2::{Ident, TokenStream};
+-use proc_macro_error::abort_call_site;
+ use quote::quote;
+ 
+ use crate::utils::{crate_ident_new, parse_nested_meta_items, NestedMetaItem};
+@@ -99,7 +98,11 @@
+     let refcounted_type = match refcounted_type(input) {
+         Some(p) => p,
+         _ => {
+-            abort_call_site!("#[derive(glib::SharedBoxed)] requires struct MyStruct(T: RefCounted)")
++            return syn::Error::new(
++                proc_macro2::Span::call_site(),
++                "#[derive(glib::SharedBoxed)] requires struct MyStruct(T: RefCounted)",
++            )
++            .to_compile_error()
+         }
+     };
+ 
+@@ -116,9 +119,7 @@
+ 
+     match found {
+         Ok(None) => {
+-            abort_call_site!(
+-                "#[derive(glib::SharedBoxed)] requires #[shared_boxed_type(name = \"SharedBoxedTypeName\")]"
+-            )
++            return syn::Error::new(proc_macro2::Span::call_site(), "#[derive(glib::SharedBoxed)] requires #[shared_boxed_type(name = \"SharedBoxedTypeName\")]").to_compile_error()
+         }
+         Err(e) => return e.to_compile_error(),
+         _ => (),
+--- a/glib-macros/src/variant_derive.rs
++++ b/glib-macros/src/variant_derive.rs
+@@ -2,7 +2,6 @@
+ 
+ use heck::ToKebabCase;
+ use proc_macro::TokenStream;
+-use proc_macro_error::abort;
+ use quote::{format_ident, quote};
+ use syn::{Data, DeriveInput, Fields, FieldsNamed, FieldsUnnamed, Generics, Ident, Type};
+ 
+@@ -14,7 +13,10 @@
+             derive_variant_for_struct(input.ident, input.generics, data_struct)
+         }
+         Data::Enum(data_enum) => {
+-            let mode = get_enum_mode(&input.attrs);
++            let mode = match get_enum_mode(&input.attrs) {
++                Ok(mode) => mode,
++                Err(error) => return error.to_compile_error().into(),
++            };
+             let has_data = data_enum
+                 .variants
+                 .iter()
+@@ -296,25 +298,31 @@
+     let static_variant_type = format!("({}v)", mode.tag_type());
+     let (impl_generics, type_generics, where_clause) = generics.split_for_impl();
+ 
++    for variant in &data_enum.variants {
++        if !matches!(variant.fields, syn::Fields::Unit) {
++            let message = match &mode {
++                EnumMode::Enum { .. } => Some("#[variant_enum(enum) only allowed with C-style enums using #[derive(glib::Enum)]"),
++                EnumMode::Flags { .. } => Some("#[variant_enum(flags) only allowed with bitflags using #[glib::flags]"),
++                _ => None,
++            };
++            if let Some(message) = message {
++                return syn::Error::new_spanned(variant, message)
++                    .to_compile_error()
++                    .into();
++            }
++        }
++    }
++
+     let to = data_enum.variants.iter().enumerate().map(|(index, v)| {
+         let ident = &v.ident;
+         let tag = match &mode {
+             EnumMode::String => {
+                 let nick = ToKebabCase::to_kebab_case(ident.to_string().as_str());
+                 quote! { #nick }
+-            },
++            }
+             EnumMode::Repr(repr) => quote! { #index as #repr },
+             _ => unimplemented!(),
+         };
+-        if !matches!(v.fields, syn::Fields::Unit) {
+-            match &mode {
+-                EnumMode::Enum { .. } =>
+-                    abort!(v, "#[variant_enum(enum) only allowed with C-style enums using #[derive(glib::Enum)]"),
+-                EnumMode::Flags { .. } =>
+-                    abort!(v, "#[variant_enum(flags) only allowed with bitflags using #[glib::flags]"),
+-                _ => (),
+-            }
+-        }
+         match &v.fields {
+             syn::Fields::Named(FieldsNamed { named, .. }) => {
+                 let field_names = named.iter().map(|f| f.ident.as_ref().unwrap());
+@@ -327,11 +335,12 @@
+                         ]))
+                     ))
+                 }
+-            },
+-            syn::Fields::Unnamed(FieldsUnnamed  { unnamed, .. }) => {
+-                let field_names = unnamed.iter().enumerate().map(|(i, _)| {
+-                    format_ident!("field{}", i)
+-                });
++            }
++            syn::Fields::Unnamed(FieldsUnnamed { unnamed, .. }) => {
++                let field_names = unnamed
++                    .iter()
++                    .enumerate()
++                    .map(|(i, _)| format_ident!("field{}", i));
+                 let field_names2 = field_names.clone();
+                 quote! {
+                     Self::#ident(#(#field_names),*) => #glib::ToVariant::to_variant(&(
+@@ -341,7 +350,7 @@
+                         ]))
+                     ))
+                 }
+-            },
++            }
+             syn::Fields::Unit => {
+                 quote! {
+                     Self::#ident => #glib::ToVariant::to_variant(&(
+@@ -349,7 +358,7 @@
+                         #glib::ToVariant::to_variant(&())
+                     ))
+                 }
+-            },
++            }
+         }
+     });
+     let into = data_enum.variants.iter().enumerate().map(|(index, v)| {
+@@ -626,12 +635,12 @@
+     derived.into()
+ }
+ 
+-fn get_enum_mode(attrs: &[syn::Attribute]) -> EnumMode {
++fn get_enum_mode(attrs: &[syn::Attribute]) -> syn::Result<EnumMode> {
+     let attr = attrs.iter().find(|a| a.path().is_ident("variant_enum"));
+ 
+     let attr = match attr {
+         Some(attr) => attr,
+-        None => return EnumMode::String,
++        None => return Ok(EnumMode::String),
+     };
+ 
+     let mut repr_attr = None;
+@@ -647,20 +656,24 @@
+             Some("flags") => {
+                 mode = EnumMode::Flags { repr: false };
+             }
+-            _ => abort!(meta.path, "unknown type in #[variant_enum] attribute"),
++            _ => {
++                return Err(syn::Error::new_spanned(
++                    meta.path,
++                    "unknown type in #[variant_enum] attribute",
++                ))
++            }
+         }
+         Ok(())
+-    })
+-    .unwrap();
+-    match mode {
++    })?;
++    Ok(match mode {
+         EnumMode::String if repr_attr.is_some() => {
+             let repr_attr = repr_attr.unwrap();
+-            let repr = get_repr(attrs).unwrap_or_else(|| {
+-                abort!(
++            let repr = get_repr(attrs).ok_or_else(|| {
++                syn::Error::new_spanned(
+                     repr_attr,
+-                    "Must have #[repr] attribute with one of i8, i16, i32, i64, u8, u16, u32, u64"
++                    "Must have #[repr] attribute with one of i8, i16, i32, i64, u8, u16, u32, u64",
+                 )
+-            });
++            })?;
+             EnumMode::Repr(repr)
+         }
+         EnumMode::Enum { .. } => EnumMode::Enum {
+@@ -670,7 +683,7 @@
+             repr: repr_attr.is_some(),
+         },
+         e => e,
+-    }
++    })
+ }
+ 
+ fn get_repr(attrs: &[syn::Attribute]) -> Option<Ident> {
+@@ -686,3 +699,30 @@
+         _ => None,
+     }
+ }
++
++#[cfg(test)]
++mod diagnostic_tests {
++    use super::{get_enum_mode, EnumMode};
++
++    #[test]
++    fn invalid_variant_attributes_are_errors_and_valid_repr_is_preserved() {
++        for (attribute, message) in [
++            (syn::parse_quote!(#[variant_enum(unknown)]), "unknown type"),
++            (
++                syn::parse_quote!(#[variant_enum(repr)]),
++                "Must have #[repr]",
++            ),
++            (syn::parse_quote!(#[variant_enum(enum =)]), "expected"),
++        ] {
++            let Err(error) = get_enum_mode(&[attribute]) else {
++                panic!("invalid variant attributes were accepted");
++            };
++            assert!(error.to_string().contains(message), "{error}");
++        }
++        let attributes = [
++            syn::parse_quote!(#[variant_enum(repr)]),
++            syn::parse_quote!(#[repr(u32)]),
++        ];
++        assert!(matches!(get_enum_mode(&attributes), Ok(EnumMode::Repr(repr)) if repr == "u32"));
++    }
++}
+--- a/gtk3-macros/Cargo.toml
++++ b/gtk3-macros/Cargo.toml
+@@ -10,6 +10,7 @@
+ # See Cargo.toml.orig for the original contents.
+ 
+ [package]
++publish = false
+ edition = "2021"
+ rust-version = "1.70"
+ name = "gtk3-macros"
+@@ -52,9 +53,6 @@
+ [dependencies.proc-macro-crate]
+ version = "1.0"
+ 
+-[dependencies.proc-macro-error]
+-version = "1.0"
+-
+ [dependencies.proc-macro2]
+ version = "1.0"
+ 
+--- a/gtk3-macros/src/composite_template_derive.rs
++++ b/gtk3-macros/src/composite_template_derive.rs
+@@ -1,7 +1,6 @@
+ // Take a look at the license at the top of the repository in the LICENSE file.
+ 
+ use proc_macro2::TokenStream;
+-use proc_macro_error::{abort, abort_call_site};
+ use quote::quote;
+ use syn::Data;
+ 
+@@ -25,12 +24,9 @@
+     }
+ }
+ 
+-fn gen_template_child_bindings(fields: &syn::Fields) -> TokenStream {
++fn gen_template_child_bindings(fields: &syn::Fields) -> syn::Result<TokenStream> {
+     let crate_ident = crate_ident_new();
+-    let attributed_fields = match parse_fields(fields) {
+-        Ok(fields) => fields,
+-        Err(err) => abort!(err.span(), err.to_string()),
+-    };
++    let attributed_fields = parse_fields(fields)?;
+ 
+     let recurse = attributed_fields.iter().map(|field| match field.attr.ty {
+         FieldAttributeType::TemplateChild => {
+@@ -51,9 +47,9 @@
+         }
+     });
+ 
+-    quote! {
++    Ok(quote! {
+         #(#recurse)*
+-    }
++    })
+ }
+ 
+ pub fn impl_composite_template(input: &syn::DeriveInput) -> TokenStream {
+@@ -62,20 +58,26 @@
+ 
+     let source = match parse_template_source(input) {
+         Ok(v) => v,
+-        Err(e) => abort_call_site!(
+-            "{}: derive(CompositeTemplate) requires #[template(...)] to specify 'file', 'resource', or 'string'",
+-            e
+-        ),
++        Err(e) => return syn::Error::new(proc_macro2::Span::call_site(), format!("{}: derive(CompositeTemplate) requires #[template(...)] to specify 'file', 'resource', or 'string'", e)).to_compile_error(),
+     };
+ 
+     let set_template = gen_set_template(source);
+ 
+     let fields = match input.data {
+         Data::Struct(ref s) => &s.fields,
+-        _ => abort_call_site!("derive(CompositeTemplate) only supports structs"),
++        _ => {
++            return syn::Error::new(
++                proc_macro2::Span::call_site(),
++                "derive(CompositeTemplate) only supports structs",
++            )
++            .to_compile_error()
++        }
+     };
+ 
+-    let template_children = gen_template_child_bindings(fields);
++    let template_children = match gen_template_child_bindings(fields) {
++        Ok(children) => children,
++        Err(error) => return error.to_compile_error(),
++    };
+ 
+     quote! {
+         impl #crate_ident::subclass::widget::CompositeTemplate for #name {
+--- a/gtk3-macros/src/lib.rs
++++ b/gtk3-macros/src/lib.rs
+@@ -5,7 +5,6 @@
+ mod util;
+ 
+ use proc_macro::TokenStream;
+-use proc_macro_error::proc_macro_error;
+ use syn::{parse_macro_input, DeriveInput};
+ 
+ /// Derive macro for using a composite template in a widget.
+@@ -81,7 +80,6 @@
+ /// # fn main() {}
+ /// ```
+ #[proc_macro_derive(CompositeTemplate, attributes(template, template_child))]
+-#[proc_macro_error]
+ pub fn composite_template_derive(input: TokenStream) -> TokenStream {
+     let input = parse_macro_input!(input as DeriveInput);
+     let gen = composite_template_derive::impl_composite_template(&input);

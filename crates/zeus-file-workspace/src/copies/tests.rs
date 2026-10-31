@@ -444,9 +444,26 @@ fn host_path_policy_is_checked_before_any_copy_output() {
 }
 #[test]
 fn synchronization_copy_keeps_the_comparison_digest_and_refuses_changed_source_metadata() {
-    let f=Fixture::new(true);let root=f.root.join("source-root");std::fs::create_dir(&root).unwrap();std::fs::rename(&f.source,root.join("source")).unwrap();
-    let pair=crate::compare::snapshot_pair(&crate::compare::Request {left:shown(&root),right:shown(&f.destination),content:true},&f.authority()).unwrap();
-    let plan=prepare_from_snapshot(&pair.left,"source",&shown(&f.destination),&f.authority()).unwrap();assert_eq!(plan.entries(),4);
-    let source=root.join("source/nested/.hidden");std::fs::write(&source,b"modified").unwrap();
-    assert!(prepare_from_snapshot(&pair.left,"source",&shown(&f.destination),&f.authority()).is_err());
+    let f = Fixture::new(true);
+    let root = f.root.join("source-root");
+    std::fs::create_dir(&root).unwrap();
+    std::fs::rename(&f.source, root.join("source")).unwrap();
+    let pair = crate::compare::snapshot_pair(
+        &crate::compare::Request {
+            left: shown(&root),
+            right: shown(&f.destination),
+            content: true,
+        },
+        &f.authority(),
+    )
+    .unwrap();
+    let plan = prepare_from_snapshot(&pair.left, "source", &shown(&f.destination), &f.authority())
+        .unwrap();
+    assert_eq!(plan.entries(), 4);
+    let source = root.join("source/nested/.hidden");
+    std::fs::write(&source, b"modified").unwrap();
+    assert!(
+        prepare_from_snapshot(&pair.left, "source", &shown(&f.destination), &f.authority())
+            .is_err()
+    );
 }

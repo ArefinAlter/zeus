@@ -194,7 +194,7 @@ pub fn prepare_verified(
     allow_occupied: bool,
     authority: &Authority,
 ) -> Result<PreparedCopy> {
-    let started=Instant::now();
+    let started = Instant::now();
     let mut plan = worker::plan_with_target(from, to, authority, allow_occupied)?;
     worker::pin_content(&mut plan, authority, started)?;
     Ok(PreparedCopy { plan })
@@ -202,35 +202,114 @@ pub fn prepare_verified(
 
 /// Derive a frozen copy from an already verified tree observation, retaining its original digest
 /// rather than silently accepting a changed source during synchronization planning. It changes no files.
-pub fn prepare_from_snapshot(tree:&crate::compare::TreeSnapshot,relative:&str,to:&str,authority:&Authority)->Result<PreparedCopy> {
-    let started=Instant::now();(authority.check)()?;
-    if !tree.content_verified || tree.entries.len()>MAX_ENTRIES {return Err(failed("Synchronization requires a complete, content-verified source snapshot."));}
-    let root=authority.reads.directory(Path::new(&tree.root))?;
-    if root.file_id().map_err(cap_failure)?!=tree.root_identity || root.os_metadata().map_err(cap_failure)?.modified()?!=tree.root_modified {return Err(failed("The source root changed since its comparison."));}
-    let selected=Path::new(relative);
-    if selected.as_os_str().is_empty()||selected.components().any(|p|!matches!(p,std::path::Component::Normal(_))) {return Err(Failure::invalid("Choose a normal entry from the verified comparison."));}
-    let original=tree.entries.iter().find(|e|Path::new(&e.relative)==selected).ok_or_else(||failed("The source entry is absent from the verified comparison."))?;
-    let source=authority.reads.path(&shown(&Path::new(&tree.root).join(selected)))?;
-    let destination=authority.writes.path(to)?;
-    if destination.starts_with(&source) {return Err(Failure::invalid("The copy destination must be outside its source."));}
-    let destination_cap=authority.writes.directory(&destination)?;
-    (authority.path_check)(&shown(&source))?;
-    let name=source.file_name().and_then(|n|n.to_str()).ok_or_else(||failed("The selected source has an invalid name."))?.to_owned();
-    (authority.path_check)(&shown(&destination.join(&name)))?;
-    let mut entries=Vec::new();let mut bytes=0u64;
-    for entry in &tree.entries {
-        if started.elapsed()>VERIFY_TIME {return Err(failed("Synchronization copy planning exceeded its aggregate verification deadline."));}
-        let path=Path::new(&entry.relative);
-        let Ok(suffix)=path.strip_prefix(selected) else {continue;};
-        if !original.directory && !suffix.as_os_str().is_empty() {return Err(failed("The comparison has inconsistent descendants."));}
-        if !entry.directory && entry.sha256.as_ref().is_none_or(|digest|digest.len()!=64||!digest.bytes().all(|b|b.is_ascii_hexdigit())) {return Err(failed("The source snapshot lacks a verified content digest."));}
-        bytes=bytes.checked_add(entry.bytes).filter(|n|*n<=MAX_JOB_BYTES).ok_or_else(||failed("This copy exceeds its staging bound."))?;
-        entries.push(Entry {relative:utf8(suffix)?,stamp:Stamp {id:entry.identity.clone(),size:entry.bytes,directory:entry.directory,modified:entry.modified},parent_id:entry.parent_identity.clone(),content_sha256:entry.sha256.clone()});
+pub fn prepare_from_snapshot(
+    tree: &crate::compare::TreeSnapshot,
+    relative: &str,
+    to: &str,
+    authority: &Authority,
+) -> Result<PreparedCopy> {
+    let started = Instant::now();
+    (authority.check)()?;
+    if !tree.content_verified || tree.entries.len() > MAX_ENTRIES {
+        return Err(failed(
+            "Synchronization requires a complete, content-verified source snapshot.",
+        ));
     }
-    let plan=Plan {id:crate::random_id(),source:shown(&source),destination:shown(&destination),name,reads:vec![authority.reads.binding_for(&source)?],writes:vec![authority.writes.binding_for(&destination)?],destination_id:destination_cap.file_id().map_err(cap_failure)?,entries,bytes};
+    let root = authority.reads.directory(Path::new(&tree.root))?;
+    if root.file_id().map_err(cap_failure)? != tree.root_identity
+        || root.os_metadata().map_err(cap_failure)?.modified()? != tree.root_modified
+    {
+        return Err(failed("The source root changed since its comparison."));
+    }
+    let selected = Path::new(relative);
+    if selected.as_os_str().is_empty()
+        || selected
+            .components()
+            .any(|p| !matches!(p, std::path::Component::Normal(_)))
+    {
+        return Err(Failure::invalid(
+            "Choose a normal entry from the verified comparison.",
+        ));
+    }
+    let original = tree
+        .entries
+        .iter()
+        .find(|e| Path::new(&e.relative) == selected)
+        .ok_or_else(|| failed("The source entry is absent from the verified comparison."))?;
+    let source = authority
+        .reads
+        .path(&shown(&Path::new(&tree.root).join(selected)))?;
+    let destination = authority.writes.path(to)?;
+    if destination.starts_with(&source) {
+        return Err(Failure::invalid(
+            "The copy destination must be outside its source.",
+        ));
+    }
+    let destination_cap = authority.writes.directory(&destination)?;
+    (authority.path_check)(&shown(&source))?;
+    let name = source
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| failed("The selected source has an invalid name."))?
+        .to_owned();
+    (authority.path_check)(&shown(&destination.join(&name)))?;
+    let mut entries = Vec::new();
+    let mut bytes = 0u64;
+    for entry in &tree.entries {
+        if started.elapsed() > VERIFY_TIME {
+            return Err(failed(
+                "Synchronization copy planning exceeded its aggregate verification deadline.",
+            ));
+        }
+        let path = Path::new(&entry.relative);
+        let Ok(suffix) = path.strip_prefix(selected) else {
+            continue;
+        };
+        if !original.directory && !suffix.as_os_str().is_empty() {
+            return Err(failed("The comparison has inconsistent descendants."));
+        }
+        if !entry.directory
+            && entry.sha256.as_ref().is_none_or(|digest| {
+                digest.len() != 64 || !digest.bytes().all(|b| b.is_ascii_hexdigit())
+            })
+        {
+            return Err(failed(
+                "The source snapshot lacks a verified content digest.",
+            ));
+        }
+        bytes = bytes
+            .checked_add(entry.bytes)
+            .filter(|n| *n <= MAX_JOB_BYTES)
+            .ok_or_else(|| failed("This copy exceeds its staging bound."))?;
+        entries.push(Entry {
+            relative: utf8(suffix)?,
+            stamp: Stamp {
+                id: entry.identity.clone(),
+                size: entry.bytes,
+                directory: entry.directory,
+                modified: entry.modified,
+            },
+            parent_id: entry.parent_identity.clone(),
+            content_sha256: entry.sha256.clone(),
+        });
+    }
+    let plan = Plan {
+        id: crate::random_id(),
+        source: shown(&source),
+        destination: shown(&destination),
+        name,
+        reads: vec![authority.reads.binding_for(&source)?],
+        writes: vec![authority.writes.binding_for(&destination)?],
+        destination_id: destination_cap.file_id().map_err(cap_failure)?,
+        entries,
+        bytes,
+    };
     plan.validate()?;
-    for entry in &plan.entries {(authority.check)()?;worker::check_original(authority,&plan,entry)?;}
-    Ok(PreparedCopy {plan})
+    for entry in &plan.entries {
+        (authority.check)()?;
+        worker::check_original(authority, &plan, entry)?;
+    }
+    Ok(PreparedCopy { plan })
 }
 
 struct Receipt {
@@ -420,8 +499,15 @@ impl Transfers {
     /// Start or observe the exact frozen manifest already approved by the host. Existing interrupted
     /// receipts remain held; the host must explicitly authorize a separate `resume` call.
     pub fn start_prepared(&self, prepared: PreparedCopy, authority: Authority) -> Result<Value> {
-        if prepared.plan.entries.iter().any(|entry|!entry.stamp.directory && entry.content_sha256.as_ref().is_none_or(|digest|digest.len()!=64||!digest.bytes().all(|b|b.is_ascii_hexdigit()))) {
-            return Err(failed("A reviewed copy requires an exact source content digest for every file."));
+        if prepared.plan.entries.iter().any(|entry| {
+            !entry.stamp.directory
+                && entry.content_sha256.as_ref().is_none_or(|digest| {
+                    digest.len() != 64 || !digest.bytes().all(|b| b.is_ascii_hexdigit())
+                })
+        }) {
+            return Err(failed(
+                "A reviewed copy requires an exact source content digest for every file.",
+            ));
         }
         let lease = self.acquire()?;
         let store = self.store()?;

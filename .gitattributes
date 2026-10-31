@@ -1,3 +1,7 @@
 # LF in the repository and in every checkout, whatever core.autocrlf says on the machine
 # (rustfmt newline_style = "Unix" and prettier endOfLine = "lf" both require it).
 * text=auto eol=lf
+
+# Preserve upstream license bytes and the context markers in the recorded source diff.
+vendor/*/LICENSE whitespace=-blank-at-eof
+vendor/gtk-macro-upstream.patch whitespace=-blank-at-eol

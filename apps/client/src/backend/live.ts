@@ -27,7 +27,9 @@ import { ulid } from './rand.ts'
 import type { IndexDelta, IndexRow } from './files.ts'
 import { filesApi, indexFromWire, nudgeIndexSync, startIndexSync } from './files.ts'
 import { historyLabel } from '../model/eventHistory.ts'
-import { computeDynamicSegments } from '../model/segments.ts'
+import { computeTransferProgress } from '../model/segments.ts'
+import { errorOf } from '../model/downloadErrors.ts'
+import { followEnqueuedDownload } from '../lib/ui.ts'
 
 export const LIVE = backend().kind !== 'scripted'
 export const HOSTED = backend().kind === 'hosted'
@@ -109,23 +111,6 @@ interface StoreHooks {
 
 let S: StoreHooks
 
-const ERRORS: Record<string, [string, string]> = {
-  'http.forbidden': ['The server refused the file (403). A signed link that expired looks like this.', 'Get a fresh link from the site and add it again.'],
-  'http.url_expired': ['The link expired.', 'Get a fresh link from the site and add it again.'],
-  'http.not_found': ['The server has no such file (404).', 'Check the address.'],
-  'http.gone': ['The file was removed from the server (410).', 'Nothing to retry; find another source.'],
-  'http.server_error': ['The server failed (5xx).', 'Retry later.'],
-  'http.unavailable': ['The server is busy (503) and asked Zeus to wait.', 'zeusd retries on its own.'],
-}
-
-const STATUS: Record<string, string> = { '403': 'http.forbidden', '404': 'http.not_found', '410': 'http.gone', '500': 'http.server_error', '502': 'http.server_error', '503': 'http.unavailable' }
-
-function errorOf(code: string | undefined): Job['error'] | undefined {
-  if (!code) return undefined
-  const status = /^http\.status_(\d{3})$/.exec(code)?.[1]
-  const known = ERRORS[status ? (STATUS[status] ?? '') : code] ?? (code.startsWith('http.') ? ['The server answered with an error.', 'Retry, or check the address.'] : ['zeusd reported a problem with this download.', 'Retry, or remove it from the list.'])
-  return { code, message: known[0], next: known[1] }
-}
 
 function hostOf(url: string): string {
   try {
@@ -227,15 +212,15 @@ function toJob(r: RemoteJob, prev: Job | undefined): Job {
     ...(state === 'completed' ? { finished: Date.parse(r.updated_at) } : {}),
     dir: where?.dir ?? S.defaultDir(categoryOf(name, s.settings.categories)),
     source: meta.source ?? { kind: 'app', label: 'You, in Zeus' },
-    segments: computeDynamicSegments(size, r.bytes_done, s.settings.downloads.connectionsPerJob, active),
+    segments: computeTransferProgress(size, r.bytes_done, active),
     connections: s.settings.downloads.connectionsPerJob,
-    resumable: size ? 'verified' : 'unknown',
+    resumable: 'unknown',
     priority: meta.priority ?? 'normal',
     ...(gone ? { missing: true } : {}),
     ...(r.sha256 ? { sha256: r.sha256 } : {}),
     ...(art?.blake3 ? { blake3: art.blake3 } : {}),
     ...(r.quarantined ? { quarantined: true, quarantineReasons: ['zeusd quarantine'] } : {}),
-    ...(state === 'failed' || state === 'retry_scheduled' ? { error: errorOf(r.error_code) ?? errorOf('job.failed') } : {}),
+    ...(state === 'failed' || state === 'retry_scheduled' ? { error: errorOf(r.last_error?.code ?? r.error_code) ?? errorOf('job.failed') } : {}),
     ...(meta.project ? { grabberProject: meta.project } : {}),
     ...(meta.description ? { description: meta.description } : {}),
     events,
@@ -863,23 +848,34 @@ function localKey(name: string): string {
   return `zeus.local.${name}.v1`
 }
 
+// Serialize writes per slice: a slow older request must not overwrite newer state.
+const saveQueues = new Map<string, Promise<void>>()
+function saveSlice(name: string, value: unknown): Promise<void> {
+  const previous = saveQueues.get(name) ?? Promise.resolve()
+  const next = previous.catch(() => undefined).then(async () => {
+    if (SVC) await svc.put(name, value)
+    else window.localStorage.setItem(localKey(name), JSON.stringify(value))
+  })
+  saveQueues.set(name, next)
+  void next.finally(() => { if (saveQueues.get(name) === next) saveQueues.delete(name) }).catch(() => undefined)
+  return next
+}
+
+/** Persist a review before its controls are exposed; failures must remain visible. */
+export async function persistAgentReview(): Promise<void> {
+  dirty.delete('threads')
+  await saveSlice('threads', sliceValue('threads'))
+}
+
 function flush(): void {
   saveTimer = undefined
   const names = [...dirty]
   dirty.clear()
   for (const name of names) {
     const value = name === 'prefs' ? getPrefs() : sliceValue(name as Slice)
-    if (SVC) {
-      svc.put(name, value).catch((e: unknown) => {
-        if (e instanceof RemoteError && e.code === 'svc.quota') S.toast({ kind: 'warn', title: 'Not saved', desc: e.message, important: true, topic: 'system' })
-      })
-    } else {
-      try {
-        window.localStorage.setItem(localKey(name), JSON.stringify(value))
-      } catch {
-        // Kept for this window only.
-      }
-    }
+    void saveSlice(name, value).catch((e: unknown) => {
+      if (e instanceof RemoteError) S.toast({ kind: 'warn', title: 'Not saved', desc: e.message, important: true, topic: 'system' })
+    })
   }
 }
 
@@ -1019,6 +1015,9 @@ async function sendNative(items: PendingItem[]): Promise<void> {
     const failedHere = items.filter((p) => !started.has(p.id))
     if (failedHere.length) fail(r.jobs.find((j) => j.error_code)?.error_code ?? 'job.enqueue_failed', r.jobs.find((j) => j.error_message)?.error_message ?? 'zeusd refused some of these downloads.', failedHere)
     await Promise.all([pollJobs(), pollQueues()])
+    r.jobs.forEach((j, i) => {
+      if (j.job_id && items[i]) followEnqueuedDownload(items[i].id, j.job_id)
+    })
   } catch (e) {
     fail(e instanceof RemoteError ? e.code : 'client.error', e instanceof RemoteError ? e.message : 'The download could not be sent to zeusd.')
   }
@@ -1076,6 +1075,9 @@ export async function send(ids: string[]): Promise<void> {
       const failedHere = group.filter((p) => !started.has(p.id))
       if (failedHere.length) fail('job.enqueue_failed', 'zeusd refused some of these downloads.', failedHere)
       await pollJobs()
+      r.jobs.forEach((j, i) => {
+        if (j.job_id && group[i]) followEnqueuedDownload(group[i].id, j.job_id)
+      })
     } catch (e) {
       fail(e instanceof RemoteError ? e.code : 'client.error', e instanceof RemoteError ? e.message : 'The download could not be sent to zeusd.')
     }

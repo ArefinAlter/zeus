@@ -163,7 +163,7 @@ export function Composer({ draftKey, busy, access, onAccess, onSend, onStop, pla
           )}
         </div>
       </div>
-      <div class="cmp-note">{NATIVE ? "A model you chose answers, with your own key; Zeus does not check its words. It cannot approve a request." : "The agent's words are not checked by Zeus. It cannot approve a request."}</div>
+      <div class="cmp-note">{NATIVE ? "Your selected model answers using its installed-agent sign-in or API connection. Check its advice; proposed changes need your approval." : "The agent's words are not checked by Zeus. It cannot approve a request."}</div>
     </div>
   )
 }

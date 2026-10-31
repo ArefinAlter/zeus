@@ -189,7 +189,7 @@ Rules:
 2. `hello` is sent with `v: 1` (00 section 4.1 rule 4). `protocol_versions` lists what E supports; D picks the highest common (00 section 4).
 3. Capabilities:
 
-| Capability | Declared by | Meaning |
+| Capability | Implemented by | Meaning |
 |---|---|---|
 | `handoff` | E, D | `handoff.offer`, `.accept`, `.reject`, `.withdraw`. |
 | `session` | E | E can release session material (`session.request`). |
@@ -203,7 +203,7 @@ Rules:
 | `job_control` | D | `job.list`, `job.control`. |
 | `grants` | D | `grant.list`, `grant.revoke`. |
 
-A sender MUST NOT send a message whose capability is not in the negotiated intersection; the receiver answers `nm.capability_missing`.
+A sender MUST NOT send a message whose capability is not in the negotiated intersection; the receiver answers `nm.capability_missing`. Both peers MUST advertise support for capabilities they use, including when E consumes an API served by D (`approvals`, `events`, `job_control`, `grants`). The table identifies the implementation side, not an exemption from negotiation.
 4. `hello.ack` carries `limits` (all hard maxima for this connection) and `head_seq`, the newest durable event sequence.
 5. If `hello.resume.last_event_seq` is present and E later subscribes, D replays from there (section 11).
 6. Several connections may exist at once (different browsers, different profiles), at most 8. D keys them by `profile_id`. A second connection with the same `profile_id` and `sw_instance_id` closes the older one with `bye` `superseded`.
@@ -221,7 +221,7 @@ A sender MUST NOT send a message whose capability is not in the negotiated inter
     "browser": { "name": "chrome", "version": "141.0.7390.65", "platform": "win" },
     "profile_id": "5e0b1f6d9a2c47e8b3d1f0a7c6e92b41",
     "protocol_versions": [1],
-    "capabilities": ["handoff", "session", "url_refresh.refetch", "url_refresh.download_api", "fetch_proxy", "incognito"],
+    "capabilities": ["handoff", "session", "url_refresh.refetch", "url_refresh.download_api", "fetch_proxy", "incognito", "approvals", "events", "job_control", "grants"],
     "sw_instance_id": "9c1f4a7e52b84d06",
     "resume": { "last_event_seq": 48198 }
   }

@@ -527,14 +527,15 @@ async fn item_sink_metadata_is_atomic_redacted_and_ordinal_survives_skip_restore
     assert!(port.jobs.lock().unwrap().is_empty());
     assert_eq!(runtime.snapshot().item_index, 0);
     runtime.step(&port).await.unwrap();
-    let jobs = port.jobs.lock().unwrap();
-    assert_eq!(jobs.len(), 1);
-    let item = jobs[0].item.as_ref().unwrap();
-    let value = serde_json::to_string(item).unwrap();
-    assert!(!value.contains("ZEUS-CANARY-ITEM"));
-    assert!(item.url_redacted);
-    assert_eq!(jobs[0].index, 1);
-    drop(jobs);
+    {
+        let jobs = port.jobs.lock().unwrap();
+        assert_eq!(jobs.len(), 1);
+        let item = jobs[0].item.as_ref().unwrap();
+        let value = serde_json::to_string(item).unwrap();
+        assert!(!value.contains("ZEUS-CANARY-ITEM"));
+        assert!(item.url_redacted);
+        assert_eq!(jobs[0].index, 1);
+    }
     let mut snapshot = runtime.snapshot().clone();
     snapshot.report.files_enqueued = 0;
     snapshot

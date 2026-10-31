@@ -64,15 +64,13 @@ impl BrowserConnection {
 pub struct BrowserBroker {
     connections: Mutex<HashMap<ConnectionId, Arc<BrowserConnection>>>,
     pub(crate) journal: Journal,
-    clock: zeus_control::SharedClock,
 }
 impl BrowserBroker {
     /// Connect the broker to the daemon's durable consent metadata and monotonic clock.
-    pub fn new(journal: Journal, clock: zeus_control::SharedClock) -> Self {
+    pub fn new(journal: Journal, _clock: zeus_control::SharedClock) -> Self {
         Self {
             connections: Mutex::new(HashMap::new()),
             journal,
-            clock,
         }
     }
     /// Register a profile only after the host has authenticated and the hello frame is validated.
@@ -200,13 +198,26 @@ impl BrowserBroker {
                         .as_str()
                         .map(str::to_owned)
                 });
-                let reviewed_profile = tx.approval(grant.approval_id)?.and_then(|a| {
-                    a.facts.and_then(|f| {
-                        (f["browser_document_mode"] == "browser_origin")
-                            .then(|| f["browser_profile_id"].as_str().map(str::to_owned))
-                            .flatten()
-                    })
-                });
+                // Ordinary handoff/session approvals have no workflow document fields.
+                // BTreeMap indexing panics on an absent key; optional facts must use get.
+                let reviewed_profile = match tx.approval(grant.approval_id)?.and_then(|a| a.facts) {
+                    Some(facts)
+                        if facts.get("browser_document_mode").and_then(|v| v.as_str())
+                            == Some("browser_origin") =>
+                    {
+                        Some(
+                            facts
+                                .get("browser_profile_id")
+                                .and_then(|v| v.as_str())
+                                .filter(|profile| !profile.is_empty())
+                                .ok_or(zeus_journal::JournalError::Invariant(
+                                    "reviewed browser profile missing",
+                                ))?
+                                .to_owned(),
+                        )
+                    }
+                    _ => None,
+                };
                 if decided_profile
                     .as_ref()
                     .zip(reviewed_profile.as_ref())
@@ -229,51 +240,6 @@ impl BrowserBroker {
             ));
         }
         Ok(recorded.or_else(|| requested.map(str::to_owned)))
-    }
-    fn authorize(&self, r: &LeaseRequest) -> SessionResult<()> {
-        let meta = self
-            .journal
-            .meta()
-            .map_err(|_| SessionError::Protocol("journal unavailable"))?;
-        if meta.kill_switch_engaged() {
-            return Err(SessionError::Remote(zeus_types::ErrorEnvelope::from_code(
-                "policy.kill_switch_engaged",
-                "kill switch engaged",
-            )));
-        }
-        let grant = self
-            .journal
-            .read(|tx| tx.grant(r.grant_id))
-            .map_err(|_| SessionError::Protocol("journal unavailable"))?
-            .ok_or(SessionError::Protocol("grant missing"))?;
-        let job = self
-            .journal
-            .read(|tx| tx.job(r.job_id))
-            .map_err(|_| SessionError::Protocol("journal unavailable"))?
-            .ok_or(SessionError::Protocol("job missing"))?;
-        let grants = self
-            .journal
-            .read(|tx| tx.grants())
-            .map_err(|_| SessionError::Protocol("journal unavailable"))?;
-        let blocked = matches!(
-            zeus_types::grant::resolve_grant(
-                grants.iter(),
-                &r.origin,
-                Some(r.job_id),
-                job.job.spec.source.run_id,
-                Timestamp::now()
-            ),
-            zeus_types::grant::GrantResolution::Denied(_)
-        );
-        if blocked
-            || grant.scope == zeus_types::GrantScope::Never
-            || !grant.is_effective_at(Timestamp::now())
-            || !grant.applies_to(&r.origin, Some(r.job_id), job.job.spec.source.run_id)
-            || r.url.origin() != r.origin
-        {
-            return Err(SessionError::Protocol("grant does not authorize lease"));
-        }
-        Ok(())
     }
     fn authorize_refresh(&self, r: &UrlRefreshRequest) -> SessionResult<zeus_types::GrantId> {
         self.journal
@@ -310,65 +276,10 @@ impl BrowserBroker {
 }
 #[async_trait]
 impl SessionProvider for BrowserBroker {
-    async fn lease(&self, r: LeaseRequest) -> SessionResult<SessionLease> {
-        self.authorize(&r)?;
-        let profile = self.grant_profile(r.grant_id, r.profile_id.as_deref())?;
-        let connection = self.select(profile.as_deref(), capability::SESSION)?;
-        let session_id = zeus_types::IdGenerator::new().session_lease_id();
-        let ttl_ms = r.ttl.as_millis().min(900_000) as u64;
-        let request = SessionRequestBody {
-            job_id: r.job_id,
-            session_id,
-            grant_id: r.grant_id,
-            origin: r.origin.clone(),
-            url: r.url.clone(),
-            purpose: r.purpose,
-            request_headers: r.request_headers.clone(),
-            ttl_ms,
-            incognito: r.incognito,
-        };
-        let result = connection.request(request, Duration::from_secs(15)).await?;
-        self.authorize(&r)?;
-        match result {
-            ExtensionBody::SessionResponse(SessionResponseBody::Granted { session }) => {
-                let bytes: usize = session
-                    .cookies
-                    .iter()
-                    .map(|c| c.name.len() + c.value.expose().len() + c.domain.len() + c.path.len())
-                    .sum();
-                if session.session_id != session_id
-                    || session.origin != r.origin
-                    || session.issued_at > Timestamp::now().saturating_add_ms(5000)
-                    || session.ttl_ms < 1000
-                    || session.ttl_ms > ttl_ms
-                    || session.cookies.len() > 150
-                    || bytes > 128 * 1024
-                {
-                    return Err(SessionError::Protocol("invalid session lease"));
-                }
-                let elapsed = Timestamp::now()
-                    .unix_millis()
-                    .saturating_sub(session.issued_at.unix_millis())
-                    .max(0) as u64;
-                let remaining = session.ttl_ms.saturating_sub(elapsed);
-                if remaining == 0 {
-                    return Err(SessionError::Protocol("expired session material"));
-                }
-                Ok(SessionLease {
-                    lease_id: session_id,
-                    material: Arc::new(session),
-                    acquired_at: self.clock.monotonic(),
-                    ttl: Duration::from_millis(remaining),
-                })
-            }
-            ExtensionBody::SessionResponse(
-                SessionResponseBody::Denied { error }
-                | SessionResponseBody::Unavailable { error }
-                | SessionResponseBody::ConsentRequired { error },
-            )
-            | ExtensionBody::Error(ErrorBody { error }) => Err(SessionError::Remote(error)),
-            _ => Err(SessionError::Protocol("unexpected session response")),
-        }
+    async fn lease(&self, _request: LeaseRequest) -> SessionResult<SessionLease> {
+        Err(SessionError::Protocol(
+            "cookie export is disabled; use browser fetch",
+        ))
     }
     async fn refresh_url(&self, r: UrlRefreshRequest) -> SessionResult<RefreshedUrl> {
         let grant_id = self.authorize_refresh(&r)?;
@@ -417,6 +328,6 @@ impl SessionProvider for BrowserBroker {
         }
     }
     fn extension_connected(&self, profile: Option<&str>) -> bool {
-        self.select(profile, capability::SESSION).is_ok()
+        self.select(profile, capability::FETCH_PROXY).is_ok()
     }
 }

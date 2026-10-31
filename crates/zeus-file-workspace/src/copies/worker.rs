@@ -26,7 +26,9 @@ fn checked_source(
     }
     Ok((parent, name))
 }
-pub(super) fn check_original(authority:&Authority,plan:&Plan,entry:&Entry)->Result<()> {checked_source(authority,plan,entry).map(|_|())}
+pub(super) fn check_original(authority: &Authority, plan: &Plan, entry: &Entry) -> Result<()> {
+    checked_source(authority, plan, entry).map(|_| ())
+}
 fn bindings(authority: &Authority, plan: &Plan) -> Result<DirectoryCap> {
     (authority.check)()?;
     let current_reads = authority.reads.bindings()?;

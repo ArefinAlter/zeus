@@ -250,3 +250,47 @@ async fn expired_terminal_grant_cannot_authorize_browser_documents() {
         .unwrap();
     assert!(f.broker.authorize_document(&f.request).is_err());
 }
+
+#[tokio::test]
+async fn workflow_without_document_mode_cannot_authorize_browser_pages() {
+    let f = Fixture::with_terminal(true);
+    f.broker
+        .journal
+        .transact(|tx| {
+            let mut approval = tx.approval(f.grant.approval_id)?.unwrap();
+            approval
+                .facts
+                .as_mut()
+                .unwrap()
+                .remove("browser_document_mode");
+            tx.put_approval(&approval)
+        })
+        .unwrap();
+    assert!(f.broker.authorize_document(&f.request).is_err());
+}
+
+#[tokio::test]
+async fn incomplete_workflow_review_cannot_borrow_a_connected_profile() {
+    let f = Fixture::with_terminal(true);
+    for profile in [None, Some(json!(null)), Some(json!(17)), Some(json!(""))] {
+        f.broker
+            .journal
+            .transact(|tx| {
+                let mut approval = tx.approval(f.grant.approval_id)?.unwrap();
+                let facts = approval.facts.as_mut().unwrap();
+                if let Some(value) = profile {
+                    facts.insert("browser_profile_id".into(), value);
+                } else {
+                    facts.remove("browser_profile_id");
+                }
+                tx.put_approval(&approval)
+            })
+            .unwrap();
+        assert!(
+            f.broker
+                .grant_profile(f.grant.id, Some(&f.request.profile_id))
+                .is_err()
+        );
+        assert!(f.broker.authorize_document(&f.request).is_err());
+    }
+}

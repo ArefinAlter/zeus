@@ -130,7 +130,7 @@ fn terminal_text(value: &str) -> String {
     value.chars().filter(|c|!c.is_control() && !matches!(c,'\u{200b}'..='\u{200f}'|'\u{202a}'..='\u{202e}'|'\u{2060}'..='\u{2069}'|'\u{feff}')).collect()
 }
 
-fn open_review_terminal() -> ApiResult<(std::fs::File, std::fs::File)> {
+fn open_review_terminal() -> ApiResult<(std::fs::File, zeus_api::transport::TerminalOutput)> {
     use std::io::IsTerminal;
     #[cfg(windows)]
     let (input_path, output_path) = ("CONIN$", "CONOUT$");
@@ -141,7 +141,10 @@ fn open_review_terminal() -> ApiResult<(std::fs::File, std::fs::File)> {
         .write(true)
         .open(input_path)
         .map_err(|_| ApiError::human_required("controlling-terminal executable review"))?;
+    // Windows IsTerminal uses GetConsoleMode, which requires GENERIC_READ even on CONOUT$.
+    // Keep the controlling-console check; a detached process must still be refused.
     let output = std::fs::OpenOptions::new()
+        .read(cfg!(windows))
         .write(true)
         .open(output_path)
         .map_err(|_| ApiError::human_required("controlling-terminal executable review"))?;
@@ -150,6 +153,8 @@ fn open_review_terminal() -> ApiResult<(std::fs::File, std::fs::File)> {
             "controlling-terminal executable review",
         ));
     }
+    let output = zeus_api::transport::TerminalOutput::new(output)
+        .map_err(|_| ApiError::human_required("controlling-terminal executable review"))?;
     Ok((input, output))
 }
 
@@ -423,6 +428,23 @@ impl TrustedPrograms {
 #[cfg(test)]
 mod offline_tests {
     use super::*;
+    #[cfg(windows)]
+    mod console_regression {
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tools/test-support/windows-console.rs"
+        ));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn offline_review_requires_a_real_controlling_console() {
+        console_regression::assert_console_gate(
+            "trust::offline_tests::offline_review_requires_a_real_controlling_console",
+            || open_review_terminal().is_ok(),
+        );
+    }
+
     #[test]
     fn incomplete_installation_is_refused_and_candidates_bind_exact_paths_and_bytes() {
         let dir = tempfile::tempdir().unwrap();

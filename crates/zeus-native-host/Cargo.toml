@@ -40,3 +40,6 @@ tempfile.workspace = true
 proptest.workspace = true
 assert_cmd.workspace = true
 predicates.workspace = true
+
+[build-dependencies]
+static_vcruntime.workspace = true

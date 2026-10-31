@@ -2996,8 +2996,7 @@ dependencies = [
 [[package]]
 name = "librqbit-utp"
 version = "0.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4f3bfdc73944bc76cab24d5690a98816770040a654c449edf5ff2b9ba22626aa"
+source = "git+https://github.com/ikatson/librqbit-utp?rev=f119a999657d66fe2c2322613428241ce8a69f23#f119a999657d66fe2c2322613428241ce8a69f23"
 dependencies = [
  "bitvec",
  "dontfrag",
@@ -4361,9 +4360,9 @@ dependencies = [
 
 [[package]]
 name = "ringbuf"
-version = "0.4.8"
+version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fe47b720588c8702e34b5979cb3271a8b1842c7cb6f57408efa70c779363488c"
+checksum = "b58b631e416dd7d84549d7e6a50f767e111f9b03e30d04f40072f6618f386aaf"
 dependencies = [
  "crossbeam-utils",
  "portable-atomic",
@@ -5072,6 +5071,12 @@ name = "static_assertions"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
+
+[[package]]
+name = "static_vcruntime"
+version = "3.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ff7589a1859b09232522bb9edf076ca7fcf14ded96685d3fa629db73023ffbb7"
 
 [[package]]
 name = "string_cache"
@@ -6632,7 +6637,7 @@ dependencies = [
 
 [[package]]
 name = "zeus-a2a"
-version = "0.1.0-alpha.1"
+version = "0.1.0-alpha.2"
 dependencies = [
  "jsonschema",
  "proptest",
@@ -6646,7 +6651,7 @@ dependencies = [
 
 [[package]]
 name = "zeus-a2a-bridge"
-version = "0.1.0-alpha.1"
+version = "0.1.0-alpha.2"
 dependencies = [
  "async-trait",
  "blake3",
@@ -6665,7 +6670,7 @@ dependencies = [
 
 [[package]]
 name = "zeus-api"
-version = "0.1.0-alpha.1"
+version = "0.1.0-alpha.2"
 dependencies = [
  "async-trait",
  "blake3",
@@ -6711,7 +6716,7 @@ dependencies = [
 
 [[package]]
 name = "zeus-cli"
-version = "0.1.0-alpha.1"
+version = "0.1.0-alpha.2"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -6730,6 +6735,7 @@ dependencies = [
  "ratatui",
  "serde",
  "serde_json",
+ "static_vcruntime",
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
@@ -6752,7 +6758,7 @@ dependencies = [
 
 [[package]]
 name = "zeus-cloud"
-version = "0.1.0-alpha.1"
+version = "0.1.0-alpha.2"
 dependencies = [
  "async-trait",
  "axum",
@@ -6789,7 +6795,7 @@ dependencies = [
 
 [[package]]
 name = "zeus-daemon"
-version = "0.1.0-alpha.1"
+version = "0.1.0-alpha.2"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -6815,6 +6821,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.11.0",
+ "static_vcruntime",
  "tempfile",
  "thiserror 2.0.21",
  "time",
@@ -6872,7 +6879,7 @@ dependencies = [
 
 [[package]]
 name = "zeus-file-workspace"
-version = "0.1.0-alpha.1"
+version = "0.1.0-alpha.2"
 dependencies = [
  "hex",
  "rand 0.10.3",
@@ -6916,6 +6923,7 @@ dependencies = [
  "httpdate",
  "percent-encoding",
  "reqwest",
+ "rustls",
  "serde_json",
  "thiserror 2.0.21",
  "tokio",
@@ -6945,7 +6953,7 @@ dependencies = [
 
 [[package]]
 name = "zeus-llm"
-version = "0.1.0-alpha.1"
+version = "0.1.0-alpha.2"
 dependencies = [
  "async-trait",
  "base64 0.23.1",
@@ -6974,7 +6982,7 @@ dependencies = [
 
 [[package]]
 name = "zeus-mcp"
-version = "0.1.0-alpha.1"
+version = "0.1.0-alpha.2"
 dependencies = [
  "async-trait",
  "axum",
@@ -7005,13 +7013,14 @@ dependencies = [
 
 [[package]]
 name = "zeus-native-host"
-version = "0.1.0-alpha.1"
+version = "0.1.0-alpha.2"
 dependencies = [
  "assert_cmd",
  "predicates",
  "proptest",
  "serde",
  "serde_json",
+ "static_vcruntime",
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
@@ -7043,7 +7052,7 @@ dependencies = [
 
 [[package]]
 name = "zeus-sources"
-version = "0.1.0-alpha.1"
+version = "0.1.0-alpha.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -7104,7 +7113,7 @@ dependencies = [
 
 [[package]]
 name = "zeus-workflow"
-version = "0.1.0-alpha.1"
+version = "0.1.0-alpha.2"
 dependencies = [
  "async-trait",
  "blake3",

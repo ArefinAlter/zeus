@@ -85,6 +85,10 @@ pub const TABLE: &[ToolAccess] = &[
         "zeus_artifacts",
         Access::Read,
         &[
+            ("get", Access::Read),
+            ("list", Access::Read),
+            ("lineage", Access::Read),
+            ("maintenance", Access::Organize),
             ("ingest", Access::Download),
             ("lifecycle_preview", Access::Organize),
             ("lifecycle_apply", Access::Organize),
@@ -169,6 +173,25 @@ fn deciding(action: &str) -> bool {
     .any(|p| a.starts_with(p))
 }
 
+/// Only explicitly enumerated read operations may execute without a desktop review.
+pub fn requires_review(name: &str, args: &Value) -> bool {
+    match name {
+        "zeus_probe" | "zeus_status" | "zeus_wait" | "zeus_verify" | "zeus_session_list"
+        | "zeus_files_list" => false,
+        "zeus_artifacts" => !matches!(action_of(args).as_deref(), Some("get" | "list" | "lineage")),
+        "zeus_inbox" => !matches!(
+            action_of(args).as_deref(),
+            Some("packages_list" | "package_get" | "submission_get")
+        ),
+        "zeus_sources" => !matches!(
+            action_of(args).as_deref(),
+            Some("accounts" | "list" | "get")
+        ),
+        "zeus_files" => action_of(args).as_deref() != Some("status"),
+        _ => true,
+    }
+}
+
 /// What a thread may call, and with what limits.
 #[derive(Debug, Clone)]
 pub struct Policy {
@@ -199,6 +222,9 @@ impl Policy {
 
     /// Decide whether a call may go to the daemon. `Err` is the reason shown to the person and the model.
     pub fn check(&self, name: &str, args: &Value) -> Result<(), String> {
+        let mut normalized = args.clone();
+        normalize_arguments(name, &mut normalized);
+        let args = &normalized;
         let Some((_, level, actions)) = TABLE.iter().find(|(n, _, _)| *n == name) else {
             return Err("there is no such tool".into());
         };
@@ -221,12 +247,12 @@ impl Policy {
                 return Err("the agent cannot select another inbox owner".into());
             }
         }
-        if name == "zeus_files"
+        if matches!(name, "zeus_files" | "zeus_artifacts")
             && action
                 .as_deref()
                 .is_none_or(|a| !actions.iter().any(|(known, _)| *known == a))
         {
-            return Err("there is no such file action".into());
+            return Err("there is no such file or artifact action".into());
         }
         if name == "zeus_sources"
             && action
@@ -304,6 +330,13 @@ fn full_schema(name: &str) -> Option<Value> {
         .map(|t| Value::Object(t.input_schema))
 }
 
+/// Normalize model encodings before both policy checks and the human review.
+pub fn normalize_arguments(name: &str, args: &mut Value) {
+    if let Some(schema) = full_schema(name) {
+        coerce(&schema, args);
+    }
+}
+
 fn wants_container(schema: &Value) -> bool {
     let ty = schema.get("type").and_then(Value::as_str);
     if matches!(ty, Some("object" | "array")) {
@@ -360,6 +393,11 @@ pub fn coerce(schema: &Value, value: &mut Value) {
 
 /// A redacted public timeline projection; never pass this projection back as executable parameters.
 pub fn input_preview(value: &Value) -> Value {
+    trim_value(&review_preview(value), 600, 30)
+}
+
+/// All review entries, with private material redacted but no hidden tail of operations.
+pub fn review_preview(value: &Value) -> Value {
     fn clean(value: &Value) -> Value {
         match value {
             Value::Object(map) => Value::Object(
@@ -405,7 +443,7 @@ pub fn input_preview(value: &Value) -> Value {
             _ => value.clone(),
         }
     }
-    trim_value(&clean(value), 600, 30)
+    clean(value)
 }
 
 /// Shorten what goes to the model: strings, lists and the whole text are bounded.
@@ -726,10 +764,7 @@ impl Executor {
                 .pointer("/required")
                 .and_then(Value::as_array)
                 .is_some_and(|r| r.iter().any(|x| x == "idempotency_key"));
-            if needs_key
-                && let Some(o) = args.as_object_mut()
-                && !o.contains_key("idempotency_key")
-            {
+            if needs_key && let Some(o) = args.as_object_mut() {
                 o.insert("idempotency_key".into(), json!(key));
             }
         }
@@ -760,6 +795,47 @@ mod tests {
             skill_tools: None,
             max_batch: 50,
         }
+    }
+
+    #[test]
+    fn mutations_and_unknown_actions_require_an_exact_review() {
+        let maintenance =
+            json!({"request": {"action": "maintenance", "phase": "apply", "request": {}}});
+        assert!(
+            policy(Access::Read)
+                .check("zeus_artifacts", &maintenance)
+                .is_err()
+        );
+        assert!(requires_review("zeus_artifacts", &maintenance));
+        assert!(requires_review(
+            "zeus_artifacts",
+            &json!({"request":{"action":"future_write"}})
+        ));
+        assert!(
+            policy(Access::Organize)
+                .check(
+                    "zeus_artifacts",
+                    &json!({"request":{"action":"future_write"}})
+                )
+                .is_err()
+        );
+        assert!(requires_review("zeus_enqueue", &json!({})));
+        let oversized =
+            json!({"urls": serde_json::to_string(&vec!["https://example.org/a"; 51]).unwrap()});
+        assert!(
+            policy(Access::Download)
+                .check("zeus_enqueue", &oversized)
+                .is_err()
+        );
+        assert!(!requires_review(
+            "zeus_artifacts",
+            &json!({"request":"{\"action\":\"list\"}"})
+        ));
+        let preview = review_preview(
+            &json!({"urls": (0..50).map(|i| format!("https://example.org/{i}?token=private")).collect::<Vec<_>>()}),
+        );
+        assert_eq!(preview["urls"].as_array().unwrap().len(), 50);
+        assert!(!preview.to_string().contains("private"));
     }
 
     #[test]

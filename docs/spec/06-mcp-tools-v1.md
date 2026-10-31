@@ -120,7 +120,9 @@ stop polling that job.
 
 ### 3.4 Catalogue stability and caching
 
-1. `tools/list` returns the thirteen tools of section 6 in the fixed order of the table in section 6, in one page, with no `nextCursor`. The list MUST NOT vary per connection, per client, per credential or per protocol revision, and MUST NOT change during the life of a process (MCP requires that it not vary per connection; Zeus makes it static per build). A narrowed credential does not hide tools: the daemon refuses the call instead.
+**Current security restriction:** Until a trusted human approval surface is implemented, the server publishes only `zeus_probe`, `zeus_status`, `zeus_wait`, `zeus_verify`, `zeus_session_list`, and `zeus_files_list`, and rejects direct calls to other tools. The full catalogue below describes the reference protocol rather than the current exposed authority. The restricted implementation does not currently advertise the catalogue digest in `tools/list`; clients must not assume digest pinning is active.
+
+1. The reference catalogue contains the fifteen tools of section 6 in table order. A restricted server publishes its allowed subset in the same order, in one page, with no `nextCursor`. Its list MUST NOT vary per connection, client, credential or protocol revision, and MUST NOT change during the life of a process.
 2. Modern results carry `ttlMs: 3600000` and `cacheScope: "public"` for `tools/list`, `prompts/list`, `resources/list` and `resources/templates/list` (they contain no user data), and `ttlMs: 0` with `cacheScope: "private"` for `resources/read`.
 3. The `tools/list` result carries `_meta["dev.zeus/tools_version"]: 1` and `_meta["dev.zeus/catalogue_blake3"]`: the lowercase hex BLAKE3 digest of the JCS form (00 section 7) of the `tools` array. The digest is a build constant, so a user or a client can pin it and notice a changed catalogue (a "rug pull" in MCP threat terms). A CI snapshot test fixes it per release.
 4. Tools named in section 11 are never listed by a v1 server, even as stubs.
@@ -1529,17 +1531,17 @@ Measured on the wire definitions derived from this document and the schema file 
 
 | Part | Bytes | About tokens |
 |---|---|---|
-| Fifteen descriptions | 3,571 | 893 |
-| Fifteen input schemas | 18,267 | 4,567 |
+| Fifteen descriptions | 3,533 | 883 |
+| Fifteen input schemas | 18,644 | 4,661 |
 | Fifteen output schemas | 13,589 | 3,398 |
-| Whole `tools` array (with names, titles, annotations) | 39,551 | 9,888 |
-| The same without `outputSchema` | 25,599 | 6,400 |
+| Whole `tools` array (with names, titles, annotations) | 39,890 | 9,973 |
+| The same without `outputSchema` | 26,061 | 6,515 |
 | Largest single tool definition (`zeus_sources`) | 4,032 | 1,008 |
 
 Rules:
 
 1. The compact `tools` array MUST stay at or below 40,960 bytes and every single tool definition at or below 4,096 bytes; a CI test fails otherwise and reports the numbers above.
-2. The generated catalogue is embedded by the Rust server, including annotations and schemas; `--check` rejects a stale embedded file. Regenerate with `node mcp-catalogue.mjs --write`. The `tools` array a server publishes MUST be JCS-equal (00 section 7) to the output of `node mcp-catalogue.mjs --json`; an implementation MAY simply embed that output. Reference catalogue digest of this draft: `4fc2e1da9976c3c55ea07bca7c57c8c2c6a93674e2f0fa37ee17700efc6e5b91`; `--check` fails when this line and the computed digest disagree.
+2. The generated catalogue is embedded by the Rust server, including annotations and schemas; `--check` rejects a stale embedded file. Regenerate with `node mcp-catalogue.mjs --write`. The full catalogue is the output of `node mcp-catalogue.mjs --json`; a security-restricted server MAY publish the ordered subset described in section 3.4, with each published definition matching the reference entry. Reference catalogue digest of this draft: `2276e7d09d49d589baca071babe381d31b4f241c88202d86a8915639b4246c29`; `--check` fails when this line and the computed digest disagree.
 3. Output schemas keep structure only (section 5.3 item 3); descriptions are not repeated in output schemas because the model reads values, not output documentation.
 4. Outputs are capped (section 5.3 item 5) and paged (section 5.7); per-tool estimates are in section 6.
 5. The text content block duplicates `structuredContent`. A client that shows the model both pays twice; MCP recommends the text block for clients that read only `content`, so Zeus sends it (section 16, O6).
@@ -1576,7 +1578,7 @@ Rules:
 An implementation of this document passes:
 
 1. **Schema conformance.** Every `structuredContent` produced in the test suite validates against the full `*Result` definition of the schema file, and every argument sample against the `*Input` definition; the wire schemas are derived as sections 5.2 and 5.3 say and accept and reject the same input corpus as the full definitions, except for the documented cross-field rules.
-2. **Catalogue.** `tools/list` has the thirteen tools in order and its `tools` array is JCS-equal to the reference catalogue (section 12 rule 2); names match `^zeus_[a-z0-9_]{1,59}$`; the annotation map validates against `CatalogueAnnotations`; titles and descriptions meet section 5.1; the size budget of section 12 holds; the digest is stable across two runs; the list is identical for stdio and HTTP and for every protocol revision.
+2. **Catalogue.** `tools/list` has the permitted tools in reference order and each published definition is JCS-equal to its reference entry (section 12 rule 2); names match `^zeus_[a-z0-9_]{1,59}$`; the annotation map validates against `CatalogueAnnotations`; titles and descriptions meet section 5.1; the size budget of section 12 holds; the digest is stable across two runs; the list is identical for stdio and HTTP and for every protocol revision.
 3. **Errors.** Unknown tool and non-object arguments are protocol errors; every other failure is `isError: true` with a valid `ToolError`, the text rendering of section 5.4 and the `next` derivation tables (one test per class and per listed code).
 4. **Idempotency.** Kill the response stream after the daemon executed `zeus_enqueue`, retry with the same key: exactly one job exists and the second answer equals the first; reuse with other arguments fails with `api.idempotency_conflict`; a dry run followed by a real call with the same key succeeds.
 5. **Waiting.** The `zeus_wait` matrix: each `until` value, with and without `since`, timeouts and clamping, an `awaiting_approval` job that does not end a `since` wait, progress values strictly increasing, no notification after the response.

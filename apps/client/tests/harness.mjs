@@ -31,14 +31,15 @@ export async function startHarness({ home, fresh = false, env = {} } = {}) {
   let stderr = ''
   child.stderr.on('data', (d) => (stderr += d))
   const info = await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('harness did not start')), 30000)
+    timer.unref()
     let buf = ''
     child.stdout.on('data', (d) => {
       buf += d
       const line = buf.split('\n').find((l) => l.startsWith('{'))
-      if (line) resolve(JSON.parse(line))
+      if (line) { clearTimeout(timer); resolve(JSON.parse(line)) }
     })
-    child.on('exit', (c) => reject(new Error(`harness exited ${c}: ${stderr}`)))
-    setTimeout(() => reject(new Error('harness did not start')), 30000)
+    child.on('exit', (c) => { clearTimeout(timer); reject(new Error(`harness exited ${c}: ${stderr}`)) })
   })
   const call = async (method, path, body) => {
     const r = await fetch(info.url + path, {
@@ -77,12 +78,14 @@ export async function startHarness({ home, fresh = false, env = {} } = {}) {
     async stop({ kill = false } = {}) {
       if (exited) return
       // Subscribe at spawn time: shutdown may exit before its HTTP response resolves.
-      const timer = setTimeout(() => { if (!exited) child.kill() }, 30000)
+      let forced = false
+      const timer = setTimeout(() => { if (!exited) { forced = true; child.kill() } }, 40000)
       timer.unref()
       try {
         if (kill) child.kill()
-        else await fetch(info.url + '/__harness/shutdown', { method: 'POST', headers: { authorization: `Bearer ${info.token}` }, signal: AbortSignal.timeout(5000) }).catch(() => undefined)
+        else await fetch(info.url + '/__harness/shutdown', { method: 'POST', headers: { authorization: `Bearer ${info.token}` }, signal: AbortSignal.timeout(35000) }).then(r => r.arrayBuffer()).catch(() => undefined)
         await closed
+        if (!kill && forced) throw new Error('The fixture engine did not shut down cleanly; forced termination was required.')
       } finally { clearTimeout(timer) }
     },
     stderr: () => stderr,

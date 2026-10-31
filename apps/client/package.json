@@ -1,7 +1,7 @@
 {
   "name": "zeus-client",
   "private": true,
-  "version": "0.1.0-alpha.1",
+  "version": "0.1.0-alpha.2",
   "description": "Zeus alpha desktop: downloads, media, file management, reviewed uploads, workflows, artifact library and optional team connections. The native app supervises its own engine; hosted and isolated test backends remain separate.",
   "license": "Apache-2.0",
   "author": "Verne Ltd.",
@@ -29,6 +29,7 @@
     "preact": "10.29.8"
   },
   "devDependencies": {
+    "@playwright/test": "1.60.0",
     "@tauri-apps/cli": "2.11.1",
     "typescript": "5.9.3",
     "vite": "7.3.7"

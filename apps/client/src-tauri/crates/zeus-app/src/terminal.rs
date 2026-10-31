@@ -27,6 +27,7 @@ fn arguments(action: &str, id: &str) -> Result<Vec<String>> {
         "revoke" if valid_id => vec!["cloud", "accounts", "revoke", id],
         "approve" if valid_id => vec!["approvals", "approve", id],
         "review" if id.is_empty() => vec!["tui"],
+        "download-tui" if id.is_empty() => vec![],
         _ => {
             return Err(Failure::invalid(
                 "Choose account setup, cloud sign-in/lifecycle or approval review.",
@@ -43,12 +44,23 @@ fn ps_quote(s: &str) -> String {
 
 /// Launch a separate, visible terminal. Approval/account changes still require physical human review.
 pub fn open(home: &AppHome, bin_dir: &Path, action: &str, id: &str) -> Result<()> {
-    let args = arguments(action, id)?;
-    let program = crate::supervisor::program(bin_dir, "zeus");
+    let mut args = arguments(action, id)?;
+    let companion = action == "download-tui";
+    let program = crate::supervisor::program(bin_dir, if companion { "zeus-tui" } else { "zeus" });
+    if companion {
+        args.extend([
+            "--desktop-home".into(),
+            home.root.to_string_lossy().into_owned(),
+            "--cli".into(),
+            crate::supervisor::program(bin_dir, "zeus")
+                .to_string_lossy()
+                .into_owned(),
+        ]);
+    }
     if !program.is_file() {
         return Err(Failure::new(
             "engine.not_installed",
-            "The bundled Zeus CLI is missing. Reinstall Zeus.",
+            "The bundled Zeus terminal program is missing. Reinstall Zeus.",
         ));
     }
     #[cfg(windows)]
@@ -148,7 +160,7 @@ pub fn open(home: &AppHome, bin_dir: &Path, action: &str, id: &str) -> Result<()
     command
         .spawn()
         .map(|_| ())
-        .map_err(|_| Failure::new("app.terminal", "The review terminal could not be opened."))
+        .map_err(|_| Failure::new("app.terminal", "The Zeus terminal could not be opened."))
 }
 
 #[cfg(test)]
@@ -180,7 +192,9 @@ mod tests {
             arguments("oauth-disconnect-remote", "research").unwrap(),
             ["cloud", "auth", "disconnect", "research", "--revoke-remote"]
         );
+        assert!(arguments("download-tui", "").unwrap().is_empty());
         for (action, id) in [
+            ("download-tui", "--cli=untrusted"),
             ("source-configure", "extra"),
             ("source-revoke", "--all"),
             ("source-revoke", "a;echo x"),

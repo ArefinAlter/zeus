@@ -1911,12 +1911,9 @@ dependencies = [
 [[package]]
 name = "glib-macros"
 version = "0.18.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0bb0228f477c0900c880fd78c8759b95c7636dbd7842707f49e132378aa2acdc"
 dependencies = [
  "heck 0.4.1",
  "proc-macro-crate 2.0.2",
- "proc-macro-error",
  "proc-macro2",
  "quote",
  "syn 2.0.119",
@@ -1991,11 +1988,8 @@ dependencies = [
 [[package]]
 name = "gtk3-macros"
 version = "0.18.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "52ff3c5b21f14f0736fed6dcfc0bfb4225ebf5725f3c0209edeec181e4d73e9d"
 dependencies = [
  "proc-macro-crate 1.3.1",
- "proc-macro-error",
  "proc-macro2",
  "quote",
  "syn 2.0.119",
@@ -3670,30 +3664,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "proc-macro-error"
-version = "1.0.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "da25490ff9892aab3fcf7c36f08cfb902dd3e71ca0f9f9517bea02a73a5ce38c"
-dependencies = [
- "proc-macro-error-attr",
- "proc-macro2",
- "quote",
- "syn 1.0.109",
- "version_check",
-]
-
-[[package]]
-name = "proc-macro-error-attr"
-version = "1.0.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a1be40180e52ecc98ad80b184934baf3d0d29f979574e439af5a55274b35f869"
-dependencies = [
- "proc-macro2",
- "quote",
- "version_check",
-]
-
-[[package]]
 name = "proc-macro2"
 version = "1.0.107"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4700,6 +4670,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
 
 [[package]]
+name = "static_vcruntime"
+version = "3.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ff7589a1859b09232522bb9edf076ca7fcf14ded96685d3fa629db73023ffbb7"
+
+[[package]]
 name = "string_cache"
 version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4744,16 +4720,6 @@ dependencies = [
  "base64 0.21.7",
  "serde",
  "serde_json",
-]
-
-[[package]]
-name = "syn"
-version = "1.0.109"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "72b64191b275b66ffe2469e8af2c1cfe3bafa67b529ead792a6d0160888b4237"
-dependencies = [
- "proc-macro2",
- "unicode-ident",
 ]
 
 [[package]]
@@ -6836,7 +6802,7 @@ dependencies = [
 
 [[package]]
 name = "zeus-api"
-version = "0.1.0-alpha.1"
+version = "0.1.0-alpha.2"
 dependencies = [
  "async-trait",
  "blake3",
@@ -6865,7 +6831,7 @@ dependencies = [
 
 [[package]]
 name = "zeus-app"
-version = "0.1.0-alpha.1"
+version = "0.1.0-alpha.2"
 dependencies = [
  "axum",
  "base64 0.23.1",
@@ -6892,7 +6858,7 @@ dependencies = [
 
 [[package]]
 name = "zeus-app-agent"
-version = "0.1.0-alpha.1"
+version = "0.1.0-alpha.2"
 dependencies = [
  "argon2",
  "base64 0.23.1",
@@ -6921,7 +6887,7 @@ dependencies = [
 
 [[package]]
 name = "zeus-app-ext"
-version = "0.1.0-alpha.1"
+version = "0.1.0-alpha.2"
 dependencies = [
  "hex",
  "rand 0.10.3",
@@ -6935,7 +6901,7 @@ dependencies = [
 
 [[package]]
 name = "zeus-app-grab"
-version = "0.1.0-alpha.1"
+version = "0.1.0-alpha.2"
 dependencies = [
  "axum",
  "hex",
@@ -6959,7 +6925,7 @@ dependencies = [
 
 [[package]]
 name = "zeus-app-index"
-version = "0.1.0-alpha.1"
+version = "0.1.0-alpha.2"
 dependencies = [
  "base64 0.23.1",
  "hex",
@@ -6984,7 +6950,7 @@ dependencies = [
 
 [[package]]
 name = "zeus-app-integration"
-version = "0.1.0-alpha.1"
+version = "0.1.0-alpha.2"
 dependencies = [
  "directories",
  "hex",
@@ -7006,7 +6972,7 @@ dependencies = [
 
 [[package]]
 name = "zeus-client"
-version = "0.1.0-alpha.1"
+version = "0.1.0-alpha.2"
 dependencies = [
  "serde",
  "serde_json",
@@ -7023,7 +6989,7 @@ dependencies = [
 
 [[package]]
 name = "zeus-cloud"
-version = "0.1.0-alpha.1"
+version = "0.1.0-alpha.2"
 dependencies = [
  "async-trait",
  "base64 0.23.1",
@@ -7057,7 +7023,7 @@ dependencies = [
 
 [[package]]
 name = "zeus-file-workspace"
-version = "0.1.0-alpha.1"
+version = "0.1.0-alpha.2"
 dependencies = [
  "hex",
  "rand 0.10.3",
@@ -7100,6 +7066,7 @@ dependencies = [
  "httpdate",
  "percent-encoding",
  "reqwest",
+ "rustls",
  "serde_json",
  "thiserror 2.0.21",
  "tokio",
@@ -7113,7 +7080,7 @@ dependencies = [
 
 [[package]]
 name = "zeus-llm"
-version = "0.1.0-alpha.1"
+version = "0.1.0-alpha.2"
 dependencies = [
  "async-trait",
  "base64 0.23.1",
@@ -7133,7 +7100,7 @@ dependencies = [
 
 [[package]]
 name = "zeus-mcp"
-version = "0.1.0-alpha.1"
+version = "0.1.0-alpha.2"
 dependencies = [
  "async-trait",
  "blake3",
@@ -7156,10 +7123,11 @@ dependencies = [
 
 [[package]]
 name = "zeus-native-host"
-version = "0.1.0-alpha.1"
+version = "0.1.0-alpha.2"
 dependencies = [
  "serde",
  "serde_json",
+ "static_vcruntime",
  "thiserror 2.0.21",
  "tokio",
  "tracing",
@@ -7190,7 +7158,7 @@ dependencies = [
 
 [[package]]
 name = "zeus-sources"
-version = "0.1.0-alpha.1"
+version = "0.1.0-alpha.2"
 dependencies = [
  "async-trait",
  "bytes",
@@ -7244,7 +7212,7 @@ dependencies = [
 
 [[package]]
 name = "zeus-workflow"
-version = "0.1.0-alpha.1"
+version = "0.1.0-alpha.2"
 dependencies = [
  "async-trait",
  "blake3",

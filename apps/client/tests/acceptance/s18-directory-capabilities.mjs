@@ -21,10 +21,10 @@ try {
   const cfg = await h.get('/native/v1/index/config')
   cfg.roots.push(...[reads, writes].map(path => ({ path, include: true, monitor_changes: false, rescan_every_hours: null, download: false, manage_files: path === writes })))
   await h.put('/native/v1/index/config', cfg)
-  const refuse = async (name, route, body) => {
+  const refuse = async (name, route, body, expectedCode) => {
     let error
     try { await h.post(route, body) } catch (e) { error = e }
-    check(name, !!error && error.status >= 400 && !!error.code)
+    check(name, !!error && error.status >= 400 && !!error.code && (!expectedCode || error.code === expectedCode))
   }
   const waitCopy = async (id) => until(async () => {
     const job = await h.post('/native/v1/files/copy/status', { id })
@@ -42,8 +42,8 @@ try {
   const copy = await h.post('/native/v1/files/copy/start', { path: join(reads, 'tree'), dir: writes })
   const copied = await waitCopy(copy.id)
   check('background recursive copy keeps hidden contents and byte totals', copied.state === 'complete' && copied.bytes === 12 && copied.files === 1 && readFileSync(join(writes, 'tree', 'inner', '.hidden'), 'utf8') === 'nested bytes')
-  const repeat = await h.post('/native/v1/files/copy/start', { path: join(reads, 'tree'), dir: writes })
-  check('recursive copy refuses an occupied destination', (await waitCopy(repeat.id)).state === 'failed' && readFileSync(join(writes, 'tree', 'inner', '.hidden'), 'utf8') === 'nested bytes')
+  await refuse('recursive copy rejects an occupied destination during preflight', '/native/v1/files/copy/start', { path: join(reads, 'tree'), dir: writes }, 'app.exists')
+  check('refused copy leaves existing destination bytes unchanged', readFileSync(join(writes, 'tree', 'inner', '.hidden'), 'utf8') === 'nested bytes')
   const moved = await h.post('/native/v1/files/rename', { path: join(writes, 'tree'), name: 'renamed tree' })
   check('directory rename has an identity-backed durable receipt', moved.can_undo && readFileSync(join(writes, 'renamed tree', 'inner', '.hidden'), 'utf8') === 'nested bytes')
   await h.post('/native/v1/files/history/undo', { id: moved.id })
@@ -56,8 +56,8 @@ try {
   await refuse('a final junction cannot be renamed as a real folder', '/native/v1/files/rename', { path: link, name: 'moved link' })
   const treeLink = join(reads, 'tree', 'linked outside')
   symlinkSync(outside, treeLink, process.platform === 'win32' ? 'junction' : 'dir')
-  const badTree = await h.post('/native/v1/files/copy/start', { path: join(reads, 'tree'), dir: folder.path })
-  check('recursive preflight refuses a linked child before producing output', (await waitCopy(badTree.id)).state === 'failed' && !existsSync(join(folder.path, 'tree')))
+  await refuse('recursive preflight refuses a linked child', '/native/v1/files/copy/start', { path: join(reads, 'tree'), dir: folder.path })
+  check('refused linked tree produces no output', !existsSync(join(folder.path, 'tree')))
   rmSync(treeLink); rmSync(link)
   // No mutation is active: replace the enabled read root after its identity was captured by Settings.
   renameSync(reads, join(home, 'old read scope')); mkdirSync(reads)

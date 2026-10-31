@@ -42,19 +42,9 @@ fn ensure_ready(app: &App) -> Result<()> {
 
 /// Strip the Windows verbatim prefix so paths read as a person writes them.
 pub fn display_path(p: &str) -> String {
-    p.strip_prefix(r"\\?\").unwrap_or(p).to_owned()
-}
-
-fn clean_paths(v: &mut Value) {
-    match v {
-        Value::String(s) => {
-            if s.starts_with(r"\\?\") {
-                *s = display_path(s);
-            }
-        }
-        Value::Array(a) => a.iter_mut().for_each(clean_paths),
-        Value::Object(o) => o.values_mut().for_each(clean_paths),
-        _ => {}
+    match p.strip_prefix(r"\\?\UNC\") {
+        Some(rest) => format!(r"\\{rest}"),
+        None => p.strip_prefix(r"\\?\").unwrap_or(p).to_owned(),
     }
 }
 
@@ -68,7 +58,7 @@ pub async fn dispatch(app: &Arc<App>, route: &str, body: Value) -> Result<Value>
         .split_once(' ')
         .ok_or_else(|| Failure::invalid("Unknown route."))?;
     let parts: Vec<&str> = path.trim_matches('/').split('/').collect();
-    let mut out = match (method, parts.as_slice()) {
+    let out = match (method, parts.as_slice()) {
         ("POST", ["api", "v1", "session"]) => session(app).await,
         ("GET", ["api", "v1", "status"]) => status(app).await,
         ("GET", ["api", "v1", "jobs"]) => jobs(app).await,
@@ -333,7 +323,8 @@ pub async fn dispatch(app: &Arc<App>, route: &str, body: Value) -> Result<Value>
             "This client asked for something this build does not offer.",
         )),
     }?;
-    clean_paths(&mut out);
+    // Preserve exact protocol values, including Windows paths inside hashed plans and receipts.
+    // Presentation-only paths are formatted explicitly where those view models are built.
     Ok(out)
 }
 

@@ -146,6 +146,13 @@ pub struct RootCaps {
 /// A path-free error suitable for the desktop response.
 pub fn cap_failure(error: zeus_fs::FsError) -> Failure {
     match error {
+        zeus_fs::FsError::Io {
+            fault: zeus_fs::FsFault::Busy,
+            ..
+        } => Failure::new(
+            "app.busy",
+            "This item is still in use. Wait for scanning or copying to finish, then try again.",
+        ),
         zeus_fs::FsError::AlreadyExists => Failure::new(
             "app.exists",
             "That destination already exists; nothing was replaced.",

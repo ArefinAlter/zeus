@@ -6676,6 +6676,47 @@
       ],
       "type": "object"
     },
+    "ItemSinkReport": {
+      "description": "Progress of an explicitly requested item export. Extracted field values are never returned here.",
+      "properties": {
+        "bytes": {
+          "description": "Durably appended bytes.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "file_name": {
+          "description": "File inside the run's reviewed destination directory.",
+          "type": "string"
+        },
+        "max_bytes": {
+          "description": "Maximum export bytes for this version.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "pending_records": {
+          "description": "Resolved outcomes waiting for an append receipt.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "records": {
+          "description": "Durably appended JSONL records.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "file_name",
+        "records",
+        "bytes",
+        "pending_records",
+        "max_bytes"
+      ],
+      "type": "object"
+    },
     "ItemsFormat": {
       "description": "Item records are JSON Lines.",
       "oneOf": [
@@ -11735,6 +11776,17 @@
             "string",
             "null"
           ]
+        },
+        "item_sink": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ItemSinkReport"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Item sink progress; absent when the reviewed plan requests no item export."
         },
         "last_error": {
           "anyOf": [

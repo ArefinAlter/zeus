@@ -112,8 +112,9 @@ fn within_ten_percent(measured: f64, limit_bytes_per_s: f64, what: &str) {
 async fn the_global_limit_holds_within_ten_percent() {
     let (url, _server) = server(2048 * KIB).await;
     let limits = Limits::new();
+    let client = transport(&limits, None);
     limits.set_global(Some(1024));
-    let (bytes, took) = read_body(&transport(&limits, None), &url).await;
+    let (bytes, took) = read_body(&client, &url).await;
     assert_eq!(bytes, 2048 * KIB);
     within_ten_percent(rate(bytes, took), (1024 * KIB) as f64, "global 1024 KiB/s");
 }
@@ -122,9 +123,10 @@ async fn the_global_limit_holds_within_ten_percent() {
 async fn a_lower_queue_limit_wins_over_the_global_one() {
     let (url, _server) = server(1024 * KIB).await;
     let limits = Limits::new();
+    let client = transport(&limits, Some("night"));
     limits.set_global(Some(2048));
     limits.set_queue("night", Some(512));
-    let (bytes, took) = read_body(&transport(&limits, Some("night")), &url).await;
+    let (bytes, took) = read_body(&client, &url).await;
     assert_eq!(bytes, 1024 * KIB);
     within_ten_percent(
         rate(bytes, took),
@@ -137,9 +139,11 @@ async fn a_lower_queue_limit_wins_over_the_global_one() {
 async fn concurrent_downloads_share_one_limit() {
     let (url, _server) = server(512 * KIB).await;
     let limits = Limits::new();
-    limits.set_global(Some(1024));
     let a = transport(&limits, None);
     let b = transport(&limits, None);
+    // Client construction can fill the intentional 100 ms idle burst. Enable the limiter
+    // only after setup so that this one-second measurement does not exclude earned credit.
+    limits.set_global(Some(1024));
     let started = Instant::now();
     let ((n1, _), (n2, _)) = tokio::join!(read_body(&a, &url), read_body(&b, &url));
     let took = started.elapsed();
@@ -190,7 +194,8 @@ async fn outside_its_window_the_limiter_does_not_slow_anything_down() {
 
     // 14:00 is outside the 15:00 to 16:00 window: the body arrives at loopback speed.
     assert_eq!(limits.global_rate(), None);
-    let (bytes, took) = read_body(&transport(&limits, None), &url).await;
+    let client = transport(&limits, None);
+    let (bytes, took) = read_body(&client, &url).await;
     assert_eq!(bytes, 2048 * KIB);
     let free = rate(bytes, took);
     println!("outside the window: {:.0} KiB/s", free / KIB as f64);
@@ -200,11 +205,11 @@ async fn outside_its_window_the_limiter_does_not_slow_anything_down() {
     );
 
     // At 15:30 the scheduler's next tick applies the limit to the very next request.
+    let (url2, _server2) = server(1024 * KIB).await;
     clock.store(at(15, 30), Ordering::SeqCst);
     service.tick().await.unwrap();
     assert_eq!(limits.global_rate(), Some(1024 * 1024));
-    let (url2, _server2) = server(1024 * KIB).await;
-    let (bytes, took) = read_body(&transport(&limits, None), &url2).await;
+    let (bytes, took) = read_body(&client, &url2).await;
     within_ten_percent(
         rate(bytes, took),
         (1024 * KIB) as f64,

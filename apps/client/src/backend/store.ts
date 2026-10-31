@@ -585,6 +585,8 @@ export function moveJob(id: string, dir: string): string | null {
 export interface NewDownload {
   url: string
   name?: string
+  /** Preserve a user-entered name even when it matches the URL basename. */
+  nameChosen?: boolean
   dir?: string
   queue: string | null
   start: boolean
@@ -669,7 +671,7 @@ function addLive(list: NewDownload[]): { ids: string[]; refused: string[] } {
     }
     const category = categoryOf(name, state.settings.categories)
     const id = newPendingId()
-    items.push({ id, url: link.url, display: link.display, host: link.host, queryWithheld: link.queryWithheld, name, dir: d.dir ?? defaultDir(category), queue: d.start ? null : d.queue, added: now, source: d.source ?? YOU, size: d.size ?? null, ...(d.project ? { project: d.project } : {}), ...(d.description ? { description: d.description } : {}), ...(d.expectedSha256 ? { expectedSha256: d.expectedSha256 } : {}), ...(d.name?.trim() && d.name.trim() !== link.name ? { nameChosen: true } : {}), ...(d.overwrite ? { overwrite: d.overwrite } : {}) })
+    items.push({ id, url: link.url, display: link.display, host: link.host, queryWithheld: link.queryWithheld, name, dir: d.dir ?? defaultDir(category), queue: d.start ? null : d.queue, added: now, source: d.source ?? YOU, size: d.size ?? null, ...(d.project ? { project: d.project } : {}), ...(d.description ? { description: d.description } : {}), ...(d.expectedSha256 ? { expectedSha256: d.expectedSha256 } : {}), ...(d.name?.trim() && (d.nameChosen || d.name.trim() !== link.name) ? { nameChosen: true } : {}), ...(d.overwrite ? { overwrite: d.overwrite } : {}) })
     ids.push(id)
   }
   set({ pending: [...items, ...state.pending], queues: state.queues.map((q) => ({ ...q, order: [...q.order, ...items.filter((p) => p.queue === q.id).map((p) => p.id)] })) })

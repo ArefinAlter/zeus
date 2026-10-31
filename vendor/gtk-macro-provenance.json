@@ -1,0 +1,29 @@
+[
+  {
+    "crate": "glib-macros",
+    "version": "0.18.5",
+    "upstream_archive_sha256": "0bb0228f477c0900c880fd78c8759b95c7636dbd7842707f49e132378aa2acdc",
+    "changed_sources": [
+      "src/boxed_derive.rs",
+      "src/closure.rs",
+      "src/derived_properties_attribute.rs",
+      "src/enum_derive.rs",
+      "src/error_domain_derive.rs",
+      "src/flags_attribute.rs",
+      "src/lib.rs",
+      "src/object_interface_attribute.rs",
+      "src/object_subclass_attribute.rs",
+      "src/shared_boxed_derive.rs",
+      "src/variant_derive.rs"
+    ]
+  },
+  {
+    "crate": "gtk3-macros",
+    "version": "0.18.2",
+    "upstream_archive_sha256": "52ff3c5b21f14f0736fed6dcfc0bfb4225ebf5725f3c0209edeec181e4d73e9d",
+    "changed_sources": [
+      "src/composite_template_derive.rs",
+      "src/lib.rs"
+    ]
+  }
+]

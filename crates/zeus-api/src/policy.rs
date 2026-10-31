@@ -521,6 +521,7 @@ mod tests {
             "files.roots.register",
             "artifacts.ingest",
             "artifacts.lifecycle.apply",
+            "artifacts.maintenance.apply",
             "workflows.plan",
             "workflows.run",
             "workflows.control",

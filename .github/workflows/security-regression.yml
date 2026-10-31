@@ -1,0 +1,23 @@
+name: MCP security regression
+on:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  mcp-boundary:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          path: zeus
+      - uses: actions/checkout@v5
+        with:
+          repository: ArefinAlter/zeus-core
+          path: zeus-core
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: zeus
+      - working-directory: zeus
+        run: cargo test --locked -p zeus-mcp

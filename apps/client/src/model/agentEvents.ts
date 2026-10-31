@@ -1,6 +1,6 @@
 // The events a run of the desktop app's agent writes (the engine's `runs/<id>/events` route) and how they become the
-// items of a thread. Pure functions, tested with node --test. The page never decides anything here: a card, a refusal
-// and a tool result are shown exactly as the engine reports them.
+// items of a thread. Pure functions, tested with node --test. Events only describe state; the dedicated desktop
+// review control separately authorizes a specific pending call. Daemon approval decisions stay on their own trust surface.
 
 import type { AgentItem, Card } from '../backend/threads.ts'
 
@@ -9,6 +9,7 @@ export type AgentEvent = { n: number } & (
   | { type: 'assistant_delta'; id: string; text: string }
   | { type: 'assistant_end'; id: string }
   | { type: 'tool_start'; id: string; tool: string; action?: string | null; input: unknown }
+  | { type: 'tool_review'; id: string; run_id: string; review_id: string; input: unknown }
   | { type: 'tool_end'; id: string; state: 'ok' | 'denied' | 'error'; summary: string; output?: unknown; ms?: number }
   | { type: 'card'; id: string; card: Card }
   | { type: 'notice'; text: string; tone: 'info' | 'warn'; code?: string }
@@ -32,8 +33,10 @@ export function applyEvent(items: AgentItem[], ev: AgentEvent): AgentItem[] {
     case 'tool_start':
       if (items.some((i) => i.id === ev.id)) return items
       return [...items, { kind: 'tool', id: ev.id, tool: ev.tool, ...(ev.action ? { action: ev.action } : {}), input: ev.input, state: 'running', summary: 'calling…' }]
+    case 'tool_review':
+      return items.map((i) => (i.kind === 'tool' && i.id === ev.id ? { ...i, state: 'waiting', input: ev.input, summary: 'Waiting for your review', review: { runId: ev.run_id, id: ev.review_id, after: ev.n, ready: false } } : i))
     case 'tool_end':
-      return items.map((i) => (i.kind === 'tool' && i.id === ev.id ? { ...i, state: ev.state, summary: ev.summary, ...(ev.output !== undefined ? { output: ev.output } : {}), ...(ev.ms !== undefined ? { ms: ev.ms } : {}) } : i))
+      return items.map((i) => (i.kind === 'tool' && i.id === ev.id ? { ...i, state: ev.state, review: undefined, summary: ev.summary, ...(ev.output !== undefined ? { output: ev.output } : {}), ...(ev.ms !== undefined ? { ms: ev.ms } : {}) } : i))
     case 'card':
       if (items.some((i) => i.id === ev.id)) return items
       return [...items, { kind: 'card', id: ev.id, card: ev.card }]
@@ -42,7 +45,7 @@ export function applyEvent(items: AgentItem[], ev: AgentEvent): AgentItem[] {
       return [...items, { kind: 'notice', id: noticeId(), text: ev.text, tone: ev.tone, ...(link ? { link: { label: link.label, to: `#/settings/${link.section}` } } : {}) }]
     }
     case 'done':
-      return items.map((i) => (i.kind === 'assistant' && i.streaming ? { ...i, streaming: false } : i.kind === 'tool' && i.state === 'running' ? { ...i, state: 'error', summary: 'stopped' } : i))
+      return items.map((i) => (i.kind === 'assistant' && i.streaming ? { ...i, streaming: false } : i.kind === 'tool' && (i.state === 'running' || i.state === 'waiting') ? { ...i, state: 'error', review: undefined, summary: 'stopped' } : i))
     default:
       return items
   }

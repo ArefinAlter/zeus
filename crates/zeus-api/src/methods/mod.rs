@@ -36,6 +36,7 @@ macro_rules! rpc_methods {
     ($( $(#[$meta:meta])* $marker:ident = $name:literal ($params:ty) -> $result:ty; )*) => {
         $(
             $(#[$meta])*
+            #[doc = concat!("RPC method marker for `", $name, "`.")]
             #[derive(Debug, Clone, Copy)]
             pub struct $marker;
 

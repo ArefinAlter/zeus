@@ -1,6 +1,6 @@
 // Builds every Windows or Linux release asset of the Zeus desktop app from this checkout:
 //
-//   node scripts/build-release.mjs --out <dir> [--version 0.1.0-alpha.1] [--skip-daemon] [--skip-extension] [--bundles nsis|deb,appimage]
+//   node scripts/build-release.mjs --out <dir> [--version 0.1.0-alpha.2] [--skip-daemon] [--bundles nsis|deb,appimage]
 //
 //  1. the browser extension package (scripts/package-extension.mjs; needs the zeus-extension checkout beside this one)
 //  2. zeusd, zeus, zeus-native-host and zeus-web-bridge in release mode (the daemon workspace, then the bridge)
@@ -17,6 +17,9 @@ import { createHash } from 'node:crypto'
 import { copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { assertReleaseVersion, assertReusableSidecars, gitSource, powershellLiteral, selectBundleAssets, supportedBundles } from './release-proof.mjs'
+
+import { assertWindowsSystemImports } from './windows-imports.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const client = resolve(here, '..')
@@ -31,11 +34,16 @@ const flag = (n) => process.argv.includes(n)
 const out = resolve(arg('--out', join(client, 'dist', 'release')))
 const semver = JSON.parse(readFileSync(join(shell, 'tauri.conf.json'), 'utf8')).version
 const version = arg('--version', semver)
+assertReleaseVersion(version, semver)
+if (!['win32', 'linux'].includes(process.platform) || process.arch !== 'x64') throw new Error('This release builder supports native Windows/Linux x64 builds.')
 const bundles = arg('--bundles', win ? 'nsis' : 'deb,appimage')
+supportedBundles(bundles, process.platform)
 const triple = win ? 'x86_64-pc-windows-msvc' : 'x86_64-unknown-linux-gnu'
 const exe = win ? '.exe' : ''
 const OS = win ? 'windows-x64' : 'linux-x64'
-const target = process.env.CARGO_TARGET_DIR ? resolve(process.env.CARGO_TARGET_DIR) : null
+// All independent Cargo workspaces must use the same absolute target for verified sidecars.
+const target = resolve(process.env.CARGO_TARGET_DIR ?? join(repo, 'target'))
+process.env.CARGO_TARGET_DIR = target
 
 function run(cmd, args, opts = {}) {
   console.log(`\n> ${cmd} ${args.join(' ')}`)
@@ -47,20 +55,44 @@ function run(cmd, args, opts = {}) {
 }
 
 const sha = (p) => createHash('sha256').update(readFileSync(p)).digest('hex')
+const tuiRepo = resolve(process.env.ZEUS_TUI_REPO ?? join(repo, '..', 'zeus-tui'))
+const sourceDirs = { zeus: repo, 'zeus-core': join(repo, '..', 'zeus-core'), 'zeus-extension': resolve(process.env.ZEUS_EXTENSION_REPO ?? join(repo, '..', 'zeus-extension')), 'zeus-tui': tuiRepo }
+const sources = Object.fromEntries(Object.entries(sourceDirs).map(([name, dir]) => [name, gitSource(name, dir)]))
+for (const directory of [client, sourceDirs['zeus-extension']]) assertReleaseVersion(JSON.parse(readFileSync(join(directory, 'package.json'), 'utf8')).version, semver)
 mkdirSync(out, { recursive: true })
 
-if (!flag('--skip-extension')) run('node', [join(here, 'package-extension.mjs')], { cwd: client })
+if (flag('--skip-extension')) throw new Error('Release builds always rebuild the extension; remove --skip-extension.')
+run('node', [join(here, 'package-extension.mjs')], { cwd: client })
 
 const release = (name) => join(target ?? join(repo, 'target'), 'release', `${name}${exe}`)
 const bridgeTarget = target ? join(target, 'bridge') : join(repo, 'services', 'pre-alpha', 'gateway', 'target')
+const sidecarProof = join(target ?? join(repo, 'target'), 'release', 'zeus-sidecars.proof.json')
+const runtimeNames = ['zeusd', 'zeus', 'zeus-native-host']
+const runtimeFiles = () => Object.fromEntries([...runtimeNames.map(name => [name, sha(release(name))]), ['zeus-web-bridge', sha(join(bridgeTarget, 'release', `zeus-web-bridge${exe}`))]])
+const runtimeProof = () => ({ version: semver, sources: { zeus: sources.zeus, core: sources['zeus-core'] }, binaries: runtimeFiles() })
 if (!flag('--skip-daemon')) {
   run('cargo', ['build', '--release', '--locked', '-p', 'zeus-daemon', '-p', 'zeus-cli', '-p', 'zeus-native-host'], { cwd: repo })
   run('cargo', ['build', '--release', '--locked'], { cwd: join(repo, 'services', 'pre-alpha', 'gateway'), env: { ...process.env, ...(target ? { CARGO_TARGET_DIR: bridgeTarget } : {}) } })
+  writeFileSync(sidecarProof, JSON.stringify(runtimeProof(), null, 2) + '\n')
+} else {
+  if (!existsSync(sidecarProof)) throw new Error('Cached sidecars have no source proof. Build without --skip-daemon.')
+  assertReusableSidecars(JSON.parse(readFileSync(sidecarProof, 'utf8')), runtimeProof())
 }
 
+// The Go terminal companion is always rebuilt from the reviewed sibling checkout.
+const goCache = join(target ?? join(repo, 'target'), 'go')
+for (const dir of ['cache', 'modules', 'path', 'tmp']) mkdirSync(join(goCache, dir), { recursive: true })
+run(process.env.ZEUS_GO ?? 'go', ['build', '-mod=readonly', '-trimpath', '-ldflags', `-X main.version=${semver}`, '-o', release('zeus-tui'), './cmd/zeus-tui'], {
+  cwd: tuiRepo,
+  env: { ...process.env, CGO_ENABLED: '0', GOTOOLCHAIN: 'local', GOOS: win ? 'windows' : 'linux', GOARCH: 'amd64',
+    GOCACHE: process.env.GOCACHE ?? join(goCache, 'cache'), GOMODCACHE: process.env.GOMODCACHE ?? join(goCache, 'modules'),
+    GOPATH: process.env.GOPATH ?? join(goCache, 'path'), GOTMPDIR: process.env.GOTMPDIR ?? join(goCache, 'tmp') },
+})
+
 // Refuse a cached runtime from an older release, including with --skip-daemon.
-for (const name of ['zeusd', 'zeus']) {
-  const result = spawnSync(release(name), ['--version'], { encoding: 'utf8', timeout: 10000 })
+for (const name of ['zeusd', 'zeus', 'zeus-tui', 'zeus-web-bridge']) {
+  const program = name === 'zeus-web-bridge' ? join(bridgeTarget, 'release', `${name}${exe}`) : release(name)
+  const result = spawnSync(program, ['--version'], { encoding: 'utf8', timeout: 10000 })
   if (result.status !== 0 || result.stdout.trim().split(/\s+/).at(-1) !== semver) {
     console.error(`${name} must be built at ${semver}; run without --skip-daemon`)
     process.exit(1)
@@ -70,7 +102,7 @@ for (const name of ['zeusd', 'zeus']) {
 // Sidecars for the installer.
 const bin = join(shell, 'binaries')
 mkdirSync(bin, { recursive: true })
-for (const name of ['zeusd', 'zeus', 'zeus-native-host']) copyFileSync(release(name), join(bin, `${name}-${triple}${exe}`))
+for (const name of ['zeusd', 'zeus', 'zeus-native-host', 'zeus-tui']) copyFileSync(release(name), join(bin, `${name}-${triple}${exe}`))
 
 // The optional Everything bridge is source-built and shipped with its SDK license. Merely
 // installing it does not query Everything or enable access to any new folder.
@@ -82,8 +114,20 @@ if (win) {
   copyFileSync(everything, join(bin, `zeus-everything-query-${triple}.exe`))
 }
 
+// Check every shipped sidecar before invoking the installer builder. Keep the exact
+// binary hashes with the import inventory so later package checks can verify it.
+const windowsDependencies = []
+function checkWindowsBinary(path) {
+  windowsDependencies.push({ name: path.split(/[\\/]/).pop(), sha256: sha(path), imports: assertWindowsSystemImports(readFileSync(path), path) })
+}
+if (win) {
+  for (const name of [...runtimeNames, 'zeus-tui']) checkWindowsBinary(release(name))
+  checkWindowsBinary(join(bridgeTarget, 'release', 'zeus-web-bridge.exe'))
+  checkWindowsBinary(everything)
+}
+
 run('npm', ['run', 'build'], { cwd: client })
-run('npx', ['tauri', 'build', '--config', win ? 'src-tauri/tauri.bundle.windows.conf.json' : 'src-tauri/tauri.bundle.conf.json', '--bundles', bundles], { cwd: client })
+run('npx', ['tauri', 'build', '--config', win ? 'src-tauri/tauri.bundle.windows.conf.json' : 'src-tauri/tauri.bundle.conf.json', '--bundles', bundles, '--', '--locked'], { cwd: client })
 
 // The installer's default folder. Tauri's per-user default is %LOCALAPPDATA%\Zeus, which is also where zeusd keeps its
 // own state when it runs on its own (spec 03 section 3.1), so a person with the command-line Zeus would find the app
@@ -93,7 +137,8 @@ if (win && bundles.split(',').includes('nsis')) {
   const releaseDir = join(target ?? shell + '/target', 'release')
   const nsisDir = join(releaseDir, 'nsis', 'x64')
   const script = join(nsisDir, 'installer.nsi')
-  const toolset = join(process.env.LOCALAPPDATA ?? '', 'tauri', 'NSIS')
+  // Both release configurations use Tauri's supported project-local tools cache.
+  const toolset = join(target, '.tauri', 'NSIS')
   const makensis = join(toolset, 'Bin', 'makensis.exe')
   const setup = readdirSync(join(releaseDir, 'bundle', 'nsis')).find((f) => f.includes(`_${semver}_`) && /setup\.exe$/.test(f))
   if (!existsSync(script) || !existsSync(makensis) || !setup) {
@@ -113,13 +158,13 @@ if (win && bundles.split(',').includes('nsis')) {
 }
 
 const appExe = release('zeus-client')
+if (win) checkWindowsBinary(appExe)
 const assets = []
 const add = (p) => assets.push(p)
 
 // Installers.
 const bundleDir = join(target ?? shell + '/target', 'release', 'bundle')
-const pick = (dir, re) => (existsSync(dir) ? readdirSync(dir).filter((f) => f.includes(`_${semver}_`) && re.test(f)).map((f) => join(dir, f)) : [])
-for (const f of [...pick(join(bundleDir, 'nsis'), /setup\.exe$/), ...pick(join(bundleDir, 'deb'), /\.deb$/), ...pick(join(bundleDir, 'appimage'), /\.AppImage$/)]) {
+for (const f of selectBundleAssets(bundleDir, semver, bundles, process.platform)) {
   const dest = join(out, f.split(/[\\/]/).pop())
   copyFileSync(f, dest)
   add(dest)
@@ -131,15 +176,15 @@ if (win) {
   rmSync(join(out, 'portable'), { recursive: true, force: true })
   mkdirSync(join(dir, 'ZeusData'), { recursive: true })
   copyFileSync(appExe, join(dir, 'zeus-client.exe'))
-  for (const name of ['zeusd', 'zeus', 'zeus-native-host']) copyFileSync(release(name), join(dir, `${name}.exe`))
+  for (const name of ['zeusd', 'zeus', 'zeus-native-host', 'zeus-tui']) copyFileSync(release(name), join(dir, `${name}.exe`))
   copyFileSync(everything, join(dir, 'zeus-everything-query.exe'))
   copyFileSync(join(repo, 'tools', 'everything-broker', 'LICENSE-SDK.txt'), join(dir, 'LICENSE-EVERYTHING-SDK.txt'))
   copyFileSync(join(repo, 'LICENSE'), join(dir, 'LICENSE'))
   copyFileSync(join(repo, 'NOTICE'), join(dir, 'NOTICE'))
-  writeFileSync(join(dir, 'README.txt'), `Zeus ${version}, portable. Run zeus-client.exe. Zeus keeps its local profile in the ZeusData folder next to it. Provider API keys use the OS credential store; installed agent CLIs retain their own sign-in and provider-managed state. Back up ZeusData before removing it.\nThis build is unsigned; Windows may show a SmartScreen warning. Check SHA256SUMS.txt before running it.\nThe Everything query helper is optional and requires explicit setup in Files. Its SDK license is included.\n`)
+  writeFileSync(join(dir, 'README.txt'), `Zeus ${version}, portable. Run zeus-client.exe; zeus-tui.exe connects to the same desktop engine. Zeus keeps its local profile in the ZeusData folder next to it. Provider API keys use the OS credential store; installed agent CLIs retain their own sign-in and provider-managed state. Back up ZeusData before removing it.\nThis build is unsigned; Windows may show a SmartScreen warning. Check SHA256SUMS.txt before running it.\nThe Everything query helper is optional and requires explicit setup in Files. Its SDK license is included.\n`)
   const zip = join(out, `zeus-client-${version}-${OS}-portable.zip`)
   rmSync(zip, { force: true })
-  run('powershell', ['-NoProfile', '-Command', `Compress-Archive -Path '${dir}' -DestinationPath '${zip}' -CompressionLevel Optimal`])
+  run('powershell', ['-NoProfile', '-Command', `Compress-Archive -Path ${powershellLiteral(dir)} -DestinationPath ${powershellLiteral(zip)} -CompressionLevel Optimal`])
   rmSync(join(out, 'portable'), { recursive: true, force: true })
   add(zip)
 }
@@ -150,7 +195,7 @@ if (win) {
   const dir = join(out, name)
   rmSync(dir, { recursive: true, force: true })
   mkdirSync(dir, { recursive: true })
-  for (const n of ['zeus', 'zeusd', 'zeus-native-host']) copyFileSync(release(n), join(dir, `${n}${exe}`))
+  for (const n of ['zeus', 'zeusd', 'zeus-native-host', 'zeus-tui']) copyFileSync(release(n), join(dir, `${n}${exe}`))
   if (everything) {
     copyFileSync(everything, join(dir, 'zeus-everything-query.exe'))
     copyFileSync(join(repo, 'tools', 'everything-broker', 'LICENSE-SDK.txt'), join(dir, 'LICENSE-EVERYTHING-SDK.txt'))
@@ -162,7 +207,7 @@ if (win) {
   if (win) {
     const zip = join(out, `${name}.zip`)
     rmSync(zip, { force: true })
-    run('powershell', ['-NoProfile', '-Command', `Compress-Archive -Path '${dir}' -DestinationPath '${zip}' -CompressionLevel Optimal`])
+    run('powershell', ['-NoProfile', '-Command', `Compress-Archive -Path ${powershellLiteral(dir)} -DestinationPath ${powershellLiteral(zip)} -CompressionLevel Optimal`])
     add(zip)
   } else {
     const tgz = join(out, `${name}.tar.gz`)
@@ -181,6 +226,14 @@ for (const z of ['zeus-extension-chromium.zip', 'zeus-extension-firefox.zip']) {
     add(dest)
   }
 }
+
+// Recheck after all builders: a lockfile or source mutation must not silently enter an asset.
+for (const [name, dir] of Object.entries(sourceDirs)) {
+  if (gitSource(name, dir) !== sources[name]) throw new Error(`${name} changed during the release build.`)
+}
+const manifest = join(out, 'release-manifest.json')
+writeFileSync(manifest, JSON.stringify({ version, platform: OS, sources, ...(win ? { windowsDependencies } : {}), assets: assets.map(path => ({ name: path.split(/[\\/]/).pop(), size: statSync(path).size, sha256: sha(path) })) }, null, 2) + '\n')
+add(manifest)
 
 const lines = assets.map((p) => `${sha(p)}  ${p.split(/[\\/]/).pop()}`)
 writeFileSync(join(out, 'SHA256SUMS.txt'), `${lines.join('\n')}\n`)

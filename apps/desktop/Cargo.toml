@@ -13,7 +13,7 @@ tauri-build = { version = "2.6", default-features = false, features = ["config-j
 
 [package]
 name = "zeus-desktop"
-version = "0.1.0-alpha.1"
+version = "0.1.0-alpha.2"
 edition = "2024"
 rust-version = "1.90"
 license = "Apache-2.0"
@@ -49,3 +49,8 @@ missing_docs = "warn"
 todo = "deny"
 unimplemented = "deny"
 dbg_macro = "warn"
+
+# Verified upstream macro sources using existing syn diagnostics; see vendor/GTK-MACRO-PATCH.md.
+[patch.crates-io]
+glib-macros = { path = "../../vendor/glib-macros" }
+gtk3-macros = { path = "../../vendor/gtk3-macros" }
