@@ -1,5 +1,13 @@
 # Zeus project handoff
 
+## 2026-10-31 — progress layout and controls repaired
+
+Visual review of the actual Windows r8 package found unconstrained SVGs in the progress window: the file icon expanded to hundreds of pixels, overlapped the percentage and pushed actions below the viewport. Functional package and alpha.1 upgrade checks passed, but that candidate is superseded. The preserved visual review explicitly fails this gate.
+
+The popup now sizes its file/rate icons, keeps filename and percentage separate, wraps details/actions and fits narrow windows without horizontal overflow. The real-UI regression fails against the previous built UI, then passes at 1360x900, 960x600 and 390x740 with the corrected layout; normal desktop controls are visible without excessive scrolling. Screenshots and geometry are retained in `D:\verne-build\audit-zeus-desktop\evidence\s33-intake-after-layout-20261031-r1`. All four intake cases, TypeScript, 70 model tests and both frontend builds pass with zero UI errors.
+
+Progress controls also reject temporary IDs for Resume, disable opening quarantined files consistently with the download list, and report file/folder-opening errors instead of silently swallowing them. No Rust, dependency or schema change is included. Fresh Windows/Linux packages and actual package acceptance are required before publishing; the temporary manual CI policy and other PR protections remain in force.
+
 ## 2026-10-31 â€” intake and progress-window regressions repaired
 
 Actual Linux AppImage testing exposed URL truncation during typing. Scenario 33 reproduces four related defects against the earlier UI: queue refresh steals address focus; late metadata overwrites chosen fields; replacing an in-flight URL retains the old response; and a manually chosen filename matching the URL basename is treated as an automatic suggestion. The repair keeps dialog focus for its lifetime, debounces metadata checks, rejects stale completions, preserves manual choices and carries explicit filename intent into the reviewed enqueue path.

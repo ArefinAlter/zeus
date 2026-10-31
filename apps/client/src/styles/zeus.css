@@ -1503,7 +1503,8 @@ a.ccard {
   display: flex;
   flex-direction: column;
   gap: 12px;
-  min-width: 520px;
+  min-width: 0;
+  width: 100%;
   max-width: 680px;
 }
 .idm-header {
@@ -1512,6 +1513,11 @@ a.ccard {
   gap: 12px;
   padding-bottom: 12px;
   border-bottom: 1px solid var(--border);
+}
+.idm-header > svg {
+  width: 40px;
+  height: 40px;
+  flex: 0 0 auto;
 }
 .idm-header-info {
   display: flex;
@@ -1531,6 +1537,8 @@ a.ccard {
   color: var(--muted-foreground);
 }
 .idm-header-pct {
+  flex: 0 0 auto;
+  white-space: nowrap;
   font-size: 24px;
   font-weight: 700;
   color: var(--primary);
@@ -1538,7 +1546,7 @@ a.ccard {
 }
 .idm-grid {
   display: grid;
-  grid-template-columns: 120px 1fr;
+  grid-template-columns: 120px minmax(0, 1fr);
   row-gap: 6px;
   column-gap: 12px;
   font-size: 13px;
@@ -1554,11 +1562,14 @@ a.ccard {
 }
 .idm-url-row {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
 }
 .idm-url {
-  max-width: 360px;
+  flex: 1 1 160px;
+  min-width: 0;
+  max-width: 100%;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1568,6 +1579,11 @@ a.ccard {
   align-items: center;
   gap: 6px;
   color: var(--primary);
+}
+.idm-rate > svg {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
 }
 .idm-chunk-section {
   display: flex;
@@ -1580,6 +1596,8 @@ a.ccard {
 }
 .idm-chunk-header {
   display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
   justify-content: space-between;
   font-size: 12px;
 }
@@ -1606,10 +1624,16 @@ a.ccard {
 }
 .idm-footer {
   display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
   justify-content: space-between;
   align-items: center;
   padding-top: 12px;
   border-top: 1px solid var(--border);
+}
+.idm-footer > .inline {
+  flex-wrap: wrap;
+  max-width: 100%;
 }
 .idm-autoclose {
   font-size: 12px;
@@ -1617,3 +1641,11 @@ a.ccard {
   cursor: pointer;
 }
 
+
+/* Keep file details and actions usable in a narrow or resized window. */
+@media (max-width: 520px) {
+  .idm-grid { grid-template-columns: minmax(0, 1fr); }
+  .idm-label:not(:first-child) { margin-top: 4px; }
+  .idm-header { gap: 8px; }
+  .idm-header-pct { font-size: 20px; }
+}

@@ -93,6 +93,28 @@ try {
     assert.deepEqual(readFileSync(job.path), pdf, 'the explicitly named file retains exact response bytes')
     await until(async () => page.getByRole('dialog', { name: 'Download Status: explicit', exact: true }).count(), { what: 'progress popup follows the actual daemon job' })
     await until(async () => page.getByRole('button', { name: 'Open File', exact: true }).isVisible(), { timeoutMs: 10000, what: 'the UI observes completion and exposes the actual completed file' })
+    const layouts = []
+    for (const [width, height] of [[1360, 900], [960, 600], [390, 740]]) {
+      await page.setViewportSize({ width, height })
+      await sleep(150)
+      const layout = await page.locator('.idm-popup').evaluate(popup => {
+        const rect = selector => { const r = popup.querySelector(selector).getBoundingClientRect(); return { left: r.left, right: r.right, top: r.top, bottom: r.bottom, width: r.width, height: r.height } }
+        const dialog = popup.closest('[role="dialog"]')
+        return { icon: rect('.idm-header > svg'), title: rect('.idm-title'), percentage: rect('.idm-header-pct'),
+          rateIcon: rect('.idm-rate > svg'), footer: rect('.idm-footer'),
+          innerWidth: dialog.clientWidth, scrollWidth: dialog.scrollWidth, windowWidth: innerWidth }
+      })
+      layouts.push({ width, height, ...layout })
+      assert.ok(layout.icon.width <= 64 && layout.icon.height <= 64, 'file icon must not displace download details')
+      assert.ok(layout.rateIcon.width <= 24 && layout.rateIcon.height <= 24, 'rate icon must not displace controls')
+      assert.ok(layout.title.width > 0 && layout.title.right <= layout.percentage.left, 'filename and percentage must not overlap')
+      assert.ok(layout.scrollWidth <= layout.innerWidth + 1, 'progress details must not overflow horizontally')
+      if (height === 900) assert.ok(layout.footer.bottom < height, 'desktop actions must be visible without scrolling past oversized content')
+      await page.getByRole('button', { name: 'Hide', exact: true }).scrollIntoViewIfNeeded()
+      await page.screenshot({ path: join(out, `progress-layout-${width}.png`) })
+    }
+    writeFileSync(join(out, 'progress-layout.json'), JSON.stringify(layouts, null, 2) + '\n')
+    await page.setViewportSize({ width: 1360, height: 900 })
   })
   assert.deepEqual(ui.errors, [], 'no UI errors')
 } catch (error) {

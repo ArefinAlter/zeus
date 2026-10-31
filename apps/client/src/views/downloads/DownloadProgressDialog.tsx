@@ -2,7 +2,7 @@
 // transfer rate, ETA, range status, connection table, and instant pause/resume controls.
 
 import { useEffect, useState } from 'preact/hooks'
-import { isActive, pause, resume, useStore } from '../../backend/store'
+import { isActive, pause, resume, toast, useStore } from '../../backend/store'
 import { HOSTED, LIVE, NATIVE } from '../../backend/live'
 import { api, native, type JobDetail } from '../../backend/remote'
 import { joinPath } from '../../lib/paths.ts'
@@ -55,7 +55,7 @@ export function DownloadProgressDialog({
   const eta = jobEta(job)
   const active = isActive(job)
   const canPause = (!LIVE || !jobId.startsWith('pend_')) && ['queued', 'probing', 'downloading', 'retry_scheduled', 'awaiting_session'].includes(job.state)
-  const canResume = ['paused', 'failed', 'queued', 'retry_scheduled'].includes(job.state)
+  const canResume = (!LIVE || !jobId.startsWith('pend_')) && ['paused', 'failed', 'queued', 'retry_scheduled'].includes(job.state)
   const fullPath = joinPath(job.dir, job.name)
 
   const rangeSupport = LIVE ? detail?.probe?.range_support ?? 'unknown' : job.resumable
@@ -224,9 +224,11 @@ export function DownloadProgressDialog({
               <button
                 type="button"
                 class="btn primary"
+                disabled={job.quarantined}
+                title={job.quarantined ? 'Quarantined: Zeus never opens this file' : undefined}
                 onClick={() => {
-                  if (NATIVE) {
-                    native.open(joinPath(job.dir, job.name), 'open').catch(() => undefined)
+                  if (NATIVE && !job.quarantined) {
+                    native.open(joinPath(job.dir, job.name), 'open').catch((e: unknown) => toast({ kind: 'warn', title: 'Could not open the file', desc: e instanceof Error ? e.message : '', important: false, topic: 'system' }))
                   }
                 }}
               >
@@ -239,7 +241,7 @@ export function DownloadProgressDialog({
               class="btn"
               onClick={() => {
                 if (NATIVE) {
-                  native.open(joinPath(job.dir, job.name), 'reveal').catch(() => native.open(job.dir, 'open').catch(() => undefined))
+                  native.open(joinPath(job.dir, job.name), 'reveal').catch(() => native.open(job.dir, 'open').catch((e: unknown) => toast({ kind: 'warn', title: 'Could not open the folder', desc: e instanceof Error ? e.message : '', important: false, topic: 'system' })))
                 } else {
                   onClose()
                   navigate(href('files', { path: job.dir }))
