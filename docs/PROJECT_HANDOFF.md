@@ -1,5 +1,13 @@
 # Zeus project handoff
 
+## 2026-10-31 — packaged desktop verified; final presentation and license correction
+
+Windows candidate r6 was built from Zeus `c0cb1f9`, Core `74ecfcb`, Extension `cf17904`, and TUI `0a7e3b5`. All asset hashes, manifest source identities, portable payload entries and runtime versions pass. Actual packaged Tauri/WebView2 acceptance passes: the Add URL UI saves a MIME-named PDF with independently verified bytes; redirects, Content-Disposition names and rejected ranges complete correctly; the packaged TUI shares the desktop profile and displays the real digest; Claude is discovered using its existing installation without API keys or implicit consent; and the app exits cleanly with no page exceptions. Evidence: `D:\verne-build\audit-zeus-package\windows-r6-r3`. Earlier fixture runs exposed two test assumptions (Windows extended paths and installed-provider enabled state), not application failures; those records are preserved.
+
+Linux r5 passes frontend, core, root, native, secondary and real-daemon acceptance at those same four revisions. Retained evidence is `/opt/verne-builds/zeus-alpha2-20261031-r5/logs`; no GitHub Actions or production-service changes were used.
+
+Visual inspection found stale API-key-only text in the Agent panel, despite the working subscription connector. The panel and missing-provider guidance now describe installed-agent sign-in and API providers accurately, and distinguish reviewed desktop actions from the external read-only MCP boundary. Installer resource manifests now include the project LICENSE and NOTICE, already present in portable/CLI archives. These presentation/packaging changes require fresh final artifacts; r6 remains an unpublished verification candidate. NSIS install/upgrade and final Linux packaged-artifact acceptance are still required. Live Claude inference is not claimed while the user's subscription quota is exhausted. Public downloads stay on the existing public personal repository because the organization mirror is private.
+
 ## 2026-10-31 — browser rescue passes both approval surfaces
 
 **Zeus remains an unpublished alpha.2 repair candidate.** The final real Edge checks now pass both terminal approval (r18) and the checked-in popup acceptance (r19). Each waits with zero Zeus bytes before consent, refuses the app's decision route, then saves the complete 8 MiB file with the original filename and an independently computed SHA-256 (`7ba7e27fa4c8dce1d309310d2204a3b7779311089f63e6bc1f496689a567a397`). The development extension ID works after explicit installation consent and host pinning; earlier claims that development IDs inherently cannot approve were incorrect. The same-OS-user automation limitation remains documented in ADR 0007.

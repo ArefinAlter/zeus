@@ -37,7 +37,7 @@ function NewThread() {
         <div class="hero">
           <Mark />
           <h1>What should Zeus fetch or check?</h1>
-          <p class="muted">{NATIVE ? 'Ask for downloads, files or checks. A model you chose, with your own key, uses the same tools an MCP client of Zeus gets. You press the buttons that change anything, and only you approve.' : 'Ask for downloads, files or checks. The agent reads Zeus through the same tools an MCP client gets, and proposes. You press the buttons that change anything, and only you approve.'}</p>
+          <p class="muted">{NATIVE ? 'Ask for downloads, files or checks. Connect a supported installed agent with its existing sign-in, or choose an API provider. Review proposed changes before Zeus runs them.' : 'Ask for downloads, files or checks. The agent reads Zeus through the same tools an MCP client gets, and proposes. You press the buttons that change anything, and only you approve.'}</p>
         </div>
         <div class="starters" role="list" aria-label="Start from">
           <div class="label">Start from</div>

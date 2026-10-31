@@ -300,7 +300,7 @@ export async function sendNative(id: string, text: string | null, regenerate = f
     }))
     const cfg = await refreshConfig()
     const provider = (t.provider ? cfg.providers.find((p) => p.id === t.provider) : undefined) ?? defaultProvider(cfg)
-    if (!provider) return fail('No model provider is set up yet. Add one in Settings, Providers, with your own key.')
+    if (!provider) return fail('No model provider is set up yet. Connect an installed agent with its existing sign-in, or add an API provider in Settings, Providers.')
     patch(id, (x) => ({ ...x, provider: provider.id }))
     const live = threadOf(id) ?? t
     const body = bodyFor(live, provider.id, regenerate ? undefined : (text ?? ''), regenerate)

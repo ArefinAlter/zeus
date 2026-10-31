@@ -9,7 +9,9 @@
       "binaries/zeus-tui"
     ],
     "resources": {
-      "../../../tools/everything-broker/LICENSE-SDK.txt": "LICENSE-EVERYTHING-SDK.txt"
+      "../../../tools/everything-broker/LICENSE-SDK.txt": "LICENSE-EVERYTHING-SDK.txt",
+      "../../../LICENSE": "LICENSE",
+      "../../../NOTICE": "NOTICE"
     },
     "useLocalToolsDir": true
   }

@@ -7,6 +7,10 @@
       "binaries/zeus-native-host",
       "binaries/zeus-tui"
     ],
-    "useLocalToolsDir": true
+    "useLocalToolsDir": true,
+    "resources": {
+      "../../../LICENSE": "LICENSE",
+      "../../../NOTICE": "NOTICE"
+    }
   }
 }
