@@ -1,6 +1,19 @@
 # Zeus alpha.2 repair candidate
 
-## 2026-10-31 � progress layout and controls repaired
+## 2026-10-31 — Windows and Linux package acceptance complete
+
+The runtime source is Zeus `1d2b057138acde1577ec31572ed9c8c77a344e62`, Core `74ecfcbe2956ae2d5502614ff78076a70906eb3d`, Extension `cf179044c708df07aa8193a1bdc41f14edd5fd42`, TUI `0a7e3b53dac3b229fa2aea0622b2327d6efd8fc9`. Windows r9 and Linux r5 artifacts are built from those exact commits. A documentation-only follow-up records this checkpoint and restores UTF-8 punctuation in the two handoff documents; no runtime, dependency, schema or packaging source changes.
+
+Windows package integrity and actual Tauri/WebView2 acceptance pass, including slow typing, PDF extensions/bytes, redirects, Content-Disposition, rejected ranges, stable progress controls, TUI shared state/digest and installed Claude discovery. NSIS fresh alpha.1 installation, upgrade to alpha.2, preserved history/file bytes and clean uninstall pass. Evidence: `D:\verne-build\audit-zeus-package\windows-r9` and `nsis-upgrade-r4`.
+
+Linux validation r8 passes fresh frontend/70 tests and actual-daemon scenarios 18/29/30/33, including intake races and three window sizes. Exact source comparison retains the full r6 Rust baseline: 342 core, 712 root, 225 native and 10 secondary tests passed, six explicitly ignored; strict Clippy/Rust 1.90 and Go tests/vet pass. Actual Debian and AppImage GTK/WebKit desktop acceptance passes for the final packages, including saved PDF bytes, typing, progress controls and Agent guidance. No sandbox bypass or production mount was used. The AppImage uses its supported extract-and-run mode in a private executable temporary directory; FUSE mounting was not tested.
+
+Release candidates are on the workstation under `D:\verne-build\releases\zeus\0.1.0-alpha.2\windows-x64-r9` and `linux-x64-r5`; verified Linux evidence is being copied to `D:\verne-build\security-2026-10-30\zeus-linux-r8-evidence`. Superseded candidates and failures remain identified in the central audit. All six repair PRs are ahead of main with no missing base commits and are mergeable. Temporary manual required checks retain the other PR protections; successful status publication, protected merges, release upload and marketing deployment remain the next gates. No Actions job is used.
+
+Limits remain explicit: unsigned packages, no macOS release, no FTP/BITS implementation or universal torrent discovery, development extension distribution and no equivalent real-Firefox rescue acceptance. Live subscription inference remains unverified while the installed Claude account is quota-limited. VPS SSH/HSTS stays staged and the retired Zeus demo stays retired; other products remain queued.
+
+
+## 2026-10-31 — progress layout and controls repaired
 
 Visual review of the actual Windows r8 package found unconstrained SVGs in the progress window: the file icon expanded to hundreds of pixels, overlapped the percentage and pushed actions below the viewport. Functional package and alpha.1 upgrade checks passed, but that candidate is superseded. The preserved visual review explicitly fails this gate.
 
