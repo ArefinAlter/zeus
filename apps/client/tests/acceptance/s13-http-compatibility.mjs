@@ -9,9 +9,25 @@ import { download, startHarness, until } from '../harness.mjs'
 
 const pdf = Buffer.from('%PDF-1.7\n1 0 obj\n<< /Type /Catalog >>\nendobj\n%%EOF\n')
 const requests = []
+const cdn = createServer((req, res) => {
+  const range = /^bytes=(\d+)-(\d*)$/.exec(req.headers.range ?? '')
+  const start = range ? Number(range[1]) : 0
+  const end = range?.[2] ? Number(range[2]) : pdf.length - 1
+  assert.ok(start <= end && end < pdf.length)
+  res.writeHead(range ? 206 : 200, {
+    'content-type': 'application/octet-stream',
+    'content-disposition': 'attachment; filename="Mirrored Report.pdf"',
+    'content-length': end - start + 1,
+    'accept-ranges': 'bytes', etag: '"cdn-fixture-v1"',
+    ...(range ? { 'content-range': `bytes ${start}-${end}/${pdf.length}` } : {}),
+  })
+  res.end(pdf.subarray(start, end + 1))
+})
+await new Promise(resolve => cdn.listen(0, '127.0.0.1', resolve))
 const server = createServer((req, res) => {
   const path = new URL(req.url, 'http://fixture').pathname
   requests.push({ path, range: req.headers.range ?? null })
+  if (path === '/cdn-gateway') { res.writeHead(307, { location: `http://127.0.0.1:${cdn.address().port}/blob` }); res.end(); return }
   if (path === '/redirect') { res.writeHead(302, { location: '/Quarterly%20Report.pdf' }); res.end(); return }
   if (path === '/forbidden') { res.writeHead(403, { 'content-length': 0 }); res.end(); return }
   if (['/reject416', '/reject400'].includes(path) && req.headers.range) {
@@ -37,6 +53,7 @@ try {
     ['/get.php?id=42', 'get.pdf'],
     ['/redirect', 'Quarterly Report.pdf'],
     ['/named', 'Server Report.pdf'],
+    ['/cdn-gateway', 'Mirrored Report.pdf'],
     ['/reject416', 'reject416.pdf'],
     ['/reject400', 'reject400.pdf'],
     ['/stream', 'stream.pdf'],
@@ -70,5 +87,5 @@ try {
   console.log(JSON.stringify({ passed: true, checks, backend: 'desktop route table + real daemon + disk verification' }, null, 2))
 } finally {
   await h?.stop()
-  await new Promise(resolve => server.close(resolve))
+  await Promise.all([new Promise(resolve => server.close(resolve)), new Promise(resolve => cdn.close(resolve))])
 }

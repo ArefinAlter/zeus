@@ -15,7 +15,7 @@ mkdirSync(output,{recursive:true})
 const powershell=join(process.env.SystemRoot,'System32','WindowsPowerShell','v1.0','powershell.exe')
 const helper=fileURLToPath(new URL('../terminal-probe.ps1',import.meta.url))
 const fx=await startFixtures(0)
-let h,ui,opened=false
+let h,ui,completed,opened=false
 const probe=(close=false)=>{
  const report=join(output,close?'closed.json':'console.json')
  execFileSync(powershell,['-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',helper,'-ExpectedTui',join(BIN,'zeus-tui.exe'),'-DesktopHome',h.home,'-ReportPath',report,...(close?['-Close']:[])],{windowsHide:true,stdio:'ignore',timeout:15000})
@@ -35,14 +35,21 @@ try {
  const response=await launched;const result=await response.json()
  assert.equal(response.ok(),true,JSON.stringify(result));assert.equal(result.opened,true);opened=true
  const screen=await until(()=>{const r=probe();return r.readable&&r.text.includes('LOCAL ENGINE CONNECTED')&&r.text.includes('terminal-proof.pdf')&&r},{timeoutMs:30000,everyMs:500,what:'rendered TUI connected to the desktop fixture'})
+ assert.ok(screen.text.replace(/[\s│]/g,'').includes(sha256(seed,size)), 'terminal displays the actual verified digest')
  assert.equal(ui.errors.length,0)
- writeFileSync(join(output,'result.json'),JSON.stringify({passed:true,profile:h.home,job_id:id,console_owner:screen.owner,console_child:screen.child,checks:['desktop button opens a real terminal','TUI renders connected state','desktop download appears in the terminal','download bytes independently verified','no UI errors']},null,2))
- console.log('SCENARIO 31: PASSED (real Windows console, shared profile, verified download)')
+ completed={passed:true,profile:h.home,job_id:id,console_owner:screen.owner,console_child:screen.child,checks:['desktop button opens a real terminal','TUI renders connected state','desktop download appears in the terminal','download bytes independently verified','terminal displays the recorded digest','no UI errors','owned fixture terminal closed']}
+
 } catch(error) {
  writeFileSync(join(output,'failure.json'),JSON.stringify({error:String(error),stderr:h?.stderr(),text:await ui?.page.locator('body').innerText().catch(()=> '')},null,2))
  throw error
 } finally {
  try {
   if(opened) { const result=probe(true); assert.ok(result.closed || result.childCount === 0,'close only this harness-owned terminal tree') }
+ } catch(error) {
+  writeFileSync(join(output,'failure.json'),JSON.stringify({phase:'cleanup',error:String(error)},null,2))
+  throw error
  } finally { await ui?.close();await h?.stop();await fx.close() }
 }
+
+writeFileSync(join(output,'result.json'),JSON.stringify(completed,null,2))
+console.log('SCENARIO 31: PASSED (real Windows console, shared profile, verified download)')

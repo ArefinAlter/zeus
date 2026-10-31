@@ -10,8 +10,34 @@ $owners = @(Get-CimInstance Win32_Process -Filter "ProcessId=$($children[0].Pare
 $owner = if ($owners.Count -eq 1) { $owners[0] } else { $null }
 if ($Close) {
  $target = if ($owner) { $owner.ProcessId } else { $children[0].ProcessId }
- & "$env:SystemRoot\System32\taskkill.exe" /PID $target /T /F | Out-Null
- @{closed=($LASTEXITCODE -eq 0)} | ConvertTo-Json | Set-Content -LiteralPath $ReportPath -Encoding UTF8
+ # Capture native stderr without PowerShell 5 promoting it to a terminating error.
+ $killInfo = New-Object System.Diagnostics.ProcessStartInfo
+ $killInfo.FileName = "$env:SystemRoot\System32\taskkill.exe"
+ $killInfo.Arguments = "/PID $target /T /F"
+ $killInfo.UseShellExecute = $false
+ $killInfo.CreateNoWindow = $true
+ $killInfo.RedirectStandardOutput = $true
+ $killInfo.RedirectStandardError = $true
+ $killer = New-Object System.Diagnostics.Process
+ $killer.StartInfo = $killInfo
+ try {
+   if (!$killer.Start()) { throw 'Cannot start fixture cleanup.' }
+   $killOutput = $killer.StandardOutput.ReadToEndAsync()
+   $killError = $killer.StandardError.ReadToEndAsync()
+   if (!$killer.WaitForExit(10000)) { $killer.Kill(); throw 'Fixture cleanup deadline exceeded.' }
+   $killExit = $killer.ExitCode
+   $null = $killOutput.GetAwaiter().GetResult()
+   $killDiagnostic = $killError.GetAwaiter().GetResult().Trim()
+ } finally { $killer.Dispose() }
+ # A short-lived polling CLI can exit during taskkill's tree walk, making its exit code
+ # nonzero even after the owned TUI is gone. Verify the exact fixture identity instead.
+ $remaining = @()
+ for ($attempt = 0; $attempt -lt 20; $attempt++) {
+   $remaining = @(Get-CimInstance Win32_Process -Filter "Name='zeus-tui.exe'" | Where-Object { $_.ExecutablePath -eq $ExpectedTui -and $_.CommandLine -and $_.CommandLine.Contains('--desktop-home') -and $_.CommandLine.IndexOf($DesktopHome,[StringComparison]::OrdinalIgnoreCase) -ge 0 })
+   if ($remaining.Count -eq 0) { break }
+   Start-Sleep -Milliseconds 250
+ }
+ @{closed=($remaining.Count -eq 0);childCount=$remaining.Count;taskkillExit=$killExit;taskkillDiagnostic=$killDiagnostic} | ConvertTo-Json | Set-Content -LiteralPath $ReportPath -Encoding UTF8
  exit 0
 }
 Add-Type -TypeDefinition @'

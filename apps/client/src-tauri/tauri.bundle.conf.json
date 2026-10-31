@@ -6,6 +6,7 @@
       "binaries/zeus",
       "binaries/zeus-native-host",
       "binaries/zeus-tui"
-    ]
+    ],
+    "useLocalToolsDir": true
   }
 }

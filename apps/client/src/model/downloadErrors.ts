@@ -1,6 +1,8 @@
 import type { Job } from './types.ts'
 
 const ERRORS: Record<string, [string, string]> = {
+  'tls.cert_invalid': ["The site's HTTPS certificate could not be validated.", 'Check your system clock, contact the site owner, or use another trusted source. This error is not retried.'],
+  'tls.handshake_failed': ['The secure connection could not be established.', 'Check your connection or try again later.'],
   'http.forbidden': ['The server refused the file (403). A signed link that expired looks like this.', 'Get a fresh link from the site and add it again.'],
   'url.expired': ['The download link expired.', 'Get a fresh link from the site and add it again.'],
   'http.blocked_challenge': ['The site requires a browser check before downloading.', 'Open the site in your browser, then use the Zeus extension to hand off the download.'],

@@ -2766,6 +2766,7 @@ dependencies = [
  "httpdate",
  "percent-encoding",
  "reqwest",
+ "rustls",
  "serde_json",
  "thiserror",
  "tokio",

@@ -20,3 +20,10 @@ test('actual daemon failure codes give actionable messages', () => {
   assert.match(errorOf('http.status_429').message, /limited/)
   assert.equal(errorOf(undefined), undefined)
 })
+
+
+test('certificate errors explain the permanent failure instead of suggesting a retry', () => {
+  assert.match(errorOf('tls.cert_invalid').message, /certificate/)
+  assert.match(errorOf('tls.cert_invalid').next, /not retried/)
+  assert.match(errorOf('tls.handshake_failed').message, /secure connection/)
+})

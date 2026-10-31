@@ -39,7 +39,9 @@ supportedBundles(bundles, process.platform)
 const triple = win ? 'x86_64-pc-windows-msvc' : 'x86_64-unknown-linux-gnu'
 const exe = win ? '.exe' : ''
 const OS = win ? 'windows-x64' : 'linux-x64'
-const target = process.env.CARGO_TARGET_DIR ? resolve(process.env.CARGO_TARGET_DIR) : null
+// All independent Cargo workspaces must use the same absolute target for verified sidecars.
+const target = resolve(process.env.CARGO_TARGET_DIR ?? join(repo, 'target'))
+process.env.CARGO_TARGET_DIR = target
 
 function run(cmd, args, opts = {}) {
   console.log(`\n> ${cmd} ${args.join(' ')}`)
@@ -121,7 +123,8 @@ if (win && bundles.split(',').includes('nsis')) {
   const releaseDir = join(target ?? shell + '/target', 'release')
   const nsisDir = join(releaseDir, 'nsis', 'x64')
   const script = join(nsisDir, 'installer.nsi')
-  const toolset = join(process.env.LOCALAPPDATA ?? '', 'tauri', 'NSIS')
+  // Both release configurations use Tauri's supported project-local tools cache.
+  const toolset = join(target, '.tauri', 'NSIS')
   const makensis = join(toolset, 'Bin', 'makensis.exe')
   const setup = readdirSync(join(releaseDir, 'bundle', 'nsis')).find((f) => f.includes(`_${semver}_`) && /setup\.exe$/.test(f))
   if (!existsSync(script) || !existsSync(makensis) || !setup) {

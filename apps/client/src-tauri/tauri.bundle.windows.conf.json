@@ -10,6 +10,7 @@
     ],
     "resources": {
       "../../../tools/everything-broker/LICENSE-SDK.txt": "LICENSE-EVERYTHING-SDK.txt"
-    }
+    },
+    "useLocalToolsDir": true
   }
 }

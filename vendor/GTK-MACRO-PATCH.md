@@ -6,4 +6,4 @@ The patch removes the abandoned proc-macro-error dependency and uses the existin
 
 Both [proc-macro-error](https://rustsec.org/advisories/RUSTSEC-2024-0370.html) and its [proc-macro-error2 fork](https://rustsec.org/advisories/RUSTSEC-2026-0173.html) have unmaintained advisories. These are build-time maintenance issues; no runtime exploit is identified. This patch adds neither an alternative diagnostic dependency nor an advisory ignore.
 
-Required validation: upstream macro tests, Linux GTK/WebKit compilation, Rust 1.90 compatibility, desktop regressions and dependency scanning. Acceptance is pending. Remove the local patches when the supported upstream GTK 3 stack removes the abandoned helper.
+Required validation: upstream macro tests, Linux GTK/WebKit compilation, Rust 1.90 compatibility, desktop regressions and dependency scanning. The isolated Linux r2 run passes upstream macro tests, Linux GTK/native compilation and Rust 1.90 checks. Full native/root dependency policy scans pass. Packaged desktop acceptance remains a separate release gate. Remove the local patches when the supported upstream GTK 3 stack removes the abandoned helper.
