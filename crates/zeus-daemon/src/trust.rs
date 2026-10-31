@@ -130,7 +130,7 @@ fn terminal_text(value: &str) -> String {
     value.chars().filter(|c|!c.is_control() && !matches!(c,'\u{200b}'..='\u{200f}'|'\u{202a}'..='\u{202e}'|'\u{2060}'..='\u{2069}'|'\u{feff}')).collect()
 }
 
-fn open_review_terminal() -> ApiResult<(std::fs::File, std::fs::File)> {
+fn open_review_terminal() -> ApiResult<(std::fs::File, zeus_api::transport::TerminalOutput)> {
     use std::io::IsTerminal;
     #[cfg(windows)]
     let (input_path, output_path) = ("CONIN$", "CONOUT$");
@@ -153,6 +153,8 @@ fn open_review_terminal() -> ApiResult<(std::fs::File, std::fs::File)> {
             "controlling-terminal executable review",
         ));
     }
+    let output = zeus_api::transport::TerminalOutput::new(output)
+        .map_err(|_| ApiError::human_required("controlling-terminal executable review"))?;
     Ok((input, output))
 }
 

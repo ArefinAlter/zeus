@@ -1,6 +1,8 @@
 import type { Job } from './types.ts'
 
 const ERRORS: Record<string, [string, string]> = {
+  'http.protocol_error': ['The response could not be used as a download.', 'Try a fresh link. For browser handoff, check whether another download manager is capturing this site.'],
+  'net.proxy_failed': ['The browser could not supply the download.', 'Keep the connected browser open, review the site permission in the Zeus extension, and check for another download manager capturing this site.'],
   'tls.cert_invalid': ["The site's HTTPS certificate could not be validated.", 'Check your system clock, contact the site owner, or use another trusted source. This error is not retried.'],
   'tls.handshake_failed': ['The secure connection could not be established.', 'Check your connection or try again later.'],
   'http.forbidden': ['The server refused the file (403). A signed link that expired looks like this.', 'Get a fresh link from the site and add it again.'],

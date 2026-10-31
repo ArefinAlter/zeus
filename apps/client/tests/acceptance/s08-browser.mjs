@@ -24,6 +24,7 @@
 // Run: node tests/acceptance/s08-browser.mjs   (ZEUS_BIN_DIR: zeus, zeusd and zeus-native-host built together)
 
 import { execFileSync } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { chromium } from '@playwright/test'
 import { join } from 'node:path'
@@ -42,7 +43,6 @@ mkdirSync(evidence, { recursive: true })
 const KEY = 'HKCU\\Software\\Microsoft\\Edge\\NativeMessagingHosts\\dev.zeus.native_host'
 
 const results = []
-const limits = []
 const check = (name, ok, detail = '') => {
   results.push({ name, ok })
   console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}${detail ? `  (${detail})` : ''}`)
@@ -117,6 +117,10 @@ try {
   writeFileSync(`${ext}/manifest.json`, JSON.stringify(manifest, null, 2))
   const profile = `${scratch}/s08-profile`
   rmSync(profile, { recursive: true, force: true })
+  const browserDownloads = join(scratch, 'browser-downloads')
+  mkdirSync(browserDownloads, { recursive: true })
+  mkdirSync(join(profile, 'Default'), { recursive: true })
+  writeFileSync(join(profile, 'Default', 'Preferences'), JSON.stringify({ download: { default_directory: browserDownloads, prompt_for_download: false } }))
   context = await chromium.launchPersistentContext(profile, {
     channel: 'msedge',
     headless: false,
@@ -136,8 +140,14 @@ try {
   // ---- 3. a download the browser cannot finish is offered to Zeus
   const size = 8 * 1024 * 1024
   const seed = 41
-  const url = `${fx.url}/dropped/from-the-browser.bin?size=${size}&seed=${seed}&cut=0.4`
+  const url = `${fx.url}/dropped/from-the-browser.bin?size=${size}&seed=${seed}&cut=0.4&hold=1`
   const page = await context.newPage()
+  // Playwright's allowAndName policy substitutes UUIDs in chrome.downloads.filename.
+  // Use normal browser naming in this disposable profile, with downloads confined to its scratch directory.
+  const downloadControl = await context.newCDPSession(page)
+  const { targetInfo } = await downloadControl.send('Target.getTargetInfo')
+  await downloadControl.send('Browser.setDownloadBehavior', { behavior: 'allow', downloadPath: browserDownloads, ...(targetInfo.browserContextId ? { browserContextId: targetInfo.browserContextId } : {}) })
+  await downloadControl.detach()
   await page.goto(`${fx.url}/site/`)
   await page.evaluate((u) => {
     const a = document.createElement('a')
@@ -151,12 +161,16 @@ try {
     return items.find((i) => i.state === 'interrupted') ?? false
   }, { timeoutMs: 30000, what: 'the browser download to be interrupted' }).catch(() => null)
   check('the browser\'s own download is interrupted and cannot be resumed', !!interrupted && interrupted.canResume === false, interrupted ? `${interrupted.error}, ${interrupted.bytesReceived} bytes` : '')
+  writeFileSync(join(evidence, 'browser-interruption.json'), JSON.stringify({ downloads: await worker.evaluate(() => chrome.downloads.search({})), requests: fx.log }, null, 2))
+  if (!interrupted || interrupted.canResume !== false) throw new Error('Fixture did not produce a non-resumable browser interruption')
   const job = await until(async () => (await h.get('/api/v1/jobs')).items.find((j) => j.source_kind === 'browser_handoff') ?? false, { timeoutMs: 30000, what: 'the handoff job' }).catch(() => null)
   check('the extension offers it and the engine creates a job from the browser', !!job, job ? `${job.id} ${job.state}` : '')
   const approval = await until(async () => waiting().find((a) => (a.kind ?? a.facts?.kind) === 'handoff') ?? false, { timeoutMs: 20000, what: 'a pending handoff approval' }).catch(() => null)
   check('an approval of kind handoff is pending, listed by the command line a person uses', !!approval, approval?.id)
   const counted = (await h.get('/api/v1/status')).daemon?.pending_approvals
   check('the status shows that requests are waiting for a person', counted >= 1, `${counted} pending`)
+  // Origin recovery alone must not bypass Zeus human consent.
+  fx.recoverDropped()
   await sleep(4000)
   const held = (await h.get('/api/v1/jobs')).items.find((j) => j.id === job?.id)
   check('with no decision nothing downloads: the job waits and no bytes were fetched', !!held && ['awaiting_approval', 'awaiting_session'].includes(held.state) && held.bytes_done === 0, `${held?.state}, ${held?.bytes_done} bytes`)
@@ -169,6 +183,11 @@ try {
   const popup = await context.newPage()
   await popup.goto(`chrome-extension://${extId}/popup/popup.html`)
   await popup.waitForSelector('article.card', { timeout: 20000 })
+  const snapshot = await popup.evaluate(() => chrome.runtime.sendMessage({ cmd: 'snapshot' }))
+  const capabilities = snapshot?.ok ? snapshot.data.link.capabilities : []
+  const negotiated = ['approvals','events','job_control','grants','fetch_proxy'].every(c => capabilities.includes(c))
+  check('the real peers negotiate approval, event, job, grant and fetch capabilities', negotiated, capabilities.join(', '))
+  if (!negotiated) throw new Error('Required browser capabilities were not negotiated')
   await popup.screenshot({ path: `${evidence}/s08-popup-pending.png` })
   const buttons = await popup.locator('button.btn').allTextContents()
   console.log('popup buttons:', JSON.stringify(buttons))
@@ -180,14 +199,7 @@ try {
   console.log('popup after the click:', (await popup.locator('body').innerText()).split(String.fromCharCode(10)).join(' | ').slice(0, 500))
   await popup.screenshot({ path: `${evidence}/s08-popup-clicked.png` })
   // ---- 5. the job runs and completes
-  const popupText = await popup.locator('body').innerText()
-  if (/cannot take decisions from the browser/.test(popupText)) {
-    // A development extension has no published id, so the daemon does not accept its decisions (Zeus ADR 0007): the
-    // approval stays with the person at the terminal. That refusal is the safe outcome and it is what this build does.
-    const still = waiting().find((a) => a.id === approval?.id)
-    check('the daemon refuses a decision from a development-id extension and the approval keeps waiting for a person', !!still, 'This version of Zeus cannot take decisions from the browser.')
-    limits.push('completion after approval was NOT demonstrated: the popup decision is refused for a development extension id, so a person decides it at the terminal (zeus approvals)')
-  } else {
+  {
     const done = await until(async () => {
       const j = (await h.get('/api/v1/jobs')).items.find((x) => x.id === job.id)
       return j && ['completed', 'failed', 'canceled'].includes(j.state) ? j : false
@@ -195,7 +207,8 @@ try {
     const after = waiting().find((a) => a.id === approval?.id)
     check('the approval left the waiting list after the popup decision', !after, after ? 'still waiting' : 'decided')
     check('the job completes in the engine after the decision', done?.state === 'completed', `${done?.state} ${done?.last_error?.code ?? ''}`)
-    check("the file has the server's bytes (SHA-256 and size)", done?.sha256 === sha256(seed, size) && statSync(done.path).size === size, done?.sha256?.slice(0, 16))
+    check("the file has the server's bytes (SHA-256 and size)", done?.sha256 === sha256(seed, size) && statSync(done.path).size === size && createHash('sha256').update(readFileSync(done.path)).digest('hex') === sha256(seed, size), done?.sha256?.slice(0, 16))
+    check('the browser-selected filename and extension are preserved', done?.filename === 'from-the-browser.bin', done?.filename)
     check('Zeus fetched it itself, after the decision', fx.log.filter((r) => r.path.startsWith('/dropped/')).length > requestsBefore)
   }
   await popup.screenshot({ path: `${evidence}/s08-popup-after.png` })
@@ -211,6 +224,5 @@ try {
   await fx.close()
 }
 const failed = results.filter((r) => !r.ok)
-for (const l of limits) console.log(`LIMIT  ${l}`)
-console.log(failed.length ? `SCENARIO 8: ${failed.length} FAILED` : limits.length ? 'SCENARIO 8: PASSED WITH LIMITS' : 'SCENARIO 8: PASSED (decision step: test automation in a real browser, not a person)')
+console.log(failed.length ? `SCENARIO 8: ${failed.length} FAILED` : 'SCENARIO 8: PASSED (decision step: test automation in a real browser, not a person)')
 process.exit(failed.length ? 1 : 0)

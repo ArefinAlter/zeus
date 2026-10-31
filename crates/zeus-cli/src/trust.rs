@@ -298,7 +298,7 @@ pub fn open_terminal() -> Result<Terminal, TrustError> {
     let physical_input = Some(input.try_clone()?);
     Ok(Terminal {
         input: Box::new(std::io::BufReader::new(input)),
-        output: Box::new(output),
+        output: Box::new(zeus_api::transport::TerminalOutput::new(output)?),
         physical_input,
     })
 }

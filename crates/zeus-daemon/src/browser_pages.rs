@@ -84,8 +84,10 @@ impl BrowserBroker {
                     .is_some_and(|approval| {
                         approval.state == zeus_types::ApprovalState::Approved
                             && approval.facts.as_ref().is_some_and(|facts| {
-                                facts["browser_document_mode"] == "browser_origin"
-                                    && facts["browser_profile_id"] == profile
+                                facts.get("browser_document_mode").and_then(|v| v.as_str())
+                                    == Some("browser_origin")
+                                    && facts.get("browser_profile_id").and_then(|v| v.as_str())
+                                        == Some(profile.as_str())
                             })
                     }),
             };

@@ -12,7 +12,7 @@
 //   /gone/<name>                              410
 //   /missing/<name>                           404
 //   /busy/<name>?size=N&fails=K&after=S       503 with Retry-After: S for the first K requests, then the file
-//   /dropped/<name>?size=N&cut=F             no ranges or validators; the first request loses its connection after fraction F (a browser download that cannot resume)
+//   /dropped/<name>?size=N&cut=F             no ranges or validators; first request drops after fraction F; hold=1 refuses retries until recoverDropped()
 //   /flaky/<name>?size=N&cut=F                closes the connection after fraction F of the body, the first time only
 //   /hash/<name>?size=N&seed=S                the SHA-256 of that file, as text
 //   /log                                      JSON list of the requests seen (method, path, range)
@@ -79,6 +79,7 @@ export function startFixtures(port = 0) {
   const busy = new Map()
   const flaked = new Set()
   const droppedSeen = new Set()
+  let droppedRecovered = false
   const siteHits = []
   const server = createServer(async (req, res) => {
     const url = new URL(req.url ?? '/', 'http://x')
@@ -86,6 +87,7 @@ export function startFixtures(port = 0) {
     seen.push({ method: req.method, path: url.pathname + url.search, range: req.headers.range ?? null, ua: req.headers['user-agent'] ?? null, t: Date.now() })
     if (seen.length > 5000) seen.shift()
     const entry = seen[seen.length - 1]
+    res.on('close', () => { entry.response_status = res.statusCode; entry.headers_sent = res.headersSent })
     const q = (k, d) => url.searchParams.get(k) ?? d
     const size = Number(q('size', 1 << 20))
     const seed = Number(q('seed', 1))
@@ -101,11 +103,15 @@ export function startFixtures(port = 0) {
       return res.end(JSON.stringify(seen))
     }
     if (kind === 'dropped') {
-      // A browser's download that cannot be resumed: no validators, no ranges, and the first request loses its
-      // connection after a fraction of the body. Later requests (Zeus's own) get the whole file.
+      // Chrome can automatically restart an interrupted download. With hold=1, fail its retries
+      // until the test explicitly recovers this origin while Zeus still awaits human consent.
       const key = url.pathname + url.search
       const first = !droppedSeen.has(key)
       droppedSeen.add(key)
+      if (!first && q('hold', '0') === '1' && !droppedRecovered) {
+        res.writeHead(204, { 'cache-control': 'no-store' })
+        return res.end()
+      }
       res.writeHead(200, { 'content-type': 'application/octet-stream', 'content-length': String(size), 'content-disposition': `attachment; filename="${decodeURIComponent(parts[parts.length - 1] ?? 'file.bin')}"` })
       if (req.method === 'HEAD') return res.end()
       const stop = first ? Math.floor(size * Number(q('cut', 0.4))) : size
@@ -213,6 +219,7 @@ export function startFixtures(port = 0) {
         port: p,
         log: seen,
         siteHits,
+        recoverDropped: () => { droppedRecovered = true },
         close: () => new Promise((r) => (server.closeAllConnections?.(), server.close(() => r()))),
       })
     })

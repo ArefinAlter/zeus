@@ -1,6 +1,9 @@
 //! Owner-only local IPC with OS peer checks before authentication.
 
 mod platform;
+mod terminal;
+
+pub use terminal::TerminalOutput;
 
 pub use platform::{discard_terminal_input, secure_private_directory, secure_private_file};
 

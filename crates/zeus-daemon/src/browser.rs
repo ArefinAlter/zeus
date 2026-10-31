@@ -198,13 +198,26 @@ impl BrowserBroker {
                         .as_str()
                         .map(str::to_owned)
                 });
-                let reviewed_profile = tx.approval(grant.approval_id)?.and_then(|a| {
-                    a.facts.and_then(|f| {
-                        (f["browser_document_mode"] == "browser_origin")
-                            .then(|| f["browser_profile_id"].as_str().map(str::to_owned))
-                            .flatten()
-                    })
-                });
+                // Ordinary handoff/session approvals have no workflow document fields.
+                // BTreeMap indexing panics on an absent key; optional facts must use get.
+                let reviewed_profile = match tx.approval(grant.approval_id)?.and_then(|a| a.facts) {
+                    Some(facts)
+                        if facts.get("browser_document_mode").and_then(|v| v.as_str())
+                            == Some("browser_origin") =>
+                    {
+                        Some(
+                            facts
+                                .get("browser_profile_id")
+                                .and_then(|v| v.as_str())
+                                .filter(|profile| !profile.is_empty())
+                                .ok_or(zeus_journal::JournalError::Invariant(
+                                    "reviewed browser profile missing",
+                                ))?
+                                .to_owned(),
+                        )
+                    }
+                    _ => None,
+                };
                 if decided_profile
                     .as_ref()
                     .zip(reviewed_profile.as_ref())
