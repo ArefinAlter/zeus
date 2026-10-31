@@ -141,7 +141,10 @@ fn open_review_terminal() -> ApiResult<(std::fs::File, std::fs::File)> {
         .write(true)
         .open(input_path)
         .map_err(|_| ApiError::human_required("controlling-terminal executable review"))?;
+    // Windows IsTerminal uses GetConsoleMode, which requires GENERIC_READ even on CONOUT$.
+    // Keep the controlling-console check; a detached process must still be refused.
     let output = std::fs::OpenOptions::new()
+        .read(cfg!(windows))
         .write(true)
         .open(output_path)
         .map_err(|_| ApiError::human_required("controlling-terminal executable review"))?;
@@ -423,6 +426,23 @@ impl TrustedPrograms {
 #[cfg(test)]
 mod offline_tests {
     use super::*;
+    #[cfg(windows)]
+    mod console_regression {
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tools/test-support/windows-console.rs"
+        ));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn offline_review_requires_a_real_controlling_console() {
+        console_regression::assert_console_gate(
+            "trust::offline_tests::offline_review_requires_a_real_controlling_console",
+            || open_review_terminal().is_ok(),
+        );
+    }
+
     #[test]
     fn incomplete_installation_is_refused_and_candidates_bind_exact_paths_and_bytes() {
         let dir = tempfile::tempdir().unwrap();

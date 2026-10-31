@@ -1,5 +1,12 @@
 # Zeus project handoff
 
+## Windows controlling-console repair — 31 October 2026
+
+Final Edge handoff acceptance exposed a Windows release blocker: `zeus approvals approve` refused a real console with `api.human_required`. The CLI and daemon's offline trust-review path opened CONOUT$ write-only, while Rust's `IsTerminal` uses [GetConsoleMode, which requires GENERIC_READ](https://learn.microsoft.com/en-us/windows/console/getconsolemode). Both paths now request read access only on Windows; terminal detection is retained.
+
+A native child-console regression fails before repair. Shared test support now checks both a newly allocated console with redirected standard IO and a detached child: the former must be accepted and the latter refused. Both regressions pass, and the complete Windows root suite passes 709 tests, strict Clippy, formatting and Rust 1.90. The runtime is rebuilt. Real Edge terminal completion and final packages remain pending at this checkpoint. The older af08878 package candidates were not published and must be superseded; sidecars must be rebuilt for the new source revision.
+
+
 ## Validation update — October 31, alpha.2
 
 Baseline Windows tests pass (707 application, 226 native, 339 core), along with MSRV, native Clippy and the final 12-case file acceptance rerun. Linux application/native/GTK macro/MSRV checks and HTTP/TUI/directory/maintenance/review acceptance pass in the isolated Ubuntu 22.04 builder. Full root/native/core cargo-deny policy checks pass without new exceptions.

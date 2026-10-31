@@ -1,5 +1,12 @@
 # Zeus alpha.2 repair candidate
 
+## Windows controlling-console repair — 31 October 2026
+
+Final Edge handoff acceptance exposed a Windows release blocker: `zeus approvals approve` refused a real console with `api.human_required`. The CLI and daemon's offline trust-review path opened CONOUT$ write-only, while Rust's `IsTerminal` uses [GetConsoleMode, which requires GENERIC_READ](https://learn.microsoft.com/en-us/windows/console/getconsolemode). Both paths now request read access only on Windows; terminal detection is retained.
+
+A native child-console regression fails before repair. Shared test support now checks both a newly allocated console with redirected standard IO and a detached child: the former must be accepted and the latter refused. Both regressions pass, and the complete Windows root suite passes 709 tests, strict Clippy, formatting and Rust 1.90. The runtime is rebuilt. Real Edge terminal completion and final packages remain pending at this checkpoint. The older af08878 package candidates were not published and must be superseded; sidecars must be rebuilt for the new source revision.
+
+
 Status: local candidate, not a published or installed-release-validated replacement. No GitHub Actions are used. Source revisions and final asset digests will be emitted by `apps/client/scripts/build-release.mjs`; an installer must not be published solely because compilation succeeded.
 
 ## Findings and implemented repairs
