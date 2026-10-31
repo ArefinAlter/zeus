@@ -25,10 +25,11 @@ export function DownloadProgressDialog({
   const [autoClose, setAutoClose] = useState(false)
   const [detail, setDetail] = useState<JobDetail | null>(null)
   useEffect(() => {
-    if (!LIVE) return
+    setDetail(null)
+    // Pending IDs exist only in the UI; daemon job endpoints require a real job ID.
+    if (!LIVE || jobId.startsWith('pend_')) return
     let alive = true
     let timer: ReturnType<typeof setTimeout> | undefined
-    setDetail(null)
     const poll = async () => {
       try {
         const result = await api.job(jobId)
@@ -53,7 +54,7 @@ export function DownloadProgressDialog({
   const p = jobPercent(job)
   const eta = jobEta(job)
   const active = isActive(job)
-  const canPause = ['queued', 'probing', 'downloading', 'retry_scheduled', 'awaiting_session'].includes(job.state)
+  const canPause = (!LIVE || !jobId.startsWith('pend_')) && ['queued', 'probing', 'downloading', 'retry_scheduled', 'awaiting_session'].includes(job.state)
   const canResume = ['paused', 'failed', 'queued', 'retry_scheduled'].includes(job.state)
   const fullPath = joinPath(job.dir, job.name)
 

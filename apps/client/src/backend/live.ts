@@ -29,6 +29,7 @@ import { filesApi, indexFromWire, nudgeIndexSync, startIndexSync } from './files
 import { historyLabel } from '../model/eventHistory.ts'
 import { computeTransferProgress } from '../model/segments.ts'
 import { errorOf } from '../model/downloadErrors.ts'
+import { followEnqueuedDownload } from '../lib/ui.ts'
 
 export const LIVE = backend().kind !== 'scripted'
 export const HOSTED = backend().kind === 'hosted'
@@ -1014,6 +1015,9 @@ async function sendNative(items: PendingItem[]): Promise<void> {
     const failedHere = items.filter((p) => !started.has(p.id))
     if (failedHere.length) fail(r.jobs.find((j) => j.error_code)?.error_code ?? 'job.enqueue_failed', r.jobs.find((j) => j.error_message)?.error_message ?? 'zeusd refused some of these downloads.', failedHere)
     await Promise.all([pollJobs(), pollQueues()])
+    r.jobs.forEach((j, i) => {
+      if (j.job_id && items[i]) followEnqueuedDownload(items[i].id, j.job_id)
+    })
   } catch (e) {
     fail(e instanceof RemoteError ? e.code : 'client.error', e instanceof RemoteError ? e.message : 'The download could not be sent to zeusd.')
   }
@@ -1071,6 +1075,9 @@ export async function send(ids: string[]): Promise<void> {
       const failedHere = group.filter((p) => !started.has(p.id))
       if (failedHere.length) fail('job.enqueue_failed', 'zeusd refused some of these downloads.', failedHere)
       await pollJobs()
+      r.jobs.forEach((j, i) => {
+        if (j.job_id && group[i]) followEnqueuedDownload(group[i].id, j.job_id)
+      })
     } catch (e) {
       fail(e instanceof RemoteError ? e.code : 'client.error', e instanceof RemoteError ? e.message : 'The download could not be sent to zeusd.')
     }

@@ -79,21 +79,25 @@ export function Tabs<T extends string>({ tabs, value, onChange }: { tabs: [T, st
 /** A modal dialog. Escape and the backdrop close it; focus moves into it and returns afterwards. */
 export function Dialog({ title, onClose, children, wide, plain }: { title: string; onClose: () => void; children: ComponentChildren; wide?: boolean; plain?: boolean }) {
   const ref = useRef<HTMLDivElement>(null)
-  useEffect(() => {
+  const close = useRef(onClose)
+  close.current = onClose
+  // Queue/status updates replace parent callbacks. Focus belongs to the dialog's
+  // lifetime, not that callback's identity, or typing loses focus on each refresh.
+  useLayoutEffect(() => {
     const prev = document.activeElement as HTMLElement | null
     if (!ref.current?.contains(document.activeElement)) ref.current?.focus()
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         e.stopPropagation()
-        onClose()
+        close.current()
       }
     }
     window.addEventListener('keydown', onKey)
     return () => {
       window.removeEventListener('keydown', onKey)
-      prev?.focus()
+      if (prev?.isConnected) prev.focus()
     }
-  }, [onClose])
+  }, [])
   return (
     <div
       class="dialog-back"

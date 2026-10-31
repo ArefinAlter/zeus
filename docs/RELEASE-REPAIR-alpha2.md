@@ -1,5 +1,17 @@
 # Zeus alpha.2 repair candidate
 
+## 2026-10-31 — intake and progress-window regressions repaired
+
+Actual Linux AppImage testing exposed URL truncation during typing. Scenario 33 reproduces four related defects against the earlier UI: queue refresh steals address focus; late metadata overwrites chosen fields; replacing an in-flight URL retains the old response; and a manually chosen filename matching the URL basename is treated as an automatic suggestion. The repair keeps dialog focus for its lifetime, debounces metadata checks, rejects stale completions, preserves manual choices and carries explicit filename intent into the reviewed enqueue path.
+
+The same regression found that the progress popup queried daemon endpoints with temporary `pend_` IDs and disappeared after enqueue. It now follows the confirmed daemon job ID only while its own dialog remains open, avoids pending-ID detail requests and waits for real completion. Pending transfers no longer display a nonfunctional Pause control.
+
+TypeScript, all 70 model tests, harness and desktop builds pass. Scenario 33 fails on the earlier UI and passes after repair with exact saved bytes, retained manual filename/folder, a newer request completing before an older response, Escape/focus restoration, a visible completed progress popup, zero UI errors and clean shutdown. Final evidence: `D:\verne-build\audit-zeus-desktop\evidence\s33-intake-after-complete-r2-20261031-r1`. An intermediate test checked the completion button before the next UI poll; its failure is retained. The earlier runner's incomplete global-error accounting is documented beside its original result, and corrected in the checked-in test.
+
+Windows r7 and Linux r3 packages from `1bdfa53` remain unpublished and are superseded as release candidates. Windows package/NSIS upgrade and Debian GUI checks passed before these additional UI defects were discovered; the repaired source requires new packages and final acceptance. The final unchanged Core revision `74ecfcb` has 341 Windows tests passing (2 ignored), and the prior full Linux source suite remains retained.
+
+The user approved temporary manual required checks for Zeus/Core/Extension in both GitHub accounts, until monthly Actions capacity is available again. All other PR protections remain enforced. Exact original and applied policies and a staged restoration script are retained in the central audit. No successful status, merge or release has been published at this checkpoint. VPS SSH/HSTS changes stay staged, and live subscription inference remains unverified while the installed Claude account is quota-limited.
+
 ## 2026-10-31 — packaged desktop verified; final presentation and license correction
 
 Windows candidate r6 was built from Zeus `c0cb1f9`, Core `74ecfcb`, Extension `cf17904`, and TUI `0a7e3b5`. All asset hashes, manifest source identities, portable payload entries and runtime versions pass. Actual packaged Tauri/WebView2 acceptance passes: the Add URL UI saves a MIME-named PDF with independently verified bytes; redirects, Content-Disposition names and rejected ranges complete correctly; the packaged TUI shares the desktop profile and displays the real digest; Claude is discovered using its existing installation without API keys or implicit consent; and the app exits cleanly with no page exceptions. Evidence: `D:\verne-build\audit-zeus-package\windows-r6-r3`. Earlier fixture runs exposed two test assumptions (Windows extended paths and installed-provider enabled state), not application failures; those records are preserved.

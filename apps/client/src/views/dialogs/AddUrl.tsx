@@ -1,5 +1,5 @@
 // Add URL: enter an address, see what the server says about it (a probe), choose the category, folder and name, and
-// either start now or put it in a queue for later. The probe answers come from sample data in this release.
+// either start now or put it in a queue for later. Late probes must not replace user choices or newer URLs.
 
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks'
 
@@ -33,14 +33,19 @@ export function AddUrl({ initial, onClose }: { initial?: string; onClose: () => 
   const [queue, setQueue] = useState(settings.scheduler.defaultQueue)
   const [error, setError] = useState<string | null>(null)
   // The folder was typed (or confirmed) by the person: a name or category change leaves it alone.
-  const [dirEdited, setDirEdited] = useState(false)
-  const [categoryEdited, setCategoryEdited] = useState(false)
+  const dirEdited = useRef(false)
+  const categoryEdited = useRef(false)
+  const nameEdited = useRef(false)
+  const probeRevision = useRef(0)
+  const probeTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const currentDir = useRef(dir)
+  currentDir.current = dir
   // "Ask where to save each download" (Settings, Save to): the folder must be confirmed before a download starts.
   const [confirmed, setConfirmed] = useState(false)
   const [dupeChoice, setDupeChoice] = useState<DupeChoice>('skip')
   const input = useRef<HTMLInputElement>(null)
   useEffect(() => input.current?.focus(), [])
-  // Live: what the server answered to a HEAD request (hosted: from the pre-alpha service, sample hosts only).
+  // Live: what the server answered to the metadata probe (hosted: from the pre-alpha service, sample hosts only).
   const [answer, setAnswer] = useState<LinkCheck | null>(null)
   const [samples, setSamples] = useState<{ url: string; note: string }[]>([])
   useEffect(() => {
@@ -51,20 +56,31 @@ export function AddUrl({ initial, onClose }: { initial?: string; onClose: () => 
   const parsed = useMemo(() => intake(url.trim()), [url])
   const link = parsed.links[0]
 
-  useEffect(() => {
-    if (link && !name) {
-      setName(link.name)
-      const c = categoryOf(link.name, settings.categories)
-      setCategory(c)
-      setDir(defaultDir(c))
+  const suggestName = (found: string) => {
+    if (nameEdited.current) return
+    setName(found)
+    if (categoryEdited.current) return
+    const c = categoryOf(found, settings.categories)
+    setCategory(c)
+    if (!dirEdited.current) {
+      const suggested = defaultDir(c)
+      if (currentDir.current !== suggested) setConfirmed(false)
+      currentDir.current = suggested
+      setDir(suggested)
     }
-  }, [link, name])
+  }
 
   useEffect(() => {
-    if (link && !probed && !probing) {
-      probe()
+    if (link) suggestName(link.name)
+    // A new address always gets its own probe, even if an old request is pending.
+    // Briefly debounce keyboard entry instead of probing every partial host/port.
+    if (link && parsed.links.length === 1) probeTimer.current = setTimeout(probe, 350)
+    return () => {
+      if (probeTimer.current !== null) clearTimeout(probeTimer.current)
+      probeTimer.current = null
+      probeRevision.current++
     }
-  }, [link?.url])
+  }, [url])
 
   const dupe = LIVE && link ? duplicateOf(link.url) : undefined
   const roots = settings.saveTo.writeRoots
@@ -75,36 +91,43 @@ export function AddUrl({ initial, onClose }: { initial?: string; onClose: () => 
   const many = parsed.links.length > 1
 
   const probe = () => {
-    if (!link) return
+    if (!link || many) return
+    if (probeTimer.current !== null) clearTimeout(probeTimer.current)
+    probeTimer.current = null
+    const revision = ++probeRevision.current
     setProbing(true)
     setError(null)
-    if (LIVE) {
-      const done = (a: LinkCheck | null) => {
-        setProbing(false)
-        setAnswer(a)
-        setProbed(link.url)
-        const found = a?.name?.trim() || link.name
-        setName(found)
-        const c = categoryOf(found, settings.categories)
-        setCategory(c)
-        setDir(defaultDir(c))
-        setDirEdited(false)
-        setCategoryEdited(false)
-        setConfirmed(false)
-        setDupeChoice('skip')
-      }
-      if (SVC) svc.check([link.url]).then((r) => done(r.items[0] ?? null), (e: unknown) => (setProbing(false), setError(e instanceof Error ? e.message : 'The check failed.')))
-      else done(null)
-      return
-    }
-    setTimeout(() => {
+    const done = (a: LinkCheck | null) => {
+      if (revision !== probeRevision.current) return
       setProbing(false)
+      setAnswer(a)
       setProbed(link.url)
-      setName(link.name)
-      const c = categoryOf(link.name, settings.categories)
-      setCategory(c)
-      setDir(defaultDir(c))
-    }, 450)
+      suggestName(a?.name?.trim() || link.name)
+    }
+    const failed = (e: unknown) => {
+      if (revision !== probeRevision.current) return
+      setProbing(false)
+      setError(e instanceof Error ? e.message : 'The check failed.')
+    }
+    if (LIVE) {
+      if (SVC) svc.check([link.url]).then((r) => done(r.items[0] ?? null), failed)
+      else done(null)
+    } else {
+      setTimeout(() => done(null), 450)
+    }
+  }
+  const changeUrl = (value: string) => {
+    if (value === url) return
+    // Invalidate synchronously: a response can arrive before the next effect runs.
+    probeRevision.current++
+    if (probeTimer.current !== null) clearTimeout(probeTimer.current)
+    probeTimer.current = null
+    setUrl(value)
+    setProbed(null)
+    setProbing(false)
+    setAnswer(null)
+    setError(null)
+    setDupeChoice('skip')
   }
   const login = !LIVE && !!link && /portal\.|library\.|members\./.test(link.host)
   const size = LIVE ? (answer?.size ?? null) : link ? sizeFor(link.url) : null
@@ -115,7 +138,7 @@ export function AddUrl({ initial, onClose }: { initial?: string; onClose: () => 
 
   const add = (start: boolean) => {
     if (!link) return
-    const res = addDownloads([{ url: link.url, name, dir, queue: start ? null : queue, start, ...(desc.trim() ? { description: desc.trim() } : {}), ...(sha && !shaBad ? { expectedSha256: sha } : {}), ...(login ? { sessionOrigin: new URL(link.url).origin } : {}), ...(NATIVE ? { overwrite: overwriteFor(dupe ? dupeChoice : undefined, settings.downloads.duplicates) } : {}) }])
+    const res = addDownloads([{ url: link.url, name, ...(nameEdited.current ? { nameChosen: true } : {}), dir, queue: start ? null : queue, start, ...(desc.trim() ? { description: desc.trim() } : {}), ...(sha && !shaBad ? { expectedSha256: sha } : {}), ...(login ? { sessionOrigin: new URL(link.url).origin } : {}), ...(NATIVE ? { overwrite: overwriteFor(dupe ? dupeChoice : undefined, settings.downloads.duplicates) } : {}) }])
     if (res.refused.length) return setError(res.refused[0] ?? 'Refused.')
     if (NATIVE) rememberFolder(category, dir)
     if (start && res.ids[0]) {
@@ -135,12 +158,9 @@ export function AddUrl({ initial, onClose }: { initial?: string; onClose: () => 
             class="mono"
             value={url}
             placeholder="https://files.example.org/archive.zip"
-            onInput={(e) => {
-              setUrl((e.target as HTMLInputElement).value)
-              setProbed(null)
-            }}
+            onInput={(e) => changeUrl((e.target as HTMLInputElement).value)}
             onKeyDown={(e) => {
-              if (e.key === 'Enter' && link && !many) probe()
+              if (e.key === 'Enter' && link && !many) { e.preventDefault(); probe() }
             }}
           />
           <button type="button" class="btn" disabled={!link || many || probing} onClick={probe}>
@@ -154,7 +174,7 @@ export function AddUrl({ initial, onClose }: { initial?: string; onClose: () => 
           <p class="muted small">This server downloads only from its sample hosts. Pick one to try:</p>
           <div class="rows card-rows">
             {samples.map((x) => (
-              <button type="button" class="row" onClick={() => (setUrl(x.url), setProbed(null))}>
+              <button type="button" class="row" onClick={() => changeUrl(x.url)}>
                 <span class="text">
                   <span class="title mono small">{x.url.replace(/^http:\/\//, '')}</span>
                   <span class="desc">{x.note}</span>
@@ -187,7 +207,7 @@ export function AddUrl({ initial, onClose }: { initial?: string; onClose: () => 
             <Icon name={probing ? 'refresh' : 'check'} />
             <span>
               {probing && !answer
-                ? 'Connecting to server… Zeus will begin download immediately.'
+                ? 'Checking the server… Review the destination while this runs.'
                 : LIVE
                 ? answer
                   ? answer.check === 'online'
@@ -195,7 +215,7 @@ export function AddUrl({ initial, onClose }: { initial?: string; onClose: () => 
                     : answer.check === 'needs_login'
                       ? 'The server wants a sign-in. Zeus lends a browser login only through the extension, after you approve.'
                       : checkNote(answer)
-                  : 'Direct high-performance Range download ready.'
+                  : 'Ready to check this address.'
                 : login
                   ? 'The site answered with a sign-in page: this file needs your login.'
                   : `206 Partial Content · ${fmtBytes(size)} · resumable`}
@@ -235,8 +255,8 @@ export function AddUrl({ initial, onClose }: { initial?: string; onClose: () => 
                 onChange={(e) => {
                   const c = (e.target as HTMLSelectElement).value as CategoryId
                   setCategory(c)
-                  setCategoryEdited(true)
-                  if (!dirEdited) setDir(defaultDir(c))
+                  categoryEdited.current = true
+                  if (!dirEdited.current) setDir(defaultDir(c))
                 }}
               >
                 {CATEGORIES.map((c) => (
@@ -252,7 +272,7 @@ export function AddUrl({ initial, onClose }: { initial?: string; onClose: () => 
                 value={dir}
                 onInput={(e) => {
                   setDir((e.target as HTMLInputElement).value)
-                  setDirEdited(true)
+                  dirEdited.current = true
                   setConfirmed(true)
                 }}
               />
@@ -268,12 +288,13 @@ export function AddUrl({ initial, onClose }: { initial?: string; onClose: () => 
                 value={name}
                 onInput={(e) => {
                   const v = (e.target as HTMLInputElement).value
+                  nameEdited.current = true
                   setName(v)
-                  if (!categoryEdited) {
+                  if (!categoryEdited.current) {
                     const c = categoryOf(v, settings.categories)
                     if (c !== category) {
                       setCategory(c)
-                      if (!dirEdited) setDir(defaultDir(c))
+                      if (!dirEdited.current) setDir(defaultDir(c))
                     }
                   }
                 }}

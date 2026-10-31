@@ -17,6 +17,13 @@ export function openDialog(d: DialogId): void {
   emit()
 }
 
+/** Follow a successful enqueue only if this pending download's dialog is still open. */
+export function followEnqueuedDownload(pendingId: string, jobId: string): void {
+  if (dialog?.kind === 'downloadProgress' && dialog.jobId === pendingId) {
+    openDialog({ kind: 'downloadProgress', jobId })
+  }
+}
+
 export function setPalette(p: null | 'all' | 'themes'): void {
   palette = p
   emit()
