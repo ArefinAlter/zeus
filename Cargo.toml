@@ -38,6 +38,8 @@ print_stdout = "allow"
 print_stderr = "allow"
 
 [workspace.dependencies]
+# Sidecars ship without a separately installed VC redistributable.
+static_vcruntime = "=3.0.0"
 redb = "4.1"
 # ---- zeus-core (sibling repository; clone it next to this one) ----
 zeus-types = { path = "../zeus-core/crates/zeus-types", version = "0.1.0" }

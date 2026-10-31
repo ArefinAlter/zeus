@@ -19,6 +19,8 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { assertReleaseVersion, assertReusableSidecars, gitSource, powershellLiteral, selectBundleAssets, supportedBundles } from './release-proof.mjs'
 
+import { assertWindowsSystemImports } from './windows-imports.mjs'
+
 const here = dirname(fileURLToPath(import.meta.url))
 const client = resolve(here, '..')
 const repo = resolve(client, '..', '..')
@@ -112,6 +114,18 @@ if (win) {
   copyFileSync(everything, join(bin, `zeus-everything-query-${triple}.exe`))
 }
 
+// Check every shipped sidecar before invoking the installer builder. Keep the exact
+// binary hashes with the import inventory so later package checks can verify it.
+const windowsDependencies = []
+function checkWindowsBinary(path) {
+  windowsDependencies.push({ name: path.split(/[\\/]/).pop(), sha256: sha(path), imports: assertWindowsSystemImports(readFileSync(path), path) })
+}
+if (win) {
+  for (const name of [...runtimeNames, 'zeus-tui']) checkWindowsBinary(release(name))
+  checkWindowsBinary(join(bridgeTarget, 'release', 'zeus-web-bridge.exe'))
+  checkWindowsBinary(everything)
+}
+
 run('npm', ['run', 'build'], { cwd: client })
 run('npx', ['tauri', 'build', '--config', win ? 'src-tauri/tauri.bundle.windows.conf.json' : 'src-tauri/tauri.bundle.conf.json', '--bundles', bundles, '--', '--locked'], { cwd: client })
 
@@ -144,6 +158,7 @@ if (win && bundles.split(',').includes('nsis')) {
 }
 
 const appExe = release('zeus-client')
+if (win) checkWindowsBinary(appExe)
 const assets = []
 const add = (p) => assets.push(p)
 
@@ -217,7 +232,7 @@ for (const [name, dir] of Object.entries(sourceDirs)) {
   if (gitSource(name, dir) !== sources[name]) throw new Error(`${name} changed during the release build.`)
 }
 const manifest = join(out, 'release-manifest.json')
-writeFileSync(manifest, JSON.stringify({ version, platform: OS, sources, assets: assets.map(path => ({ name: path.split(/[\\/]/).pop(), size: statSync(path).size, sha256: sha(path) })) }, null, 2) + '\n')
+writeFileSync(manifest, JSON.stringify({ version, platform: OS, sources, ...(win ? { windowsDependencies } : {}), assets: assets.map(path => ({ name: path.split(/[\\/]/).pop(), size: statSync(path).size, sha256: sha(path) })) }, null, 2) + '\n')
 add(manifest)
 
 const lines = assets.map((p) => `${sha(p)}  ${p.split(/[\\/]/).pop()}`)

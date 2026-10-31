@@ -68,3 +68,6 @@ predicates.workspace = true
 insta.workspace = true
 tempfile.workspace = true
 proptest.workspace = true
+
+[build-dependencies]
+static_vcruntime.workspace = true

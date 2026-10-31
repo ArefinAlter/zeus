@@ -1,5 +1,13 @@
 # Zeus project handoff
 
+## 2026-10-31 — Windows clean-install runtime repair
+
+The unpublished Windows r9 candidate imported an unbundled `VCRUNTIME140.dll` from zeusd, zeus, zeus-native-host and zeus-web-bridge. Local acceptance had passed because the development workstation already has that runtime. Release-artifact and downstream-desktop checks are now explicitly failed in both GitHub accounts; all PRs remain drafts and no release is published.
+
+Each Rust sidecar now uses pinned `static_vcruntime` 3.0.0 to link the VC runtime statically on MSVC while retaining the Windows UCRT. The release builder checks direct and delay-load PE imports of all seven shipped executables against the Windows system-DLL policy and records hashes/imports in its manifest. This gate detects the old four-binary failure; it does not claim to audit dynamic LoadLibrary calls. Three dependency-gate regression tests bring the frontend total to 73 passing tests. Lockfile changes contain only this build dependency; no existing package was upgraded.
+
+Fresh Windows/Linux Rust, MSRV/dependency and package validation is required before publication. Earlier r9/r5 packages and the prior manual attestation are superseded as release approval. Other functional evidence is retained. Workstation evidence: `D:\verne-build\security-2026-10-30\zeus-runtime-imports-before.json`; shared status: `A:\ogun\audit\2026-10-30\remediation\STATUS.md`. GitHub Actions remains unused; VPS SSH/HSTS stays staged.
+
 ## 2026-10-31 — Windows and Linux package acceptance complete
 
 The runtime source is Zeus `1d2b057138acde1577ec31572ed9c8c77a344e62`, Core `74ecfcbe2956ae2d5502614ff78076a70906eb3d`, Extension `cf179044c708df07aa8193a1bdc41f14edd5fd42`, TUI `0a7e3b53dac3b229fa2aea0622b2327d6efd8fc9`. Windows r9 and Linux r5 artifacts are built from those exact commits. A documentation-only follow-up records this checkpoint and restores UTF-8 punctuation in the two handoff documents; no runtime, dependency, schema or packaging source changes.

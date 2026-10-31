@@ -53,3 +53,6 @@ dbg_macro = "warn"
 codegen-units = 4
 lto = "thin"
 strip = true
+
+[build-dependencies]
+static_vcruntime = "=3.0.0"
