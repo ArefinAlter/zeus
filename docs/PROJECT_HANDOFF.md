@@ -1,5 +1,17 @@
 # Zeus project handoff
 
+## 2026-10-31 — runtime correction and final package acceptance verified
+
+The coordinated artifact source is Zeus `11d25e2f7de591dd635cb52ffee1d448be07c60f`, Core `74ecfcbe2956ae2d5502614ff78076a70906eb3d`, Extension `cf179044c708df07aa8193a1bdc41f14edd5fd42`, TUI `0a7e3b53dac3b229fa2aea0622b2327d6efd8fc9`. This follow-up updates only the two handoff documents; the release manifests retain the exact artifact source and a separate record identifies the reviewed/tagged documentation revision.
+
+Windows r10 passes all seven actual archived executable direct/delay import inventories, eliminating the old unbundled VC-runtime dependency. This gate does not claim to inspect dynamic library loading. Actual desktop acceptance covers PDF names/bytes, redirects, range fallback, typing/progress controls, shared TUI state/digests and installed Claude discovery. Visual review passes. NSIS alpha.1 installation, upgrade preserving the same job and exact file bytes, payload integrity and uninstall restoring original integration state all pass. Evidence: `D:\verne-build\audit-zeus-package\windows-r10` and `nsis-upgrade-r5`. Installer SHA-256: `dde0db58bc5a9523a9cd767ce83383eebae260367b52e3f83319c69cb270a3f2`.
+
+Linux r9 validation and r6 packages pass fresh root/native/secondary Rust, strict Clippy/Rust 1.90, frontend and real-daemon acceptance, followed by actual Debian and AppImage GUI tests. AppImage uses extract-and-run mode without a sandbox bypass; FUSE mounting is not claimed. Complete hash-verified logs/screenshots are copied to `D:\verne-build\security-2026-10-30\zeus-linux-r9-evidence-r6`. Windows passes 714 root, 226 native and 5 bridge tests; Linux passes 712 root, 225 native and 10 secondary tests. Four native tests are explicitly ignored on each platform. Unchanged Core validation passes 341 Windows / 342 Linux tests, with two ignored per platform. All 73 frontend and 319 unchanged extension tests pass. Current policy passes for the three changed Cargo workspaces without new exceptions.
+
+Packages remain unpublished under `D:\verne-build\releases\zeus\0.1.0-alpha.2\windows-x64-r10` and `linux-x64-r6` until protected PR merges, final attestation and release publication complete. Earlier r9/r5 artifacts and their attestation remain superseded. Manual CI is temporary while Actions capacity is unavailable; other PR protections remain intact. The user explicitly approved this Zeus source upload to the existing isolated VPS builder. No production SSH/HSTS change was deployed.
+
+Limits remain explicit: unsigned Windows/Linux packages, quota-limited live Claude inference, real-Firefox rescue still pending, no macOS release, and no FTP/BITS or universal torrent discovery. Other products and those capability expansions remain outstanding. Central status: `A:\ogun\audit\2026-10-30\remediation\STATUS.md` and `A:\verne-handoff\2026-10-26`.
+
 ## 2026-10-31 — Windows clean-install runtime repair
 
 The unpublished Windows r9 candidate imported an unbundled `VCRUNTIME140.dll` from zeusd, zeus, zeus-native-host and zeus-web-bridge. Local acceptance had passed because the development workstation already has that runtime. Release-artifact and downstream-desktop checks are now explicitly failed in both GitHub accounts; all PRs remain drafts and no release is published.
